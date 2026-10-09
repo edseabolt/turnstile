@@ -33,6 +33,62 @@ npm run ci          # ci:host (lint, format:check, typecheck, check:markers, tes
 A new user prompt resets the session's gate state. Gate state survives
 restarts via journal replay (last 2000 lines of `GATE: PASS` entries).
 
+## How it fits the ecosystem
+
+Claude Code's agent workflows are backed by host-side governance:
+permission prompts and tool hooks that can stop a call before it
+happens. I built turnstile to bring that shape to OpenCode: gates the
+runtime enforces, not requests the model honors. It borrows the
+enforcement model, none of the implementation, and stays
+OpenCode-native: zero dependencies, TypeScript, loaded from your own
+checkout.
+
+Most other agent-structure projects on OpenCode are orchestration
+suites: an orchestrator plans work, dispatches specialists, and
+reconciles results. Some add pipeline discipline on top, but the
+discipline is carried by prompts: a phase header the model prints at
+the start of a response, a "review gate" step inside a skill's
+instructions, a warning when a write lands without a prior test run.
+Those asks work when the model complies. Turnstile's gates aim a step
+further: they are decided in tool and task-dispatch hooks, outside the
+model loop, so a dispatch that violates a gate fails before a subagent
+session is created.
+
+That makes turnstile a layer, not a competitor to orchestration. It
+reads task dispatches to attribute markers and enforce gates; it never
+plans work, routes models, or spawns specialists. An orchestration
+suite that dispatches task calls with agent names will pass through
+turnstile unchanged unless a gate applies. Other adjacent approaches
+gate on written artifacts, like spec workflows, or on a single
+human-approval point; turnstile gates the machine steps around those.
+The bundled planner/executor/test-runner/reviewer agents in
+`.opencode/agents/` are the reference pipeline, not a requirement; the
+gates key off agent names and markers, and other suites' agents can
+carry their own markers.
+
+Three properties matter for comparing enforcement layers, and all three
+are visible in this repo's tests:
+
+- Verifiable state. `GATE:` and `VERDICT:` markers are parsed from
+  child session text (`src/markers.ts`), stored per parent session
+  (`src/state.ts`), and replayed from the JSONL journal on restart, so
+  gate state survives sessions and reloads rather than living in a
+  prompt.
+- Failure posture. Hooks fail open: an internal error is journaled and
+  the call proceeds. The only refusals are deliberate
+  `BLOCKED by turnstile:` throws at a declared gate. A broken
+  enforcement plugin should degrade to prompt contracts, not break
+  every session.
+- Auditability. Every dispatch, gate transition, verdict, and blocked
+  call is appended to `turnstile.jsonl` (bounded rotation, see
+  SECURITY.md). The journal is the record of what was claimed, which is
+  what makes the gates reviewable after the fact.
+
+The tradeoff is scope. Turnstile is host-coupled to the OpenCode v2
+plugin API, verified against v2.0.22, and enforces exactly the
+pipeline above. Multi-harness suites reach further; turnstile goes
+deeper on one host and one pipeline.
+
 ## Install
 
 This repo is the source of truth for what lands in `~/.config/opencode`:
