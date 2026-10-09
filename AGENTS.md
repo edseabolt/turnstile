@@ -10,13 +10,13 @@ executor → test-runner → reviewer) defined in the host's instructions
 file; install the matching contract block with the bundled skill or
 `node scripts/install-agents.mjs` (see `templates/global-AGENTS.md`).
 The plugin and pipeline subagent definitions are installed by
-`npm run install` (symlinks by default, `--copy` for real copies; manifest:
+`npm run init` (symlinks by default, `--copy` for real copies; manifest:
 `install.json`), making this repo the source of truth for
 `~/.config/opencode/plugin(s)` and `~/.config/opencode/agents`.
 The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `.opencode/agents/`;
-`npm run install` links or copies them into `~/.config/opencode/agents/`;
+`npm run init` links or copies them into `~/.config/opencode/agents/`;
 adjust the `model:` frontmatter in the repo files, since installs share it.
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker

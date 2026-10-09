@@ -102,13 +102,13 @@ never touched. Two install modes are available:
 | ------------------------- | --------------------------------------------------- | ------------------------------------------------------- |
 | Best for                  | developing turnstile                                | general use, dotfiles repos that reject foreign links   |
 | How targets point at repo | symlinks into the checkout                          | real copies                                             |
-| After `git pull`          | nothing to do; edits are live on next session start | re-run `npm run install -- --copy` to re-sync           |
+| After `git pull`          | nothing to do; edits are live on next session start | re-run `npm run init -- --copy` to re-sync              |
 | Editing installed files   | edit the repo; links share it                       | edit the repo; user-edited copies conflict on next sync |
 
 ```sh
 git clone <repo-url> && cd turnstile
 npm install          # typescript + @types/node, for typechecking
-npm run install      # symlink mode
+npm run init      # symlink mode
 # or: npm run install:copy
 npm run install:check  # verify installed state; exit 1 on drift (gates local CI)
 ```
@@ -182,7 +182,7 @@ npm install         # only if dependencies changed
 then restart OpenCode sessions (or `opencode service restart`) so the
 running server reloads the plugin. There is no separate install step for
 code or agent changes; the links are already live. Re-run
-`npm run install` only when the **set** of artifacts changes (a new agent
+`npm run init` only when the **set** of artifacts changes (a new agent
 added to `install.json`, an artifact removed or moved): it creates, fixes,
 or removes repo-owned links to match the manifest.
 
@@ -191,7 +191,7 @@ Copy mode adds one extra step, because copies do not follow the repo:
 ```sh
 git pull            # in this repo
 npm install         # only if dependencies changed
-npm run install -- --copy   # re-sync: re-copies changed files, skips clean ones
+npm run init -- --copy   # re-sync: re-copies changed files, skips clean ones
 ```
 
 then restart OpenCode sessions. Unchanged files are skipped; changed ones
@@ -200,7 +200,7 @@ are re-copied; user-edited copies conflict and wait for `--force`.
 Shared caveats:
 
 - Symlinks point at the clone's absolute path. Do not move, rename, or
-  delete the checkout; if you relocate it, re-run `npm run install`.
+  delete the checkout; if you relocate it, re-run `npm run init`.
 - `npm run install:check` reports drift between the manifest and what is
   actually installed; local `npm run ci` gates on it. GitHub CI runs
   `npm run ci:host`, the same chain without the install check, because a
@@ -230,8 +230,8 @@ node scripts/install-agents.mjs          # or: npm run install:agents
   template; it also flags unmanaged contract content. Useful in CI or
   dotfiles setup.
 - Agent definitions and the plugin itself are installed separately via
-  `npm run install` (symlinks, for development) or
-  `npm run install -- --copy` (see the Install section above).
+  `npm run init` (symlinks, for development) or
+  `npm run init -- --copy` (see the Install section above).
 
 Alternatively, in an OpenCode session, invoke the bundled
 `turnstile-setup` skill, which runs the installer and verifies marker

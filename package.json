@@ -1,13 +1,20 @@
 {
-  "name": "turnstile",
+  "name": "opencode-turnstile",
   "version": "0.1.0",
   "description": "OpenCode plugin that mechanically enforces agent pipeline gates (planner → executor → test-runner → reviewer)",
-  "private": true,
   "type": "module",
   "license": "MIT",
+  "bin": {
+    "opencode-turnstile": "bin/cli.mjs"
+  },
   "files": [
     "turnstile.ts",
     "src",
+    "scripts",
+    "bin",
+    "install.json",
+    "templates",
+    ".opencode/agents",
     "README.md",
     "LICENSE"
   ],
@@ -19,13 +26,24 @@
     "format:check": "prettier --check .",
     "check:markers": "node scripts/check-markers.mjs",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
-    "install": "node scripts/install.mjs",
+    "init": "node scripts/install.mjs",
+    "init:copy": "node scripts/install.mjs --copy",
+    "init:check": "node scripts/install.mjs --check",
     "install:copy": "node scripts/install.mjs --copy",
     "install:check": "node scripts/install.mjs --check",
     "install:agents": "node scripts/install-agents.mjs",
+    "pack:dry": "npm pack --dry-run",
     "ci:host": "npm run lint && npm run format:check && npm run typecheck && npm run check:markers && npm test",
     "ci": "npm run ci:host && npm run install:check"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edseabolt/turnstile.git"
+  },
+  "bugs": {
+    "url": "https://github.com/edseabolt/turnstile/issues"
+  },
+  "homepage": "https://github.com/edseabolt/turnstile#readme",
   "engines": {
     "node": ">=22.6"
   },

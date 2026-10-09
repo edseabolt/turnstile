@@ -15,11 +15,11 @@ user's global instructions file (`scripts/install-agents.mjs`).
 1. Install the plugin and agents from the repo's root:
 
    ```
-   npm run install
+   npm run init
    ```
 
    - Default is symlink mode (repo edits live); use
-     `npm run install -- --copy` for real copies when the user refuses
+     `npm run init -- --copy` for real copies when the user refuses
      symlinks — copy mode keeps a ledger recording what it installed.
    - Targets come from `install.json`; unowned files are never touched.
    - Conflicts (a real file differing from the repo, or a user-edited
