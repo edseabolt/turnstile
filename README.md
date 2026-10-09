@@ -1,0 +1,271 @@
+# turnstile
+
+An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
+agent pipeline: planner → executor → test-runner → reviewer. The workflow
+itself lives in a policy instruction file (e.g. `AGENTS.md`) that tells the
+agents what the pipeline is; turnstile complements that file, it does not
+replace it. Policy steers; turnstile blocks.
+
+The entry point is `turnstile.ts`; behavior lives in focused modules under
+`src/` (one boundary per file: types, journal, state, markers, gates,
+setup). The plugin has zero runtime dependencies and fails open.
+
+Verify with:
+
+```sh
+npm install
+npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) + install:check
+```
+
+## What it enforces
+
+| Gate                   | Behavior                                                                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Reviewer dispatch gate | `reviewer` subagent dispatches are blocked until a test-runner result in the session recorded `GATE: PASS`, or the dispatch prompt contains the literal marker `USER WAIVER:`              |
+| Reviewer round cap     | Max 2 `reviewer` dispatches per task without a `GATE: PASS`                                                                                                                                |
+| Decomposition gate     | `executor` dispatches must cite `chunk-N` / `AC-n` when any plan in `.opencode/plans/*.md` has a `## Decomposition` block                                                                  |
+| Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob)                                                                                                            |
+| Marker parsing         | `GATE:` / `VERDICT:` markers are parsed from task results and child-session text, deduped per task; marker-less outputs from marker-contracted agents (test-runner/reviewer) are journaled |
+| Trace                  | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, bash commands, errors                                                                                              |
+| Decoding clamps        | executor/test-runner/debugger temperature ≤ 0.2; reviewer temperature = 0                                                                                                                  |
+| Compaction             | Injects a "preserve verbatim" instruction for markers and findings                                                                                                                         |
+
+A new user prompt resets the session's gate state. Gate state survives
+restarts via journal replay (last 2000 lines of `GATE: PASS` entries).
+
+## Install
+
+This repo is the source of truth for what lands in `~/.config/opencode`:
+the plugin and the pipeline agent definitions are installed per the
+manifest in `install.json`; unowned files in the target directories are
+never touched. Two install modes are available:
+
+|                           | Symlink (default)                                   | Copy (`--copy`)                                         |
+| ------------------------- | --------------------------------------------------- | ------------------------------------------------------- |
+| Best for                  | developing turnstile                                | general use, dotfiles repos that reject foreign links   |
+| How targets point at repo | symlinks into the checkout                          | real copies                                             |
+| After `git pull`          | nothing to do; edits are live on next session start | re-run `npm run install -- --copy` to re-sync           |
+| Editing installed files   | edit the repo; links share it                       | edit the repo; user-edited copies conflict on next sync |
+
+```sh
+git clone <repo-url> && cd turnstile
+npm install          # typescript + @types/node, for typechecking
+npm run install      # symlink mode
+# or: npm run install:copy
+npm run install:check  # verify installed state; exit 1 on drift (gates local CI)
+```
+
+A target that differs from the repo is a **conflict**: `install` fails with
+a per-path summary. Re-run with `--force` to back the file up
+(`<name>.bak.<timestamp>`) and replace it. Conflicts mean:
+
+- symlink mode: a real file (or a link pointing outside the repo) sits at a
+  manifest target and differs from the source, typically pre-existing
+  files or hand edits.
+- copy mode: an installed copy was edited after install (the ledger can
+  tell user edits from repo updates), or an untracked real file sits at a
+  target.
+
+Copy mode records everything it installed in
+`~/.config/opencode/.turnstile-install.json` (the ledger: destination →
+source + content hash). The ledger makes re-syncs safe: repo updates
+re-copy cleanly and user edits fail loudly. It also lets the
+installer remove copies whose manifest entry was deleted. Deleting the
+ledger turns every copy into an untracked file the installer will refuse
+to touch.
+
+### Set the agents' models
+
+The five agent definitions in `.opencode/agents/` ship with `model:`
+frontmatter pointing at the author's locally served models (`oMLX/...`).
+You almost certainly do not have those models, and dispatches to the
+pipeline agents will fail or fall back until you set your own.
+
+Since installs share the repo's files (symlink mode) or conflict on
+divergence (copy mode), set your models **in the clone**, not in
+`~/.config/opencode/agents/`: edit the `model:` line of each agent file
+(`planner`, `executor`, `test-runner`, `reviewer`, `debugger`) to a model
+you have, in `providerID/modelID` form, then install or re-sync per the
+mode table above. Model overrides in installed copies are lost on the next
+sync; the repo is the source of truth.
+
+### Customizing the pipeline agents
+
+The agent definitions are opinionated on purpose: turnstile recognizes
+and clamps them by name, and the marker contract in the agent prompts is
+what the plugin enforces against. Editing the installed files is therefore
+not a supported customization path — symlink installs share the repo file,
+and copy installs conflict on the next sync.
+
+Two sanctioned ways to change the pipeline:
+
+- **Bring your own agents.** Add your own agent definitions (any names) to
+  `~/.config/opencode/agents/`; the installer never touches files it does
+  not own. Then point turnstile at them via
+  `~/.config/opencode/turnstile.json`: `agents.reviewer`,
+  `agents.executor`, `agents.testRunner`, and `agents.debugger` take the
+  names turnstile should recognize, clamp, and hold to the marker
+  contract. Your agents get the same gates the shipped ones do.
+- **Fork the repo.** To change the pipeline content itself, fork and edit
+  `.opencode/agents/*.md` there; your installer serves your fork.
+
+### Updating
+
+Symlink mode: because everything is linked into the checkout, updating is
+just:
+
+```sh
+git pull            # in this repo
+npm install         # only if dependencies changed
+```
+
+then restart OpenCode sessions (or `opencode service restart`) so the
+running server reloads the plugin. There is no separate install step for
+code or agent changes; the links are already live. Re-run
+`npm run install` only when the **set** of artifacts changes (a new agent
+added to `install.json`, an artifact removed or moved): it creates, fixes,
+or removes repo-owned links to match the manifest.
+
+Copy mode adds one extra step, because copies do not follow the repo:
+
+```sh
+git pull            # in this repo
+npm install         # only if dependencies changed
+npm run install -- --copy   # re-sync: re-copies changed files, skips clean ones
+```
+
+then restart OpenCode sessions. Unchanged files are skipped; changed ones
+are re-copied; user-edited copies conflict and wait for `--force`.
+
+Shared caveats:
+
+- Symlinks point at the clone's absolute path. Do not move, rename, or
+  delete the checkout; if you relocate it, re-run `npm run install`.
+- `npm run install:check` reports drift between the manifest and what is
+  actually installed; local `npm run ci` gates on it. GitHub CI runs
+  `npm run ci:host`, the same chain without the install check, because a
+  runner has no installs to check. Verify a copy install with
+  `npm run install:check -- --copy`.
+
+### Install the AGENTS.md contracts
+
+Turnstile enforces what your instructions file declares. Install the
+matching contract block into your global AGENTS.md:
+
+```sh
+node scripts/install-agents.mjs          # or: npm run install:agents
+```
+
+- Default target: `~/.config/opencode/AGENTS.md` (override with `--file`).
+- The block is delimited by `<!-- turnstile:start -->` …
+  `<!-- turnstile:end -->` sentinels; re-running updates only that block
+  and preserves all surrounding personal content.
+- Fresh installs get the sentinels automatically. If the target already
+  contains pipeline-gates content _without_ sentinels (e.g. an install
+  from before the block was managed), the installer refuses with
+  reconciliation instructions instead of appending a duplicate block —
+  wrap the existing section with the sentinels (updating its content to
+  match the template), or remove it, then re-run.
+- `--check` exits 0/1 depending on whether the installed block matches the
+  template; it also flags unmanaged contract content. Useful in CI or
+  dotfiles setup.
+- Agent definitions and the plugin itself are installed separately via
+  `npm run install` (symlinks, for development) or
+  `npm run install -- --copy` (see the Install section above).
+
+Alternatively, in an OpenCode session, invoke the bundled
+`turnstile-setup` skill, which runs the installer and verifies marker
+sync. The template source lives at `templates/global-AGENTS.md`.
+
+## Configuration
+
+Defaults live in code (`src/config.ts`); override via
+`~/.config/opencode/turnstile.json`, environment variables, or both.
+Precedence: defaults < config file < env. The plugin reads config once, at
+setup; restart sessions to apply. Invalid keys are ignored and journaled
+(fail-open); a malformed config file never breaks the host.
+
+| Key                                                                             | Default                                                                       | Meaning                                                           |
+| ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `metricsDir`                                                                    | `$XDG_DATA_HOME/opencode/metrics`, fallback `~/.local/share/opencode/metrics` | directory for both telemetry files                                |
+| `journalMaxBytes`                                                               | 5242880                                                                       | rotate a journal file past this size                              |
+| `journalMaxGenerations`                                                         | 5                                                                             | rotated generations kept per journal                              |
+| `maxReviewerRounds`                                                             | 2                                                                             | reviewer dispatches per task without `GATE: PASS`                 |
+| `readWarn` / `readBlock`                                                        | 8 / 15                                                                        | whole-file read horizon                                           |
+| `waiverMarker`                                                                  | `USER WAIVER:`                                                                | literal waiver marker                                             |
+| `plansDir`                                                                      | `.opencode/plans`                                                             | executor decomposition scan directory                             |
+| `trace`                                                                         | `true`                                                                        | write the human-readable trace file (JSONL journal always writes) |
+| `agents.reviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` | `reviewer` / `executor` / `test-runner` / `debugger`                          | agent names recognized in dispatches                              |
+| `agents.bareOutput`                                                             | `["test-runner", "reviewer"]`                                                 | agents whose marker-less output is a violation                    |
+| `gateMarker` / `verdictMarker`                                                  | canonical regex sources                                                       | marker patterns, compiled with `gm`                               |
+
+Environment variables (override the file):
+
+- `TURNSTILE_TRACE=0|1`: disable/enable the trace file
+- `TURNSTILE_METRICS_DIR=<dir>`: relocate the telemetry directory
+- `TURNSTILE_CONFIG=<path>`: use a different config file
+
+## Markers
+
+Subagents must emit these as the first line of their output. These examples
+are the canonical syntax; CI asserts the parser in `turnstile.ts` accepts
+exactly them.
+
+```
+GATE: PASS tests=12 passed=11 failed=1
+GATE: FAIL tests=12 passed=10 failed=2
+
+VERDICT: APPROVE crit=0 high=0 med=2 low=1
+VERDICT: BLOCK crit=1 high=0 med=0 low=2
+```
+
+Waiver marker (must appear in the reviewer dispatch prompt, verbatim):
+
+```
+USER WAIVER: <the user's words>
+```
+
+## What turnstile is not
+
+Turnstile is a speed bump and an audit trail, not a security boundary.
+
+- Any text matching the gate marker, including a marker an agent
+  hallucinated or copied from documentation, flips `hasGatePass`. An agent
+  that wants a green gate can emit `GATE: PASS tests=1 passed=1 failed=0`
+  without running anything.
+- `USER WAIVER:` as a substring anywhere in a dispatch prompt unlocks the
+  reviewer gate. A prompt-injected waiver is indistinguishable from a real
+  one.
+- `scripts/check-markers.mjs` guards against accidental drift between the
+  parser and documented markers; it cannot guard against forgery, because
+  the markers are plain prose by design.
+
+Use OpenCode's permission and sandboxing mechanisms against hostile agents.
+Treat turnstile's journal as the record of what was _claimed_, and treat the
+journal itself as sensitive data (see SECURITY.md).
+
+## Files and journals
+
+- Journals live outside the repo in `~/.local/share/opencode/metrics/`:
+  - `turnstile.jsonl`: full JSONL trace; rotates at 5 MB, keeps 5
+    generations
+  - `gate-events.jsonl`: human-readable
+    `YYYY-MM-DD HH:MM | agent | event | detail` lines (suppressed entirely
+    by `trace: false`)
+- Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
+  ~30 MB per journal, worst case ~60 MB total.
+- `.opencode/plans/*.md` containing `## Decomposition` are load-bearing:
+  their presence activates the executor chunk-citation gate.
+
+## Behavior contract
+
+- Fail-open by design. Every hook body is guarded; internal errors are
+  journaled and the tool call proceeds. Removing the plugin leaves the
+  pipeline functional (prompt contracts alone). The only thrown errors are
+  the deliberate `BLOCKED by turnstile:` ones.
+- The doc comment at the top of `turnstile.ts` is the authoritative summary
+  of enforced contracts; this README mirrors it and CI keeps the marker
+  examples in sync with the parser regexes.
+- Host API is the OpenCode v2 promise-plugin shape
+  (`{ tool.hook, session.hook, event.subscribe }`), verified against
+  opencode v2.0.22.
