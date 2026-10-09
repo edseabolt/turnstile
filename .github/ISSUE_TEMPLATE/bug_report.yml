@@ -1,0 +1,38 @@
+name: Bug report
+description: A gate misfired, blocked a call it should not have, or made an error log
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Check the journals first (`~/.local/share/opencode/metrics/`);
+        most "gate never fired" reports are host-version drift or
+        agent-name mismatches visible there.
+  - type: input
+    id: host-version
+    attributes:
+      label: OpenCode version
+      description: output of `opencode --version`; the host API is verified against v2.0.22
+    validations:
+      required: true
+  - type: input
+    id: turnstile-sha
+    attributes:
+      label: turnstile commit
+      description: "`git rev-parse --short HEAD` in your checkout"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: the blocked call or missing gate, and the `BLOCKED by turnstile:` message verbatim
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace excerpt
+      description: >
+        relevant `gate-events.jsonl` lines. Redact anything sensitive
+        before posting; treat journals as sensitive data (SECURITY.md).
