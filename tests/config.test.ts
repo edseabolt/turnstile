@@ -32,10 +32,11 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.journalMaxGenerations, 5)
   assert.deepEqual(cfg.agents, {
     reviewer: "reviewer",
+    planReviewer: "plan-reviewer",
     executor: "executor",
     testRunner: "test-runner",
     debugger: "debugger",
-    bareOutput: ["test-runner", "reviewer"],
+    bareOutput: ["test-runner", "reviewer", "plan-reviewer"],
   })
 })
 
@@ -85,7 +86,7 @@ test("mergeConfig merges agents one level deep and validates bareOutput", () => 
   assert.deepEqual(config.agents.bareOutput, ["qc"])
   assert.equal(warnings.length, 1)
   const bad = mergeConfig(base, { agents: { bareOutput: [1, 2] } })
-  assert.deepEqual(bad.config.agents.bareOutput, ["test-runner", "reviewer"])
+  assert.deepEqual(bad.config.agents.bareOutput, ["test-runner", "reviewer", "plan-reviewer"])
 })
 
 /** The config file layer applies over defaults. */

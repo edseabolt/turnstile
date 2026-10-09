@@ -7,6 +7,11 @@
  * - `ctx.event.subscribe({ signal })`
  *
  * Enforced mechanically:
+ * - Plan-approval gate: `task` dispatches to `executor` require a current
+ *   plan-reviewer `VERDICT: APPROVE` for the task whenever a plan file
+ *   exists in `.opencode/plans/`, or an explicit user waiver (`USER
+ *   WAIVER:` literal in the prompt). Plan-file changes invalidate the
+ *   approval, forcing re-review after a re-plan.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
  *   it), or an explicit user waiver (the dispatch prompt must contain the
@@ -17,9 +22,11 @@
  *   when a plan file with a `## Decomposition` block exists.
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
  *   assistant text, deduped per task (streaming re-delivery is ignored);
- *   marker-less outputs from marker-contracted agents (test-runner/reviewer)
- *   are journaled as violations; gate journal entries are keyed by the
- *   parent session so replay restores where the gate looks.
+ *   marker-less outputs from marker-contracted agents (test-runner/reviewer/
+ *   plan-reviewer) are journaled as violations; a plan-reviewer result's
+ *   last `VERDICT` moves the plan-approval gate (parent-keyed, journaled as
+ *   type `plan`); gate journal entries are keyed by the parent session so
+ *   replay restores where the gates look.
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors.
  * - Decoding: executor/test-runner/debugger temperature clamped ≤ 0.2;
@@ -39,8 +46,8 @@
  * - `src/journal.ts` — telemetry persistence (JSONL journal + trace).
  * - `src/state.ts` — per-session gate state, session mapping, journal replay.
  * - `src/markers.ts` — GATE/VERDICT parsing and dedup.
- * - `src/gates.ts` — enforcement decisions (reviewer gate, read horizon,
- *   decomposition).
+ * - `src/gates.ts` — enforcement decisions (plan-approval gate, reviewer
+ *   gate, read horizon, decomposition).
  * - `src/setup.ts` — hook registration and the stream-event loop.
  */
 import { createTurnstile } from "./src/setup.ts"

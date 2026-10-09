@@ -3,6 +3,10 @@
   "ledger": "~/.config/opencode/.turnstile-install.json",
   "links": [
     { "src": "turnstile.ts", "dest": "~/.config/opencode/plugins/turnstile.ts" },
+    {
+      "src": ".opencode/agents/plan-reviewer.md",
+      "dest": "~/.config/opencode/agents/plan-reviewer.md"
+    },
     { "src": ".opencode/agents/planner.md", "dest": "~/.config/opencode/agents/planner.md" },
     { "src": ".opencode/agents/executor.md", "dest": "~/.config/opencode/agents/executor.md" },
     {
