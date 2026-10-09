@@ -7,11 +7,14 @@
 //
 // Usage:
 //   node scripts/install.mjs [--manifest <path>] [--check] [--force]
-//                            [--link | --copy]
+//                            [--uninstall] [--link | --copy]
 //
 //   --manifest     Manifest to install (default: install.json at the repo root)
 //   --check        Verify all targets without writing; exit 1 on drift
 //   --force        Convert conflicting targets after backing them up
+//   --uninstall    Reverse the manifest: remove repo-owned links / ledger-owned
+//                  copies for every entry (then retire leftovers); exit 1 only
+//                  when something could not be removed (conflict/unowned).
 //   --link/--copy  Override the mode. Resolution: CLI flag > manifest "mode"
 //                  field > auto-detect (.git present => link, else copy)
 //
@@ -63,14 +66,21 @@ try {
 /**
  * Parses command-line arguments.
  * @param {string[]} argv Raw argv (process.argv).
- * @returns {{manifest: string, check: boolean, force: boolean, mode: "link"|"copy"|null}} Parsed arguments.
+ * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null}} Parsed arguments.
  */
 function parseArgs(argv) {
-  const args = { manifest: join(repoRoot, "install.json"), check: false, force: false, mode: null }
+  const args = {
+    manifest: join(repoRoot, "install.json"),
+    check: false,
+    force: false,
+    uninstall: false,
+    mode: null,
+  }
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === "--manifest") args.manifest = argv[++i]
     else if (argv[i] === "--check") args.check = true
     else if (argv[i] === "--force") args.force = true
+    else if (argv[i] === "--uninstall") args.uninstall = true
     else if (argv[i] === "--link") args.mode = "link"
     else if (argv[i] === "--copy") args.mode = "copy"
     else {
@@ -372,65 +382,114 @@ async function installCopy(entry, args, ledger, version, mode) {
 }
 
 /**
- * Removes a retired path when it is repo-owned: a symlink resolving into
- * the checkout, or a copied file recorded in the ledger.
- * @param {string} dest Retired destination path.
+ * Removes a path when it is repo-owned: a symlink resolving into the
+ * checkout, or a copied file recorded in the ledger. Unowned files (a
+ * symlink pointing outside the repo, or an untracked file) are never touched;
+ * they are reported as left alone. Retired leftovers are handled by calling
+ * this with the retired destination.
+ * @param {string} dest Destination path.
  * @param {{write: boolean}} mode Write when true, report-only otherwise.
  * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger.
  * @returns {Promise<{acted: boolean, note?: string}>} Whether a change was (or would be) made.
  */
-async function removeRetired(dest, mode, ledger) {
+async function removeEntry(dest, mode, ledger) {
   const kind = await kindAt(dest)
   if (kind === "missing") return { acted: false }
   if (kind === "link") {
     const target = await linkTarget(dest)
     if (!ownedByRepo(target)) return { acted: false, note: `symlink not repo-owned (${target})` }
-    if (!mode.write) return { acted: true, note: "retired link still present" }
+    if (!mode.write) return { acted: true, note: "link still present" }
     await unlinkP(dest)
     return { acted: true }
   }
   if (kind === "file") {
     if (!ledger[dest]) return { acted: false, note: "untracked file left alone" }
-    if (!mode.write) return { acted: true, note: "retired copy still present" }
-    delete ledger[dest]
+    if (!mode.write) return { acted: true, note: "copy still present" }
     await unlinkP(dest)
+    delete ledger[dest]
     return { acted: true }
   }
   return { acted: false, note: `left alone (${kind})` }
 }
 
 /**
- * Runs the installer in apply mode and prints a per-target report.
+ * Runs the installer in apply mode and prints a per-target report. In
+ * uninstall mode it removes repo-owned links / ledger-owned copies for every
+ * manifest entry (reporting unowned ones as failures) before retiring
+ * leftovers; otherwise it installs as configured. Tracks whether any change
+ * was made so the caller can gate the "restart OpenCode sessions" note.
  * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
- * @param {{check: boolean, force: boolean, mode: "link"|"copy"|null}} args Parsed arguments.
- * @returns {Promise<boolean>} True when every change succeeded.
+ * @param {{check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null}} args Parsed arguments.
+ * @returns {Promise<{ok: boolean, changed: boolean}>} Success flag and whether anything changed.
  */
 async function apply(manifest, args) {
   const ledger = loadLedger(manifest.ledgerPath)
   let ok = true
+  let changed = false
+
+  if (args.uninstall) {
+    for (const entry of manifest.links) {
+      try {
+        const result = await removeEntry(entry.dest, { write: true }, ledger)
+        if (result.acted) {
+          changed = true
+          console.log(`install: removed ${entry.dest}`)
+        } else if (result.note) {
+          // Could not remove something that was left alone (unowned / conflict).
+          ok = false
+          console.log(`install: could not remove ${entry.dest} — ${result.note}`)
+        } else console.log(`install: up to date ${entry.dest}`)
+      } catch (error) {
+        ok = false
+        console.error(String(error.message ?? error))
+      }
+    }
+    for (const dest of manifest.retired) {
+      try {
+        const result = await removeEntry(dest, { write: true }, ledger)
+        if (result.acted) {
+          changed = true
+          console.log(`install: removed retired ${dest}`)
+        } else if (result.note) {
+          console.log(`install: retired ${dest} — ${result.note}`)
+        }
+      } catch (error) {
+        ok = false
+        console.error(String(error.message ?? error))
+      }
+    }
+    saveLedger(manifest.ledgerPath, ledger)
+    return { ok, changed }
+  }
+
   for (const entry of manifest.links) {
     try {
       const result =
         manifest.mode === "copy"
           ? await installCopy(entry, args, ledger, pkgVersion, manifest.mode)
           : await installLink(entry, args, ledger)
-      if (result.acted)
+      if (result.acted) {
+        changed = true
         console.log(
           `install: ${manifest.mode} ${entry.dest}${result.note ? ` (${result.note})` : ""}`,
         )
-      else console.log(`install: up to date ${entry.dest}`)
+      } else console.log(`install: up to date ${entry.dest}`)
     } catch (error) {
       ok = false
       console.error(String(error.message ?? error))
     }
   }
   for (const dest of manifest.retired) {
-    const result = await removeRetired(dest, { write: true }, ledger)
-    if (result.acted) console.log(`install: removed retired ${dest}`)
-    else if (result.note) console.log(`install: retired ${dest} — ${result.note}`)
+    const result = await removeEntry(dest, { write: true }, ledger)
+    if (result.acted) {
+      changed = true
+      console.log(`install: removed retired ${dest}`)
+    } else if (result.note) {
+      console.log(`install: retired ${dest} — ${result.note}`)
+    }
   }
   saveLedger(manifest.ledgerPath, ledger)
-  return ok
+  return { ok, changed }
 }
 
 /**
@@ -463,7 +522,7 @@ async function check(manifest, version) {
     }
   }
   for (const dest of manifest.retired) {
-    const result = await removeRetired(dest, { write: false }, ledger)
+    const result = await removeEntry(dest, { write: false }, ledger)
     if (result.acted) {
       ok = false
       console.error(`check: retired link still present: ${dest}`)
@@ -478,8 +537,9 @@ async function main() {
   console.log(
     `install: mode=${manifest.mode} (${manifest.mode === "link" ? "checkout" : "package"})`,
   )
-  const ok = args.check ? await check(manifest, pkgVersion) : await apply(manifest, args)
-  if (!args.check) console.log("restart OpenCode sessions to pick up changes.")
+  if (args.check) return await check(manifest, pkgVersion)
+  const { ok, changed } = await apply(manifest, args)
+  if (changed) console.log("restart OpenCode sessions to pick up changes.")
   return ok
 }
 
@@ -496,4 +556,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 // Pure, side-effect-free helpers exported for unit tests (chunk-4): tests can
 // import these directly without spawning the CLI.
-export { detectMode, resolveMode, normalizeLedger }
+export { detectMode, resolveMode, normalizeLedger, removeEntry }
