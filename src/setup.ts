@@ -224,7 +224,7 @@ export function createTurnstile(
           try {
             if (!draft) return
             const agent = typeof draft.agent === "string" ? draft.agent : ""
-            if (agent === config.agents.reviewer) {
+            if (agent === config.agents.reviewer || agent === config.agents.planReviewer) {
               // Force 0 even when the host sent no options object at all —
               // today's early return skipped the clamp in exactly that case.
               if (!draft.options) draft.options = {}
@@ -295,6 +295,7 @@ export function createTurnstile(
               }
 
               if (agent === config.agents.executor) {
+                gates.enforcePlanApproval(sessionID, prompt, projectDir, ledger)
                 gates.enforceDecomposition(sessionID, prompt, projectDir)
               }
               return
@@ -329,6 +330,27 @@ export function createTurnstile(
               const agent =
                 agentFromTaskInput(event.input) ||
                 agentFromTaskInput(event.result?.input as TaskInput | undefined)
+              // Plan-approval attribution: only a plan-reviewer result moves
+              // the plan gate. Latest verdict wins; a BLOCK or marker-less
+              // result keeps the gate red. Keyed by parent session like the
+              // other gate state.
+              if (agent === config.agents.planReviewer) {
+                const sid = ledger.parentOf(asSessionID(event?.sessionID))
+                const s = ledger.state(sid)
+                const verdicts = output.match(verdictRe) ?? []
+                const marker = verdicts[verdicts.length - 1] ?? ""
+                const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+                s.hasPlanVerdict = result === "APPROVE"
+                journaler.journal({
+                  type: "plan",
+                  sessionID: sid,
+                  raw: asSessionID(event?.sessionID),
+                  result,
+                  marker: marker || "<none>",
+                  source: "task-result",
+                })
+                journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>")
+              }
               const bare =
                 config.agents.bareOutput.includes(agent) && output !== "" && !hasMarker(output)
               if (bare) {

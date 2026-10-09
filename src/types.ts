@@ -79,6 +79,8 @@ export interface StreamEvent {
 /** Gate state for one parent session. */
 export interface GateState {
   hasGatePass: boolean
+  /** True when this task's plan has a current plan-reviewer APPROVE. */
+  hasPlanVerdict: boolean
   verdicts: string[]
   reviewRounds: number
   reads: number
@@ -99,6 +101,8 @@ export interface MarkerEvent {
 /** Agent names turnstile recognizes in dispatches and generation drafts. */
 export interface TurnstileAgents {
   reviewer: string
+  /** Plan reviewer: adversarial review of the implementation plan. */
+  planReviewer: string
   executor: string
   testRunner: string
   debugger: string

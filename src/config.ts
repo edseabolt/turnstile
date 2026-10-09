@@ -48,10 +48,11 @@ export function defaultConfig(
     trace: true,
     agents: {
       reviewer: "reviewer",
+      planReviewer: "plan-reviewer",
       executor: "executor",
       testRunner: "test-runner",
       debugger: "debugger",
-      bareOutput: ["test-runner", "reviewer"],
+      bareOutput: ["test-runner", "reviewer", "plan-reviewer"],
     },
     gateMarker: GATE_RE.source,
     verdictMarker: VERDICT_RE.source,
@@ -150,7 +151,8 @@ export function mergeConfig(
           continue
         }
         if (typeof agentValue === "string" && agentValue.trim().length > 0) {
-          const name = agentKey as "reviewer" | "executor" | "testRunner" | "debugger"
+          const name = agentKey as
+            "reviewer" | "planReviewer" | "executor" | "testRunner" | "debugger"
           config.agents[name] = agentValue
         } else {
           warnings.push(`config: agents.${agentKey} must be a non-empty string; keeping default`)

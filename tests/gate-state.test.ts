@@ -388,7 +388,8 @@ test("clamps: reviewer forced to 0 (even without options), executors clamped to 
   dispose()
 })
 
-/** A plan with ## Decomposition blocks executor dispatches lacking chunk-N / AC-n. */
+/** Plan approval must come first: an unreviewed plan blocks before the
+ * decomposition citation check, even when the prompt cites no chunk. */
 test("decomposition gate: executor must cite chunk-N when a plan has Decomposition", async () => {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
@@ -400,6 +401,22 @@ test("decomposition gate: executor must cite chunk-N when a plan has Decompositi
   process.chdir(project)
   try {
     const { h, dispose } = await boot()
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      (e: Error) => e.message.includes('no plan approval for "plan.md"'),
+    )
+    // Plan approved: the decomposition gate takes over and demands a chunk.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {
@@ -557,6 +574,12 @@ test("event loop: child session.created events do not move the project dir", asy
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
     )
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {

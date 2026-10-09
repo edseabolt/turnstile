@@ -3,12 +3,17 @@
 
 ## Turnstile pipeline gates
 
-Order: planner → executor → test-runner → reviewer. This file is the
-source of truth for policy; the `turnstile` plugin (installed at
-`~/.config/opencode/plugins/turnstile.ts`) enforces it mechanically.
+Order: planner → plan-reviewer → executor → test-runner → reviewer. This
+file is the source of truth for policy; the `turnstile` plugin (installed
+at `~/.config/opencode/plugins/turnstile.ts`) enforces it mechanically.
 Enforcement mechanics (regexes, thresholds, journals) are canonical in
 turnstile's README; if prose here diverges from enforcement, trust the
 plugin and fix this file. Advisory only if the plugin is absent.
+
+Plan gate: dispatch `executor` only after this task's plan-reviewer first
+line is `VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or after an
+explicit user waiver. Plan-file changes invalidate the approval — after a
+re-plan, dispatch plan-reviewer again before resuming executor work.
 
 Dispatch gate: dispatch `reviewer` only after this task's test-runner first
 line is `GATE: PASS tests=<n> passed=<n> failed=<n>`, or after an explicit
@@ -19,6 +24,8 @@ Markers (first line, machine-parseable):
 
 - test-runner: `GATE: PASS|FAIL tests=<n> passed=<n> failed=<n>`
 - reviewer: `VERDICT: APPROVE|BLOCK crit=<n> high=<n> med=<n> low=<n>`
+- plan-reviewer: `VERDICT: APPROVE|BLOCK crit=<n> high=<n> med=<n> low=<n>`
+  (first line; then an AC traceability table with `Covered-by` per AC)
 - reviewer acceptance table: add an `AC-ID` column referencing `AC-<n>`
 - planner: number criteria `AC-1…AC-n`; if the change spans >5 files or >3
   outcomes, add `## Decomposition` with ordered `chunk-N` entries (≤5 files)

@@ -15,6 +15,7 @@ import type { GateState } from "./types.ts"
 export function newState(): GateState {
   return {
     hasGatePass: false,
+    hasPlanVerdict: false,
     verdicts: [],
     reviewRounds: 0,
     reads: 0,
@@ -69,11 +70,19 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
     if (fs.existsSync(journalPath)) {
       const lines = fs.readFileSync(journalPath, "utf8").split("\n").filter(Boolean)
       const lastGateResult = new Map<string, string>()
+      const lastPlanResult = new Map<string, string>()
       for (const line of lines.slice(-2000)) {
         try {
           const e = JSON.parse(line) as { type?: unknown; sessionID?: unknown; result?: unknown }
           if (e.type === "gate" && e.sessionID && (e.result === "PASS" || e.result === "FAIL")) {
             lastGateResult.set(e.sessionID as string, e.result)
+          }
+          if (
+            e.type === "plan" &&
+            e.sessionID &&
+            (e.result === "APPROVE" || e.result === "BLOCK")
+          ) {
+            lastPlanResult.set(e.sessionID as string, e.result)
           }
         } catch {
           // skip malformed lines
@@ -83,6 +92,12 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         if (result !== "PASS") continue
         const s = states.get(sessionID) ?? newState()
         s.hasGatePass = true
+        states.set(sessionID, s)
+      }
+      for (const [sessionID, result] of lastPlanResult) {
+        if (result !== "APPROVE") continue
+        const s = states.get(sessionID) ?? newState()
+        s.hasPlanVerdict = true
         states.set(sessionID, s)
       }
     }

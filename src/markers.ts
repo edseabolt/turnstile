@@ -17,7 +17,7 @@ export const VERDICT_RE = /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\
 
 /** Agents contracted to emit GATE/VERDICT markers; marker-less output from
  * anything else is normal, not a violation. */
-export const BARE_OUTPUT_AGENTS: readonly string[] = ["test-runner", "reviewer"]
+export const BARE_OUTPUT_AGENTS: readonly string[] = ["test-runner", "reviewer", "plan-reviewer"]
 
 /**
  * Compiles a marker regex from a config-provided source string with `gm`
