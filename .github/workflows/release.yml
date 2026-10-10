@@ -12,10 +12,13 @@ jobs:
       id-token: write # npm provenance (OIDC)
     steps:
       - uses: actions/checkout@v7
+      # Trusted publishing (OIDC) needs npm >= 11.5.1 and node 24 per the
+      # npm docs / setup-node reports.
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org/
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run ci:host
       - name: Guard tag against package.json version
@@ -24,5 +27,3 @@ jobs:
           grep -q "\"version\": \"$v\"" package.json || {
             echo "tag v$v does not match package.json version"; exit 1; }
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
