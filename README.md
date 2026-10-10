@@ -244,6 +244,56 @@ Copy-mode users: after a `git pull` that changes these definitions,
 re-run `npm run install:copy` to pick up the new frontmatter. `npm run
 install:check` will report `stale` (not `conflict`) until you do.
 
+### Printing a model config
+
+To generate a `{"agents": {…}}` snippet instead of copying the six agent
+names by hand, run the printer. It writes nothing — it short-circuits before
+any install work, so the ledger, links, and copies are untouched:
+
+```sh
+npm run init -- --print-model-config
+```
+
+That prints one entry per agent, each defaulting to a placeholder:
+
+```json
+{
+  "agents": {
+    "planner": "<provider>/<model-id>",
+    "plan-reviewer": "<provider>/<model-id>",
+    "executor": "<provider>/<model-id>",
+    "test-runner": "<provider>/<model-id>",
+    "reviewer": "<provider>/<model-id>",
+    "debugger": "<provider>/<model-id>"
+  }
+}
+```
+
+Seed individual agents with repeatable `--model` seeds. A bare
+`provider/model` (optionally `#variant`) seeds all six; `name=` seeds one:
+
+```sh
+npm run init -- --print-model-config \
+  --model planner=anthropic/claude-haiku-4-5 \
+  --model executor=anthropic/claude-sonnet-4-5
+```
+
+Add `--validate` to cross-check every concrete seed against
+`opencode models` and exit 1 naming a model it does not list; placeholder
+seeds are skipped:
+
+```sh
+npm run init -- --print-model-config --model planner=anthropic/claude-haiku-4-5 --validate
+```
+
+Paste the output into `~/.config/opencode/opencode.json` (see the
+[Set the agents' models](#set-the-agents-models) section).
+`opencode-turnstile init -- --print-model-config` routes the same flags
+through `scripts/install.mjs` and adds nothing of its own: `install.mjs`
+recognizes `--print-model-config` and prints before writing, while the router
+still idempotently installs the contract block in
+`~/.config/opencode/AGENTS.md` in the same run.
+
 ### Customizing the pipeline agents
 
 The agent definitions are opinionated on purpose: turnstile recognizes

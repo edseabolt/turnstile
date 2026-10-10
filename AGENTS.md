@@ -22,6 +22,11 @@ the shipped definitions carry no `model:` frontmatter — subagents inherit
 the dispatching session's model, and per-agent pins belong in
 `~/.config/opencode/opencode.json` under `agents.<name>.model`; installs
 never carry user state.
+`--print-model-config` optionally prints a ready-to-paste `{"agents": {…}}`
+model snippet (repeatable `--model [name=]provider/model[#variant]` seeds;
+`--validate` checks them against `opencode models` and exits 1 on a miss) and
+writes nothing — it short-circuits before any install work — while the router
+still idempotently installs the contract block in the same run (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift), all chained in `npm run ci`:

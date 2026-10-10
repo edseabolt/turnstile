@@ -30,6 +30,11 @@ Commands:
   uninstall Remove installed artifacts (agents + block)
   version   Print the installed package version
 
+init also accepts convenience flags (passthrough to scripts/install.mjs):
+  --print-model-config  Print a {"agents": {...}} model snippet, write nothing
+  --model [name=]provider/model[#variant]  Seed an agent (repeatable)
+  --validate            Check concrete specs against "opencode models"
+
 A git checkout installs by linking (live edits); a package install copies.`
 
 /**
@@ -59,6 +64,13 @@ async function main() {
       // managed contract block in ~/.config/opencode/AGENTS.md, mirroring
       // uninstall's two-step shape in reverse. Passthrough flags go to the
       // manifest installer; the agents installer needs none of them.
+      //
+      // --print-model-config is passthrough too: install.mjs prints the
+      // snippet and short-circuits before any manifest work, but the router
+      // still runs BOTH steps, so the contract block is idempotently
+      // installed as usual. Print mode writes nothing; the two-step install
+      // is the router's idempotent contract-block behavior, which is out of
+      // scope for the write-free printer flag.
       const byInstall = await spawnInstaller(installScript, passthrough)
       const byAgents = await spawnInstaller(agentsScript, [])
       return process.exit(byInstall || byAgents ? 1 : 0)
