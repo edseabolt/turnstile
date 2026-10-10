@@ -94,7 +94,9 @@ deeper on one host and one pipeline.
 
 ## Install
 
-Turnstile ships as the npm package `opencode-turnstile`. There are three
+Turnstile ships as the npm package
+[`opencode-turnstile`](https://www.npmjs.com/package/opencode-turnstile).
+There are three
 ways to use it; pick one, and do not combine the plugin-array path with
 the CLI install.
 
