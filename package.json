@@ -1,6 +1,6 @@
 {
   "name": "opencode-turnstile",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode plugin that mechanically enforces agent pipeline gates (planner → executor → test-runner → reviewer)",
   "type": "module",
   "license": "MIT",
