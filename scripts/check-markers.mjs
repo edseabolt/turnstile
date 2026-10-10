@@ -42,10 +42,10 @@ for (const line of lines) {
 }
 
 // Agent templates: the backticked GATE:/VERDICT: examples in
-// .opencode/agents/*.md are the prompt-side half of the marker contract.
+// agents/*.md are the prompt-side half of the marker contract.
 // Templates spell the numeric fields <n>; they must parse once the
 // placeholder stands in for digits.
-const agentsDir = join(root, ".opencode", "agents")
+const agentsDir = join(root, "agents")
 let agentTemplates = 0
 for (const f of readdirSync(agentsDir).filter((f) => f.endsWith(".md"))) {
   const text = readFileSync(join(agentsDir, f), "utf8")
@@ -60,7 +60,7 @@ for (const f of readdirSync(agentsDir).filter((f) => f.endsWith(".md"))) {
   }
 }
 if (agentTemplates === 0) {
-  console.error("check-markers: no marker templates found in .opencode/agents")
+  console.error("check-markers: no marker templates found in agents/")
   failed++
 }
 

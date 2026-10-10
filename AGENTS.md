@@ -16,7 +16,7 @@ The plugin and pipeline subagent definitions are installed by
 `~/.config/opencode/skills` (the vendored `turnstile-setup` skill).
 The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
-`.opencode/agents/`;
+`agents/`;
 `npm run init` links or copies them into `~/.config/opencode/agents/`;
 adjust the `model:` frontmatter in the repo files, since installs share it.
 Verification tooling: ESLint + typescript-eslint (lint), Prettier

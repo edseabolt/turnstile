@@ -6,27 +6,27 @@
       "dest": "~/.config/opencode/plugins/turnstile.ts"
     },
     {
-      "src": ".opencode/agents/plan-reviewer.md",
+      "src": "agents/plan-reviewer.md",
       "dest": "~/.config/opencode/agents/plan-reviewer.md"
     },
     {
-      "src": ".opencode/agents/planner.md",
+      "src": "agents/planner.md",
       "dest": "~/.config/opencode/agents/planner.md"
     },
     {
-      "src": ".opencode/agents/executor.md",
+      "src": "agents/executor.md",
       "dest": "~/.config/opencode/agents/executor.md"
     },
     {
-      "src": ".opencode/agents/test-runner.md",
+      "src": "agents/test-runner.md",
       "dest": "~/.config/opencode/agents/test-runner.md"
     },
     {
-      "src": ".opencode/agents/reviewer.md",
+      "src": "agents/reviewer.md",
       "dest": "~/.config/opencode/agents/reviewer.md"
     },
     {
-      "src": ".opencode/agents/debugger.md",
+      "src": "agents/debugger.md",
       "dest": "~/.config/opencode/agents/debugger.md"
     },
     {

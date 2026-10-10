@@ -15,7 +15,7 @@
     "install.json",
     "templates",
     "skills",
-    ".opencode/agents",
+    "agents",
     "README.md",
     "LICENSE"
   ],
