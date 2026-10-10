@@ -211,19 +211,38 @@ to touch.
 
 ### Set the agents' models
 
-The six agent definitions in `agents/` ship with `model:`
-frontmatter pointing at the author's locally served models (`oMLX/...`).
-You almost certainly do not have those models, and dispatches to the
-pipeline agents will fail or fall back until you set your own.
+The six agent definitions in `agents/` ship **without** a `model:`
+frontmatter key. Each subagent therefore runs on the model of the session
+that dispatched it — OpenCode v2's documented inheritance rule — so there
+is nothing to configure for the common case.
 
-Since installs share the repo's files (symlink mode) or conflict on
-divergence (copy mode), set your models **in the clone**, not in
-`~/.config/opencode/agents/`: edit the `model:` line of each agent file
-(`planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`,
-`debugger`) to a model
-you have, in `providerID/modelID` form, then install or re-sync per the
-mode table above. Model overrides in installed copies are lost on the next
-sync; the repo is the source of truth.
+To pin a specific model per agent, paste a block into
+`~/.config/opencode/opencode.json` (**plural** `agents` is the v2 key;
+v1 used singular `agent`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "planner": { "model": "anthropic/claude-haiku-4-5" },
+    "plan-reviewer": { "model": "anthropic/claude-haiku-4-5" },
+    "executor": { "model": "anthropic/claude-sonnet-4-5" },
+    "test-runner": { "model": "anthropic/claude-haiku-4-5" },
+    "reviewer": { "model": "anthropic/claude-sonnet-4-5" },
+    "debugger": { "model": "anthropic/claude-sonnet-4-5" },
+  },
+}
+```
+
+Model IDs come from `opencode models` and take the form
+`provider/modelID`, with an optional `#variant`. Restarts pick the change
+up. Because the shipped definitions are silent on `model:`, a pin you add
+is the only definition of that model — there is no merge precedence to
+reason about.
+
+Copy-mode users: after a `git pull` that changes these definitions,
+re-run `npm run install:copy` to pick up the new frontmatter. `npm run
+install:check` will report `stale` (not `conflict`) until you do.
 
 ### Customizing the pipeline agents
 

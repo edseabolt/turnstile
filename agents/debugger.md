@@ -1,7 +1,6 @@
 ---
 description: Investigates failures, identifies root causes, implements targeted fixes, and verifies the result.
 mode: subagent
-model: oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
 # Runaway-loop backstop for the Horizon rule below: near the cap OpenCode
 # drops tools and asks for a summary. Tune to your workflow.
 steps: 50

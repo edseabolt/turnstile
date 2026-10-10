@@ -1,7 +1,6 @@
 ---
 description: Analyzes requirements, explores the repository, designs implementation approaches by evaluating tradeoffs, and creates implementation plans without modifying source code
 mode: subagent
-model: oMLX/oQ/Qwen3.8-Flash-Next-oQ4-mtp
 permissions:
   - { action: edit, resource: "*", effect: deny }
   - { action: edit, resource: ".opencode/plans/**", effect: allow }

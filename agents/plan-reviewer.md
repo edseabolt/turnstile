@@ -1,7 +1,6 @@
 ---
 description: Adversarially reviews an implementation plan for requirement coverage, AC traceability, feasibility, and scope before any code is written
 mode: subagent
-model: oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
 permissions:
   - { action: edit, resource: "*", effect: deny }
   - { action: shell, resource: "*", effect: allow }

@@ -1,7 +1,6 @@
 ---
 description: Implements an approved plan, validates changes, and fixes test failures
 mode: subagent
-model: oMLX/oQ/Ornith-1.5-35B-A3B-oQ8-mtp
 # Runaway-loop backstop for the Horizon rule below: near the cap OpenCode
 # drops tools and asks for a summary. Tune to your workflow.
 steps: 50

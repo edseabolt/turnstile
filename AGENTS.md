@@ -18,7 +18,10 @@ The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `agents/`;
 `npm run init` links or copies them into `~/.config/opencode/agents/`;
-adjust the `model:` frontmatter in the repo files, since installs share it.
+the shipped definitions carry no `model:` frontmatter — subagents inherit
+the dispatching session's model, and per-agent pins belong in
+`~/.config/opencode/opencode.json` under `agents.<name>.model`; installs
+never carry user state.
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift), all chained in `npm run ci`:
