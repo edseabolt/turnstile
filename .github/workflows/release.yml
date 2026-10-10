@@ -26,4 +26,7 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           grep -q "\"version\": \"$v\"" package.json || {
             echo "tag v$v does not match package.json version"; exit 1; }
-      - run: npm publish --provenance --access public
+      # Stage-only: the tarball lands in npm's review queue; a maintainer
+      # approves it (2FA) on npmjs.com before it goes live. Pair with the
+      # trusted-publisher config NOT allowing direct npm publish.
+      - run: npm stage publish --provenance --access public
