@@ -1,7 +1,7 @@
 /**
  * @fileoverview Marker boundary: `GATE:`/`VERDICT:` marker parsing with
  * per-task dedup, plus agent attribution helpers. Pure with respect to
- * journal and filesystem — callers journal the returned marker events.
+ * journal and filesystem, so callers journal the returned marker events.
  */
 
 import type { GateState, MarkerEvent, TaskInput } from "./types.ts"
@@ -88,8 +88,8 @@ export function parseGateMarkers(
     if (!state.seen.has(key)) {
       state.seen.add(key)
       const result: "PASS" | "FAIL" = gate.includes("PASS") ? "PASS" : "FAIL"
-      // Latest observed result wins across texts, not just within one:
-      // a re-run's FAIL un-greens the gate set by an earlier PASS.
+      // A re-run's FAIL un-greens a gate set by an earlier PASS, even across
+      // different texts: the latest observed result wins.
       state.hasGatePass = result === "PASS"
       events.push({ kind: "gate", marker: gate, result, suppressed: gates.length - 1 })
     }

@@ -40,6 +40,11 @@ plugin runtime itself is Node ≥ 18.
    behavior must be identical to the documented defaults.
 6. **Dependencies:** zero runtime dependencies is a stated feature;
    devDependencies are tooling only.
+7. **Shipped scripts are dependency-free:** `scripts/*.mjs` and `bin/cli.mjs`
+   import only `node:` builtins; they run from `npx opencode-turnstile`
+   without a repo clone. Do not add imports beyond Node builtins, and keep
+   the publish artifact aligned with `package.json` `files` (verify with
+   `npm run pack:dry`).
 
 ## Tests
 

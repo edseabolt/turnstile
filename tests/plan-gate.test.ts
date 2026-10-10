@@ -2,7 +2,7 @@
  * @fileoverview Plan-approval gate tests: executor dispatch blocked until
  * a plan-reviewer result records `VERDICT: APPROVE`, waiver bypass, bare
  * output and BLOCK verdicts keep the gate red, re-plan invalidation, the
- * no-plans-dir pass-through, and journal replay of plan approvals — via a
+ * no-plans-dir pass-through, and journal replay of plan approvals, via a
  * fake host with injected config.
  */
 

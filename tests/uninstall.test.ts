@@ -1,8 +1,8 @@
 /**
  * @fileoverview Uninstall / removal-gating tests for the exported `removeEntry`
  * helper from scripts/install.mjs. It removes a path only when that path is
- * repo-owned — a symlink resolving into this checkout, or a ledger-recorded
- * copy — and otherwise leaves the target untouched (reporting it as left
+ * repo-owned (a symlink resolving into this checkout, or a ledger-recorded
+ * copy) and otherwise leaves the target untouched (reporting it as left
  * alone). Each test builds its own temp directory and removes it on
  * completion; nothing is written outside the temp dir, and the only repo path
  * ever referenced is a symlink that merely points at a real file in the
@@ -16,7 +16,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 
-// @ts-expect-error TS7016 — scripts/install.mjs is untyped JS; tests import
+// @ts-expect-error TS7016: scripts/install.mjs is untyped JS; tests import
 // removeEntry directly rather than spawning the CLI.
 import { removeEntry } from "../scripts/install.mjs"
 

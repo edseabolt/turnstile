@@ -1,5 +1,5 @@
 /**
- * turnstile — runtime enforcement of the AGENTS.md pipeline contracts.
+ * turnstile: runtime enforcement of the AGENTS.md pipeline contracts.
  *
  * Written for OpenCode v2.x promise-plugin host (`{ id, setup }`):
  * - `ctx.tool.hook("execute.before" | "execute.after", cb)`
@@ -31,7 +31,7 @@
  *   calls, bash commands, errors.
  * - Decoding: executor/test-runner/debugger temperature clamped ≤ 0.2;
  *   reviewer temperature = 0.
- * - Config: layered and read once at setup — code defaults ⊕
+ * - Config: layered and read once at setup: code defaults ⊕
  *   `~/.config/opencode/turnstile.json` ⊕ env (`TURNSTILE_TRACE`,
  *   `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`) ⊕ injected options (tests).
  *   Invalid keys are ignored and journaled (fail-open); restart to apply.
@@ -40,15 +40,15 @@
  * journaled and the tool call proceeds. Removing this file leaves the
  * pipeline functional (prompt contracts alone).
  *
- * Module layout — one boundary per file; this file is the thin entry point
+ * Module layout: one boundary per file; this file is the thin entry point
  * the host loads, holding only the module shape and setup composition:
- * - `src/types.ts` — host wire shapes and gate-state structures.
- * - `src/journal.ts` — telemetry persistence (JSONL journal + trace).
- * - `src/state.ts` — per-session gate state, session mapping, journal replay.
- * - `src/markers.ts` — GATE/VERDICT parsing and dedup.
- * - `src/gates.ts` — enforcement decisions (plan-approval gate, reviewer
+ * - `src/types.ts`: host wire shapes and gate-state structures.
+ * - `src/journal.ts`: telemetry persistence (JSONL journal + trace).
+ * - `src/state.ts`: per-session gate state, session mapping, journal replay.
+ * - `src/markers.ts`: GATE/VERDICT parsing and dedup.
+ * - `src/gates.ts`: enforcement decisions (plan-approval gate, reviewer
  *   gate, read horizon, decomposition).
- * - `src/setup.ts` — hook registration and the stream-event loop.
+ * - `src/setup.ts`: hook registration and the stream-event loop.
  */
 import { createTurnstile } from "./src/setup.ts"
 import type { Host, TurnstileOptions } from "./src/types.ts"

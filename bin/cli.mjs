@@ -56,7 +56,7 @@ async function main() {
   switch (command) {
     case "init": {
       // Full install: manifest artifacts (plugin + agents), then the
-      // managed contract block in ~/.config/opencode/AGENTS.md — mirrors
+      // managed contract block in ~/.config/opencode/AGENTS.md, mirroring
       // uninstall's two-step shape in reverse. Passthrough flags go to the
       // manifest installer; the agents installer needs none of them.
       const byInstall = await spawnInstaller(installScript, passthrough)
@@ -68,7 +68,7 @@ async function main() {
     case "uninstall": {
       // Reverse the copy/symlink install, then unmerge the managed block.
       // Inherited stdio surfaces both scripts' reports verbatim; exit non-zero
-      // only if either step failed. No restart note is printed here — each
+      // only if either step failed. No restart note is printed here; each
       // child prints its own, gated on whether it changed anything.
       const byInstall = await spawnInstaller(installScript, ["--uninstall"])
       const byAgents = await spawnInstaller(agentsScript, ["--remove"])

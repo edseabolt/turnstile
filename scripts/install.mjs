@@ -52,7 +52,7 @@ const realpathP = promisify(realpath)
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const defaultLedger = "~/.config/opencode/.turnstile-install.json"
 // Single read of the package version at startup; recorded in every copy-mode
-// ledger entry so `check` can report an outdated install (AC-4). Guarded:
+// ledger entry so `check` can report an outdated install. Guarded:
 // a missing or malformed package.json must not crash the module at import
 // time (fail-open contract); version records as null and `check` treats
 // null as "no version info" rather than an outdated install.
@@ -160,7 +160,7 @@ function hashContent(content) {
 /**
  * Normalizes one ledger entry to the current shape: missing `version`
  * defaults to `null`, missing `mode` defaults to `"copy"` (the legacy
- * copy-mode layout). Path transforms are intentionally skipped —
+ * copy-mode layout). Path transforms are intentionally skipped:
  * `relative(repoRoot, src)` already equals the manifest-relative string for
  * every recorded entry. Pure: no filesystem access.
  * @param {Record<string, unknown>} ledger Raw ledger keyed by destination.
@@ -495,7 +495,7 @@ async function apply(manifest, args) {
 /**
  * Runs the installer in check mode: reports drift, writes nothing.
  * A ledger record whose version is older than the current package version
- * is reported (AC-4) as a warning and does not fail the check.
+ * is reported as a warning and does not fail the check.
  * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
  * @param {string} version Current package version.
  * @returns {Promise<boolean>} True when no drift was found.
@@ -554,6 +554,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     })
 }
 
-// Pure, side-effect-free helpers exported for unit tests (chunk-4): tests can
+// Pure, side-effect-free helpers exported for unit tests: tests can
 // import these directly without spawning the CLI.
 export { detectMode, resolveMode, normalizeLedger, removeEntry }

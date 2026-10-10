@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Installs the turnstile contract block into a global AGENTS.md file.
 // Idempotent: only the sentinel-delimited managed block is written or
-// replaced — surrounding personal content is preserved. (Agent definitions
+// replaced; surrounding personal content is preserved. (Agent definitions
 // are installed as symlinks by scripts/install.mjs; this script no longer
 // copies them.)
 //
@@ -13,7 +13,7 @@
 //              the managed block matches the template.
 //   --remove   Delete the sentinel-delimited managed block (surrounding
 //              content preserved); refuses a start-sentinel-without-end.
-//              Idempotent — running on a file without the block is a no-op.
+//              Idempotent: running on a file without the block is a no-op.
 //   --no-adopt Refuse to replace a differing legacy section: print
 //              reconciliation instructions and exit 1 instead of adopting.
 
@@ -185,7 +185,7 @@ function findLegacySection(content) {
   for (const h of headings) {
     // Span first (next heading of <= level), then probe inside it. Nested
     // turnstile-named subsections are excluded from the probe: their content
-    // belongs to them, not to an enclosing higher-level heading — otherwise
+    // belongs to them, not to an enclosing higher-level heading; otherwise
     // a `# Title` above a turnstile section would swallow the chain and look
     // like a second section.
     let spanEnd = content.length
@@ -378,7 +378,7 @@ function main() {
 
   // --remove only deletes the managed block; it must not be blocked by the
   // adopt analysis (a corrupted file is refused inside removeBlock instead,
-  // mirroring the chunk-3 contract).
+  // mirroring the uninstall contract).
   if (args.remove) {
     let result
     try {
@@ -458,7 +458,7 @@ function performAction(plan, analysis, current, block, file) {
     }
     case "replace": {
       // Legacy section differs: adopt-with-backup by default. The backup is
-      // written first and guarded — a failed backup must not leave a
+      // written first and guarded: a failed backup must not leave a
       // half-adopted file, and its loss must not crash with a stack trace.
       const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)
       let backupPath = `${file}.bak.${stamp}`
@@ -480,7 +480,7 @@ function performAction(plan, analysis, current, block, file) {
     }
     case "resync": {
       // The managed block is present but out of date; re-sync it in place
-      // (no backup — it is turnstile's own managed content).
+      // (no backup: it is turnstile's own managed content).
       const next = merge(current, block, file)
       writeResult(file, next, "updated managed block in")
       return 0
@@ -491,7 +491,7 @@ function performAction(plan, analysis, current, block, file) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
 
-// Pure, side-effect-free helpers exported for unit tests (chunk-5): tests can
+// Pure, side-effect-free helpers exported for unit tests: tests can
 // import these directly rather than spawning the CLI.
 export {
   removeBlock,

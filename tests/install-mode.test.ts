@@ -2,7 +2,8 @@
  * @fileoverview Installer mode resolution and ledger-normalization tests.
  * These import the pure, side-effect-free helpers exported by
  * scripts/install.mjs (detectMode, resolveMode, normalizeLedger) and exercise
- * them directly — no CLI spawn, no filesystem writes, no touching a real home.
+ * them directly, with no CLI spawn, no filesystem writes, and no touching a
+ * real home.
  */
 
 import { test } from "node:test"
@@ -11,7 +12,7 @@ import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-// @ts-expect-error TS7016 — scripts/install.mjs is untyped JS; tests import its
+// @ts-expect-error TS7016: scripts/install.mjs is untyped JS; tests import its
 // pure exports directly rather than spawning the CLI.
 import { detectMode, resolveMode, normalizeLedger } from "../scripts/install.mjs"
 

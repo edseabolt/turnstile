@@ -3,7 +3,7 @@
  * dispatch-based round cap, marker dedup, journal replay, read horizon
  * (parent-keyed), bare-output scoping, decoding clamps, the decomposition
  * gate, and the stream-event loop (child→parent resolution and child-text
- * marker parsing) — all via a fake host with injected config.
+ * marker parsing), all via a fake host with injected config.
  */
 
 import { test } from "node:test"

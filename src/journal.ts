@@ -1,8 +1,8 @@
 /**
  * @fileoverview Telemetry boundary: JSONL journal and human-readable trace
  * persistence. A `Journaler` instance is created per plugin setup from the
- * resolved config and injected into the state, gate, and wiring layers —
- * no module-level paths, so tests can redirect all writes. Journaling is
+ * resolved config and injected into the state, gate, and wiring layers,
+ * so no module-level paths exist and tests can redirect all writes. Journaling is
  * fail-open by contract: no write ever breaks execution.
  */
 
@@ -63,7 +63,7 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
     try {
       fs.unlinkSync(oldest)
     } catch {
-      // no generation at the limit yet — nothing to prune
+      // no generation at the limit yet; nothing to prune
     }
     for (let gen = maxGenerations - 1; gen >= 1; gen--) {
       try {
@@ -82,7 +82,7 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
  * Appends one line to a file, creating the parent directory first. The
  * caller is responsible for rotating when a size bound applies (the
  * JSONL journal and trace both call `rotateIfLarge` before appending).
- * Silent on any failure — journaling must never break execution.
+ * Silent on any failure: journaling must never break execution.
  * @param file Path of the file to append to.
  * @param text The line to append (a trailing newline is added).
  */

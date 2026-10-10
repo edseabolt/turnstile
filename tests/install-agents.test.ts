@@ -1,12 +1,11 @@
 /**
  * @fileoverview Tests for the exported helpers in scripts/install-agents.mjs.
  * `removeBlock` deletes the sentinel-delimited managed block while preserving
- * surrounding content and refuses an unbalanced start sentinel. The chunk-5
- * adoption helpers — `analyze` (classify), `applyPlan` (write action),
- * `checkReport` (check-mode line), `findLegacySection` (locator),
- * `sectionsEquivalent` (comparison), `installBlock` (splice) — are exercised
- * directly. Pure: no CLI spawn, no filesystem writes, never touches a real
- * home.
+ * surrounding content and refuses an unbalanced start sentinel. The legacy-
+ * adoption helpers are exercised directly: `analyze` (classify), `applyPlan`
+ * (write action), `checkReport` (check-mode line), `findLegacySection`
+ * (locator), `sectionsEquivalent` (comparison), `installBlock` (splice).
+ * Pure: no CLI spawn, no filesystem writes, never touches a real home.
  */
 
 import { test } from "node:test"
@@ -20,7 +19,7 @@ import {
   analyze,
   applyPlan,
   checkReport,
-  // @ts-expect-error TS7016 — scripts/install-agents.mjs is untyped JS; tests
+  // @ts-expect-error TS7016: scripts/install-agents.mjs is untyped JS; tests
   // import the pure helpers directly rather than spawning the CLI.
 } from "../scripts/install-agents.mjs"
 import { readFileSync } from "node:fs"
@@ -86,7 +85,7 @@ test("removeBlock trims boundary newlines and joins surrounding content with one
   assert.equal(removeBlock(current).next, "  head\ntail\n")
 })
 
-// ---- chunk-5 adoption decision helpers ----
+// ---- legacy-adoption decision helpers ----
 
 test("analyze: empty content decides 'append'", () => {
   assert.deepEqual(analyze("", block), { decision: "append" })

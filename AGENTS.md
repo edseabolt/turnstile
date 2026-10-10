@@ -12,7 +12,8 @@ file; install the matching contract block with the bundled skill or
 The plugin and pipeline subagent definitions are installed by
 `npm run init` (symlinks by default, `--copy` for real copies; manifest:
 `install.json`), making this repo the source of truth for
-`~/.config/opencode/plugin(s)` and `~/.config/opencode/agents`.
+`~/.config/opencode/plugin(s)`, `~/.config/opencode/agents`, and
+`~/.config/opencode/skills` (the vendored `turnstile-setup` skill).
 The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `.opencode/agents/`;
@@ -23,7 +24,7 @@ Verification tooling: ESLint + typescript-eslint (lint), Prettier
 drift), all chained in `npm run ci`:
 
 ```
-npm run ci   # lint -> format:check -> typecheck -> check:markers -> test
+npm run ci   # ci:host (lint -> format:check -> typecheck -> check:markers -> test) + install:check
 ```
 
 ## Coding practices
@@ -61,7 +62,7 @@ optimization but be mindful of algorithmic complexity.
 Write tests for critical paths and complex logic. Aim for high test coverage
 on business logic. Use descriptive test names that explain the expected
 behavior. All tests should have docstrings too. (The gate state machine in `src/state.ts` and `src/markers.ts` is
-the critical path; the planned harness is `node:test` with
+the critical path; the harness is `node:test` with
 `--experimental-strip-types`, wired into `npm run ci`.)
 
 ### Error handling
@@ -117,8 +118,9 @@ stated feature; devDependencies are tooling only.)
   journaled, never block tool calls. Only deliberate `BLOCKED by turnstile:`
   errors throw. Keep that distinction when editing hooks.
 - Journal replay: `GATE: PASS` entries from `~/.local/share/opencode/metrics/turnstile.jsonl`
-  restore gate state on restart (last 2000 lines). A new user prompt resets
-  the session's gate state.
+  restore gate state on restart (last 2000 lines), and plan-reviewer
+  `VERDICT: APPROVE` entries restore the plan-approval gate the same way.
+  A new user prompt resets the session's gate state.
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
   requires updating both the regexes here and the global AGENTS.md contracts.

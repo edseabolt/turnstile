@@ -1,11 +1,11 @@
 /**
  * @fileoverview Host-wiring boundary: registers turnstile's hooks with the
- * OpenCode v2 host and owns the plugin lifecycle — hook registration, the
+ * OpenCode v2 host and owns the plugin lifecycle: hook registration, the
  * stream-event loop, and cleanup. Enforcement decisions delegate to
  * src/gates.ts; marker parsing to src/markers.ts; persistence to
  * src/journal.ts; bookkeeping to src/state.ts. Configuration is resolved
  * once here (defaults ⊕ config file ⊕ env ⊕ injected overrides) and
- * injected downward — no module reads config after this point.
+ * injected downward; no module reads config after this point.
  *
  * Fail-open by contract: every hook body is guarded; only the deliberate
  * BLOCKED errors thrown by the gate layer propagate to the host.
@@ -175,7 +175,7 @@ export function createTurnstile(
 
     /**
      * Resolves and caches the parent of a child session via the host API.
-     * Parent-less records are negatively cached (a stable signal — the
+     * Parent-less records are negatively cached (a stable signal: the
      * session exists and has no parent edge); thrown lookups are retried
      * up to `maxLookupAttempts` because the record may appear later.
      * Without a usable edge the caller falls back to keying by the session
@@ -199,7 +199,7 @@ export function createTurnstile(
           boundLookups()
         }
       } catch {
-        // lookup failure: retryable — fall back to keying by the session
+        // lookup failure: retryable; fall back to keying by the session
         // itself until the record becomes visible or attempts run out
         failedLookups.set(sessionID, attempts + 1)
         boundLookups()
@@ -225,7 +225,7 @@ export function createTurnstile(
             if (!draft) return
             const agent = typeof draft.agent === "string" ? draft.agent : ""
             if (agent === config.agents.reviewer || agent === config.agents.planReviewer) {
-              // Force 0 even when the host sent no options object at all —
+              // Force 0 even when the host sent no options object at all:
               // today's early return skipped the clamp in exactly that case.
               if (!draft.options) draft.options = {}
               draft.options.temperature = 0
@@ -234,7 +234,7 @@ export function createTurnstile(
               agent === config.agents.testRunner ||
               agent === config.agents.debugger
             ) {
-              // Clamp also applies when the host sent no temperature — an
+              // Clamp also applies when the host sent no temperature: an
               // unset temperature is whatever the host defaults to, which
               // is exactly what the ≤ 0.2 contract bounds.
               if (!draft.options) draft.options = {}

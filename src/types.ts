@@ -113,7 +113,7 @@ export interface TurnstileAgents {
 /**
  * Layered plugin configuration. Defaults in `src/config.ts`; user overrides
  * via `~/.config/opencode/turnstile.json`, then env vars, then injected
- * options (tests). Read once at setup — restart sessions to apply.
+ * options (tests). Read once at setup; restart sessions to apply.
  */
 export interface TurnstileConfig {
   /** Directory holding the JSONL journal and trace files. */
@@ -158,7 +158,7 @@ export interface TurnstileOptions {
 /**
  * The v2 promise-plugin host shape (verified against opencode v2.0.22).
  *
- * Hook callback payloads are typed `any` at this wire boundary only — the
+ * Hook callback payloads are typed `any` at this wire boundary only; the
  * host does not expose stable payload types. Every function turnstile
  * defines has concrete parameter and return types; the `any` ends here.
  */

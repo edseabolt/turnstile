@@ -1,5 +1,5 @@
 /**
- * @fileoverview Policy boundary: enforcement decisions — the reviewer
+ * @fileoverview Policy boundary: enforcement decisions: the reviewer
  * dispatch gate, the plan-approval gate, the whole-file read horizon, and
  * the decomposition gate.
  * Functions here either return normally or throw a deliberate BLOCKED
@@ -96,7 +96,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * exhausted or the test gate has not gone green. The cap counts reviewer
    * dispatches themselves (per the documented "max 2 reviewer dispatches
    * per task" contract), not BLOCK verdicts. A waiver applies to the
-   * dispatch carrying it only — every dispatch prompt must contain the
+   * dispatch carrying it only; every dispatch prompt must contain the
    * literal marker to be exempt.
    * @param sessionID The parent session ID.
    * @param prompt The dispatch prompt text.
