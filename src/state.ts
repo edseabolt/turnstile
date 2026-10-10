@@ -1,7 +1,7 @@
 /**
  * @fileoverview State boundary: per-session gate state, the child→parent
  * session mapping, and journal replay so a completed task's `GATE: PASS`
- * survives restarts. Pure bookkeeping — no enforcement decisions here.
+ * survives restarts. Pure bookkeeping; no enforcement decisions here.
  */
 
 import * as fs from "node:fs"

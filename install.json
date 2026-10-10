@@ -1,20 +1,42 @@
 {
-  "mode": "link",
   "ledger": "~/.config/opencode/.turnstile-install.json",
   "links": [
-    { "src": "turnstile.ts", "dest": "~/.config/opencode/plugins/turnstile.ts" },
+    {
+      "src": "turnstile.ts",
+      "dest": "~/.config/opencode/plugins/turnstile.ts"
+    },
     {
       "src": ".opencode/agents/plan-reviewer.md",
       "dest": "~/.config/opencode/agents/plan-reviewer.md"
     },
-    { "src": ".opencode/agents/planner.md", "dest": "~/.config/opencode/agents/planner.md" },
-    { "src": ".opencode/agents/executor.md", "dest": "~/.config/opencode/agents/executor.md" },
+    {
+      "src": ".opencode/agents/planner.md",
+      "dest": "~/.config/opencode/agents/planner.md"
+    },
+    {
+      "src": ".opencode/agents/executor.md",
+      "dest": "~/.config/opencode/agents/executor.md"
+    },
     {
       "src": ".opencode/agents/test-runner.md",
       "dest": "~/.config/opencode/agents/test-runner.md"
     },
-    { "src": ".opencode/agents/reviewer.md", "dest": "~/.config/opencode/agents/reviewer.md" },
-    { "src": ".opencode/agents/debugger.md", "dest": "~/.config/opencode/agents/debugger.md" }
+    {
+      "src": ".opencode/agents/reviewer.md",
+      "dest": "~/.config/opencode/agents/reviewer.md"
+    },
+    {
+      "src": ".opencode/agents/debugger.md",
+      "dest": "~/.config/opencode/agents/debugger.md"
+    },
+    {
+      "src": "skills/turnstile-setup/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-setup/SKILL.md"
+    }
   ],
-  "retired": [{ "dest": "~/.config/opencode/plugin/turnstile.ts" }]
+  "retired": [
+    {
+      "dest": "~/.config/opencode/plugin/turnstile.ts"
+    }
+  ]
 }

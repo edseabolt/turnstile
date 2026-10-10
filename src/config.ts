@@ -1,7 +1,7 @@
 /**
  * @fileoverview Config boundary: layered configuration for the plugin.
  * Precedence: code defaults ⊕ JSON config file ⊕ environment variables ⊕
- * injected overrides (tests). Config is read once at setup — restart
+ * injected overrides (tests). Config is read once at setup; restart
  * sessions to apply. Invalid keys are ignored and journaled to the
  * env-resolved metrics directory (the journaler does not exist until
  * config resolves): config errors never crash the host, per the fail-open
@@ -243,7 +243,7 @@ function applyEnvLayer(config: TurnstileConfig, env: Record<string, string | und
 /**
  * Resolves the full layered configuration: defaults ⊕ config file ⊕ env ⊕
  * injected overrides. Config-file and validation problems are journaled to
- * the default metrics directory and returned as warnings — never thrown.
+ * the default metrics directory and returned as warnings, never thrown.
  * @param env Environment providing XDG_DATA_HOME, TURNSTILE_* variables.
  * @param overrides Final-layer overrides (injected options; tests).
  * @returns The resolved config plus one warning string per skipped/invalid

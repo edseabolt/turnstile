@@ -15,11 +15,11 @@ user's global instructions file (`scripts/install-agents.mjs`).
 1. Install the plugin and agents from the repo's root:
 
    ```
-   npm run install
+   npm run init
    ```
 
    - Default is symlink mode (repo edits live); use
-     `npm run install -- --copy` for real copies when the user refuses
+     `npm run init -- --copy` for real copies when the user refuses
      symlinks — copy mode keeps a ledger recording what it installed.
    - Targets come from `install.json`; unowned files are never touched.
    - Conflicts (a real file differing from the repo, or a user-edited
@@ -36,16 +36,20 @@ user's global instructions file (`scripts/install-agents.mjs`).
 
    - Default target is `~/.config/opencode/AGENTS.md`; pass
      `--file <path>` only if the user asks for a different file.
-   - Preflight: if the target contains pipeline-gates content but **no**
-     `<!-- turnstile:start -->` … `<!-- turnstile:end -->` sentinels, the
-     installer refuses (exit 1) with reconciliation instructions rather
-     than appending a duplicate block. Reconcile first — wrap the
-     existing section with the sentinels (updating its content to match
-     the template) or let the user hand-merge — before running the
-     installer.
+   - Preflight: adoption is automatic. When the target already contains
+     turnstile contract content but **no** `<!-- turnstile:start -->` …
+     `<!-- turnstile:end -->` sentinels, the installer adopts the section:
+     it wraps an equivalent section with the sentinels (no content
+     change), and for a section that differs it backs up the target first
+     (`<file>.bak.<timestamp>`) and replaces the span with the current
+     template. Run with `--check` to preview without writing, or
+     `--no-adopt` to refuse and get reconciliation instructions instead.
+   - The installer only refuses (exit 1, no write) for targets it cannot
+     resolve safely: a corrupted one — a start sentinel with no end
+     sentinel — or an ambiguous one — more than one turnstile section.
+     Fix one of those by hand, then re-run.
    - The script touches only the managed block; everything else in the
-     target file is preserved. It never overwrites a corrupted block —
-     it refuses and tells the user to fix it manually.
+     target file is preserved.
 
 3. Verify the installed block matches the template:
 

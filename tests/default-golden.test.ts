@@ -2,8 +2,7 @@
  * @fileoverview Byte-identity goldens: with default config, journal entry
  * shapes, trace format, and block messages must match the historical
  * behavior exactly. The bare-output blocked entry is deliberately excluded
- * (chunk-4 adds an `agent` key there by design — see the plan's AC-15
- * scope note).
+ * (it gains an `agent` key by design, unlike the other block messages).
  */
 
 import { test } from "node:test"

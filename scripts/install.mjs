@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 // Installs this repo's artifacts into ~/.config/opencode, driven by
-// install.json. The repo is the source of truth: symlink mode (default)
-// links targets into the checkout so repo edits are live; copy mode
-// duplicates files and records what it installed in a ledger file so later
-// syncs can tell "repo changed" from "user edited".
+// install.json. The repo is the source of truth: symlink mode (auto-detected
+// on a git checkout) links targets into the checkout so repo edits are live;
+// copy mode duplicates files and records what it installed in a ledger file
+// so later syncs can tell "repo changed" from "user edited".
 //
 // Usage:
 //   node scripts/install.mjs [--manifest <path>] [--check] [--force]
-//                            [--link | --copy]
+//                            [--uninstall] [--link | --copy]
 //
 //   --manifest     Manifest to install (default: install.json at the repo root)
 //   --check        Verify all targets without writing; exit 1 on drift
 //   --force        Convert conflicting targets after backing them up
-//   --link/--copy  Override the manifest's "mode" (default: link)
+//   --uninstall    Reverse the manifest: remove repo-owned links / ledger-owned
+//                  copies for every entry (then retire leftovers); exit 1 only
+//                  when something could not be removed (conflict/unowned).
+//   --link/--copy  Override the mode. Resolution: CLI flag > manifest "mode"
+//                  field > auto-detect (.git present => link, else copy)
 //
 // Ownership model: symlink targets are repo-owned iff the link resolves
 // inside this checkout; copied files are repo-owned iff the ledger records
@@ -35,7 +39,7 @@ import {
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 const symlinkP = promisify(symlink)
@@ -47,18 +51,36 @@ const realpathP = promisify(realpath)
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const defaultLedger = "~/.config/opencode/.turnstile-install.json"
+// Single read of the package version at startup; recorded in every copy-mode
+// ledger entry so `check` can report an outdated install. Guarded:
+// a missing or malformed package.json must not crash the module at import
+// time (fail-open contract); version records as null and `check` treats
+// null as "no version info" rather than an outdated install.
+let pkgVersion = null
+try {
+  pkgVersion = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version ?? null
+} catch {
+  // Fall through with null: metadata is advisory, not load-bearing.
+}
 
 /**
  * Parses command-line arguments.
  * @param {string[]} argv Raw argv (process.argv).
- * @returns {{manifest: string, check: boolean, force: boolean, mode: "link"|"copy"|null}} Parsed arguments.
+ * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null}} Parsed arguments.
  */
 function parseArgs(argv) {
-  const args = { manifest: join(repoRoot, "install.json"), check: false, force: false, mode: null }
+  const args = {
+    manifest: join(repoRoot, "install.json"),
+    check: false,
+    force: false,
+    uninstall: false,
+    mode: null,
+  }
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === "--manifest") args.manifest = argv[++i]
     else if (argv[i] === "--check") args.check = true
     else if (argv[i] === "--force") args.force = true
+    else if (argv[i] === "--uninstall") args.uninstall = true
     else if (argv[i] === "--link") args.mode = "link"
     else if (argv[i] === "--copy") args.mode = "copy"
     else {
@@ -70,6 +92,33 @@ function parseArgs(argv) {
 }
 
 /**
+ * Auto-detects the install mode from the filesystem: a git checkout links
+ * (working tree is the source of truth, edits are live); an extracted
+ * package copies (installed files are the source of truth).
+ * @returns {"link"|"copy"} The detected mode.
+ */
+function detectMode() {
+  return existsSync(join(repoRoot, ".git")) ? "link" : "copy"
+}
+
+/**
+ * Resolves the install mode by precedence: an explicit CLI flag wins, then
+ * the manifest's "mode" field, then filesystem auto-detect. A manifest
+ * mode outside {"link","copy"} is ignored (with a warning) rather than
+ * silently degrading to link behavior.
+ * @param {"link"|"copy"|null} modeOverride Mode from the command line, if any.
+ * @param {"link"|"copy"|undefined} manifestMode The manifest's "mode" field, if any.
+ * @returns {"link"|"copy"} The resolved mode.
+ */
+function resolveMode(modeOverride, manifestMode) {
+  if (manifestMode !== undefined && manifestMode !== "link" && manifestMode !== "copy") {
+    console.warn(`install: ignoring unknown manifest mode "${manifestMode}"`)
+    return modeOverride ?? detectMode()
+  }
+  return modeOverride ?? manifestMode ?? detectMode()
+}
+
+/**
  * Reads and validates the install manifest.
  * @param {string} file Path to install.json.
  * @param {"link"|"copy"|null} modeOverride Mode from the command line, if any.
@@ -77,7 +126,7 @@ function parseArgs(argv) {
  */
 function readManifest(file, modeOverride) {
   const raw = JSON.parse(readFileSync(file, "utf8"))
-  const mode = modeOverride ?? (raw.mode === "copy" ? "copy" : "link")
+  const mode = resolveMode(modeOverride, raw.mode)
   const links = (raw.links ?? []).map((entry) => ({
     src: join(repoRoot, entry.src),
     dest: expand(entry.dest),
@@ -109,19 +158,43 @@ function hashContent(content) {
 }
 
 /**
- * Loads the copy-mode ownership ledger, or an empty record when absent.
+ * Normalizes one ledger entry to the current shape: missing `version`
+ * defaults to `null`, missing `mode` defaults to `"copy"` (the legacy
+ * copy-mode layout). Path transforms are intentionally skipped:
+ * `relative(repoRoot, src)` already equals the manifest-relative string for
+ * every recorded entry. Pure: no filesystem access.
+ * @param {Record<string, unknown>} ledger Raw ledger keyed by destination.
+ * @returns {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} Normalized ledger.
+ */
+function normalizeLedger(ledger) {
+  const normalized = {}
+  for (const [dest, record] of Object.entries(ledger)) {
+    normalized[dest] = {
+      src: record.src,
+      hash: record.hash,
+      version: record.version ?? null,
+      mode: record.mode ?? "copy",
+    }
+  }
+  return normalized
+}
+
+/**
+ * Loads the copy-mode ownership ledger, normalizing legacy entries on read.
+ * An absent ledger is an empty record; the written form stays normalized,
+ * so `saveLedger` persists the migration permanently.
  * @param {string} file Ledger path.
- * @returns {Record<string, {src: string, hash: string}>} Ledger keyed by destination.
+ * @returns {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} Ledger keyed by destination.
  */
 function loadLedger(file) {
   if (!existsSync(file)) return {}
-  return JSON.parse(readFileSync(file, "utf8"))
+  return normalizeLedger(JSON.parse(readFileSync(file, "utf8")))
 }
 
 /**
  * Persists the ownership ledger, creating parent directories as needed.
  * @param {string} file Ledger path.
- * @param {Record<string, {src: string, hash: string}>} ledger Ledger to write.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ledger to write.
  * @returns {void}
  */
 function saveLedger(file, ledger) {
@@ -198,7 +271,7 @@ async function inspectLink(entry) {
  * A copied file that no longer matches its last-installed hash is treated
  * as user-edited: the repo wins only via --force.
  * @param {{src: string, dest: string}} entry Manifest link entry.
- * @param {Record<string, {src: string, hash: string}>} ledger Ownership ledger.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger.
  * @returns {{code: "ok"|"adopt"|"stale"|"conflict"|"missing"|"invalid", detail?: string}} Drift report.
  */
 function inspectCopy(entry, ledger) {
@@ -223,7 +296,7 @@ function inspectCopy(entry, ledger) {
  * Computes the drift of one manifest entry under the resolved mode.
  * @param {{src: string, dest: string}} entry Manifest link entry.
  * @param {"link"|"copy"} mode Install mode.
- * @param {Record<string, {src: string, hash: string}>} ledger Ownership ledger.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger.
  * @returns {Promise<{code: string, detail?: string}>} Drift report.
  */
 async function inspectEntry(entry, mode, ledger) {
@@ -246,7 +319,7 @@ async function backup(dest) {
  * Installs one entry as a symlink.
  * @param {{src: string, dest: string}} entry Manifest link entry.
  * @param {{force: boolean}} args Parsed arguments.
- * @param {Record<string, {src: string, hash: string}>} ledger Ownership ledger (link installs prune their entry).
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger (link installs prune their entry).
  * @returns {Promise<{acted: boolean, note?: string}>} Whether a change was made.
  */
 async function installLink(entry, args, ledger) {
@@ -277,10 +350,12 @@ async function installLink(entry, args, ledger) {
  * Installs one entry as a copy, recording ownership in the ledger.
  * @param {{src: string, dest: string}} entry Manifest link entry.
  * @param {{force: boolean}} args Parsed arguments.
- * @param {Record<string, {src: string, hash: string}>} ledger Ownership ledger, mutated on success.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger, mutated on success.
+ * @param {string} version Current package version, recorded for the `check` stale report.
+ * @param {"link"|"copy"} mode Install mode this record was written under.
  * @returns {Promise<{acted: boolean, note?: string}>} Whether a change was made.
  */
-async function installCopy(entry, args, ledger) {
+async function installCopy(entry, args, ledger, version, mode) {
   const report = inspectCopy(entry, ledger)
   if (report.code === "invalid") throw new Error(`install: ${entry.dest} — ${report.detail}`)
   if (report.code === "ok") return { acted: false }
@@ -300,78 +375,132 @@ async function installCopy(entry, args, ledger) {
   ledger[entry.dest] = {
     src: relative(repoRoot, entry.src),
     hash: hashContent(readFileSync(entry.src, "utf8")),
+    version,
+    mode,
   }
   return { acted: true, note }
 }
 
 /**
- * Removes a retired path when it is repo-owned: a symlink resolving into
- * the checkout, or a copied file recorded in the ledger.
- * @param {string} dest Retired destination path.
+ * Removes a path when it is repo-owned: a symlink resolving into the
+ * checkout, or a copied file recorded in the ledger. Unowned files (a
+ * symlink pointing outside the repo, or an untracked file) are never touched;
+ * they are reported as left alone. Retired leftovers are handled by calling
+ * this with the retired destination.
+ * @param {string} dest Destination path.
  * @param {{write: boolean}} mode Write when true, report-only otherwise.
- * @param {Record<string, {src: string, hash: string}>} ledger Ownership ledger.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger.
  * @returns {Promise<{acted: boolean, note?: string}>} Whether a change was (or would be) made.
  */
-async function removeRetired(dest, mode, ledger) {
+async function removeEntry(dest, mode, ledger) {
   const kind = await kindAt(dest)
   if (kind === "missing") return { acted: false }
   if (kind === "link") {
     const target = await linkTarget(dest)
     if (!ownedByRepo(target)) return { acted: false, note: `symlink not repo-owned (${target})` }
-    if (!mode.write) return { acted: true, note: "retired link still present" }
+    if (!mode.write) return { acted: true, note: "link still present" }
     await unlinkP(dest)
     return { acted: true }
   }
   if (kind === "file") {
     if (!ledger[dest]) return { acted: false, note: "untracked file left alone" }
-    if (!mode.write) return { acted: true, note: "retired copy still present" }
-    delete ledger[dest]
+    if (!mode.write) return { acted: true, note: "copy still present" }
     await unlinkP(dest)
+    delete ledger[dest]
     return { acted: true }
   }
   return { acted: false, note: `left alone (${kind})` }
 }
 
 /**
- * Runs the installer in apply mode and prints a per-target report.
+ * Runs the installer in apply mode and prints a per-target report. In
+ * uninstall mode it removes repo-owned links / ledger-owned copies for every
+ * manifest entry (reporting unowned ones as failures) before retiring
+ * leftovers; otherwise it installs as configured. Tracks whether any change
+ * was made so the caller can gate the "restart OpenCode sessions" note.
  * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
- * @param {{check: boolean, force: boolean, mode: "link"|"copy"|null}} args Parsed arguments.
- * @returns {Promise<boolean>} True when every change succeeded.
+ * @param {{check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null}} args Parsed arguments.
+ * @returns {Promise<{ok: boolean, changed: boolean}>} Success flag and whether anything changed.
  */
 async function apply(manifest, args) {
   const ledger = loadLedger(manifest.ledgerPath)
   let ok = true
+  let changed = false
+
+  if (args.uninstall) {
+    for (const entry of manifest.links) {
+      try {
+        const result = await removeEntry(entry.dest, { write: true }, ledger)
+        if (result.acted) {
+          changed = true
+          console.log(`install: removed ${entry.dest}`)
+        } else if (result.note) {
+          // Could not remove something that was left alone (unowned / conflict).
+          ok = false
+          console.log(`install: could not remove ${entry.dest} — ${result.note}`)
+        } else console.log(`install: up to date ${entry.dest}`)
+      } catch (error) {
+        ok = false
+        console.error(String(error.message ?? error))
+      }
+    }
+    for (const dest of manifest.retired) {
+      try {
+        const result = await removeEntry(dest, { write: true }, ledger)
+        if (result.acted) {
+          changed = true
+          console.log(`install: removed retired ${dest}`)
+        } else if (result.note) {
+          console.log(`install: retired ${dest} — ${result.note}`)
+        }
+      } catch (error) {
+        ok = false
+        console.error(String(error.message ?? error))
+      }
+    }
+    saveLedger(manifest.ledgerPath, ledger)
+    return { ok, changed }
+  }
+
   for (const entry of manifest.links) {
     try {
       const result =
         manifest.mode === "copy"
-          ? await installCopy(entry, args, ledger)
+          ? await installCopy(entry, args, ledger, pkgVersion, manifest.mode)
           : await installLink(entry, args, ledger)
-      if (result.acted)
+      if (result.acted) {
+        changed = true
         console.log(
           `install: ${manifest.mode} ${entry.dest}${result.note ? ` (${result.note})` : ""}`,
         )
-      else console.log(`install: up to date ${entry.dest}`)
+      } else console.log(`install: up to date ${entry.dest}`)
     } catch (error) {
       ok = false
       console.error(String(error.message ?? error))
     }
   }
   for (const dest of manifest.retired) {
-    const result = await removeRetired(dest, { write: true }, ledger)
-    if (result.acted) console.log(`install: removed retired ${dest}`)
-    else if (result.note) console.log(`install: retired ${dest} — ${result.note}`)
+    const result = await removeEntry(dest, { write: true }, ledger)
+    if (result.acted) {
+      changed = true
+      console.log(`install: removed retired ${dest}`)
+    } else if (result.note) {
+      console.log(`install: retired ${dest} — ${result.note}`)
+    }
   }
   saveLedger(manifest.ledgerPath, ledger)
-  return ok
+  return { ok, changed }
 }
 
 /**
  * Runs the installer in check mode: reports drift, writes nothing.
+ * A ledger record whose version is older than the current package version
+ * is reported as a warning and does not fail the check.
  * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
+ * @param {string} version Current package version.
  * @returns {Promise<boolean>} True when no drift was found.
  */
-async function check(manifest) {
+async function check(manifest, version) {
   const ledger = loadLedger(manifest.ledgerPath)
   let ok = true
   for (const entry of manifest.links) {
@@ -381,6 +510,9 @@ async function check(manifest) {
       continue
     }
     const report = await inspectEntry(entry, manifest.mode, ledger)
+    const record = ledger[entry.dest]
+    if (record && record.version && record.version !== version)
+      console.log(`check: outdated ${entry.dest} (installed ${record.version}, package ${version})`)
     if (report.code === "ok") console.log(`check: OK ${entry.dest}`)
     else {
       ok = false
@@ -390,7 +522,7 @@ async function check(manifest) {
     }
   }
   for (const dest of manifest.retired) {
-    const result = await removeRetired(dest, { write: false }, ledger)
+    const result = await removeEntry(dest, { write: false }, ledger)
     if (result.acted) {
       ok = false
       console.error(`check: retired link still present: ${dest}`)
@@ -399,8 +531,29 @@ async function check(manifest) {
   return ok
 }
 
-const args = parseArgs(process.argv)
-const manifest = readManifest(args.manifest, args.mode)
-const ok = args.check ? await check(manifest) : await apply(manifest, args)
-if (!args.check) console.log("restart OpenCode sessions to pick up changes.")
-process.exit(ok ? 0 : 1)
+async function main() {
+  const args = parseArgs(process.argv)
+  const manifest = readManifest(args.manifest, args.mode)
+  console.log(
+    `install: mode=${manifest.mode} (${manifest.mode === "link" ? "checkout" : "package"})`,
+  )
+  if (args.check) return await check(manifest, pkgVersion)
+  const { ok, changed } = await apply(manifest, args)
+  if (changed) console.log("restart OpenCode sessions to pick up changes.")
+  return ok
+}
+
+// Run as a script only when invoked directly; importing the module (e.g. for
+// unit tests) must not execute the installer or call process.exit.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
+    .then((ok) => process.exit(ok ? 0 : 1))
+    .catch((error) => {
+      console.error(`install: ${error instanceof Error ? error.message : String(error)}`)
+      process.exit(1)
+    })
+}
+
+// Pure, side-effect-free helpers exported for unit tests: tests can
+// import these directly without spawning the CLI.
+export { detectMode, resolveMode, normalizeLedger, removeEntry }
