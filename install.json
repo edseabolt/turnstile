@@ -14,7 +14,11 @@
       "dest": "~/.config/opencode/agents/test-runner.md"
     },
     { "src": ".opencode/agents/reviewer.md", "dest": "~/.config/opencode/agents/reviewer.md" },
-    { "src": ".opencode/agents/debugger.md", "dest": "~/.config/opencode/agents/debugger.md" }
+    { "src": ".opencode/agents/debugger.md", "dest": "~/.config/opencode/agents/debugger.md" },
+    {
+      "src": "skills/turnstile-setup/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-setup/SKILL.md"
+    }
   ],
   "retired": [{ "dest": "~/.config/opencode/plugin/turnstile.ts" }]
 }
