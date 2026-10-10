@@ -65,7 +65,7 @@ turnstile unchanged unless a gate applies. Other adjacent approaches
 gate on written artifacts, like spec workflows, or on a single
 human-approval point; turnstile gates the machine steps around those.
 The bundled planner/executor/test-runner/reviewer agents in
-`.opencode/agents/` are the reference pipeline, not a requirement; the
+`agents/` are the reference pipeline, not a requirement; the
 gates key off agent names and markers, and other suites' agents can
 carry their own markers.
 
@@ -211,7 +211,7 @@ to touch.
 
 ### Set the agents' models
 
-The six agent definitions in `.opencode/agents/` ship with `model:`
+The six agent definitions in `agents/` ship with `model:`
 frontmatter pointing at the author's locally served models (`oMLX/...`).
 You almost certainly do not have those models, and dispatches to the
 pipeline agents will fail or fall back until you set your own.
@@ -244,7 +244,7 @@ Two sanctioned ways to change the pipeline:
   hold to the marker contract. Your agents get the same gates the shipped
   ones do.
 - **Fork the repo.** To change the pipeline content itself, fork and edit
-  `.opencode/agents/*.md` there; your installer serves your fork.
+  `agents/*.md` there; your installer serves your fork.
 
 ### Updating
 
