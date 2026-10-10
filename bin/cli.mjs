@@ -54,8 +54,15 @@ async function main() {
   const [command, ...passthrough] = process.argv.slice(2)
 
   switch (command) {
-    case "init":
-      return spawnInstaller(installScript, passthrough)
+    case "init": {
+      // Full install: manifest artifacts (plugin + agents), then the
+      // managed contract block in ~/.config/opencode/AGENTS.md — mirrors
+      // uninstall's two-step shape in reverse. Passthrough flags go to the
+      // manifest installer; the agents installer needs none of them.
+      const byInstall = await spawnInstaller(installScript, passthrough)
+      const byAgents = await spawnInstaller(agentsScript, [])
+      return process.exit(byInstall || byAgents ? 1 : 0)
+    }
     case "check":
       return spawnInstaller(installScript, ["--check", ...passthrough])
     case "uninstall": {

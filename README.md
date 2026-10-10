@@ -93,6 +93,79 @@ deeper on one host and one pipeline.
 
 ## Install
 
+Turnstile ships as the npm package `opencode-turnstile`. There are three
+ways to use it — pick one; do not combine the plugin-array path with the
+CLI install.
+
+1. **Zero-config enforcement (plugin only).** Add the package to your
+   OpenCode config's plugin array and restart. turnstile loads and
+   enforces its gates, but neither the pipeline agent definitions nor the
+   AGENTS.md contract block are installed:
+
+   ```json
+   { "plugins": ["opencode-turnstile"] }
+   ```
+
+2. **Full install via the CLI.** `npx opencode-turnstile init` installs
+   the plugin, the pipeline agent definitions, and the managed contract
+   block in `~/.config/opencode/AGENTS.md` (see
+   [From a clone](#from-a-clone) below for the same commands run from
+   a clone).
+
+3. **Develop from a clone.** Clone this repo and run `npm run init`
+   (symlink mode) so installed artifacts stay live against your edits.
+   See [From a clone](#from-a-clone) below.
+
+### No postinstall
+
+Turnstile has **no** npm lifecycle hook (`postinstall`, etc.). Installing
+`opencode-turnstile` as a dependency never writes to
+`~/.config/opencode` — it only makes the gates available through the
+plugin array. Everything else (agent definitions, the AGENTS.md contract
+block) happens only when you run an explicit command. This is deliberate:
+writes to your config directory are opt-in, not automatic.
+
+### Modes
+
+`init` auto-detects an install mode: a git checkout installs by
+**linking** (the working tree stays the source of truth, so edits are
+live); an `npx` package install **copies** files (the installed files are
+the source of truth). Override with `--link` or `--copy`:
+
+```sh
+npx opencode-turnstile init --copy
+```
+
+The chosen mode is recorded in the ledger, so `check` stays consistent
+across reruns.
+
+### Check
+
+`npx opencode-turnstile check` verifies the installed state against the
+manifest and exits 0 (clean) or 1 (drift). A copy install whose recorded
+version is older than the published package is reported as a warning —
+`check: outdated <dest> (installed X, package Y)` — and does not fail the
+check.
+
+### Upgrade
+
+The plugin updates with your dependency manager (`npm upgrade
+opencode-turnstile`, or your registry's equivalent). Re-run `check` to see
+whether anything is outdated or drifted, then `init` to re-sync only what
+changed — `npx opencode-turnstile init --copy` for package installs,
+`npm run init -- --copy` from a clone. The AGENTS.md contract block is
+re-synced the same way, keeping only the managed block in step.
+
+### Uninstall
+
+`npx opencode-turnstile uninstall` reverses the install: it removes
+ledger-owned copies and repo-owned symlinks and unmerges the managed
+contract block from AGENTS.md. It is idempotent and ownership-aware —
+files it never installed (untracked files, symlinks pointing outside the
+repo) are left alone, and a second run is a clean no-op.
+
+### From a clone
+
 This repo is the source of truth for what lands in `~/.config/opencode`:
 the plugin and the pipeline agent definitions are installed per the
 manifest in `install.json`; unowned files in the target directories are
