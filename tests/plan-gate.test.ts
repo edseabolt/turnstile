@@ -524,3 +524,234 @@ test("plan gate: stale verdict for one child does not attribute to another child
     restore()
   }
 })
+
+/**
+ * AC-1 (issue repro): a plans-dir change invalidates every session holding a
+ * live approval, not just the first to dispatch — the consumed-once global
+ * `changed` flag left the second session's stale approval ungated.
+ */
+test("plan gate: plan-file change invalidates every approved session", async () => {
+  const { h, restore, project } = await bootWithPlan()
+  try {
+    // Two independent sessions each approve and run a green dispatch.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Re-plan invalidates BOTH sessions (future mtime bumps past timer tick).
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    fs.writeFileSync(planPath, "# P revised\n")
+    const future = new Date(Date.now() + 5000)
+    fs.utimesSync(planPath, future, future)
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p2",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+    // Re-approving both releases both.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * AC-2 (single-session manifestation): approving then editing the plan before
+ * any executor dispatch blocks the session's very first dispatch — no prior
+ * scan exists to (on the old code) suppress invalidation on the first scan.
+ */
+test("plan gate: approve then edit blocks the first dispatch", async () => {
+  const { h, restore, project } = await bootWithPlan()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    // Edit the plan before ANY executor dispatch runs.
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    fs.writeFileSync(planPath, "# P revised\n")
+    const future = new Date(Date.now() + 5000)
+    fs.utimesSync(planPath, future, future)
+    // First dispatch must be blocked — there is no prior scan to trust.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * AC-3 (tightens the replay test): a journal-replayed approval survives the
+ * first dispatch (empty stamp is accepted once and stamped), then a later edit
+ * invalidates it, and re-approving re-stamps so the session runs again.
+ */
+test("plan gate: replayed approval stamps then invalidates on edit", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  fs.writeFileSync(
+    journalPath,
+    JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE", marker: APPROVE }) +
+      "\n",
+  )
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    // Replay-restored approval survives the first dispatch (stamps the key).
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // An edit after restart invalidates the previously-approved plan.
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    fs.writeFileSync(planPath, "# P revised\n")
+    const future = new Date(Date.now() + 5000)
+    fs.utimesSync(planPath, future, future)
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+    // Re-approving re-stamps, so the session runs again (proves re-stamp).
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * AC-5 (fail-open null stamp): an approval recorded while the plans dir is
+ * absent stamps "" (unknown); it is accepted once when the dir later appears
+ * and stamped, so a subsequent edit still invalidates it.
+ */
+test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stamp", async () => {
+  const project = tmpDir()
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    // Approve while the plans dir is absent → stamp "" (unknown, fail-open).
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    // No plans dir at enforcement → executor needs no approval.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // The plans dir + plan file appear; the empty stamp is validated here.
+    fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+    fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // A subsequent edit invalidates the freshly-stamped approval.
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    fs.writeFileSync(planPath, "# P revised\n")
+    const future = new Date(Date.now() + 5000)
+    fs.utimesSync(planPath, future, future)
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})

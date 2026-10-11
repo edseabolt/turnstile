@@ -10,8 +10,9 @@
  * - Plan-approval gate: `task` dispatches to `executor` require a current
  *   plan-reviewer `VERDICT: APPROVE` for the task whenever a plan file
  *   exists in `.opencode/plans/`, or an explicit user waiver (`USER
- *   WAIVER:` literal in the prompt). Plan-file changes invalidate the
- *   approval, forcing re-review after a re-plan.
+ *   WAIVER:` literal in the prompt). Plan-dir changes invalidate approvals
+ *   issued against the previous plans-dir signature (replayed approvals are
+ *   accepted once, then stamped).
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
  *   it), or an explicit user waiver (the dispatch prompt must contain the

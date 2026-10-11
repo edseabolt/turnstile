@@ -25,6 +25,7 @@ import { createLedger, type GateLedger } from "./state.ts"
 import type {
   CompactionDraft,
   EventProperties,
+  GateState,
   GenerateDraft,
   Host,
   PromptHookProperties,
@@ -110,6 +111,20 @@ export function createTurnstile(
   }
 
   /**
+   * Stamps a plan-reviewer verdict's approval against the current plans-dir
+   * signature so a later re-plan is detectable at dispatch time. An APPROVE
+   * against an unreadable dir stamps "" (unknown): the approval is accepted
+   * once and stamped on the next enforcing dispatch (fail-open); a BLOCK
+   * clears the stamp (hygiene). Mutates `s` in place.
+   * @param s The session's gate state (mutated).
+   * @param result The verdict result ("APPROVE" or "BLOCK").
+   * @param projectDir The current project directory (for the plans-dir scan).
+   */
+  function stampPlanApproval(s: GateState, result: string, projectDir: string): void {
+    s.plansSignature = result === "APPROVE" ? (gates.plansSignature(projectDir) ?? "") : ""
+  }
+
+  /**
    * Attributes a plan-reviewer result to the parent's plan-approval gate. The
    * delivery's own verdict wins over any stored child-text observation; the
    * journaled `source` names the winning pipeline (task-result or the child
@@ -127,6 +142,7 @@ export function createTurnstile(
     const markerSource = own ? "task-result" : rec.source || "task-result"
     const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
     s.hasPlanVerdict = result === "APPROVE"
+    stampPlanApproval(s, result, projectDir)
     journaler.journal({
       type: "plan",
       sessionID: sid,

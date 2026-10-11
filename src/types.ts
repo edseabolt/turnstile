@@ -85,6 +85,12 @@ export interface GateState {
   reviewRounds: number
   reads: number
   seen: Set<string>
+  /**
+   * Plans-dir signature the approval was issued against; "" means
+   * unknown (journal-replayed or pre-stamp) and is accepted once, then
+   * stamped, on the next enforcing dispatch.
+   */
+  plansSignature: string
 }
 
 /** One first-sight marker observation returned by the marker parser. */

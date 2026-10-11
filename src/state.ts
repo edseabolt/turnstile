@@ -20,6 +20,7 @@ export function newState(): GateState {
     reviewRounds: 0,
     reads: 0,
     seen: new Set(),
+    plansSignature: "",
   }
 }
 
@@ -81,7 +82,10 @@ export interface GateLedger {
  * gate state after a restart. Reads the last 2000 lines; skips malformed
  * lines. Only the *last* gate result per session decides the restored
  * state, mirroring the runtime latest-wins rule: a trailing `GATE: FAIL`
- * keeps the gate red. Fail-open.
+ * keeps the gate red. Fail-open. A restored `hasPlanVerdict` is trusted for
+ * exactly the current plans-dir state (no signature is journaled), so the
+ * first enforcing dispatch stamps the live key and edits _after_ restart
+ * invalidate the restored approval.
  * @param states The session→state map to populate.
  * @param journalPath Absolute path of the JSONL journal to replay.
  */
