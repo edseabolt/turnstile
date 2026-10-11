@@ -21,7 +21,27 @@ export function newState(): GateState {
     reads: 0,
     seen: new Set(),
     plansSignature: "",
+    // A freshly-built bucket has no outstanding replay grace; only a journal
+    // replay (createLedger) grants it, and only for one prompt.
+    replayGrace: false,
   }
+}
+
+/**
+ * Builds the gate state for the first post-restart prompt (the grace prompt):
+ * carries the replayed bucket's current flag _values_ forward — not provenance
+ * — so a live `GATE: FAIL` after replay is never resurrected. All other fields
+ * (`verdicts`, `reviewRounds`, `reads`, `seen`, the empty `plansSignature`
+ * stamp) come fresh; the returned bucket's `replayGrace` is consumed (false).
+ * @param prior The replayed bucket being reset.
+ * @returns A reset bucket with the prior flags; grace consumed.
+ */
+function mergeAfterReplay(prior: GateState): GateState {
+  const s = newState()
+  s.hasGatePass = prior.hasGatePass
+  s.hasPlanVerdict = prior.hasPlanVerdict
+  s.plansSignature = prior.hasPlanVerdict ? prior.plansSignature : ""
+  return s
 }
 
 /** Live gate bookkeeping shared by the gate, marker, and wiring layers. */
@@ -36,8 +56,12 @@ export interface GateLedger {
    */
   state(sessionID: string): GateState
   /**
-   * Replaces the gate state for a session with a fresh bucket. Used on
-   * each new user prompt: a new prompt starts a new task.
+   * Resets a session's gate state for a new user prompt (a new prompt starts a
+   * new task). The first prompt after a restart carries the journal-replayed
+   * flags forward with a single-prompt grace (values, not provenance — a live
+   * GATE: FAIL after replay is carried as false); every later prompt fully
+   * resets (fresh flags; `reviewRounds`/`reads`/`seen`/`verdicts` are always
+   * fresh). Fail-open: pure object map operations.
    * @param sessionID The parent session ID to reset.
    */
   resetState(sessionID: string): void
@@ -82,9 +106,13 @@ export interface GateLedger {
  * gate state after a restart. Reads the last 2000 lines; skips malformed
  * lines. Only the *last* gate result per session decides the restored
  * state, mirroring the runtime latest-wins rule: a trailing `GATE: FAIL`
- * keeps the gate red. Fail-open. A restored `hasPlanVerdict` is trusted for
- * exactly the current plans-dir state (no signature is journaled), so the
- * first enforcing dispatch stamps the live key and edits _after_ restart
+ * keeps the gate red. Fail-open. Both restore loops tag the bucket with
+ * `replayGrace` — the one-prompt survival window for the first post-restart
+ * prompt; both loops touch the same bucket object when a session has both a
+ * gate and a plan result, so the tag is set once. A restored `hasPlanVerdict`
+ * is trusted for exactly the current plans-dir state (no signature is journaled,
+ * so it stamps an empty ""), which the grace prompt's executor dispatch accepts
+ * once and re-stamps via reconcilePlanStamp — edits _after_ restart still
  * invalidate the restored approval.
  * @param states The session→state map to populate.
  * @param journalPath Absolute path of the JSONL journal to replay.
@@ -116,12 +144,14 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         if (result !== "PASS") continue
         const s = states.get(sessionID) ?? newState()
         s.hasGatePass = true
+        s.replayGrace = true
         states.set(sessionID, s)
       }
       for (const [sessionID, result] of lastPlanResult) {
         if (result !== "APPROVE") continue
         const s = states.get(sessionID) ?? newState()
         s.hasPlanVerdict = true
+        s.replayGrace = true
         states.set(sessionID, s)
       }
     }
@@ -133,7 +163,9 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
 /**
  * Creates the gate ledger and replays prior gate passes from the journal.
  * Both session maps are LRU-capped at `maxSessions` (promote-on-touch);
- * beyond the cap the least-recently-used entry is evicted.
+ * beyond the cap the least-recently-used entry is evicted. A replayed bucket
+ * evicted before its grace prompt loses the one-prompt survival (fail-toward-
+ * strict); without the tag the next prompt is an ordinary full reset.
  * @param journalPath Absolute path of the JSONL journal to replay.
  * @param maxSessions LRU cap for tracked sessions (states + parent map).
  * @returns A ledger bound to a fresh in-memory session map.
@@ -188,8 +220,10 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       return s
     },
     resetState(sessionID: string): void {
+      // delete+set keeps the LRU MRU position and the cap, as a plain reset.
+      const prior = states.get(sessionID)
       states.delete(sessionID)
-      states.set(sessionID, newState())
+      states.set(sessionID, prior?.replayGrace ? mergeAfterReplay(prior) : newState())
       cap(states)
     },
     parentOf(sessionID: string | undefined): string {

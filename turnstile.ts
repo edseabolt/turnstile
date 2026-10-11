@@ -12,11 +12,15 @@
  *   exists in `.opencode/plans/`, or an explicit user waiver (`USER
  *   WAIVER:` literal in the prompt). Plan-dir changes invalidate approvals
  *   issued against the previous plans-dir signature (replayed approvals are
- *   accepted once, then stamped).
+ *   accepted once, then stamped). A journal-replayed approval survives the
+ *   first prompt after a restart (the resume prompt) and then every later
+ *   prompt starts a clean cycle.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
  *   it), or an explicit user waiver (the dispatch prompt must contain the
- *   literal marker `USER WAIVER:`).
+ *   literal marker `USER WAIVER:`). A journal-replayed `GATE: PASS` survives
+ *   the first prompt after a restart (the resume prompt) and then every later
+ *   prompt starts a clean cycle.
  * - Round cap: max 2 `task -> reviewer` dispatches per task.
  * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads).
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`

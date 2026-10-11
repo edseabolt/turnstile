@@ -33,8 +33,11 @@ npm run ci          # ci:host (lint, format:check, typecheck, check:markers, tes
 | Decoding clamps        | executor/test-runner/debugger temperature ≤ 0.2; reviewer and plan-reviewer temperature = 0                                                                                                                                                                                                                                                                                        |
 | Compaction             | Injects a "preserve verbatim" instruction for markers and findings                                                                                                                                                                                                                                                                                                                 |
 
-A new user prompt resets the session's gate state. Gate state survives
-restarts via journal replay (last 2000 lines of `GATE: PASS` entries).
+A new user prompt resets the session's gate state. Replayed gate state
+survives a restart and the next user prompt (the resume prompt), then
+reverts: every later prompt starts a clean gate cycle. Replay reads the
+last 2000 lines of the journal (`GATE: PASS` and plan `VERDICT: APPROVE`
+entries).
 
 ## How it fits the ecosystem
 
@@ -75,7 +78,8 @@ are visible in this repo's tests:
 - Verifiable state. `GATE:` and `VERDICT:` markers are parsed from
   child session text (`src/markers.ts`), stored per parent session
   (`src/state.ts`), and replayed from the JSONL journal on restart, so
-  gate state survives sessions and reloads rather than living in a
+  replayed gate state survives a restart and the next user prompt, then
+  every later prompt starts a clean gate cycle rather than living in a
   prompt.
 - Failure posture. Hooks fail open: an internal error is journaled and
   the call proceeds. The only refusals are deliberate
