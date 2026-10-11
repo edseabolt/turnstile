@@ -18,11 +18,15 @@ import {
   journalEntries,
   makeFakeHost,
   tmpDir,
+  waitUntil,
   type FakeHost,
 } from "./helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
+
+/** Gives the async event loop a tick to drain queued stream events. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
 
 /** Boots in a temp project dir containing a plan file. */
 async function bootWithPlan(
@@ -260,6 +264,262 @@ test("plan gate: child plan-reviewer result greens the parent's gate", async () 
       sessionID: "p1",
       input: { agent: "executor", prompt: "do the work" },
     })
+  } finally {
+    restore()
+  }
+})
+
+/** AC-1: a preamble (blank line + prose) before the marker still attributes APPROVE from the task-result pipeline. */
+test("plan gate: preamble before APPROVE attributes with source task-result", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: {
+        output: `\nreviewed the plan, structure is fine\n\n${APPROVE}\n## AC traceability\n`,
+      },
+    })
+    const plan = journalEntries(metricsDir).find((l) => l.type === "plan")
+    assert.ok(plan)
+    assert.equal(plan.result, "APPROVE")
+    assert.match(plan.marker, /VERDICT: APPROVE/)
+    assert.equal(plan.source, "task-result")
+    const violations = journalEntries(metricsDir).filter((l) => l.type === "violation")
+    assert.ok(!violations.some((l) => l.agent === "plan-reviewer"))
+    // Executor dispatch proceeds (plan file present → requires the green gate).
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/** AC-2: a verdict on the child's own text is attributed when the delivery output is marker-less (divergence). */
+test("plan gate: child-text verdict attributes through a marker-less delivery", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `\nreview\n\n${APPROVE}\n` },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    // Summarized delivery: no marker anywhere in the output.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Review complete; see journal." },
+    })
+    const plan = journalEntries(metricsDir).find((l) => l.type === "plan")
+    assert.ok(plan)
+    assert.equal(plan.result, "APPROVE")
+    assert.equal(plan.sessionID, "p1")
+    assert.equal(plan.raw, "c1")
+    assert.equal(plan.source, "child-text")
+    const violations = journalEntries(metricsDir).filter((l) => l.type === "violation")
+    assert.ok(!violations.some((l) => l.agent === "plan-reviewer"))
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/** AC-3: a task-result marker never enters the child store; a later marker-less delivery still blocks. */
+test("plan gate: task-result marker is not stored; later marker-less still blocks", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${BLOCK}\nAC-1 GAP\n` },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "reviewed, looks fine\n" },
+    })
+    const plan = journalEntries(metricsDir).filter((l) => l.type === "plan")
+    const second = plan[plan.length - 1]
+    assert.ok(second)
+    assert.equal(second.result, "BLOCK")
+    assert.equal(second.marker, "<none>")
+    assert.equal(second.source, "task-result")
+    const violations = journalEntries(metricsDir).filter((l) => l.type === "violation")
+    assert.ok(violations.some((l) => l.agent === "plan-reviewer"))
+  } finally {
+    restore()
+  }
+})
+
+/** AC-4: latest child-text observation wins; the delivery's own output overrides a stored marker. */
+test("plan gate: latest child-text wins and delivery text overrides stored marker", async () => {
+  // (a) BLOCK then APPROVE child text → marker-less delivery approves.
+  {
+    const { h, metricsDir, restore } = await bootWithPlan()
+    try {
+      h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+      h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+      h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+      await waitUntil(
+        () => journalEntries(metricsDir).filter((l) => l.type === "verdict").length >= 2,
+      )
+      await settle()
+      await callTool(h, "execute.after", {
+        tool: "task",
+        sessionID: "c1",
+        input: { agent: "plan-reviewer" },
+        result: { output: "Review complete." },
+      })
+      const plan = journalEntries(metricsDir).filter((l) => l.type === "plan")
+      const latest = plan[plan.length - 1]
+      assert.ok(latest)
+      assert.equal(latest.result, "APPROVE")
+      await callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      })
+    } finally {
+      restore()
+    }
+  }
+  // (a, reverse) APPROVE then BLOCK child text → marker-less delivery blocks.
+  {
+    const { h, metricsDir, restore } = await bootWithPlan()
+    try {
+      h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+      h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+      h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+      await waitUntil(
+        () => journalEntries(metricsDir).filter((l) => l.type === "verdict").length >= 2,
+      )
+      await settle()
+      await callTool(h, "execute.after", {
+        tool: "task",
+        sessionID: "c1",
+        input: { agent: "plan-reviewer" },
+        result: { output: "Review complete." },
+      })
+      const plan = journalEntries(metricsDir).filter((l) => l.type === "plan")
+      const latest = plan[plan.length - 1]
+      assert.ok(latest)
+      assert.equal(latest.result, "BLOCK")
+      await assert.rejects(() =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      )
+    } finally {
+      restore()
+    }
+  }
+  // (b) delivery text BLOCK overrides a stored child-text APPROVE (delivery wins).
+  {
+    const { h, metricsDir, restore } = await bootWithPlan()
+    try {
+      h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+      h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+      await waitUntil(
+        () => journalEntries(metricsDir).filter((l) => l.type === "verdict").length >= 1,
+      )
+      await callTool(h, "execute.after", {
+        tool: "task",
+        sessionID: "c1",
+        input: { agent: "plan-reviewer" },
+        result: { output: `${BLOCK}\nsome reasoning\n` },
+      })
+      const plan = journalEntries(metricsDir).filter((l) => l.type === "plan")
+      const latest = plan[plan.length - 1]
+      assert.ok(latest)
+      assert.equal(latest.result, "BLOCK")
+      assert.equal(latest.source, "task-result")
+    } finally {
+      restore()
+    }
+  }
+})
+
+/** AC-5: per-child recording is independent of the dedup set; a sibling streaming an identical marker still attributes. */
+test("plan gate: identical marker for a sibling child still attributes per child", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: APPROVE } })
+    await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+    // Byte-identical marker for a second child: dedup suppresses its verdict
+    // entry, but text-derived recording still stores it (independent of seen).
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: APPROVE } })
+    await settle()
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c2",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Review complete; see journal." },
+    })
+    const plan = journalEntries(metricsDir).filter((l) => l.type === "plan")
+    const latest = plan[plan.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.result, "APPROVE")
+    assert.equal(latest.raw, "c2")
+    assert.equal(latest.source, "child-text")
+    // Dedup untouched: still exactly one verdict entry despite two children.
+    assert.equal(journalEntries(metricsDir).filter((l) => l.type === "verdict").length, 1)
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/** AC-6: a stale verdict for one child does not attribute to an unrelated child. */
+test("plan gate: stale verdict for one child does not attribute to another child", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await waitUntil(() => journalEntries(metricsDir).some((e) => e.type === "verdict"))
+    // c2 has no stream events → its store is empty.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c2",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Task finished." },
+    })
+    const plan = journalEntries(metricsDir).filter((l) => l.type === "plan")
+    const latest = plan[plan.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.result, "BLOCK")
+    assert.equal(latest.marker, "<none>")
+    const violations = journalEntries(metricsDir).filter((l) => l.type === "violation")
+    assert.ok(violations.some((l) => l.agent === "plan-reviewer"))
+    // Gate stays red for the parent.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
   } finally {
     restore()
   }

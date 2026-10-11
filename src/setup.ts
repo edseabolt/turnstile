@@ -98,6 +98,47 @@ export function createTurnstile(
   let taskDeliverySeq = 0
 
   /**
+   * Returns the last verdict match in `text` for `re` (last-match-wins, the
+   * same rule `parseGateMarkers` uses); "" when there is no match. Independent
+   * of `String.match`'s global-regex lastIndex state because `.match` resets it.
+   * @param text The text to scan.
+   * @param re The compiled verdict regex.
+   * @returns The last match text, or "" when `text` has no verdict match.
+   */
+  function lastMatch(text: string, re: RegExp): string {
+    return text.match(re)?.at(-1) ?? ""
+  }
+
+  /**
+   * Attributes a plan-reviewer result to the parent's plan-approval gate. The
+   * delivery's own verdict wins over any stored child-text observation; the
+   * journaled `source` names the winning pipeline (task-result or the child
+   * text that carried the marker). A BLOCK or marker-less result keeps the gate
+   * red. Keyed by parent session; never throws (fail-open).
+   * @param child The raw child session ID, for the `plan` entry's `raw` field.
+   * @param output The delivery's own result text.
+   */
+  function attributePlanVerdict(child: string, output: string): void {
+    const sid = ledger.parentOf(child)
+    const s = ledger.state(sid)
+    const own = lastMatch(output, verdictRe)
+    const rec = ledger.childVerdict(child)
+    const marker = own || rec.marker
+    const markerSource = own ? "task-result" : rec.source || "task-result"
+    const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+    s.hasPlanVerdict = result === "APPROVE"
+    journaler.journal({
+      type: "plan",
+      sessionID: sid,
+      raw: child,
+      result,
+      marker: marker || "<none>",
+      source: markerSource,
+    })
+    journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>")
+  }
+
+  /**
    * Parses markers out of assistant text and journals first-sight events.
    * @param text The assistant text to scan.
    * @param sessionID The raw (possibly child) session ID.
@@ -111,6 +152,15 @@ export function createTurnstile(
     dedupScope = "",
   ): void {
     if (!text) return
+    // Record a child's latest VERDICT from the text itself, before the parent
+    // edge is needed, so a child with an unresolved edge still records. Only
+    // non-task-result sources enter the store: task-result markers are handled
+    // by the delivery's own match during attribution, and keeping them out
+    // preserves "a marker-less task-result delivery keeps the gate red".
+    if (sessionID && source !== "task-result") {
+      const m = lastMatch(text, verdictRe)
+      if (m) ledger.recordChildVerdict(sessionID, m, source)
+    }
     const sid = ledger.parentOf(sessionID)
     if (!sid) return
     const s = ledger.state(sid)
@@ -321,42 +371,27 @@ export function createTurnstile(
           try {
             if (event?.tool === "task" || event?.tool === "subagent") {
               const output = String(event.result?.output ?? "")
-              parseMarkers(
-                output,
-                asSessionID(event?.sessionID),
-                "task-result",
-                `task-result\u0000${++taskDeliverySeq}`,
-              )
+              const child = asSessionID(event?.sessionID)
+              parseMarkers(output, child, "task-result", `task-result\u0000${++taskDeliverySeq}`)
               const agent =
                 agentFromTaskInput(event.input) ||
                 agentFromTaskInput(event.result?.input as TaskInput | undefined)
               // Plan-approval attribution: only a plan-reviewer result moves
-              // the plan gate. Latest verdict wins; a BLOCK or marker-less
-              // result keeps the gate red. Keyed by parent session like the
-              // other gate state.
+              // the plan gate. The delivery's own verdict wins over a stored
+              // child-text observation; a BLOCK or marker-less result keeps
+              // the gate red. Keyed by parent session like the other state.
               if (agent === config.agents.planReviewer) {
-                const sid = ledger.parentOf(asSessionID(event?.sessionID))
-                const s = ledger.state(sid)
-                const verdicts = output.match(verdictRe) ?? []
-                const marker = verdicts[verdicts.length - 1] ?? ""
-                const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
-                s.hasPlanVerdict = result === "APPROVE"
-                journaler.journal({
-                  type: "plan",
-                  sessionID: sid,
-                  raw: asSessionID(event?.sessionID),
-                  result,
-                  marker: marker || "<none>",
-                  source: "task-result",
-                })
-                journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>")
+                attributePlanVerdict(child, output)
               }
               const bare =
-                config.agents.bareOutput.includes(agent) && output !== "" && !hasMarker(output)
+                config.agents.bareOutput.includes(agent) &&
+                output !== "" &&
+                !hasMarker(output) &&
+                ledger.childVerdict(child).marker === ""
               if (bare) {
                 journaler.journal({
                   type: "violation",
-                  sessionID: asSessionID(event?.sessionID),
+                  sessionID: child,
                   agent,
                   reason: "task output contained no GATE/VERDICT marker",
                 })

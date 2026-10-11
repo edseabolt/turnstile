@@ -6,7 +6,7 @@
 
 import * as fs from "node:fs"
 
-import type { GateState } from "./types.ts"
+import type { ChildVerdict, GateState } from "./types.ts"
 
 /**
  * Creates a fresh gate state bucket for one parent session.
@@ -54,6 +54,26 @@ export interface GateLedger {
    * @param parentID The parent session ID.
    */
   setParent(sessionID: string, parentID: string): void
+  /**
+   * Overwrites the child's latest `VERDICT:` marker observation and its
+   * provenance source label. Recording is verdict-kind only (only `VERDICT:`
+   * markers are ever stored; never `GATE:`) and is unconditioned on agent
+   * type: the plan gate is the sole consumer, and because attribution is
+   * keyed by child ID this cannot leak a verdict to a different child or let
+   * a GATE-only child suppress a plan-reviewer bare-output violation.
+   * @param childID The child session ID.
+   * @param marker The last `VERDICT:` marker observed in the child's text.
+   * @param source Pipeline provenance label the marker was observed in.
+   */
+  recordChildVerdict(childID: string, marker: string, source: string): void
+  /**
+   * Returns the child's latest `VERDICT:` marker observation, or an empty
+   * verdict ({ marker: "", source: "" }) when the child has none. Touches
+   * the child to keep it most-recently-used (LRU).
+   * @param childID The child session ID.
+   * @returns The stored observation, or { marker: "", source: "" }.
+   */
+  childVerdict(childID: string): ChildVerdict
 }
 
 /**
@@ -117,6 +137,10 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
 export function createLedger(journalPath: string, maxSessions: number = 64): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
+  // Latest VERDICT marker observation per child session, LRU-capped and
+  // promote-on-touch like the other session maps. Verdict-kind only, keyed by
+  // child ID so it never leaks across children.
+  const childVerdicts = new Map<string, ChildVerdict>()
 
   /**
    * Promotes a key to most-recently-used in an insertion-ordered map.
@@ -176,6 +200,15 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     setParent(sessionID: string, parentID: string): void {
       childToParent.set(sessionID, parentID)
       cap(childToParent)
+    },
+    recordChildVerdict(childID: string, marker: string, source: string): void {
+      promote(childVerdicts, childID)
+      childVerdicts.set(childID, { marker, source })
+      cap(childVerdicts)
+    },
+    childVerdict(childID: string): ChildVerdict {
+      promote(childVerdicts, childID)
+      return childVerdicts.get(childID) ?? { marker: "", source: "" }
     },
   }
 }

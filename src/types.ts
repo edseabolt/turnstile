@@ -98,6 +98,19 @@ export interface MarkerEvent {
   suppressed: number
 }
 
+/**
+ * The latest `VERDICT:` marker observation for a single child session and the
+ * provenance label of the pipeline that carried it. The store is
+ * verdict-kind only: only `VERDICT:` markers are stored (never `GATE:`), so a
+ * GATE-only child can never suppress a plan-reviewer bare-output violation.
+ */
+export interface ChildVerdict {
+  /** Last `VERDICT:` marker observed for the child, or "" when none. */
+  marker: string
+  /** Pipeline provenance label, e.g. "child-text" or "child-message". */
+  source: string
+}
+
 /** Agent names turnstile recognizes in dispatches and generation drafts. */
 export interface TurnstileAgents {
   reviewer: string
