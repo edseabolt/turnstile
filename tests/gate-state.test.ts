@@ -255,6 +255,75 @@ test("round cap with default 2: third reviewer dispatch blocked at the limit", a
   dispose()
 })
 
+/** Waived dispatches do not consume the round cap: after any number of
+ *  waivers, the next unwaived dispatch still proceeds (issue #19). */
+test("round cap: waived dispatches do not consume the cap; an unwaived dispatch proceeds", async () => {
+  const { h, dispose } = await boot()
+  // Green gate so the unwaived dispatch can clear the no-gate-pass check.
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+  })
+  // Two waived dispatches must not drain the unwaived budget.
+  for (let i = 0; i < 2; i++) {
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    })
+  }
+  // The unwaived dispatch still resolves — HEAD throws the round-limit message.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  dispose()
+})
+
+/** Waivers neither count toward nor reset the cap: after any number of
+ *  waivers exactly `maxReviewerRounds` unwaived dispatches succeed and the
+ *  next rejects with the golden round-limit message (issue #19). */
+test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is blocked", async () => {
+  const { h, dispose } = await boot()
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+  })
+  // A single waiver precedes the unwaived budget: it must neither consume nor
+  // reset it.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+  })
+  // Two unwaived dispatches still succeed (default cap of 2).
+  for (let i = 0; i < 2; i++) {
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+  }
+  // The third unwaived dispatch rejects with the byte-identical golden message.
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "reviewer", prompt: "again" },
+      }),
+    (e: Error) =>
+      e.message ===
+      "BLOCKED by turnstile: reviewer round limit (2) reached. Escalate the open findings to the user, or start a new task (a new user prompt resets the cap).",
+  )
+  dispose()
+})
+
 /** Replay of a parent-keyed PASS entry restores the gate across restarts. */
 test("journal replay restores a parent-keyed GATE: PASS across restarts", async () => {
   const metricsDir = tmpDir()

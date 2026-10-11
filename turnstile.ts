@@ -21,7 +21,9 @@
  *   literal marker `USER WAIVER:`). A journal-replayed `GATE: PASS` survives
  *   the first prompt after a restart (the resume prompt) and then every later
  *   prompt starts a clean cycle.
- * - Round cap: max 2 `task -> reviewer` dispatches per task.
+ * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
+ *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
+ *   counting toward it; a new user prompt resets it.
  * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads).
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.

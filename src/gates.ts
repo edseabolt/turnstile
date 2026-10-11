@@ -34,7 +34,8 @@ export interface Gates {
    * Enforces the reviewer dispatch gate for a pending `task` dispatch:
    * records a waiver when the prompt carries the waiver marker (per
    * dispatch, not sticky), then blocks when the dispatch cap is exhausted
-   * or the test gate has not gone green.
+   * or the test gate has not gone green. A waiver bypasses the cap without
+   * counting toward it.
    * @param sessionID The parent session ID.
    * @param prompt The dispatch prompt text.
    * @param ledger The gate ledger to read and mutate state from.
@@ -106,7 +107,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * exhausted or the test gate has not gone green. The cap counts reviewer
    * dispatches themselves (per the documented "max 2 reviewer dispatches
    * per task" contract), not BLOCK verdicts. A waiver applies to the
-   * dispatch carrying it only; every dispatch prompt must contain the
+   * dispatch carrying it only, bypasses the cap without counting toward it,
+   * and expires with that dispatch; every dispatch prompt must contain the
    * literal marker to be exempt.
    * @param sessionID The parent session ID.
    * @param prompt The dispatch prompt text.
@@ -156,7 +158,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     }
     // Check-then-increment: the Nth dispatch is allowed and the (N+1)th is
     // blocked, so exactly `maxReviewerRounds` dispatches succeed per task.
-    s.reviewRounds++
+    // A waiver is an explicit per-dispatch user escape, so it bypasses the
+    // cap without counting toward it — the cap bounds the unwaived re-dispatch
+    // loop only.
+    if (!waived) s.reviewRounds++
   }
 
   /**
