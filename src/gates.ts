@@ -9,6 +9,7 @@
  */
 
 import * as fs from "node:fs"
+import { createHash } from "node:crypto"
 import * as path from "node:path"
 
 import type { Journaler } from "./journal.ts"
@@ -185,17 +186,18 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    *     plan exists and the prompt cites no chunk.
    */
   // Cached plans-dir scan keyed by the directory's content signature
-  // (dir mtime + sorted plan names + per-file mtimes). A key hit returns the
-  // cached scan and skips both the rescan and the per-file re-read for the
-  // `## Decomposition` check; a key miss recomputes decompFile. Any fs error
-  // throws to the caller's fail-open.
+  // (`dir|name:sha256hex,…`). A key hit returns the cached scan and skips the
+  // utf8 decode and the `## Decomposition` search; a key miss recomputes
+  // decompFile. Any fs error throws to the caller's fail-open.
   let plansCache: { key: string; scan: PlansScan } | null = null
 
   /** What one plans-dir scan establishes for both plan gates. */
   interface PlansScan {
     /**
-     * Content signature of the plans dir: `dir|dirMtime|name:mtime,…`. Two
-     * scans with different keys mean the plans dir changed.
+     * Content signature of the plans dir: `dir|name:sha256hex,…`. Two scans
+     * with different keys mean the plans dir _content_ changed (an add,
+     * delete, rename, or same-size/content edit); a utimes-only or dir touch
+     * leaves it identical — dir mtime is deliberately not hashed.
      */
     key: string
     /** Sorted plan file names (empty when the dir holds no plans). */
@@ -205,30 +207,54 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Scans the plans directory, returning the scan whose `key` is the dir's
-   * content signature. The cache skips a redundant rescan: a key hit returns
-   * the cached scan, a key miss replaces it — either way the returned key
-   * reports the dir's current content.
+   * Sorted `.md` names with per-file content buffers, one readdir + read
+   * each; the buffers feed the digest so `scanPlans` never re-reads a file.
    * @param dir Absolute plans directory path.
-   * @returns The current scan; `scan.key` is the dir's content signature.
+   * @returns Sorted `{ name, bytes }` for every `.md` entry (empty when none).
    */
-  function scanPlans(dir: string): PlansScan {
+  function readEntries(dir: string): Array<{ name: string; bytes: Buffer }> {
     const names = fs
       .readdirSync(dir)
       .filter((f) => f.endsWith(".md"))
       .sort()
-    const files = names.map((n) => `${n}:${fs.statSync(path.join(dir, n)).mtimeMs}`)
-    const key = `${dir}|${fs.statSync(dir).mtimeMs}|${files.join(",")}`
-    const scan: PlansScan = { key, names, decompFile: null }
+    return names.map((name) => ({ name, bytes: fs.readFileSync(path.join(dir, name)) }))
+  }
+
+  /**
+   * Content signature: `dir|name:sha256hex,…`. Identical iff the plans dir's
+   * content is identical — an add, delete, rename, or same-size/content edit
+   * changes it; a utimes-only or dir touch does not.
+   * @param dir Absolute plans directory path.
+   * @param entries The plan entries from `readEntries`.
+   * @returns The content signature for `dir` and its entries.
+   */
+  function plansKey(dir: string, entries: Array<{ name: string; bytes: Buffer }>): string {
+    const files = entries
+      .map((e) => `${e.name}:${createHash("sha256").update(e.bytes).digest("hex")}`)
+      .join(",")
+    return `${dir}|${files}`
+  }
+
+  /**
+   * Scans the plans directory, returning the scan whose `key` is the dir's
+   * content signature. The cache skips a redundant rescan: a key hit returns
+   * the cached scan, skipping the utf8 decode and `## Decomposition` search;
+   * a key miss replaces it — either way the returned key reports the dir's
+   * current content.
+   * @param dir Absolute plans directory path.
+   * @returns The current scan; `scan.key` is the dir's content signature.
+   */
+  function scanPlans(dir: string): PlansScan {
+    const entries = readEntries(dir)
+    const key = plansKey(dir, entries)
     const cached = plansCache
-    if (cached !== null && cached.key === key) {
-      return cached.scan
+    if (cached !== null && cached.key === key) return cached.scan
+    const scan: PlansScan = {
+      key,
+      names: entries.map((e) => e.name),
+      decompFile:
+        entries.find((e) => e.bytes.toString("utf8").includes("## Decomposition"))?.name ?? null,
     }
-    // Key miss: compute the `## Decomposition` file only now, so a key hit
-    // skips this per-file re-read (the cached scan already carries it).
-    scan.decompFile =
-      names.find((n) => fs.readFileSync(path.join(dir, n), "utf8").includes("## Decomposition")) ??
-      null
     plansCache = { key, scan }
     return scan
   }

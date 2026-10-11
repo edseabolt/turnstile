@@ -10,7 +10,7 @@
  * - Plan-approval gate: `task` dispatches to `executor` require a current
  *   plan-reviewer `VERDICT: APPROVE` for the task whenever a plan file
  *   exists in `.opencode/plans/`, or an explicit user waiver (`USER
- *   WAIVER:` literal in the prompt). Plan-dir changes invalidate approvals
+ *   WAIVER:` literal in the prompt). Plan-content changes invalidate approvals
  *   issued against the previous plans-dir signature (replayed approvals are
  *   accepted once, then stamped). A journal-replayed approval survives the
  *   first prompt after a restart (the resume prompt) and then every later
