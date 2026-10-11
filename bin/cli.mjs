@@ -30,10 +30,13 @@ Commands:
   uninstall Remove installed artifacts (agents + block)
   version   Print the installed package version
 
-init also accepts convenience flags (passthrough to scripts/install.mjs):
+init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
+  init -- --print-model-config [--model [name=]provider/model[#variant]] [--validate]
+
   --print-model-config  Print a {"agents": {...}} model snippet, write nothing
-  --model [name=]provider/model[#variant]  Seed an agent (repeatable)
+  --model               Seed an agent (repeatable); ids may be multi-segment, e.g. oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
   --validate            Check concrete specs against "opencode models"
+                        (--model/--validate require --print-model-config, else exit 2)
 
 A git checkout installs by linking (live edits); a package install copies.`
 
@@ -71,7 +74,12 @@ async function main() {
       // installed as usual. Print mode writes nothing; the two-step install
       // is the router's idempotent contract-block behavior, which is out of
       // scope for the write-free printer flag.
-      const byInstall = await spawnInstaller(installScript, passthrough)
+      //
+      // A leading "--" separates the subcommand from its flags
+      // (`init -- --print-model-config`); install.mjs rejects a literal "--"
+      // as an unknown argument, so drop it before forwarding.
+      const initPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      const byInstall = await spawnInstaller(installScript, initPassthrough)
       const byAgents = await spawnInstaller(agentsScript, [])
       return process.exit(byInstall || byAgents ? 1 : 0)
     }

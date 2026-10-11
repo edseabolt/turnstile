@@ -120,6 +120,40 @@ test("parseModelSpecs: rejects a malformed spec, showing the grammar", () => {
   )
 })
 
+/** A bare multi-segment id (interior slashes) seeds all six agents verbatim. */
+test("parseModelSpecs: a bare multi-segment id seeds all six", () => {
+  assert.deepEqual(parseModelSpecs(["oMLX/oQ/GLM-5.3-Flash-oQ4-mtp"]), {
+    planner: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+    "plan-reviewer": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+    executor: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+    "test-runner": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+    reviewer: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+    debugger: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+  })
+})
+
+/** A name= prefix on a multi-segment id seeds only that one agent. */
+test("parseModelSpecs: a name= multi-segment id seeds only one agent", () => {
+  assert.deepEqual(parseModelSpecs(["planner=oMLX/oQ/GLM-5.3-Flash-oQ4-mtp"]), {
+    planner: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+  })
+})
+
+/** A trailing #variant binds to the tail of a multi-segment id. */
+test("parseModelSpecs: a trailing #variant binds to a multi-segment id", () => {
+  assert.deepEqual(parseModelSpecs(["planner=oMLX/oQ/Ornith-1.5-35B-A3B-oQ8-mtp#fast"]), {
+    planner: "oMLX/oQ/Ornith-1.5-35B-A3B-oQ8-mtp#fast",
+  })
+})
+
+/** The exact seeded user id drives planner with the full multi-segment id
+ * (AC-6). */
+test("parseModelSpecs: the exact oMLX id seeds planner", () => {
+  assert.deepEqual(parseModelSpecs(["planner=oMLX/oQ/GLM-5.3-Flash-oQ4-mtp"]), {
+    planner: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
+  })
+})
+
 // ---- formatModelConfig -----------------------------------------------------
 
 /** formatModelConfig emits all six agents in canonical order, placeholders unset. */
@@ -188,8 +222,9 @@ test("main --print-model-config --validate: an unknown concrete model returns fa
   console.error = (msg: unknown): void => {
     errors.push(String(msg))
   }
-  setCommandRunner((): { stdout: string } => ({
+  setCommandRunner((): { stdout: string; status: number } => ({
     stdout: "anthropic/claude-3\nanthropic/claude-sonnet-4\n",
+    status: 0,
   }))
   try {
     const result = await main([
@@ -218,7 +253,10 @@ test("main --print-model-config --validate: an unknown concrete model returns fa
 test("main --print-model-config --validate: a present concrete model returns true", async () => {
   const restore = (command: string, args: string[], options?: object) =>
     spawnSync(command, args, options)
-  setCommandRunner((): { stdout: string } => ({ stdout: "anthropic/claude-3\n" }))
+  setCommandRunner((): { stdout: string; status: number } => ({
+    stdout: "anthropic/claude-3\n",
+    status: 0,
+  }))
   try {
     const result = await main([
       "node",
@@ -232,6 +270,45 @@ test("main --print-model-config --validate: a present concrete model returns tru
   } finally {
     setCommandRunner(restore)
   }
+})
+
+/**
+ * --validate when `opencode models` fails to spawn: the print path reports the
+ * failure ("could not run opencode models …") and returns false (mapped to
+ * exit 1), instead of flagging every seeded spec as unknown. The spawn-failure
+ * branch throws and `main` converts it to a false return, so the tested path
+ * never calls process.exit directly.
+ */
+test("main --print-model-config --validate: a failed opencode models spawn reports and returns false", async () => {
+  const restore = (command: string, args: string[], options?: object) =>
+    spawnSync(command, args, options)
+  const errors: string[] = []
+  const originalError = console.error
+  console.error = (msg: unknown): void => {
+    errors.push(String(msg))
+  }
+  setCommandRunner((): { error: Error; status: null } => ({
+    error: new Error("spawnSync opencode ENOENT"),
+    status: null,
+  }))
+  try {
+    const result = await main([
+      "node",
+      "install.mjs",
+      "--print-model-config",
+      "--model",
+      "planner=anthropic/claude-3",
+      "--validate",
+    ])
+    assert.equal(result, false)
+  } finally {
+    console.error = originalError
+    setCommandRunner(restore)
+  }
+  assert.ok(
+    errors.some((e) => e.includes("could not run opencode models")),
+    `expected a spawn-failure message, got: ${errors.join(" | ")}`,
+  )
 })
 
 // ---- CLI smoke tests (child spawn, no live host CLI) -----------------------
@@ -320,4 +397,45 @@ test("CLI an unknown flag still exits 2", () => {
   })
   assert.equal(res.status, 2)
   assert.match(res.stderr, /unknown argument --nope/)
+})
+
+/**
+ * --model given without --print-model-config has no effect, so it exits 2 with
+ * the orphan message instead of falling through to a real install (AC-6).
+ */
+test("CLI --model without --print-model-config exits 2, orphan message", () => {
+  const res = spawnSync(
+    process.execPath,
+    [join(repoRoot, "scripts/install.mjs"), "--model", "planner=anthropic/claude-3"],
+    { encoding: "utf8" },
+  )
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /--validate\/--model require --print-model-config/)
+})
+
+/** --validate given without --print-model-config exits 2 with the orphan message. */
+test("CLI --validate without --print-model-config exits 2, orphan message", () => {
+  const res = spawnSync(process.execPath, [join(repoRoot, "scripts/install.mjs"), "--validate"], {
+    encoding: "utf8",
+  })
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /--validate\/--model require --print-model-config/)
+})
+
+/**
+ * The router strips a leading "--" from the init passthrough, so
+ * `init -- --print-model-config` reaches install.mjs and exits 0 instead of
+ * install.mjs rejecting the literal "--" as an unknown argument (exit 2,
+ * router regression).
+ */
+test("router init -- --print-model-config: strips the leading -- and exits 0", () => {
+  const res = spawnSync(
+    process.execPath,
+    [join(repoRoot, "bin/cli.mjs"), "init", "--", "--print-model-config"],
+    { encoding: "utf8" },
+  )
+  assert.equal(res.status, 0)
+  // install.mjs prints the JSON snippet before the agents installer runs; its
+  // presence in stdout proves the flag reached install.mjs through the router.
+  assert.match(res.stdout, /"agents": \{/)
 })

@@ -270,17 +270,22 @@ That prints one entry per agent, each defaulting to a placeholder:
 ```
 
 Seed individual agents with repeatable `--model` seeds. A bare
-`provider/model` (optionally `#variant`) seeds all six; `name=` seeds one:
+`provider/model` (optionally `#variant`) seeds all six; `name=` seeds one.
+Model ids may be multi-segment — providers require interior slashes, e.g.
+`oMLX/oQ/GLM-5.3-Flash-oQ4-mtp` — so the model body is everything after the
+first slash.
 
 ```sh
 npm run init -- --print-model-config \
   --model planner=anthropic/claude-haiku-4-5 \
-  --model executor=anthropic/claude-sonnet-4-5
+  --model executor=oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
 ```
 
 Add `--validate` to cross-check every concrete seed against
 `opencode models` and exit 1 naming a model it does not list; placeholder
-seeds are skipped:
+seeds are skipped. `--model` and `--validate` are only valid with
+`--print-model-config`: given without it, install.mjs prints an actionable
+message and exits 2.
 
 ```sh
 npm run init -- --print-model-config --model planner=anthropic/claude-haiku-4-5 --validate

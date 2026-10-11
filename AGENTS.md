@@ -24,7 +24,9 @@ the dispatching session's model, and per-agent pins belong in
 never carry user state.
 `--print-model-config` optionally prints a ready-to-paste `{"agents": {…}}`
 model snippet (repeatable `--model [name=]provider/model[#variant]` seeds;
-`--validate` checks them against `opencode models` and exits 1 on a miss) and
+model ids may be multi-segment, e.g. `oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`;
+`--validate` checks concrete specs against `opencode models` and exits 1 on a
+miss; `--model`/`--validate` given without `--print-model-config` exit 2) and
 writes nothing — it short-circuits before any install work — while the router
 still idempotently installs the contract block in the same run (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
