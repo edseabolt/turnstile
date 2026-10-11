@@ -16,7 +16,7 @@ Verify with:
 
 ```sh
 npm install
-npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) + install:check
+npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) + install:check + install:agents:check (contract block)
 ```
 
 ## What it enforces
@@ -357,9 +357,11 @@ Shared caveats:
 - Symlinks point at the clone's absolute path. Do not move, rename, or
   delete the checkout; if you relocate it, re-run `npm run init`.
 - `npm run install:check` reports drift between the manifest and what is
-  actually installed; local `npm run ci` gates on it. GitHub CI runs
-  `npm run ci:host`, the same chain without the install check, because a
-  runner has no installs to check. Verify a copy install with
+  actually installed; `npm run install:agents:check` reports drift between
+  the installed contract block and `templates/global-AGENTS.md`; local
+  `npm run ci` gates on both. GitHub CI runs `npm run ci:host`, the same
+  chain without the install checks, because a runner has no installs to
+  check. Verify a copy install with
   `npm run install:check -- --copy`.
 
 ### Install the AGENTS.md contracts

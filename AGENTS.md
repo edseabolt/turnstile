@@ -34,7 +34,7 @@ Verification tooling: ESLint + typescript-eslint (lint), Prettier
 drift), all chained in `npm run ci`:
 
 ```
-npm run ci   # ci:host (lint -> format:check -> typecheck -> check:markers -> test) + install:check
+npm run ci   # ci:host (lint -> format:check -> typecheck -> check:markers -> test) + install:check + install:agents:check
 ```
 
 ## Coding practices
