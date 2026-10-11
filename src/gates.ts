@@ -13,7 +13,7 @@ import * as path from "node:path"
 
 import type { Journaler } from "./journal.ts"
 import type { GateLedger } from "./state.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { GateState, TurnstileConfig } from "./types.ts"
 
 /**
  * The only error type turnstile deliberately throws at the host: an
@@ -65,8 +65,8 @@ export interface Gates {
    * Enforces the plan-approval gate: when any plan file exists in the
    * configured plans directory, executor dispatches require a current
    * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver).
-   * Approval is invalidated when plan files change, forcing re-review
-   * after a re-plan.
+   * Approval is invalidated when this session's approval was issued against
+   * a different plans-dir signature, forcing re-review after a re-plan.
    * @param sessionID The parent session ID.
    * @param prompt The dispatch prompt text (checked for the waiver marker).
    * @param projectDir The current project directory.
@@ -80,6 +80,15 @@ export interface Gates {
     projectDir: string,
     ledger: GateLedger,
   ): void
+  /**
+   * Returns the current plans-dir signature for approval-time stamping, or
+   * null when the dir is absent or unreadable (fail-open: an unstampable
+   * approval behaves as unknown and is validated on the next enforcing
+   * dispatch).
+   * @param projectDir The current project directory.
+   * @returns The plans-dir content signature, or null when absent/unreadable.
+   */
+  plansSignature(projectDir: string): string | null
 }
 
 /**
@@ -175,13 +184,20 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * @throws Error with a `BLOCKED by turnstile:` prefix when a decomposed
    *     plan exists and the prompt cites no chunk.
    */
-  // Cached plans-dir verdict keyed by the directory's content signature
-  // (dir mtime + sorted plan names + per-file mtimes). Saves the
-  // per-dispatch rescan; any fs error throws to the caller's fail-open.
+  // Cached plans-dir scan keyed by the directory's content signature
+  // (dir mtime + sorted plan names + per-file mtimes). A key hit returns the
+  // cached scan and skips both the rescan and the per-file re-read for the
+  // `## Decomposition` check; a key miss recomputes decompFile. Any fs error
+  // throws to the caller's fail-open.
   let plansCache: { key: string; scan: PlansScan } | null = null
 
   /** What one plans-dir scan establishes for both plan gates. */
   interface PlansScan {
+    /**
+     * Content signature of the plans dir: `dir|dirMtime|name:mtime,…`. Two
+     * scans with different keys mean the plans dir changed.
+     */
+    key: string
     /** Sorted plan file names (empty when the dir holds no plans). */
     names: string[]
     /** First (sorted) plan carrying a `## Decomposition` block, or null. */
@@ -189,29 +205,51 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Scans the plans directory, returning the scan and whether it differs
-   * from the previously cached scan (used to invalidate plan approval).
+   * Scans the plans directory, returning the scan whose `key` is the dir's
+   * content signature. The cache skips a redundant rescan: a key hit returns
+   * the cached scan, a key miss replaces it — either way the returned key
+   * reports the dir's current content.
    * @param dir Absolute plans directory path.
-   * @returns The scan plus a `changed` flag (false on the host's first
-   *     scan so a journal-replayed approval survives a restart).
+   * @returns The current scan; `scan.key` is the dir's content signature.
    */
-  function scanPlans(dir: string): { scan: PlansScan; changed: boolean } {
+  function scanPlans(dir: string): PlansScan {
     const names = fs
       .readdirSync(dir)
       .filter((f) => f.endsWith(".md"))
       .sort()
     const files = names.map((n) => `${n}:${fs.statSync(path.join(dir, n)).mtimeMs}`)
     const key = `${dir}|${fs.statSync(dir).mtimeMs}|${files.join(",")}`
-    if (plansCache !== null && plansCache.key === key) {
-      return { scan: plansCache.scan, changed: false }
+    const scan: PlansScan = { key, names, decompFile: null }
+    const cached = plansCache
+    if (cached !== null && cached.key === key) {
+      return cached.scan
     }
-    const decompFile =
+    // Key miss: compute the `## Decomposition` file only now, so a key hit
+    // skips this per-file re-read (the cached scan already carries it).
+    scan.decompFile =
       names.find((n) => fs.readFileSync(path.join(dir, n), "utf8").includes("## Decomposition")) ??
       null
-    const scan: PlansScan = { names, decompFile }
-    const changed = plansCache !== null
     plansCache = { key, scan }
-    return { scan, changed }
+    return scan
+  }
+
+  /**
+   * Reconciles a session's approval with the current scan: a non-empty stamp
+   * that differs from `scan.key` means the plan was re-planned since approval,
+   * so the verdict is stale and re-review is required; a green pass re-stamps
+   * the current key (idempotent, and how a replay-restored "" becomes
+   * validated). A "" stamp is unknown — journal-replayed approvals must
+   * survive restart, so it is accepted once, mirroring the old first-scan
+   * rule. The accept-once window also covers a session that approved but never
+   * ran an enforcing dispatch: its stamp is still empty until the first green
+   * dispatch stamps it.
+   * @param s The session's gate state (mutated).
+   * @param scan The current plans-dir scan.
+   */
+  function reconcilePlanStamp(s: GateState, scan: PlansScan): void {
+    if (s.hasPlanVerdict && s.plansSignature !== "" && s.plansSignature !== scan.key)
+      s.hasPlanVerdict = false
+    if (s.hasPlanVerdict) s.plansSignature = scan.key
   }
 
   function enforceDecomposition(sessionID: string, prompt: string, projectDir: string): void {
@@ -219,7 +257,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     const plansDir = path.join(projectDir, config.plansDir)
     try {
       if (!fs.existsSync(plansDir)) return
-      const { scan } = scanPlans(plansDir)
+      const scan = scanPlans(plansDir)
       if (scan.decompFile !== null) {
         journaler.journal({
           type: "blocked",
@@ -235,6 +273,25 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     } catch (e) {
       if (e instanceof BlockError) throw e
       // unreadable plans dir: fail-open
+    }
+  }
+
+  /**
+   * Returns the current plans-dir signature for approval-time stamping, or
+   * null when the dir is absent or unreadable (fail-open: an unstampable
+   * approval behaves as unknown and is validated on the next enforcing
+   * dispatch).
+   * @param projectDir The current project directory.
+   * @returns The plans-dir content signature, or null when absent/unreadable.
+   */
+  function plansSignature(projectDir: string): string | null {
+    const plansDir = path.join(projectDir, config.plansDir)
+    if (!fs.existsSync(plansDir)) return null
+    try {
+      return scanPlans(plansDir).key
+    } catch {
+      // unreadable plans dir: fail-open (unstampable approval → "")
+      return null
     }
   }
 
@@ -260,16 +317,14 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     const plansDir = path.join(projectDir, config.plansDir)
     try {
       if (!fs.existsSync(plansDir)) return
-      const { scan, changed } = scanPlans(plansDir)
+      const scan = scanPlans(plansDir)
       if (scan.names.length === 0) return
       const s = ledger.state(sessionID)
-      if (changed) {
-        // Plan files changed since the last scan → any prior approval is
-        // stale and re-review is required. The host's very first scan does
-        // not clear (changed=false there) so a journal-replayed approval
-        // survives a restart.
-        s.hasPlanVerdict = false
-      }
+      // Reconcile this session's approval with the current scan: a stamp that
+      // differs from the current key means re-plan → stale verdict; a green
+      // pass re-stamps (and how a replay-restored "" becomes validated). Both
+      // per-session stamps are checked, so an edit invalidates every session.
+      reconcilePlanStamp(s, scan)
       if (!s.hasPlanVerdict) {
         const plan = scan.names[0]
         journaler.journal({
@@ -291,5 +346,11 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     }
   }
 
-  return { guardReviewerDispatch, guardReadLimit, enforceDecomposition, enforcePlanApproval }
+  return {
+    guardReviewerDispatch,
+    guardReadLimit,
+    enforceDecomposition,
+    enforcePlanApproval,
+    plansSignature,
+  }
 }

@@ -85,6 +85,12 @@ export interface GateState {
   reviewRounds: number
   reads: number
   seen: Set<string>
+  /**
+   * Plans-dir signature the approval was issued against; "" means
+   * unknown (journal-replayed or pre-stamp) and is accepted once, then
+   * stamped, on the next enforcing dispatch.
+   */
+  plansSignature: string
 }
 
 /** One first-sight marker observation returned by the marker parser. */
@@ -96,6 +102,19 @@ export interface MarkerEvent {
   /** Marker matches observed in the same text but not journaled
    *  (latest-wins policy); 0 when this was the only match. */
   suppressed: number
+}
+
+/**
+ * The latest `VERDICT:` marker observation for a single child session and the
+ * provenance label of the pipeline that carried it. The store is
+ * verdict-kind only: only `VERDICT:` markers are stored (never `GATE:`), so a
+ * GATE-only child can never suppress a plan-reviewer bare-output violation.
+ */
+export interface ChildVerdict {
+  /** Last `VERDICT:` marker observed for the child, or "" when none. */
+  marker: string
+  /** Pipeline provenance label, e.g. "child-text" or "child-message". */
+  source: string
 }
 
 /** Agent names turnstile recognizes in dispatches and generation drafts. */
