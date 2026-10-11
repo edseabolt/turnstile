@@ -17,7 +17,8 @@ re-plan, dispatch plan-reviewer again before resuming executor work.
 
 Dispatch gate: dispatch `reviewer` only after this task's test-runner first
 line is `GATE: PASS tests=<n> passed=<n> failed=<n>`, or after an explicit
-user waiver. Max 2 reviewer dispatches per task; then escalate the open
+user waiver. Max 2 reviewer dispatches per task (waived dispatches don't
+count toward the cap; a new user prompt resets it); then escalate the open
 findings to the user.
 
 Markers (first line, machine-parseable):
