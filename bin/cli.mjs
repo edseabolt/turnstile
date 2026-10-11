@@ -30,6 +30,14 @@ Commands:
   uninstall Remove installed artifacts (agents + block)
   version   Print the installed package version
 
+init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
+  init -- --print-model-config [--model [name=]provider/model[#variant]] [--validate]
+
+  --print-model-config  Print a {"agents": {...}} model snippet, write nothing
+  --model               Seed an agent (repeatable); ids may be multi-segment, e.g. oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
+  --validate            Check concrete specs against "opencode models"
+                        (--model/--validate require --print-model-config, else exit 2)
+
 A git checkout installs by linking (live edits); a package install copies.`
 
 /**
@@ -59,7 +67,19 @@ async function main() {
       // managed contract block in ~/.config/opencode/AGENTS.md, mirroring
       // uninstall's two-step shape in reverse. Passthrough flags go to the
       // manifest installer; the agents installer needs none of them.
-      const byInstall = await spawnInstaller(installScript, passthrough)
+      //
+      // --print-model-config is passthrough too: install.mjs prints the
+      // snippet and short-circuits before any manifest work, but the router
+      // still runs BOTH steps, so the contract block is idempotently
+      // installed as usual. Print mode writes nothing; the two-step install
+      // is the router's idempotent contract-block behavior, which is out of
+      // scope for the write-free printer flag.
+      //
+      // A leading "--" separates the subcommand from its flags
+      // (`init -- --print-model-config`); install.mjs rejects a literal "--"
+      // as an unknown argument, so drop it before forwarding.
+      const initPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      const byInstall = await spawnInstaller(installScript, initPassthrough)
       const byAgents = await spawnInstaller(agentsScript, [])
       return process.exit(byInstall || byAgents ? 1 : 0)
     }

@@ -18,6 +18,17 @@
 //   --link/--copy  Override the mode. Resolution: CLI flag > manifest "mode"
 //                  field > auto-detect (.git present => link, else copy)
 //
+//   --print-model-config  Print a ready-to-paste {"agents": {...}} model
+//                  snippet to stdout and write nothing (short-circuits before
+//                  any manifest/install work, like --check). Repeatable
+//                  --model specs seed individual agents:
+//                  --model [name=]provider/model[#variant] (bare => all six;
+//                  name= sets one; last spec wins per agent). Model ids may be
+//                  multi-segment (e.g. oMLX/oQ/GLM-5.3-Flash-oQ4-mtp).
+//                  --validate cross-checks concrete specs against
+//                  `opencode models` (exit 1 naming a model it does not list).
+//                  --model/--validate without --print-model-config exit 2.
+//
 // Ownership model: symlink targets are repo-owned iff the link resolves
 // inside this checkout; copied files are repo-owned iff the ledger records
 // them. Unowned files are never read, modified, or removed. Conflicts
@@ -36,6 +47,7 @@ import {
   lstat,
   realpath,
 } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
@@ -66,7 +78,7 @@ try {
 /**
  * Parses command-line arguments.
  * @param {string[]} argv Raw argv (process.argv).
- * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null}} Parsed arguments.
+ * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null, model: string[], printModelConfig: boolean, validate: boolean, modelSpecs: Record<string,string>}} Parsed arguments. A `--model`/`--validate` without `--print-model-config` is an error and exits 2 (checked before any parsing or I/O). Model specs are validated here only when the printer flag is set; a malformed or unknown-name spec prints an actionable message and exits 2 (matching the unknown-arg contract), and the parsed map is stashed as `modelSpecs` for `main`.
  */
 function parseArgs(argv) {
   const args = {
@@ -75,6 +87,10 @@ function parseArgs(argv) {
     force: false,
     uninstall: false,
     mode: null,
+    model: [],
+    printModelConfig: false,
+    validate: false,
+    modelSpecs: {},
   }
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === "--manifest") args.manifest = argv[++i]
@@ -83,12 +99,168 @@ function parseArgs(argv) {
     else if (argv[i] === "--uninstall") args.uninstall = true
     else if (argv[i] === "--link") args.mode = "link"
     else if (argv[i] === "--copy") args.mode = "copy"
+    else if (argv[i] === "--model") args.model.push(argv[++i])
+    else if (argv[i] === "--print-model-config") args.printModelConfig = true
+    else if (argv[i] === "--validate") args.validate = true
     else {
       console.error(`install: unknown argument ${argv[i]}`)
       process.exit(2)
     }
   }
+  // --model/--validate only mean something for the printer: given without
+  // --print-model-config they have no effect, so reject them loudly (exit 2,
+  // like an unknown argument) instead of silently falling through to a real
+  // install. Checked first, before any parsing or manifest I/O below.
+  if (!args.printModelConfig && (args.model.length > 0 || args.validate)) {
+    console.error("install: --validate/--model require --print-model-config")
+    process.exit(2)
+  }
+  // A --model spec only matters for the printer; validate it up front (so a
+  // bad one exits 2 like an unknown argument) and stash the parsed map for
+  // `main`.
+  if (args.printModelConfig) {
+    try {
+      args.modelSpecs = parseModelSpecs(args.model)
+    } catch (error) {
+      console.error(`install: ${error.message}`)
+      process.exit(2)
+    }
+  }
   return args
+}
+
+// The six pipeline agents, in canonical order. This is the single source of
+// truth for both the printer (formatModelConfig) and the validator
+// (findMissingModels), so the JSON block and the --validate pass can never
+// disagree on which agents exist.
+const AGENT_NAMES = ["planner", "plan-reviewer", "executor", "test-runner", "reviewer", "debugger"]
+
+/** The placeholder used by `formatModelConfig` for any agent left unset. */
+const MODEL_PLACEHOLDER = "<provider>/<model-id>"
+
+/**
+ * Human-readable model-spec grammar shown in error messages — never the raw
+ * regex source. The name binds at the `=`, the provider to the first segment,
+ * and a `#variant` to the tail; a model id may itself be multi-segment
+ * (e.g. `oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`), so "model" spans interior slashes.
+ */
+const SPEC_GRAMMAR = "[name=]provider/model[#variant] (model ids may be multi-segment)"
+
+/**
+ * Grammar for one model spec: an optional `<name>=` built from AGENT_NAMES
+ * (a single source of truth), then provider (segment 1) and a model id (the
+ * remainder, slashes included) so real multi-segment ids parse, then an
+ * optional `#variant` bound to the tail. Split on the FIRST `/`.
+ */
+const NAME_ALT = AGENT_NAMES.join("|")
+const SPEC_RE = new RegExp(`^(?:(${NAME_ALT})=)?([\\w.-]+)/([\\w.:/-]+)(?:#([\\w.-]+))?$`)
+
+/**
+ * Parses model specs into an agent→spec map, in canonical order. A bare spec
+ * (no `<name>=` prefix) seeds all six agents; `name=` seeds exactly one; the
+ * last spec to name an agent wins. Pure: no filesystem, no spawn.
+ * @param {string[]} specs The raw --model spec strings (possibly empty).
+ * @returns {Record<string, string>} Map of agent name to spec.
+ * @throws {Error} On an unknown agent name (lists the six) or a malformed spec
+ *   (shows the grammar).
+ */
+function parseModelSpecs(specs) {
+  const result = {}
+  for (const spec of specs) {
+    if (typeof spec !== "string")
+      throw new Error(`invalid --model spec "${spec}"; expected ${SPEC_GRAMMAR}`)
+    const eq = spec.indexOf("=")
+    let name = null
+    let body = spec
+    if (eq !== -1) {
+      name = spec.slice(0, eq)
+      body = spec.slice(eq + 1)
+      if (!AGENT_NAMES.includes(name))
+        throw new Error(
+          `unknown agent "${name}" in --model spec; expected one of ${AGENT_NAMES.join(", ")}`,
+        )
+    }
+    if (!body.match(SPEC_RE))
+      throw new Error(`invalid --model spec "${spec}"; expected ${SPEC_GRAMMAR}`)
+    const targets = name ? [name] : AGENT_NAMES
+    for (const agent of targets) result[agent] = body
+  }
+  return result
+}
+
+/**
+ * Formats an agent→spec map into a JSON `{"agents": {...}}` snippet, one entry
+ * per agent in canonical order. Unset agents fall back to a placeholder so the
+ * output is always a complete, paste-ready block. Pure.
+ * @param {Record<string, string>} specs Map of agent name to spec.
+ * @returns {string} The two-space-indented JSON snippet.
+ */
+function formatModelConfig(specs) {
+  const agents = {}
+  for (const agent of AGENT_NAMES) {
+    agents[agent] = specs[agent] ?? MODEL_PLACEHOLDER
+  }
+  return JSON.stringify({ agents }, null, 2)
+}
+
+/**
+ * Finds the concrete specs a user actually named that are not present in
+ * `available` (the parsed lines of `opencode models`). Placeholder specs and
+ * agents the user never named are skipped — only seeded, concrete models are
+ * checked. A `#variant` suffix is stripped before matching (host model lists
+ * the base id) but the spec is reported as named on a miss. Pure: no spawn.
+ * @param {Record<string, string>} specs Map of agent name to spec.
+ * @param {string[]} available Model identifiers as listed by `opencode models`.
+ * @returns {string[]} The named-but-unknown specs, in canonical agent order.
+ */
+function findMissingModels(specs, available) {
+  const availableSet = new Set(available)
+  const missing = []
+  for (const agent of AGENT_NAMES) {
+    const spec = specs[agent]
+    if (!spec || spec === MODEL_PLACEHOLDER) continue
+    if (!availableSet.has(spec.split("#")[0])) missing.push(spec)
+  }
+  return missing
+}
+
+/**
+ * The command runner used by --validate. A thin seam around `spawnSync` so
+ * tests can inject canned `opencode models` output via setCommandRunner
+ * (ESM named imports are read-only, so the runner is overridden through the
+ * setter, not by reassigning the import).
+ */
+let commandRunner = (command, args, options) => spawnSync(command, args, options)
+
+/**
+ * Overrides the --validate command runner (see commandRunner).
+ * @param {(command: string, args: string[], options?: object) => {stdout?: string}} fn New runner.
+ * @returns {void}
+ */
+function setCommandRunner(fn) {
+  commandRunner = fn
+}
+
+/**
+ * Lists the model identifiers the host knows about, by running
+ * `opencode models` through the injectable commandRunner seam. Lines are
+ * split on newlines for `findMissingModels`. A failed spawn throws
+ * `could not run opencode models (<reason>)` rather than reporting every spec
+ * as unknown; `main` consumes that error and returns false (mapped to exit 1),
+ * so this tested path never calls process.exit directly.
+ * @returns {Promise<string[]>} The available model identifiers.
+ * @throws {Error} When the spawn fails, naming it so `main` can report it.
+ */
+async function availableModels() {
+  const res = commandRunner("opencode", ["models"], { encoding: "utf8" })
+  if (res.error || res.status !== 0) {
+    // A failed spawn must not masquerade as "every spec is unknown"; report it
+    // and stop. This runs through the injectable commandRunner seam, so tests
+    // can drive the branch without a live host `opencode models`.
+    const reason = res.error?.message ?? `exit code ${res.status}`
+    throw new Error(`could not run opencode models (${reason})`)
+  }
+  return (res.stdout ?? "").split(/\r?\n/)
 }
 
 /**
@@ -531,8 +703,34 @@ async function check(manifest, version) {
   return ok
 }
 
-async function main() {
-  const args = parseArgs(process.argv)
+async function main(argv = process.argv) {
+  const args = parseArgs(argv)
+
+  // --print-model-config writes nothing: it parses the requested specs,
+  // optionally validates them against `opencode models`, prints a ready-to
+  // paste snippet, and returns. This short-circuits before the manifest is
+  // even read (like --check), so no link/copy target or ledger entry is
+  // touched. The router still idempotently installs the contract block
+  // separately; that is out of scope for this write-free flag.
+  if (args.printModelConfig) {
+    if (args.validate) {
+      let available
+      try {
+        available = await availableModels()
+      } catch (error) {
+        console.error(`install: ${error instanceof Error ? error.message : String(error)}`)
+        return false
+      }
+      const missing = findMissingModels(args.modelSpecs, available)
+      if (missing.length) {
+        for (const model of missing) console.error(`validate: unknown model ${model}`)
+        return false
+      }
+    }
+    console.log(formatModelConfig(args.modelSpecs))
+    return true
+  }
+
   const manifest = readManifest(args.manifest, args.mode)
   console.log(
     `install: mode=${manifest.mode} (${manifest.mode === "link" ? "checkout" : "package"})`,
@@ -555,5 +753,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 // Pure, side-effect-free helpers exported for unit tests: tests can
-// import these directly without spawning the CLI.
-export { detectMode, resolveMode, normalizeLedger, removeEntry }
+// import these directly without spawning the CLI. `setCommandRunner` is the
+// seam for faking the `opencode models` spawn (ESM named imports are
+// read-only, so the runner is overridden through this setter); `main` is
+// exported so the write-free print/validate path can be driven in-process
+// with a fake runner (no child spawn, no process.exit in the tested path).
+export {
+  detectMode,
+  resolveMode,
+  normalizeLedger,
+  removeEntry,
+  parseModelSpecs,
+  formatModelConfig,
+  findMissingModels,
+  setCommandRunner,
+  main,
+}

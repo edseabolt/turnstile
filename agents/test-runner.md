@@ -1,7 +1,6 @@
 ---
 description: Runs tests and verification commands, analyzes failures, and applies scoped fixes to test or environment issues only.
 mode: subagent
-model: oMLX/oQ/Ornith-1.5-35B-A3B-oQ8-mtp
 permissions:
   # Mechanical backstop for the Constraints section: default-deny edits,
   # allow the conventional test layout. Widen or narrow per repo layout.

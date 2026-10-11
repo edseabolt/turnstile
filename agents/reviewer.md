@@ -1,7 +1,6 @@
 ---
 description: Independently reviews an implementation for correctness, regressions, missing requirements, and inadequate tests
 mode: subagent
-model: oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
 permissions:
   - { action: edit, resource: "*", effect: deny }
   - { action: shell, resource: "*", effect: allow }

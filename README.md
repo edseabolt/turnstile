@@ -211,19 +211,93 @@ to touch.
 
 ### Set the agents' models
 
-The six agent definitions in `agents/` ship with `model:`
-frontmatter pointing at the author's locally served models (`oMLX/...`).
-You almost certainly do not have those models, and dispatches to the
-pipeline agents will fail or fall back until you set your own.
+The six agent definitions in `agents/` ship **without** a `model:`
+frontmatter key. Each subagent therefore runs on the model of the session
+that dispatched it — OpenCode v2's documented inheritance rule — so there
+is nothing to configure for the common case.
 
-Since installs share the repo's files (symlink mode) or conflict on
-divergence (copy mode), set your models **in the clone**, not in
-`~/.config/opencode/agents/`: edit the `model:` line of each agent file
-(`planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`,
-`debugger`) to a model
-you have, in `providerID/modelID` form, then install or re-sync per the
-mode table above. Model overrides in installed copies are lost on the next
-sync; the repo is the source of truth.
+To pin a specific model per agent, paste a block into
+`~/.config/opencode/opencode.json` (**plural** `agents` is the v2 key;
+v1 used singular `agent`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "planner": { "model": "anthropic/claude-haiku-4-5" },
+    "plan-reviewer": { "model": "anthropic/claude-haiku-4-5" },
+    "executor": { "model": "anthropic/claude-sonnet-4-5" },
+    "test-runner": { "model": "anthropic/claude-haiku-4-5" },
+    "reviewer": { "model": "anthropic/claude-sonnet-4-5" },
+    "debugger": { "model": "anthropic/claude-sonnet-4-5" },
+  },
+}
+```
+
+Model IDs come from `opencode models` and take the form
+`provider/modelID`, with an optional `#variant`. Restarts pick the change
+up. Because the shipped definitions are silent on `model:`, a pin you add
+is the only definition of that model — there is no merge precedence to
+reason about.
+
+Copy-mode users: after a `git pull` that changes these definitions,
+re-run `npm run install:copy` to pick up the new frontmatter. `npm run
+install:check` will report `stale` (not `conflict`) until you do.
+
+### Printing a model config
+
+To generate a `{"agents": {…}}` snippet instead of copying the six agent
+names by hand, run the printer. It writes nothing — it short-circuits before
+any install work, so the ledger, links, and copies are untouched:
+
+```sh
+npm run init -- --print-model-config
+```
+
+That prints one entry per agent, each defaulting to a placeholder:
+
+```json
+{
+  "agents": {
+    "planner": "<provider>/<model-id>",
+    "plan-reviewer": "<provider>/<model-id>",
+    "executor": "<provider>/<model-id>",
+    "test-runner": "<provider>/<model-id>",
+    "reviewer": "<provider>/<model-id>",
+    "debugger": "<provider>/<model-id>"
+  }
+}
+```
+
+Seed individual agents with repeatable `--model` seeds. A bare
+`provider/model` (optionally `#variant`) seeds all six; `name=` seeds one.
+Model ids may be multi-segment — providers require interior slashes, e.g.
+`oMLX/oQ/GLM-5.3-Flash-oQ4-mtp` — so the model body is everything after the
+first slash.
+
+```sh
+npm run init -- --print-model-config \
+  --model planner=anthropic/claude-haiku-4-5 \
+  --model executor=oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
+```
+
+Add `--validate` to cross-check every concrete seed against
+`opencode models` and exit 1 naming a model it does not list; placeholder
+seeds are skipped. `--model` and `--validate` are only valid with
+`--print-model-config`: given without it, install.mjs prints an actionable
+message and exits 2.
+
+```sh
+npm run init -- --print-model-config --model planner=anthropic/claude-haiku-4-5 --validate
+```
+
+Paste the output into `~/.config/opencode/opencode.json` (see the
+[Set the agents' models](#set-the-agents-models) section).
+`opencode-turnstile init -- --print-model-config` routes the same flags
+through `scripts/install.mjs` and adds nothing of its own: `install.mjs`
+recognizes `--print-model-config` and prints before writing, while the router
+still idempotently installs the contract block in
+`~/.config/opencode/AGENTS.md` in the same run.
 
 ### Customizing the pipeline agents
 

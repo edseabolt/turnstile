@@ -18,7 +18,17 @@ The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `agents/`;
 `npm run init` links or copies them into `~/.config/opencode/agents/`;
-adjust the `model:` frontmatter in the repo files, since installs share it.
+the shipped definitions carry no `model:` frontmatter — subagents inherit
+the dispatching session's model, and per-agent pins belong in
+`~/.config/opencode/opencode.json` under `agents.<name>.model`; installs
+never carry user state.
+`--print-model-config` optionally prints a ready-to-paste `{"agents": {…}}`
+model snippet (repeatable `--model [name=]provider/model[#variant]` seeds;
+model ids may be multi-segment, e.g. `oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`;
+`--validate` checks concrete specs against `opencode models` and exits 1 on a
+miss; `--model`/`--validate` given without `--print-model-config` exit 2) and
+writes nothing — it short-circuits before any install work — while the router
+still idempotently installs the contract block in the same run (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift), all chained in `npm run ci`:
