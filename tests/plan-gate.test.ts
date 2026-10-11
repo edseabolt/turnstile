@@ -12,6 +12,9 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
+import { createGates } from "../src/gates.ts"
+import { defaultConfig } from "../src/config.ts"
+import { createJournaler } from "../src/journal.ts"
 import {
   callTool,
   isolatedEnv,
@@ -791,5 +794,191 @@ test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stam
     dispose()
   } finally {
     process.chdir(prev)
+  }
+})
+
+/**
+ * AC-2 (issue repro b): a content-preserving utimes-only touch (identical
+ * bytes, only atime/mtime moved) must NOT invalidate a prior approval, so the
+ * next executor dispatch stays green and no extra no-plan-verdict is journaled.
+ */
+test("plan gate: content-preserving utimes touch keeps approval green", async () => {
+  const { h, metricsDir, restore, project } = await bootWithPlan("# P\n")
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Content-preserving touch: move timestamps only, bytes identical.
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    const future = Date.now() + 5000
+    fs.utimesSync(planPath, future, future)
+    const blockedBefore = journalEntries(metricsDir).filter((l) => l.reason === "no-plan-verdict")
+    // Still green — a touch with no content change does not demand re-review.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // The touch did not inject a fresh no-plan-verdict block.
+    const blockedAfter = journalEntries(metricsDir).filter((l) => l.reason === "no-plan-verdict")
+    assert.equal(blockedAfter.length, blockedBefore.length)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * AC-1 (issue repro a): a same-byte-length rewrite whose atime/mtime are
+ * restored to the exact prior floats must still invalidate, because the
+ * content signature (sha256) differs. The number-seconds utimes form (not
+ * Date) avoids moving the restored mtime onto a new APFS tick.
+ */
+test("plan gate: same-mtime same-size edit invalidates the approval", async () => {
+  const { h, restore, project } = await bootWithPlan("# P\n")
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Same-size rewrite (both 4 bytes), then restore the exact prior times.
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    const st = fs.statSync(planPath)
+    fs.writeFileSync(planPath, "# Q\n")
+    fs.utimesSync(planPath, st.atimeMs / 1000, st.mtimeMs / 1000)
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * AC-3 (structural): plansSignature is a stat-free, dir-prefixed content
+ * signature `dir|name:sha256hex(,…)`: empty dir ⇒ `${dir}|`, adding a plan ⇒
+ * `${dir}|plan.md:[0-9a-f]{64}`, and re-runs are identical. No mtime term.
+ */
+test("plan gate: plansSignature is a content signature (dir|name:sha256hex)", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  const plansDir = path.join(project, ".opencode", "plans")
+  const metricsDir = tmpDir()
+  const config = { ...defaultConfig(process.env), metricsDir }
+  const journaler = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 5 * 1024 * 1024,
+    maxGenerations: 5,
+  })
+  const gates = createGates(config, journaler)
+  // Empty dir ⇒ stable dir-prefixed empty signature, no stat/mtime term.
+  assert.equal(gates.plansSignature(project), `${plansDir}|`)
+  // Add a plan ⇒ dir|name:64-hex; the format carries no `mtime`.
+  fs.writeFileSync(path.join(plansDir, "plan.md"), "# P\n")
+  const sig = gates.plansSignature(project)
+  assert.ok(sig, "plansSignature returned null for an existing plan")
+  const escaped = plansDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  assert.match(sig, new RegExp(`^${escaped}\\|plan\\.md:[0-9a-f]{64}$`))
+  assert.doesNotMatch(sig, /mtime/)
+  // Idempotent: a re-scan with unchanged content returns the same key.
+  assert.equal(gates.plansSignature(project), sig)
+})
+
+/**
+ * AC-4 (add/delete regression): deleting one of two plans changes the name
+ * set, so the key changes even though the surviving plan's content bytes
+ * never moved — the approval must invalidate (and still name the survivor).
+ */
+test("plan gate: deleting a plan invalidates via the name set", async () => {
+  const { h, restore, project } = await bootWithPlan("# P\n")
+  try {
+    // A second plan joins the dir before approval so the key carries both.
+    fs.writeFileSync(path.join(project, ".opencode", "plans", "extra.md"), "# E\n")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Remove the sibling: the name set shrinks, the key changes, survivor is
+    // the same bytes → approval invalidates and names "plan.md".
+    fs.rmSync(path.join(project, ".opencode", "plans", "extra.md"))
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * AC-3 (fail-open widening): an unreadable plan file throws mid-scan, and
+ * enforcePlanApproval's silent fail-open catch lets the dispatch through
+ * (no BlockError). Skipped as root, where permission bits are bypassed.
+ */
+test("plan gate: unreadable plan file mid-scan fails open (executor allowed)", async () => {
+  if (process.getuid?.() === 0) return
+  const { h, restore, metricsDir, project } = await bootWithPlan("# P\n")
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Make the plan unreadable; the read throws, the gate fails open.
+    const planPath = path.join(project, ".opencode", "plans", "plan.md")
+    const mode = fs.statSync(planPath).mode
+    fs.chmodSync(planPath, 0o000)
+    try {
+      await callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      })
+      // Catches stay silent: the failed scan journals nothing new.
+      assert.ok(!journalEntries(metricsDir).some((l) => l.type === "blocked" || l.type === "error"))
+    } finally {
+      fs.chmodSync(planPath, mode)
+    }
+  } finally {
+    restore()
   }
 })

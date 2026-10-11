@@ -91,6 +91,13 @@ export interface GateState {
    * stamped, on the next enforcing dispatch.
    */
   plansSignature: string
+  /**
+   * True while a journal-replayed bucket's unconsumed one-prompt grace is
+   * outstanding: the next reset carries hasGatePass/hasPlanVerdict forward
+   * instead of wiping them. Cleared by the first reset; re-granted only by
+   * journal replay at ledger creation (process restart or plugin reload).
+   */
+  replayGrace: boolean
 }
 
 /** One first-sight marker observation returned by the marker parser. */

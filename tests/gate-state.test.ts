@@ -461,6 +461,158 @@ test("a new user prompt resets gate state", async () => {
   dispose()
 })
 
+/** Replay-recovered GATE: PASS survives the first post-restart prompt: the
+ *  resume prompt preserves the restored flag rather than wiping it (issue #15).
+ *  Red on HEAD — HEAD wipes on the prompt, so this dispatch goes red. */
+test("replayed GATE: PASS survives the first post-restart prompt", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  // The resume prompt fires resetState before the first enforcing dispatch.
+  await callSession(h, "prompt", { sessionID: "p1" })
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  const entries = journalEntries(metricsDir)
+  assert.ok(entries.some((l) => l.type === "dispatch" && l.agent === "reviewer"))
+  dispose()
+})
+
+/** The recovery is bounded to exactly one prompt: the second post-restart
+ *  prompt full-resets, so a subsequent reviewer dispatch goes red again. */
+test("replayed PASS survives exactly one prompt", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  // Two prompts after replay: the grace covers only the first, so the gate is
+  // red again on the second prompt. Guards against surviving every prompt.
+  await callSession(h, "prompt", { sessionID: "p1" })
+  await callSession(h, "prompt", { sessionID: "p1" })
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "reviewer", prompt: "review it" },
+      }),
+    (e: Error) => e.message === NO_GATE_MESSAGE,
+  )
+  dispose()
+})
+
+/** A live GATE: FAIL after replay is not resurrected: the grace prompt carries
+ *  the current (false) flag, never the replayed provenance. */
+test("live GATE: FAIL after replay is not resurrected by the grace prompt", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  // A live FAIL (latest-wins) un-greens the replayed gate before the prompt.
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: FAIL tests=3 passed=1 failed=2\n" },
+  })
+  await callSession(h, "prompt", { sessionID: "p1" })
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "reviewer", prompt: "review it" },
+      }),
+    (e: Error) => e.message === NO_GATE_MESSAGE,
+  )
+  dispose()
+})
+
+/** A journaled plan APPROVE survives the grace prompt: the empty stamp is
+ *  accepted once and stamped, so executor dispatches resolve (issue #15's
+ *  plan-gate half). Red on HEAD — HEAD wipes hasPlanVerdict on the prompt. */
+test("replayed APPROVE survives the grace prompt and stamps", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  fs.writeFileSync(
+    journalPath,
+    `${JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+    })}\n`,
+  )
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await callSession(h, "prompt", { sessionID: "p1" })
+    // Accept-once stamp path: the replay-restored "" is validated + stamped.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Stamped: the session stays approved on the next dispatch too.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "more work" },
+    })
+    // Explicit evidence: attribution journaled the replayed approval as APPROVE.
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "plan" && l.sessionID === "p1" && l.result === "APPROVE",
+      ),
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/** A prompt for an untracked session is an ordinary reset: replayed-bucket
+ *  exemptions never apply, so an unknown session resets plainly (guards the
+ *  nullish-prior path in resetState). */
+test("prompt for an untracked session stays a plain reset", async () => {
+  const { h, dispose } = await boot()
+  // Two prompts for a session with no bucket: both are plain resets.
+  await callSession(h, "prompt", { sessionID: "p9" })
+  await callSession(h, "prompt", { sessionID: "p9" })
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p9",
+        input: { agent: "reviewer", prompt: "review it" },
+      }),
+    (e: Error) => e.message === NO_GATE_MESSAGE,
+  )
+  dispose()
+})
+
 /** Child-session markers from the created-edge stream resolve to the parent's gate. */
 test("event loop: session.created edge maps child markers to the parent session", async () => {
   const { h, dispose, metricsDir } = await boot()
