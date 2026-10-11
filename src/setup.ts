@@ -399,11 +399,16 @@ export function createTurnstile(
               if (agent === config.agents.planReviewer) {
                 attributePlanVerdict(child, output)
               }
+              // The bare-output suppression — a streamed verdict in the
+              // child's own text hiding a summarized, marker-less delivery —
+              // is scoped to the plan-reviewer only. reviewer/test-runner keep
+              // their pre-suppression behavior: a marker-less delivery
+              // violates even when the child's streamed text quoted a VERDICT.
               const bare =
                 config.agents.bareOutput.includes(agent) &&
                 output !== "" &&
                 !hasMarker(output) &&
-                ledger.childVerdict(child).marker === ""
+                (agent !== config.agents.planReviewer || ledger.childVerdict(child).marker === "")
               if (bare) {
                 journaler.journal({
                   type: "violation",

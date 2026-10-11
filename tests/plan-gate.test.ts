@@ -336,6 +336,44 @@ test("plan gate: child-text verdict attributes through a marker-less delivery", 
   }
 })
 
+/** AC-2 (delta variant): a verdict on the child's streamed text-delta is
+ * attributed through a marker-less delivery (divergence via the delta source). */
+test("plan gate: child-text-delta verdict attributes through a marker-less delivery", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.text.delta",
+      data: { sessionID: "c1", delta: `\nreview\n\n${APPROVE}\n` },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    // Summarized delivery: no marker anywhere in the output.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Review complete; see journal." },
+    })
+    const plan = journalEntries(metricsDir).find((l) => l.type === "plan")
+    assert.ok(plan)
+    assert.equal(plan.result, "APPROVE")
+    assert.equal(plan.sessionID, "p1")
+    assert.equal(plan.raw, "c1")
+    assert.equal(plan.source, "child-text-delta")
+    const violations = journalEntries(metricsDir).filter((l) => l.type === "violation")
+    assert.ok(!violations.some((l) => l.agent === "plan-reviewer"))
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
 /** AC-3: a task-result marker never enters the child store; a later marker-less delivery still blocks. */
 test("plan gate: task-result marker is not stored; later marker-less still blocks", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()

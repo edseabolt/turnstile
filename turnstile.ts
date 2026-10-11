@@ -24,13 +24,17 @@
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
  *   assistant text, deduped per task (streaming re-delivery is ignored);
  *   marker-less outputs from marker-contracted agents (test-runner/reviewer/
- *   plan-reviewer) are journaled as violations; the last `VERDICT` for a
- *   dispatch moves the plan-approval gate, taken from the task result or, when
- *   the host summarized the result, from that child session's assistant text;
- *   the journaled `type:"plan"` `source` names the winning pipeline; a delivery
- *   with no marker on any source keeps the gate red (parent-keyed, journaled as
- *   type `plan`); gate journal entries are keyed by the parent session so
- *   replay restores where the gates look.
+ *   plan-reviewer) are journaled as violations; the summary/divergence
+ *   suppression (a child's streamed verdict hiding a marker-less summarized
+ *   delivery) is scoped to the plan-reviewer only — reviewer/test-runner
+ *   violate on a marker-less delivery even when the child's streamed text
+ *   quoted a VERDICT; the last `VERDICT` for a dispatch moves the plan-approval
+ *   gate, taken from the task result or, when the host summarized the result,
+ *   from that child session's assistant text; the journaled `type:"plan"`
+ *   `source` names the winning pipeline; a delivery with no marker on any
+ *   source keeps the gate red (parent-keyed, journaled as type `plan`); gate
+ *   journal entries are keyed by the parent session so replay restores where
+ *   the gates look.
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors.
  * - Decoding: executor/test-runner/debugger temperature clamped ≤ 0.2;
