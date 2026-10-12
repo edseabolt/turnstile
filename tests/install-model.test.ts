@@ -442,10 +442,10 @@ function runCliUnderHome(fn: (home: string) => void) {
 /**
  * Router printer-mode short-circuit (AC-11): `init -- --print-model-config`
  * prints the snippet, exits 0, and writes NOTHING. install.mjs short-circuits
- * before any manifest work (no agent files, no ledger) and the router skips
- * the agents installer (no AGENTS.md block) — confirming the short-circuit is
- * genuinely write-free, not just "the printer prints but the router still
- * installs" (which is what the pre-chunk-7 router did).
+ * before any manifest work (no agent files, no ledger, no AGENTS.md) — the
+ * router runs only install.mjs and returns its exit code verbatim, confirming
+ * the short-circuit is genuinely write-free, not just "the printer prints but
+ * something still installs".
  */
 test("router init -- --print-model-config: prints, exits 0, writes nothing", () => {
   runCliUnderHome((home) => {
@@ -466,12 +466,13 @@ test("router init -- --print-model-config: prints, exits 0, writes nothing", () 
 })
 
 /**
- * Non-printer `init` is unchanged: the router runs BOTH installers, so the
- * agent files (from install.mjs) and the managed AGENTS.md block (from
- * install-agents.mjs) are both created under the sandboxed HOME. Proves the
- * short-circuit is specific to printer mode.
+ * Non-printer `init` installs the manifest artifacts (agent files) but NEVER
+ * writes to AGENTS.md — the contract-block installer (install-agents.mjs) is
+ * deleted, so plain init is a single install.mjs spawn. So `~/.config/opencode/
+ * agents/` exists and `~/.config/opencode/AGENTS.md` does not: this is the
+ * literal R1 / AC-1 proof that no installer path writes to any AGENTS.md.
  */
-test("router plain init: installs both the agent files and the contract block", () => {
+test("router plain init: installs agent files and never writes AGENTS.md (R1/AC-1)", () => {
   runCliUnderHome((home) => {
     const res = spawnSync(process.execPath, [join(repoRoot, "bin/cli.mjs"), "init"], {
       encoding: "utf8",
@@ -479,9 +480,10 @@ test("router plain init: installs both the agent files and the contract block", 
     })
     assert.equal(res.status, 0)
     assert.ok(existsSync(join(home, ".config/opencode/agents")), "agent files should be installed")
-    assert.ok(
+    assert.equal(
       existsSync(join(home, ".config/opencode/AGENTS.md")),
-      "contract block should be installed",
+      false,
+      "AGENTS.md must never be written by any installer (R1/AC-1)",
     )
   })
 })

@@ -40,6 +40,7 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.gateEvidence, "enforce")
   assert.equal(cfg.evidencePattern, DEFAULT_EVIDENCE_PATTERN)
   assert.deepEqual(cfg.agents, {
+    planner: "planner",
     reviewer: "reviewer",
     planReviewer: "plan-reviewer",
     executor: "executor",
@@ -47,6 +48,7 @@ test("defaultConfig reproduces the historical constants", () => {
     debugger: "debugger",
     bareOutput: ["test-runner", "reviewer", "plan-reviewer"],
   })
+  assert.equal(cfg.agents.planner, "planner")
 })
 
 /** Covers the XDG_DATA_HOME → ~/.local/share fallback for metricsDir. */

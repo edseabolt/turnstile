@@ -806,8 +806,7 @@ async function main(argv = process.argv) {
   // optionally validates them against `opencode models`, prints a ready-to
   // paste snippet, and returns. This short-circuits before the manifest is
   // even read (like --check), so no link/copy target or ledger entry is
-  // touched. The router still idempotently installs the contract block
-  // separately; that is out of scope for this write-free flag.
+  // touched.
   if (args.printModelConfig) {
     if (args.validate) {
       let available

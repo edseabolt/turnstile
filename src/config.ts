@@ -56,6 +56,7 @@ export function defaultConfig(
     plansDir: path.join(".opencode", "plans"),
     trace: true,
     agents: {
+      planner: "planner",
       reviewer: "reviewer",
       planReviewer: "plan-reviewer",
       executor: "executor",

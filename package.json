@@ -13,7 +13,6 @@
     "scripts",
     "bin",
     "install.json",
-    "templates",
     "skills",
     "agents",
     "README.md",
@@ -32,12 +31,10 @@
     "init:check": "node scripts/install.mjs --check",
     "install:copy": "node scripts/install.mjs --copy",
     "install:check": "node scripts/install.mjs --check",
-    "install:agents": "node scripts/install-agents.mjs",
-    "install:agents:check": "node scripts/install-agents.mjs --check",
     "pack:dry": "npm pack --dry-run",
     "ci:host": "npm run lint && npm run format:check && npm run typecheck && npm run check:markers && npm test",
     "ci": "npm run ci:host",
-    "ci:installed": "npm run install:check && npm run install:agents:check"
+    "ci:installed": "npm run install:check"
   },
   "repository": {
     "type": "git",

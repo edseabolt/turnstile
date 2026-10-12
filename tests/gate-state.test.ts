@@ -1266,6 +1266,7 @@ test("newState initializes seenFrom and suppressedPending and omits verdicts", (
   assert.equal(s.seenFrom.size, 0)
   assert.equal(s.suppressedPending, 0)
   assert.equal("verdicts" in s, false)
+  assert.equal(s.policyInjected, false)
 })
 
 /** An invalid `gateMarker` config falls back to the canonical regex and journals
