@@ -14,7 +14,7 @@ import * as path from "node:path"
 const xdgTmp = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-xdg-"))
 process.env.XDG_DATA_HOME = xdgTmp
 
-const { defaultConfig, CONFIG_PATH, ENV_KEYS, loadConfig, mergeConfig } =
+const { configDigest, defaultConfig, CONFIG_PATH, ENV_KEYS, loadConfig, mergeConfig } =
   await import("../src/config.ts")
 const { DEFAULT_JOURNAL_PATH } = await import("../src/journal.ts")
 const { GATE_RE } = await import("../src/markers.ts")
@@ -149,4 +149,22 @@ test("malformed config file fails open: defaults + journaled error", () => {
 /** The exported CONFIG_PATH constant points at ~/.config/opencode/turnstile.json. */
 test("module-level CONFIG_PATH points at the user config location", () => {
   assert.equal(CONFIG_PATH, path.join(os.homedir(), ".config", "opencode", "turnstile.json"))
+})
+
+/** The digest is exactly 12 lowercase hex characters. */
+test("configDigest returns 12 lowercase hex chars", () => {
+  const digest = configDigest(defaultConfig({}))
+  assert.match(digest, /^[0-9a-f]{12}$/)
+})
+
+/** An independently-built config with the same content digests identically. */
+test("configDigest is deterministic across independently-built configs", () => {
+  assert.equal(configDigest(defaultConfig({})), configDigest(defaultConfig({})))
+})
+
+/** Flipping one key changes the digest. */
+test("configDigest flips when a key value changes", () => {
+  const base = defaultConfig({})
+  const flipped = { ...base, trace: !base.trace }
+  assert.notEqual(configDigest(base), configDigest(flipped))
 })

@@ -925,3 +925,141 @@ test("trace file rotates with the same bound as the journal", async () => {
   assert.ok(gens.length >= 1, "expected at least one rotated trace generation")
   dispose()
 })
+
+/** Setup journals exactly one load heartbeat with version, digest, and hook count. */
+test("setup journals one load heartbeat with version, digest, and hook count", async () => {
+  const { dispose, metricsDir } = await boot()
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  const entry = setups[0]
+  // version is a non-empty string or null (the review finding dropped the
+  // strict semver regex so prerelease versions cannot fail this).
+  assert.ok(entry.version === null || (typeof entry.version === "string" && entry.version !== ""))
+  assert.match(entry.digest, /^[0-9a-f]{12}$/)
+  assert.equal(entry.hooks, 6)
+  // trace:true (boot default) carries the human-readable trace fields.
+  assert.equal(entry.trace, true)
+  assert.equal(typeof entry.agents, "object")
+  assert.equal(typeof entry.metricsDir, "string")
+  dispose()
+})
+
+/** Without trace, only the digest represents the config in the heartbeat. */
+test("setup heartbeat redacts trace fields when trace is false", async () => {
+  const { dispose, metricsDir } = await boot({ trace: false })
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  assert.equal(setups[0]?.trace, undefined)
+  assert.equal(setups[0]?.agents, undefined)
+  assert.equal(setups[0]?.metricsDir, undefined)
+  assert.match(setups[0]?.digest, /^[0-9a-f]{12}$/)
+  dispose()
+})
+
+/** A degraded host without event.subscribe registers 5 hooks. */
+test("setup journals hooks === 5 when event.subscribe is absent", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  // A degraded host never exposes the event stream.
+  delete (h.host as { event?: unknown }).event
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  assert.equal(setups[0]?.hooks, 5)
+  dispose()
+})
+
+/** A stream that completes without abort is journaled as a stream-ended error. */
+test("consume journals a stream-ended error when the stream completes without abort", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  // A finite stream: emits one session.error-shaped event then ends WITHOUT
+  // an abort, so consume() completes normally.
+  let emitted = false
+  const subscribe = (_options?: { signal?: AbortSignal }): AsyncIterable<any> => ({
+    [Symbol.asyncIterator](): AsyncIterator<any> {
+      return {
+        next: async (): Promise<IteratorResult<any>> => {
+          if (emitted) return { done: true, value: undefined }
+          emitted = true
+          return {
+            done: false,
+            value: { type: "session.error", data: { sessionID: "p1", error: "x" } },
+          }
+        },
+      }
+    },
+  })
+  ;(h.host as { event?: unknown }).event = { subscribe }
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.error === "event stream ended"))
+  dispose()
+})
+
+/** Disposing (aborting) the stream journals no stream-ended error. */
+test("dispose (abort) exits journal no stream-ended error", async () => {
+  const { dispose, metricsDir } = await boot()
+  dispose()
+  // Poll rather than assume: the fake stream only ends on abort, which the
+  // consumer must treat as silent.
+  for (
+    let i = 0;
+    i < 30 && journalEntries(metricsDir).some((l) => l.error === "event stream ended");
+    i++
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.ok(!journalEntries(metricsDir).some((l) => l.error === "event stream ended"))
+})
+
+/** An unresolvable agent name journals both the dispatch and an error, never throws. */
+test("unresolvable agent task dispatch journals dispatch + an error and never throws", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  await callTool(h, "execute.before", { tool: "task", sessionID: "p1", input: {} })
+  const dispatch = journalEntries(metricsDir).find((l) => l.type === "dispatch")
+  assert.ok(dispatch, "expected a dispatch entry")
+  assert.equal(dispatch?.agent, "")
+  assert.ok(
+    journalEntries(metricsDir).some(
+      (l) =>
+        l.type === "error" &&
+        l.error ===
+          "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
+    ),
+  )
+  dispose()
+})
+
+/** A mixed journal: non-gate entries are ignored, gate state still restores. */
+test("replay ignores non-gate entries and restores gate state from a mixed journal", async () => {
+  const metricsDir = tmpDir()
+  // A hand-written journal: a GATE: PASS that must restore state, plus a setup
+  // and an error entry the replay filter must ignore.
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({ ts: "t0", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" }),
+      JSON.stringify({
+        ts: "t1",
+        type: "setup",
+        version: "0.2.1",
+        digest: "abcdef012345",
+        hooks: 6,
+      }),
+      JSON.stringify({ ts: "t2", type: "error", error: "unrelated startup note" }),
+    ].join("\n") + "\n",
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  // Gate restored: the reviewer dispatches (no BlockError); the setup/error
+  // replay entries were ignored, so they do not gate on anything.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  dispose()
+})

@@ -8,6 +8,7 @@
  * contract.
  */
 
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -269,4 +270,24 @@ export function loadConfig(
     if (!warning.startsWith("config file")) journalConfigError(warning, env)
   }
   return { config: resolved, warnings }
+}
+
+/**
+ * Computes a short, stable digest of a resolved config.
+ *
+ * The digest is the first 12 hex characters of the SHA-256 of the config's
+ * JSON serialization: two setups with the same config produce the same
+ * digest, and any config change flips it — so the digest ties a session's
+ * journal entries to the exact config that drove them (and is reproducible
+ * offline). `JSON.stringify` serializes a plain object's keys in insertion
+ * order, and every config is built by the same literal + spread paths
+ * (`defaultConfig`, `mergeConfig`), so the serialization is stable *today*.
+ * A future refactor that conditionally inserts keys would change the
+ * serialization and invalidate historical digests — by design, a changed
+ * config should no longer match an old one.
+ * @param config The resolved config to digest.
+ * @returns 12 lowercase hex characters.
+ */
+export function configDigest(config: TurnstileConfig): string {
+  return createHash("sha256").update(JSON.stringify(config)).digest("hex").slice(0, 12)
 }

@@ -11,7 +11,11 @@
  * BLOCKED errors thrown by the gate layer propagate to the host.
  */
 
-import { loadConfig } from "./config.ts"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { fileURLToPath } from "node:url"
+
+import { configDigest, loadConfig } from "./config.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
   agentFromTaskInput,
@@ -56,6 +60,25 @@ function track(reg: unknown, cleanups: Array<() => void>): void {
 }
 
 /**
+ * Reads the plugin version from package.json for the load heartbeat.
+ *
+ * Fail-open: returns null when package.json is unreadable (e.g. a bare
+ * `setup.ts` + `src/` copy without it), mirroring the `install.mjs` version
+ * read. Resolved from `import.meta.url` so it is correct under symlink
+ * installs (Node realpaths the module URL to the repo) and npm installs
+ * (`package.json` ships at the root).
+ * @returns The version string, or null when it cannot be read.
+ */
+function readPluginVersion(): string | null {
+  try {
+    const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json")
+    return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Builds the turnstile plugin for a host: resolves the layered config,
  * creates the telemetry writer and gate ledger (replaying the journal),
  * then returns the async setup function that registers every hook.
@@ -70,6 +93,9 @@ export function createTurnstile(
 ): (h: Host) => Promise<(() => void) | void> {
   const env = opts.env ?? process.env
   const { config } = loadConfig(env, opts.config)
+  // Version is read once here (fail-open, alongside loadConfig) for the load
+  // heartbeat; null on exotic installs where package.json is unreadable.
+  const version = readPluginVersion()
   const journaler: Journaler = createJournaler({
     metricsDir: config.metricsDir,
     trace: config.trace,
@@ -218,6 +244,9 @@ export function createTurnstile(
    */
   return async function setup(h: Host): Promise<(() => void) | void> {
     const cleanups: Array<() => void> = []
+    // Count of successfully registered hooks (3 session + 2 tool + 1 event
+    // subscriber = 6 on a full host); feeds the load heartbeat below.
+    let hooks = 0
 
     // Parent-lookup bookkeeping, keyed by child session ID. Values are
     // attempts made; capped so long-lived hosts cannot grow it unboundedly.
@@ -280,6 +309,7 @@ export function createTurnstile(
           if (typeof sessionID === "string") ledger.resetState(sessionID)
         })
         track(reg, cleanups)
+        hooks++
       } catch (e) {
         journaler.journal({ type: "error", error: `session.prompt hook registration: ${e}` })
       }
@@ -312,6 +342,7 @@ export function createTurnstile(
           }
         })
         track(reg, cleanups)
+        hooks++
       } catch (e) {
         journaler.journal({ type: "error", error: `session.generate hook registration: ${e}` })
       }
@@ -330,6 +361,7 @@ export function createTurnstile(
           }
         })
         track(reg, cleanups)
+        hooks++
       } catch (e) {
         journaler.journal({ type: "error", error: `session.compaction hook registration: ${e}` })
       }
@@ -356,6 +388,18 @@ export function createTurnstile(
               })
               journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`)
 
+              // An empty agent name is the only reliable misconfiguration
+              // signal: the host input shape no longer uses
+              // subagent_type/agent/subagent, so every gate condition misses.
+              // Telemetry only — journaling cannot throw.
+              if (!agent)
+                journaler.journal({
+                  type: "error",
+                  sessionID,
+                  error:
+                    "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
+                })
+
               if (agent === config.agents.reviewer) {
                 gates.guardReviewerDispatch(sessionID, prompt, ledger)
               }
@@ -378,6 +422,7 @@ export function createTurnstile(
           }
         })
         track(reg, cleanups)
+        hooks++
       } catch (e) {
         journaler.journal({ type: "error", error: `tool.before hook registration: ${e}` })
       }
@@ -459,6 +504,7 @@ export function createTurnstile(
           }
         })
         track(reg, cleanups)
+        hooks++
       } catch (e) {
         journaler.journal({ type: "error", error: `tool.after hook registration: ${e}` })
       }
@@ -540,6 +586,10 @@ export function createTurnstile(
             journaler.journal({ type: "error", error: `event ${event.type}: ${e}` })
           }
         }
+        // A normal completion (closed stream) is a silent death mode; an
+        // abort/detach exit stays silent. Telemetry only.
+        if (!controller.signal.aborted)
+          journaler.journal({ type: "error", error: "event stream ended" })
       }
       const consuming = consume().catch((e: unknown) => {
         if (!controller.signal.aborted)
@@ -549,7 +599,20 @@ export function createTurnstile(
         controller.abort()
         void consuming
       })
+      hooks++
     }
+
+    // Load heartbeat: one entry per host-session boot, emitted after every
+    // registration so `hooks` is accurate. Telemetry only — it never blocks.
+    journaler.journal({
+      type: "setup",
+      version,
+      digest: configDigest(config),
+      hooks,
+      ...(config.trace
+        ? { trace: true, agents: config.agents, metricsDir: config.metricsDir }
+        : {}),
+    })
 
     /**
      * Disposes every hook registration tracked during setup.
