@@ -29,6 +29,13 @@ export interface ToolResult {
 /** Payload of the `tool.execute.before` and `tool.execute.after` hooks. */
 export interface ToolHookEvent {
   tool?: unknown
+  /**
+   * Dispatched subagent/agent name, observed on v2.0.27
+   * execute.before/after payloads. The host contract does not type this
+   * field, hence `unknown`; chunk 2 uses it (with a config-name set) to skip
+   * injecting orchestrator policy into child sessions.
+   */
+  agent?: unknown
   sessionID?: unknown
   input?: TaskInput
   result?: ToolResult
@@ -81,6 +88,14 @@ export interface GateState {
   hasGatePass: boolean
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
+  /**
+   * True once this task's first parent task/subagent result delivery has
+   * carried the injected orchestrator policy forward into model context.
+   * Cleared per task by `ledger.resetState()` on every user prompt, so the
+   * policy is re-injected on each task (the intended per-task re-supply,
+   * which also re-applies it after compaction).
+   */
+  policyInjected: boolean
   /**
    * Dedup key → raw session ID that first observed the marker; written
    * alongside `seen.add` by `observeMarker`. Tracks first-sight provenance so
@@ -139,6 +154,8 @@ export interface ChildVerdict {
 
 /** Agent names turnstile recognizes in dispatches and generation drafts. */
 export interface TurnstileAgents {
+  /** Planner: first in the pipeline; the primary session's plan gate gates dispatch. */
+  planner: string
   reviewer: string
   /** Plan reviewer: adversarial review of the implementation plan. */
   planReviewer: string

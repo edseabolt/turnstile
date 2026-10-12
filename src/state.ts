@@ -16,6 +16,7 @@ export function newState(): GateState {
   return {
     hasGatePass: false,
     hasPlanVerdict: false,
+    policyInjected: false,
     seenFrom: new Map(),
     suppressedPending: 0,
     reviewRounds: 0,

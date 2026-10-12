@@ -26,6 +26,7 @@ import {
 } from "./markers.ts"
 import { BlockError, createGates, type Gates } from "./gates.ts"
 import { createLedger, type GateLedger } from "./state.ts"
+import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
   CompactionDraft,
   EventProperties,
@@ -473,6 +474,50 @@ export function createTurnstile(
                   sessionID: child,
                   agent,
                   reason: "task output contained no GATE/VERDICT marker",
+                })
+              }
+              // Orchestrator policy injection (chunk 2, Approach B): prepend
+              // the policy to the model-facing output text on the first
+              // per-parent per-task delivery, so the model always carries the
+              // pipeline contract. Scoped three ways: tool name (task/subagent
+              // only), config-known subagent name (children dispatch under
+              // their own name — defense in depth), and the policyInjected
+              // flag (once per task; reset per prompt re-supplies it, also
+              // after compaction). The mutation target is event.result.output
+              // in place — the same production-proven target as the read-budget
+              // warn prefix below. Fail-open via an inner try/catch scoped to
+              // ONLY this phase; the handler's shared outer catch (marker
+              // parsing, plan attribution, read-warn) is intentionally not
+              // disturbed, so a policy failure journals injected:false and
+              // swallows rather than blocking the tool.
+              const subagentNames = new Set(
+                (
+                  [
+                    "reviewer",
+                    "planReviewer",
+                    "executor",
+                    "testRunner",
+                    "debugger",
+                    "planner",
+                  ] as const
+                ).map((name) => config.agents[name]),
+              )
+              if (typeof event.agent === "string" && subagentNames.has(event.agent)) return
+              const policyState = ledger.state(child)
+              if (policyState.policyInjected) return
+              // A string result is the confirmed task/subagent shape; any other
+              // shape fails open silently (no corruption, no journal entry).
+              if (!event.result || typeof event.result.output !== "string") return
+              try {
+                event.result.output = ORCHESTRATOR_POLICY + "\n" + event.result.output
+                policyState.policyInjected = true
+                journaler.journal({ type: "policy", sessionID: child, injected: true })
+              } catch (e) {
+                journaler.journal({
+                  type: "policy",
+                  sessionID: child,
+                  injected: false,
+                  error: String(e),
                 })
               }
               return

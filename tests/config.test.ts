@@ -31,6 +31,7 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.journalMaxBytes, 5 * 1024 * 1024)
   assert.equal(cfg.journalMaxGenerations, 5)
   assert.deepEqual(cfg.agents, {
+    planner: "planner",
     reviewer: "reviewer",
     planReviewer: "plan-reviewer",
     executor: "executor",
@@ -38,6 +39,7 @@ test("defaultConfig reproduces the historical constants", () => {
     debugger: "debugger",
     bareOutput: ["test-runner", "reviewer", "plan-reviewer"],
   })
+  assert.equal(cfg.agents.planner, "planner")
 })
 
 /** Covers the XDG_DATA_HOME → ~/.local/share fallback for metricsDir. */
