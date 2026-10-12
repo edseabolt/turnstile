@@ -410,6 +410,20 @@ source lives at `templates/global-AGENTS.md`.
 
 Defaults live in code (`src/config.ts`); override via
 `~/.config/opencode/turnstile.json`, environment variables, or both.
+
+**Quick start: copy the example config** — [`examples/turnstile.example.json`](examples/turnstile.example.json)
+to `~/.config/opencode/turnstile.json` and edit from there. Every key in it
+is optional and matches the code defaults; delete any key to fall back to the
+default. Two keys are deliberately omitted from the example:
+
+- `metricsDir`: computed at load time (`$XDG_DATA_HOME/opencode/metrics`,
+  fallback `~/.local/share/opencode/metrics`); if you set it yourself it must
+  be an absolute path (`~` is not expanded)
+- `gateMarker` / `verdictMarker`: included in the example verbatim so you can
+  see the format, but leave them alone unless you are intentionally changing
+  the marker syntax (the shipped subagent definitions emit the canonical
+  markers)
+
 Precedence: defaults < config file < env. The plugin reads config once, at
 setup; restart sessions to apply. Invalid keys are ignored and journaled
 (fail-open); a malformed config file never breaks the host.
