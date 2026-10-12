@@ -1,14 +1,15 @@
 ---
 name: turnstile-setup
-description: Install or update the turnstile plugin, pipeline agents, and contract block into the user's ~/.config/opencode, then verify sync. Use when the user asks to set up turnstile, add pipeline gates to AGENTS.md, refresh the installed contract block, or after changing marker syntax in this repo.
+description: Install the turnstile plugin and pipeline agents into the user's ~/.config/opencode and verify sync. Use when the user asks to set up turnstile, run the pipeline gates, add pipeline gates to a session, or after changing marker syntax in this repo. The plugin injects the orchestrator policy at runtime (via the execute.after hook); it does not write a contract block into AGENTS.md.
 ---
 
 # Turnstile setup
 
-Install the artifacts this repo owns into `~/.config/opencode` — the
-plugin and pipeline agents as symlinks (`scripts/install.mjs`, driven by
-`install.json`), and the contract block this plugin enforces into the
-user's global instructions file (`scripts/install-agents.mjs`).
+Install the artifacts this repo owns into `~/.config/opencode` — the plugin and
+the pipeline agent definitions — as symlinks (`scripts/install.mjs`, driven by
+`install.json`). This repo no longer owns a contract block: the orchestrator
+policy is injected at runtime by the plugin, not written to the user's global
+instructions file (`~/.config/opencode/AGENTS.md`) at install time.
 
 ## Steps
 
@@ -28,49 +29,32 @@ user's global instructions file (`scripts/install-agents.mjs`).
    - Verify with `npm run install:check` (add `-- --copy` for copy mode)
      — must exit 0.
 
-2. Install the contract block into the global AGENTS.md:
+2. Confirm the runtime policy. The plugin injects the orchestrator policy
+   into the primary session per task from `src/policy.ts`; there is no
+   block to verify on disk. If the user's `~/.config/opencode/AGENTS.md`
+   still contains a legacy turnstile sentinel block (from an install before
+   the runtime-injection change), delete it by hand — the plugin does not
+   read or manage it, and there is deliberately no installer to remove it:
 
    ```
-   node scripts/install-agents.mjs
+   # ~/.config/opencode/AGENTS.md — delete the section between the
+   # `<!-- turnstile:start -->` and `<!-- turnstile:end -->` sentinels
    ```
 
-   - Default target is `~/.config/opencode/AGENTS.md`; pass
-     `--file <path>` only if the user asks for a different file.
-   - Preflight: adoption is automatic. When the target already contains
-     turnstile contract content but **no** `<!-- turnstile:start -->` …
-     `<!-- turnstile:end -->` sentinels, the installer adopts the section:
-     it wraps an equivalent section with the sentinels (no content
-     change), and for a section that differs it backs up the target first
-     (`<file>.bak.<timestamp>`) and replaces the span with the current
-     template. Run with `--check` to preview without writing, or
-     `--no-adopt` to refuse and get reconciliation instructions instead.
-   - The installer only refuses (exit 1, no write) for targets it cannot
-     resolve safely: a corrupted one — a start sentinel with no end
-     sentinel — or an ambiguous one — more than one turnstile section.
-     Fix one of those by hand, then re-run.
-   - The script touches only the managed block; everything else in the
-     target file is preserved.
-
-3. Verify the installed block matches the template:
-
-   ```
-   node scripts/install-agents.mjs --check
-   ```
-
-   Must exit 0. If it exits 1, re-run step 2 and investigate rather than
-   hand-editing the installed file.
-
-4. Verify the marker contract is still in sync with the parser:
+3. Verify the marker contract is still in sync with the parser:
 
    ```
    node scripts/check-markers.mjs
    ```
 
-   Must pass. If it fails, the README's marker examples and the regex
+   Must pass. It validates the README's concrete examples, the `<n>`-placeholder
+   templates in `agents/*.md`, and those in `src/policy.ts` against the parser
+   regexes in `src/markers.ts`. If it fails, the README examples and the regex
    literals in `src/markers.ts` have drifted — fix both together.
 
 ## Report
 
-Tell the user: which files were linked or written, whether each was
-created or updated, and that OpenCode sessions restart to pick up the
-change. Do not quote the whole installed block back; summarize.
+Tell the user: which files were linked or copied (created or updated), that the
+orchestrator policy is injected at runtime (no instructions-file block), and —
+if a legacy sentinel block was present — that it was removed by hand. Do not
+quote the injected policy back; summarize.

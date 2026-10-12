@@ -2,11 +2,12 @@
 
 An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
 agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
-The workflow
-itself lives in a policy instruction file (e.g. `AGENTS.md`) that tells the
-agents what the pipeline is; turnstile complements that file rather than
-replacing it. The policy steers the agents, and turnstile blocks the
-dispatches that violate it.
+The pipeline policy is injected at runtime by the plugin: when the plugin is
+loaded, it prepends the orchestrator policy to the primary session's first
+task result every task (see [Policy injection](#policy-injection)), so a fresh
+install can never lose it and nothing is written to any instructions file at
+install time. Per-agent instruction lines live in each `agents/<name>.md`. The
+policy steers the agents, and turnstile blocks the dispatches that violate it.
 
 The entry point is `turnstile.ts`; behavior lives in focused modules under
 `src/` (one boundary per file: types, journal, state, markers, gates,
@@ -17,7 +18,7 @@ Verify with:
 ```sh
 npm install
 npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) — host chain only; green on a fresh clone
-npm run ci:installed  # install:check && install:agents:check — run after `npm run init` on a machine with installed artifacts
+npm run ci:installed  # install:check — run after `npm run init` on a machine with installed artifacts
 ```
 
 ## What it enforces
@@ -106,17 +107,20 @@ ways to use it; pick one, and do not combine the plugin-array path with
 the CLI install.
 
 1. **Zero-config enforcement (plugin only).** Add the package to your
-   OpenCode config's plugin array and restart. turnstile loads and
-   enforces its gates, but neither the pipeline agent definitions nor the
-   AGENTS.md contract block are installed:
+   OpenCode config's plugin array and restart. turnstile loads and enforces
+   its gates, injecting the orchestrator policy into the primary session at
+   runtime (see [Policy injection](#policy-injection)) — nothing is written to
+   any instructions file, and the pipeline agent definitions are not installed
+   by this option alone:
 
    ```json
    { "plugins": ["opencode-turnstile"] }
    ```
 
-2. **Full install via the CLI.** `npx opencode-turnstile init` installs
-   the plugin, the pipeline agent definitions, and the managed contract
-   block in `~/.config/opencode/AGENTS.md` (see
+2. **Full install via the CLI.** `npx opencode-turnstile init` installs the
+   plugin and the pipeline agent definitions; the orchestrator policy is
+   injected at runtime by the plugin, so no contract block is written to
+   `~/.config/opencode/AGENTS.md` (see
    [From a clone](#from-a-clone) below for the same commands run from
    a clone).
 
@@ -129,9 +133,9 @@ the CLI install.
 Turnstile has **no** npm lifecycle hook (`postinstall`, etc.). Installing
 `opencode-turnstile` as a dependency never writes to
 `~/.config/opencode`; it only makes the gates available through the
-plugin array. Everything else (agent definitions, the AGENTS.md contract
-block) happens only when you run an explicit command. This is deliberate:
-writes to your config directory are opt-in, not automatic.
+plugin array. Everything else (the agent definitions) happens only when you
+run an explicit command. This is deliberate: writes to your config directory
+are opt-in, not automatic.
 
 ### Modes
 
@@ -161,16 +165,21 @@ The plugin updates with your dependency manager (`npm upgrade
 opencode-turnstile`, or your registry's equivalent). Re-run `check` to see
 whether anything is outdated or drifted, then `init` to re-sync only what
 changed: `npx opencode-turnstile init --copy` for package installs,
-`npm run init -- --copy` from a clone. The AGENTS.md contract block is
-re-synced the same way, keeping only the managed block in step.
+`npm run init -- --copy` from a clone. The injected orchestrator policy
+travels with the plugin, so re-syncing the plugin re-supplies it — there is
+no separate contract block to re-sync.
 
 ### Uninstall
 
 `npx opencode-turnstile uninstall` reverses the install: it removes
-ledger-owned copies and repo-owned symlinks and unmerges the managed
-contract block from AGENTS.md. It is idempotent and ownership-aware:
+ledger-owned copies and repo-owned symlinks and stops injecting the
+orchestrator policy. It is idempotent and ownership-aware:
 files it never installed (untracked files, symlinks pointing outside the
-repo) are left alone, and a second run is a clean no-op.
+repo) are left alone, and a second run is a clean no-op. Injected policy is
+gone the moment the plugin is unloaded; a legacy contract block once written
+by hand into `~/.config/opencode/AGENTS.md` is not owned by turnstile and is
+removed separately — see
+[Migrating a legacy AGENTS.md block](#migrating-a-legacy-agentsmd-block).
 
 ### From a clone
 
@@ -302,8 +311,8 @@ Paste the output into `~/.config/opencode/opencode.json` (see the
 through `scripts/install.mjs` and adds nothing of its own: `install.mjs`
 recognizes `--print-model-config` and prints before writing, and the router
 skips the agents install step entirely in that case — so the whole command
-writes nothing (no ledger, no links, no contract block). Plain `init` still
-installs everything as usual.
+writes nothing (no ledger, no links, no agents, no injected policy). Plain
+`init` still installs everything as usual.
 
 ### Customizing the pipeline agents
 
@@ -359,52 +368,66 @@ Shared caveats:
 - Symlinks point at the clone's absolute path. Do not move, rename, or
   delete the checkout; if you relocate it, re-run `npm run init`.
 - `npm run install:check` reports drift between the manifest and what is
-  actually installed; `npm run install:agents:check` reports drift between
-  the installed contract block and `templates/global-AGENTS.md`. These install
-  checks are gated by `npm run ci:installed`, which chains both and must run
-  after `npm run init` on a machine with artifacts installed — a fresh clone
-  has nothing to check. The host chain (`npm run ci` = `npm run ci:host`)
-  covers lint, format:check, typecheck, check:markers, and test without the
-  install checks. GitHub CI runs `npm run ci:host`, the host chain only,
-  because a runner has no installs to check. Verify a copy install with
+  actually installed. There is no `install:agents:check`: the orchestrator
+  policy is injected from code (`src/policy.ts`), not a manifest-managed
+  template, so nothing to verify there — `npm run ci:installed` is now just
+  `install:check`. These install checks must run after `npm run init` on a
+  machine with artifacts installed — a fresh clone has nothing to check. The
+  host chain (`npm run ci` = `npm run ci:host`) covers lint, format:check,
+  typecheck, check:markers, and test without the install checks. GitHub CI
+  runs `npm run ci:host`, the host chain only, because a runner has no
+  installs to check. Verify a copy install with
   `npm run install:check -- --copy`.
 
-### Install the AGENTS.md contracts
+### Policy injection
 
-Turnstile enforces what your instructions file declares. Install the
-matching contract block into your global AGENTS.md:
+Turnstile does not read orchestrator policy from a file at install time —
+it makes that policy available by injecting it at runtime. When the plugin is
+loaded, `src/setup.ts` prepends the orchestrator policy paragraph from
+`src/policy.ts` to the primary session's first `task` (or `subagent`) result
+delivery, once per task, via the `tool.hook("execute.after")` handler — the
+same hook the plugin already uses to rewrite tool output reaching the model.
+The source of truth is code shipped with the plugin, so a fresh install can
+never lose it, and it follows the plugin through updates and
+uninstall–reinstall cycles.
+
+- **Fail-open.** The injection is fully guarded with an inner try/catch; on
+  failure it journals a `type:"policy"` entry with `injected:false` and
+  proceeds — a broken injection never blocks a tool call.
+- **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
+  each new prompt, so the block re-injects per task) means the policy is
+  prepended exactly once per task, not once per turn.
+- **Marker placeholders.** The injected paragraph quotes the gate/verdict
+  markers with `<n>` placeholders (e.g. `GATE: PASS tests=<n> passed=<n>
+failed=<n>`, `VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`) rather
+  than concrete digits, and never the pipe-joined `PASS|FAIL` form. The
+  plugin parses markers from _any_ session text, so a fully concrete example
+  echoed back by the model could flip a gate; the placeholder form stays
+  unparseable while remaining human-readable.
+- **Per-agent instructions** are not injected by the plugin: they live in
+  each `agents/<name>.md` installed alongside the plugin.
+
+With the plugin **off**, none of this prose is present anywhere — there is no
+AGENTS.md block to fall back on. That is the deliberate tradeoff: loss-proof
+by construction while the plugin loads, and a known, documented gap when it
+does not.
+
+### Migrating a legacy AGENTS.md block
+
+If a previous turnstile install once wrote a managed contract block into
+`~/.config/opencode/AGENTS.md`, that block is now orphaned: the plugin no
+longer reads or manages it, and it will coexist with the injected policy
+(duplicate prose until removed). There is deliberately no installer to remove
+it — turnstile no longer owns that file, so it never rewrites it. Delete the
+sentinel-delimited block by hand, once:
 
 ```sh
-node scripts/install-agents.mjs          # or: npm run install:agents
+# ~/.config/opencode/AGENTS.md — delete the section between the
+# `<!-- turnstile:start -->` and `<!-- turnstile:end -->` sentinels, then save
 ```
 
-- Default target: `~/.config/opencode/AGENTS.md` (override with `--file`).
-- The block is delimited by `<!-- turnstile:start -->` …
-  `<!-- turnstile:end -->` sentinels; re-running updates only that block
-  and preserves all surrounding personal content.
-- Legacy targets are adopted automatically. If the file already contains
-  pipeline-gates content _without_ sentinels (e.g. an install from before
-  the block was managed), the installer classifies the existing section:
-  equivalent to the template, it wraps the section in sentinels without
-  changing its content; differing from the template, it backs the file up
-  to `<name>.bak.<timestamp>` and replaces the section with the current
-  block. Pass `--no-adopt` to refuse both and print reconciliation
-  instructions instead.
-- The installer refuses (exit 1, no write) only when a target is
-  ambiguous (more than one turnstile section) or corrupted (a start
-  sentinel without an end sentinel); reconcile those by hand.
-- `--check` reports the outcome without writing: OK, or the adoption
-  decision (would-adopt-equivalent / would-replace / drift), exiting 0
-  only for OK. Useful in CI or dotfiles setup.
-- Agent definitions and the plugin itself are installed separately via
-  `npm run init` (symlinks, for development) or
-  `npm run init -- --copy` (see the Install section above).
-
-Alternatively, in an OpenCode session, invoke the bundled
-`turnstile-setup` skill, which runs the installer and verifies marker
-sync. The skill ships in the package and installs to
-`~/.config/opencode/skills/turnstile-setup/SKILL.md`; the template
-source lives at `templates/global-AGENTS.md`.
+After that, the injected policy is the single source of orchestrator policy
+for the session.
 
 ## Configuration
 

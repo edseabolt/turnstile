@@ -6,9 +6,11 @@ OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
 file (`types`, `config`, `journal`, `state`, `markers`, `gates`, `setup`). It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
-executor → test-runner → reviewer) defined in the host's instructions
-file; install the matching contract block with the bundled skill or
-`node scripts/install-agents.mjs` (see `templates/global-AGENTS.md`).
+executor → test-runner → reviewer). The orchestrator policy is injected
+into the primary session at runtime by the plugin (from `src/policy.ts`
+via the `execute.after` hook) rather than written to any instructions
+file at install time — a fresh install can never lose it; per-agent
+instruction lines live in each `agents/<name>.md`.
 The plugin and pipeline subagent definitions are installed by
 `npm run init` (symlinks by default, `--copy` for real copies; manifest:
 `install.json`), making this repo the source of truth for
@@ -35,7 +37,7 @@ drift):
 
 ```
 npm run ci           # ci:host (lint -> format:check -> typecheck -> check:markers -> test) — host chain only
-npm run ci:installed # install:check && install:agents:check — install-drift, run after npm run init
+npm run ci:installed # install:check — install-drift, run after npm run init
 ```
 
 ## Coding practices
@@ -134,7 +136,9 @@ stated feature; devDependencies are tooling only.)
   A new user prompt resets the session's gate state.
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
-  requires updating both the regexes here and the global AGENTS.md contracts.
+  requires updating both the regexes here and the marker examples in the
+  validated sources — README.md, `agents/*.md`, and `src/policy.ts` — checked
+  together by `scripts/check-markers.mjs`.
 - The read-counter keys off the parent session (`childToParent` map); state
   is per parent, not per child subagent session.
 

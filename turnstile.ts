@@ -1,5 +1,13 @@
 /**
- * turnstile: runtime enforcement of the AGENTS.md pipeline contracts.
+ * turnstile: runtime enforcement of the orchestrator pipeline contracts.
+ *
+ * - Orchestrator policy: injected into the primary (parent) session per task
+ *   via the `execute.after` hook — the `ORCHESTRATOR_POLICY` block from
+ *   `src/policy.ts` is prepended to the first `task`/`subagent` result delivery
+ *   per task, with per-task idempotency via `GateState.policyInjected`, fully
+ *   guarded and fail-open (a broken injection journals `type:"policy"` and
+ *   proceeds). Nothing is written to an instructions file at install time — the
+ *   AGENTS.md contract block is a historical install step, removed in issue #28.
  *
  * Written for OpenCode v2.x promise-plugin host (`{ id, setup }`):
  * - `ctx.tool.hook("execute.before" | "execute.after", cb)`

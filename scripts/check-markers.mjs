@@ -64,6 +64,28 @@ if (agentTemplates === 0) {
   failed++
 }
 
+// Plugin policy: the backticked GATE:/VERDICT: examples in src/policy.ts are
+// the orchestrator-side half of the marker contract — the runtime policy
+// injected into the parent session. Same extraction rule as the agent
+// templates: they spell <n> and must parse once the placeholder stands in
+// for digits. (The template source that once lived here for this contract is
+// gone; src/policy.ts is its successor, so its examples are validated too.)
+const policyFile = join(root, "src", "policy.ts")
+let policyTemplates = 0
+for (const m of readFileSync(policyFile, "utf8").matchAll(/`((?:GATE|VERDICT): [^\n`]*)`/g)) {
+  const line = m[1].replaceAll("<n>", "1")
+  const re = line.startsWith("GATE") ? gateRe : verdictRe
+  policyTemplates++
+  if (!re.test(line)) {
+    console.error(`check-markers: policy marker template not accepted by parser: ${line}`)
+    failed++
+  }
+}
+if (policyTemplates === 0) {
+  console.error("check-markers: no marker templates found in src/policy.ts")
+  failed++
+}
+
 // Inverse check: the regexes must also reject malformed markers.
 for (const [re, bad] of [
   [gateRe, "GATE: PASS tests=12"],
@@ -82,5 +104,5 @@ if (failed) {
   process.exit(1)
 }
 console.log(
-  `check-markers: OK (${lines.length} README examples, ${agentTemplates} agent templates verified against parser)`,
+  `check-markers: OK (${lines.length} README examples, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser)`,
 )
