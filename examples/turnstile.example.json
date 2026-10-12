@@ -1,0 +1,21 @@
+{
+  "journalMaxBytes": 5242880,
+  "journalMaxGenerations": 5,
+  "maxReviewerRounds": 2,
+  "maxSessions": 64,
+  "readWarn": 8,
+  "readBlock": 15,
+  "waiverMarker": "USER WAIVER:",
+  "plansDir": ".opencode/plans",
+  "trace": true,
+  "agents": {
+    "reviewer": "reviewer",
+    "planReviewer": "plan-reviewer",
+    "executor": "executor",
+    "testRunner": "test-runner",
+    "debugger": "debugger",
+    "bareOutput": ["test-runner", "reviewer", "plan-reviewer"]
+  },
+  "gateMarker": "^\\s*[`>#*\\s]*GATE: (PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+",
+  "verdictMarker": "^\\s*[`>#*\\s]*VERDICT: (APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+"
+}
