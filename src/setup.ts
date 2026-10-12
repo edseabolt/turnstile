@@ -25,6 +25,7 @@ import {
   VERDICT_RE,
 } from "./markers.ts"
 import { BlockError, createGates, type Gates } from "./gates.ts"
+import { createEvidenceTracker } from "./evidence.ts"
 import { createLedger, type GateLedger } from "./state.ts"
 import type {
   CompactionDraft,
@@ -128,6 +129,18 @@ export function createTurnstile(
   }
   const ledger: GateLedger = createLedger(journaler.journalPath, config.maxSessions)
   const gates: Gates = createGates(config, journaler)
+  // Evidence tracker: correlates a GATE: PASS against journaled exit-0
+  // bash/shell test executions attributed to the parent. Owns only the
+  // *evidence* dimension (issue #33); marker authority (#46) is separate.
+  const evidence = createEvidenceTracker(
+    config,
+    (raw) => ledger.parentOf(raw),
+    (cause) =>
+      journaler.journal({
+        type: "error",
+        error: `config evidencePattern: invalid regex, using default: ${String(cause)}`,
+      }),
+  )
   let projectDir: string = process.cwd()
   // Per-delivery dedup scope counter: each task result is a distinct
   // delivery, so a re-run emitting a byte-identical marker is still
@@ -216,14 +229,35 @@ export function createTurnstile(
     const sid = ledger.parentOf(sessionID)
     if (!sid) return
     const s = ledger.state(sid)
+    // Evidence verdict computed here: the caller owns the tracker + config.
+    // Under "enforce" the flip switch is the observed correlation; under "flag"
+    // the flip switch is omitted (always flips) while the journal is stamped;
+    // under "off" neither the flip switch nor the stamp is passed, keeping
+    // events byte-identical to legacy output.
+    const observed = config.gateEvidence === "off" ? undefined : evidence.has(sid)
+    const passVerified = config.gateEvidence === "enforce" ? observed : undefined
+    const stampVerified = observed
+    const stampMode = observed === undefined ? undefined : config.gateEvidence
     // Thread the raw child session ID as `raw`: dedup provenance is per-child,
     // so a dedup hit from a different child accounts as cross-child suppression
     // while the same child's re-delivery stays silent.
-    for (const event of parseGateMarkers(s, text, gateRe, verdictRe, dedupScope, sessionID ?? "")) {
+    for (const event of parseGateMarkers(
+      s,
+      text,
+      gateRe,
+      verdictRe,
+      dedupScope,
+      sessionID ?? "",
+      passVerified,
+      stampVerified,
+      stampMode,
+    )) {
       const suppressed = event.suppressed > 0 ? { suppressed: event.suppressed } : {}
       if (event.kind === "gate") {
         // Keyed by parent session so journal replay restores state where the
         // reviewer gate looks it up; raw child ID kept for forensics.
+        const evidenceStamp =
+          event.verified !== undefined ? { verified: event.verified, mode: event.mode } : {}
         journaler.journal({
           type: "gate",
           sessionID: sid,
@@ -231,6 +265,7 @@ export function createTurnstile(
           result: event.result,
           source,
           marker: event.marker,
+          ...evidenceStamp,
           ...suppressed,
         })
         journaler.traceEvent("test-runner", "gate", event.marker, sid)
@@ -319,7 +354,12 @@ export function createTurnstile(
       try {
         const reg = await h.session.hook("prompt", (properties: PromptHookProperties) => {
           const sessionID = properties?.sessionID
-          if (typeof sessionID === "string") ledger.resetState(sessionID)
+          if (typeof sessionID === "string") {
+            ledger.resetState(sessionID)
+            // Evidence is task-scoped, exactly like gate state: a new user
+            // prompt drops the in-memory correlation.
+            evidence.clear(sessionID)
+          }
         })
         track(reg, cleanups)
         hooks++
@@ -510,6 +550,51 @@ export function createTurnstile(
                   : "<redacted>",
                 exit: meta.exit ?? meta.exitCode ?? meta.code,
               })
+              // Evidence correlation (issue #33): record a plausible exit-0
+              // test execution and promote an earlier unverified PASS the
+              // moment its evidence arrives, within the same task lifetime.
+              // No command text ever leaves memory (redaction contract).
+              if (config.gateEvidence !== "off") {
+                const obsSid = asSessionID(event?.sessionID)
+                const exit = meta.exit ?? meta.exitCode ?? meta.code
+                if (
+                  evidence.observe(
+                    obsSid,
+                    event.input?.command ?? event.input?.cmd ?? event.result?.title ?? "",
+                    exit,
+                  )
+                ) {
+                  journaler.journal({
+                    type: "evidence",
+                    sessionID: obsSid,
+                    event: "observed",
+                    exit,
+                  })
+                }
+                const parent = ledger.parentOf(obsSid)
+                // Peek, don't insert: a fresh bucket can never carry a
+                // non-empty `unverifiedPass`, so unknown bash sessions must
+                // not enter the LRU (behavior-preserving guard).
+                const ps = ledger.peek(parent)
+                if (ps && ps.unverifiedPass && evidence.has(parent)) {
+                  ps.hasGatePass = true
+                  ps.unverifiedPass = ""
+                  journaler.journal({
+                    type: "gate",
+                    sessionID: parent,
+                    result: "PASS",
+                    event: "promoted",
+                    verified: true,
+                    mode: config.gateEvidence,
+                  })
+                  journaler.traceEvent(
+                    "test-runner",
+                    "gate",
+                    "GATE: PASS promoted on evidence",
+                    parent,
+                  )
+                }
+              }
             }
           } catch (e) {
             if (e instanceof BlockError) throw e

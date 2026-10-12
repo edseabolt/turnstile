@@ -25,7 +25,7 @@ npm run ci:installed  # install:check && install:agents:check — run after `npm
 | Gate                   | Behavior                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Plan-approval gate     | `executor` subagent dispatches are blocked until a plan-reviewer result in the session recorded `VERDICT: APPROVE` (when any plan exists in `.opencode/plans/*.md`), or the dispatch prompt contains the literal marker `USER WAIVER:`; plan-content changes invalidate approvals issued against the previous plans-dir signature (replayed approvals are accepted once, then stamped) |
-| Reviewer dispatch gate | `reviewer` subagent dispatches are blocked until a test-runner result in the session recorded `GATE: PASS`, or the dispatch prompt contains the literal marker `USER WAIVER:`                                                                                                                                                                                                          |
+| Reviewer dispatch gate | `reviewer` subagent dispatches are blocked until a test-runner result in the session recorded a `GATE: PASS` _verified_ by the current task's bash/shell executions — a matching exit-0 test command under the default `gateEvidence:enforce`; `flag` flips on trust (still stamped), `off` never stamps — or the dispatch prompt contains the literal marker `USER WAIVER:`           |
 | Reviewer round cap     | Max 2 `reviewer` dispatches per task, regardless of gate state; dispatches carrying `USER WAIVER:` bypass the cap and do not count toward it.                                                                                                                                                                                                                                          |
 | Decomposition gate     | `executor` dispatches must cite `chunk-N` / `AC-n` when any plan in `.opencode/plans/*.md` has a `## Decomposition` block                                                                                                                                                                                                                                                              |
 | Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob)                                                                                                                                                                                                                                                                                                        |
@@ -428,19 +428,21 @@ Precedence: defaults < config file < env. The plugin reads config once, at
 setup; restart sessions to apply. Invalid keys are ignored and journaled
 (fail-open); a malformed config file never breaks the host.
 
-| Key                                                                                                     | Default                                                                       | Meaning                                                                           |
-| ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `metricsDir`                                                                                            | `$XDG_DATA_HOME/opencode/metrics`, fallback `~/.local/share/opencode/metrics` | directory for both telemetry files                                                |
-| `journalMaxBytes`                                                                                       | 5242880                                                                       | rotate a journal file past this size                                              |
-| `journalMaxGenerations`                                                                                 | 5                                                                             | rotated generations kept per journal                                              |
-| `maxReviewerRounds`                                                                                     | 2                                                                             | reviewer dispatches per task, regardless of gate state (waived dispatches exempt) |
-| `readWarn` / `readBlock`                                                                                | 8 / 15                                                                        | whole-file read horizon                                                           |
-| `waiverMarker`                                                                                          | `USER WAIVER:`                                                                | literal waiver marker                                                             |
-| `plansDir`                                                                                              | `.opencode/plans`                                                             | executor decomposition scan directory                                             |
-| `trace`                                                                                                 | `true`                                                                        | write the human-readable trace file (JSONL journal always writes)                 |
-| `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger`        | agent names recognized in dispatches                                              |
-| `agents.bareOutput`                                                                                     | `["test-runner", "reviewer", "plan-reviewer"]`                                | agents whose marker-less output is a violation                                    |
-| `gateMarker` / `verdictMarker`                                                                          | canonical regex sources                                                       | marker patterns, compiled with `gm`                                               |
+| Key                                                                                                     | Default                                                                       | Meaning                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metricsDir`                                                                                            | `$XDG_DATA_HOME/opencode/metrics`, fallback `~/.local/share/opencode/metrics` | directory for both telemetry files                                                                                                          |
+| `journalMaxBytes`                                                                                       | 5242880                                                                       | rotate a journal file past this size                                                                                                        |
+| `journalMaxGenerations`                                                                                 | 5                                                                             | rotated generations kept per journal                                                                                                        |
+| `maxReviewerRounds`                                                                                     | 2                                                                             | reviewer dispatches per task, regardless of gate state (waived dispatches exempt)                                                           |
+| `readWarn` / `readBlock`                                                                                | 8 / 15                                                                        | whole-file read horizon                                                                                                                     |
+| `waiverMarker`                                                                                          | `USER WAIVER:`                                                                | literal waiver marker                                                                                                                       |
+| `plansDir`                                                                                              | `.opencode/plans`                                                             | executor decomposition scan directory                                                                                                       |
+| `trace`                                                                                                 | `true`                                                                        | write the human-readable trace file (JSONL journal always writes)                                                                           |
+| `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger`        | agent names recognized in dispatches                                                                                                        |
+| `agents.bareOutput`                                                                                     | `["test-runner", "reviewer", "plan-reviewer"]`                                | agents whose marker-less output is a violation                                                                                              |
+| `gateMarker` / `verdictMarker`                                                                          | canonical regex sources                                                       | marker patterns, compiled with `gm`                                                                                                         |
+| `gateEvidence`                                                                                          | `enforce`                                                                     | `enforce` requires a correlating exit-0 test command to flip the gate; `flag` flips on trust (stamps `verified`); `off` journals without it |
+| `evidencePattern`                                                                                       | a npm/pnpm/yarn/bun/deno/node `--test`/pytest/`make test`/go/cargo pattern    | regex matched (case-insensitively) against bash/shell commands; user-overridable for non-JS toolchains (e.g. Ruby/`rspec`)                  |
 
 Environment variables (override the file):
 
@@ -472,10 +474,23 @@ USER WAIVER: <the user's words>
 
 Turnstile is a speed bump and an audit trail, not a security boundary.
 
-- Any text matching the gate marker, including a marker an agent
-  hallucinated or copied from documentation, flips `hasGatePass`. An agent
-  that wants a green gate can emit `GATE: PASS tests=1 passed=1 failed=0`
-  without running anything.
+- Any text matching the gate marker — including a marker an agent
+  hallucinated or copied from documentation — is journaled `verified:false`
+  under the default `gateEvidence:enforce` mode and does not flip
+  `hasGatePass` unless the current task's bash/shell executions contain a
+  matching exit-0 test command (plausibility checked against
+  `evidencePattern`). An agent that wants a green gate can no longer emit
+  `GATE: PASS tests=1 passed=1 failed=0` without running anything — but
+  `gateEvidence:flag` reverts to the historical flip-on-trust semantics
+  (still stamped `verified:false`), and `gateEvidence:off` journals without
+  the field at all.
+- A `GATE: PASS` is only as trustworthy as the journal: an attacker who can
+  write or replay the metrics directory can craft a `verified:true` entry,
+  and `flag`/`off` make a fabricated marker trust-lossless. Tests that run
+  outside the observable bash/shell surface (external CI, a differently
+  named execution tool) leave enforce mode with no evidence to verify
+  against — operators in that situation use `flag`/`off` at the cost of the
+  guarantee. The journal records what was _claimed_, never proof.
 - `USER WAIVER:` as a substring anywhere in a dispatch prompt unlocks the
   reviewer gate. A prompt-injected waiver is indistinguishable from a real
   one.

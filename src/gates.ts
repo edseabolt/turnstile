@@ -143,6 +143,25 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       )
     }
     if (!s.hasGatePass && !waived) {
+      // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
+      // unverifiedPass set: the gate is genuinely not green, so the block names
+      // the evidence contract. The legacy no-gate-pass path stays byte-identical
+      // when no unverified claim was recorded (s.unverifiedPass === "").
+      if (s.unverifiedPass !== "") {
+        journaler.journal({
+          type: "blocked",
+          sessionID,
+          agent: config.agents.reviewer,
+          reason: "gate-unverified",
+        })
+        throw new BlockError(
+          "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
+            "was recorded without a journaled successful test-command execution for this " +
+            `session. Run the ${config.agents.testRunner} subagent first, or obtain an ` +
+            `explicit user waiver ` +
+            `(the dispatch prompt must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+        )
+      }
       journaler.journal({
         type: "blocked",
         sessionID,

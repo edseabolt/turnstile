@@ -2,9 +2,15 @@
  * @fileoverview Marker boundary: `GATE:`/`VERDICT:` marker parsing with
  * per-task dedup, plus agent attribution helpers. Pure with respect to
  * journal and filesystem, so callers journal the returned marker events.
+ *
+ * The caller computes the evidence verdict (it owns the evidence tracker and
+ * config) and threads it in as optional trailing params: `passVerified` flips
+ * the gate only under `enforce`, while `stampVerified`/`stampMode` label the
+ * journal entry under `enforce` and `flag` (absent under `off`, keeping those
+ * events byte-identical to legacy output).
  */
 
-import type { GateState, MarkerEvent, TaskInput } from "./types.ts"
+import type { GateEvidenceMode, GateState, MarkerEvent, TaskInput } from "./types.ts"
 
 // `export const` keeps the regex literals load-bearing for
 // scripts/check-markers.mjs, which extracts them by name and asserts the
@@ -111,6 +117,12 @@ function takePending(state: GateState): number {
  * @param verdictRe The verdict marker regex (defaults to VERDICT_RE).
  * @param dedupScope Key prefix partitioning the dedup set (default "").
  * @param raw Raw session ID that produced the marker (child provenance).
+ * @param passVerified PASS flip switch: false (enforce-only) flags the last
+ *     unverified claim without flipping; undefined (flag/off) or true flips.
+ * @param stampVerified Journal stamp for the PASS event, or undefined when the
+ *     event must stay byte-identical to legacy output (the `"off"` mode).
+ * @param stampMode Evidence mode at stamp time (replay uses it to distinguish
+ *     enforce non-flipping entries from flag flipping ones).
  * @returns Marker events observed for the first time in this text.
  */
 export function parseGateMarkers(
@@ -120,6 +132,9 @@ export function parseGateMarkers(
   verdictRe: RegExp = VERDICT_RE,
   dedupScope = "",
   raw = "",
+  passVerified?: boolean,
+  stampVerified?: boolean,
+  stampMode?: GateEvidenceMode,
 ): MarkerEvent[] {
   const events: MarkerEvent[] = []
   if (!text) return events
@@ -131,15 +146,39 @@ export function parseGateMarkers(
     const key = `${dedupScope}gate\u0000${gate}`
     if (observeMarker(state, key, raw)) {
       const result: "PASS" | "FAIL" = gate.includes("PASS") ? "PASS" : "FAIL"
-      // A re-run's FAIL un-greens a gate set by an earlier PASS, even across
-      // different texts: the latest observed result wins.
-      state.hasGatePass = result === "PASS"
-      events.push({
-        kind: "gate",
-        marker: gate,
-        result,
-        suppressed: gates.length - 1 + takePending(state),
-      })
+      if (result === "PASS") {
+        // passVerified === false (enforce-only) flags the last unverified
+        // claim without flipping; undefined (flag/off) or true flips as before.
+        if (passVerified === false) {
+          state.unverifiedPass = gate
+        } else {
+          state.hasGatePass = true
+          state.unverifiedPass = ""
+        }
+        // Stamp verified/mode only when the caller supplied a stamp: the
+        // `"off"` mode leaves both undefined for byte-identical legacy output.
+        const stamp =
+          stampVerified !== undefined ? { verified: stampVerified, mode: stampMode } : {}
+        events.push({
+          kind: "gate",
+          marker: gate,
+          result,
+          suppressed: gates.length - 1 + takePending(state),
+          ...stamp,
+        })
+      } else {
+        // A re-run's FAIL un-greens a gate set by an earlier PASS, even across
+        // different texts: the latest observed result wins. Clears any
+        // unverified PASS left by an earlier enforce-only rejection.
+        state.hasGatePass = false
+        state.unverifiedPass = ""
+        events.push({
+          kind: "gate",
+          marker: gate,
+          result,
+          suppressed: gates.length - 1 + takePending(state),
+        })
+      }
     }
   }
   if (verdict) {
