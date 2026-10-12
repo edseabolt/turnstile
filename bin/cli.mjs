@@ -7,12 +7,12 @@
 //
 //   opencode-turnstile init       Install/sync artifacts into ~/.config/opencode
 //   opencode-turnstile check      Verify artifacts against the manifest
-//   opencode-turnstile uninstall  Remove installed artifacts (agents + block)
+//   opencode-turnstile uninstall  Remove installed artifacts (manifest artifacts)
 //   opencode-turnstile version    Print the installed package version
 //
 // `init -- --print-model-config` writes nothing: the router runs install.mjs,
 // which prints the snippet and short-circuits before any install work, so the
-// router skips the agents step and returns install.mjs's exit code verbatim.
+// router returns install.mjs's exit code verbatim.
 //
 // Unknown subcommand or no args prints usage and exits 2.
 
@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url"
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, "..")
 const installScript = join(repoRoot, "scripts/install.mjs")
-const agentsScript = join(repoRoot, "scripts/install-agents.mjs")
 
 const USAGE = `Usage: opencode-turnstile <command>
 
@@ -34,7 +33,7 @@ Commands:
   check     Verify installed artifacts against the manifest
             (check --repair prints which targets would be auto-repaired,
              writing nothing — a dry run of the --repair apply mode)
-  uninstall Remove installed artifacts (agents + block)
+  uninstall Remove installed artifacts (manifest artifacts)
   version   Print the installed package version
 
 init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
@@ -70,38 +69,32 @@ async function main() {
 
   switch (command) {
     case "init": {
-      // Full install: manifest artifacts (plugin + agents), then the
-      // managed contract block in ~/.config/opencode/AGENTS.md, mirroring
-      // uninstall's two-step shape in reverse. Passthrough flags go to the
-      // manifest installer; the agents installer needs none of them.
+      // Full install: manifest artifacts (plugin + agents) via a single
+      // install.mjs spawn. This installer never writes to AGENTS.md — the
+      // legacy contract-block installer was deleted (R1); any pre-existing
+      // block is removed by hand by the user, not by npm/init.
       //
       // Printer-mode short-circuit: --print-model-config makes init write
       // completely free. install.mjs prints the snippet and short-circuits
-      // before any manifest work, so the router runs only install.mjs and
-      // returns its exit code — it skips the agents step entirely. This is
-      // what makes "print mode writes nothing" literally true.
+      // before any manifest work, so the router returns install.mjs's exit
+      // code verbatim. This is what makes "print mode writes nothing"
+      // literally true.
       //
       // A leading "--" separates the subcommand from its flags
       // (`init -- --print-model-config`); install.mjs rejects a literal "--"
       // as an unknown argument, so drop it before forwarding.
       const initPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
-      if (initPassthrough.includes("--print-model-config")) {
-        return process.exit(await spawnInstaller(installScript, initPassthrough))
-      }
-      const byInstall = await spawnInstaller(installScript, initPassthrough)
-      const byAgents = await spawnInstaller(agentsScript, [])
-      return process.exit(byInstall || byAgents ? 1 : 0)
+      return process.exit(await spawnInstaller(installScript, initPassthrough))
     }
     case "check":
       return spawnInstaller(installScript, ["--check", ...passthrough])
     case "uninstall": {
-      // Reverse the copy/symlink install, then unmerge the managed block.
-      // Inherited stdio surfaces both scripts' reports verbatim; exit non-zero
-      // only if either step failed. No restart note is printed here; each
-      // child prints its own, gated on whether it changed anything.
+      // Reverse the copy/symlink install via a single install.mjs spawn.
+      // Inherited stdio surfaces the report verbatim; exit non-zero only if
+      // it failed. No restart note is printed here; the child prints its own,
+      // gated on whether it changed anything.
       const byInstall = await spawnInstaller(installScript, ["--uninstall"])
-      const byAgents = await spawnInstaller(agentsScript, ["--remove"])
-      return process.exit(byInstall || byAgents ? 1 : 0)
+      return process.exit(byInstall ? 1 : 0)
     }
     case "version":
       console.log(JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version)
