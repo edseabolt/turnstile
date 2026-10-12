@@ -27,14 +27,15 @@ model snippet (repeatable `--model [name=]provider/model[#variant]` seeds;
 model ids may be multi-segment, e.g. `oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`;
 `--validate` checks concrete specs against `opencode models` and exits 1 on a
 miss; `--model`/`--validate` given without `--print-model-config` exit 2) and
-writes nothing — it short-circuits before any install work — while the router
-still idempotently installs the contract block in the same run (see the README).
+writes nothing — it short-circuits before any install work — and the router
+skips the agents install step entirely in that case (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
-drift), all chained in `npm run ci`:
+drift):
 
 ```
-npm run ci   # ci:host (lint -> format:check -> typecheck -> check:markers -> test) + install:check + install:agents:check
+npm run ci           # ci:host (lint -> format:check -> typecheck -> check:markers -> test) — host chain only
+npm run ci:installed # install:check && install:agents:check — install-drift, run after npm run init
 ```
 
 ## Coding practices

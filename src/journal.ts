@@ -113,8 +113,11 @@ export interface Journaler {
    * @param agent The acting agent label (e.g. `orchestrator`, `reviewer`).
    * @param event The event kind (e.g. `dispatch`, `gate`, `verdict`).
    * @param detail Free-form event detail, truncated to 200 characters.
+   * @param sessionID Optional session ID; when provided it is appended as a
+   *     trailing ` | <id>` segment after `detail`. Omitting it leaves the
+   *     four documented segments (`ts | agent | event | detail`) byte-identical.
    */
-  traceEvent(agent: string, event: string, detail: string): void
+  traceEvent(agent: string, event: string, detail: string, sessionID?: string): void
 }
 
 /**
@@ -141,16 +144,20 @@ export function createJournaler(options: {
       rotateIfLarge(journalPath, options.maxBytes, options.maxGenerations)
       appendLine(journalPath, JSON.stringify({ ts: now(), ...entry }))
     },
-    traceEvent(agent: string, event: string, detail: string): void {
+    traceEvent(agent: string, event: string, detail: string, sessionID?: string): void {
       if (!options.trace) return
       // The trace file shares the journal's rotation bound (AGENTS.md
       // retention contract: bounded at (N + 1) × maxBytes per file).
       rotateIfLarge(tracePath, options.maxBytes, options.maxGenerations)
       const d = new Date()
       const pad = (n: number): string => String(n).padStart(2, "0")
+      // The session segment is optional and appended last; the first four
+      // segments (ts | agent | event | detail) stay byte-identical for every
+      // existing `split("|")` consumer when it is omitted.
+      const tail = sessionID ? ` | ${sessionID}` : ""
       appendLine(
         tracePath,
-        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())} | ${agent} | ${event} | ${String(detail).slice(0, 200)}`,
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())} | ${agent} | ${event} | ${String(detail).slice(0, 200)}${tail}`,
       )
     },
   }

@@ -104,8 +104,18 @@ export function createTurnstile(
   })
   // Config warnings are already journaled by config.ts (the pre-journaler
   // sink); journaling them here too would double-write every entry.
-  const gateRe = compileMarkerRegex(config.gateMarker, GATE_RE)
-  const verdictRe = compileMarkerRegex(config.verdictMarker, VERDICT_RE)
+  const gateRe = compileMarkerRegex(config.gateMarker, GATE_RE, (cause) =>
+    journaler.journal({
+      type: "error",
+      error: `config gateMarker: invalid regex, using default: ${String(cause)}`,
+    }),
+  )
+  const verdictRe = compileMarkerRegex(config.verdictMarker, VERDICT_RE, (cause) =>
+    journaler.journal({
+      type: "error",
+      error: `config verdictMarker: invalid regex, using default: ${String(cause)}`,
+    }),
+  )
 
   /**
    * True when the text contains at least one GATE or VERDICT marker per the
@@ -177,7 +187,7 @@ export function createTurnstile(
       marker: marker || "<none>",
       source: markerSource,
     })
-    journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>")
+    journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
   }
 
   /**
@@ -206,7 +216,10 @@ export function createTurnstile(
     const sid = ledger.parentOf(sessionID)
     if (!sid) return
     const s = ledger.state(sid)
-    for (const event of parseGateMarkers(s, text, gateRe, verdictRe, dedupScope)) {
+    // Thread the raw child session ID as `raw`: dedup provenance is per-child,
+    // so a dedup hit from a different child accounts as cross-child suppression
+    // while the same child's re-delivery stays silent.
+    for (const event of parseGateMarkers(s, text, gateRe, verdictRe, dedupScope, sessionID ?? "")) {
       const suppressed = event.suppressed > 0 ? { suppressed: event.suppressed } : {}
       if (event.kind === "gate") {
         // Keyed by parent session so journal replay restores state where the
@@ -220,7 +233,7 @@ export function createTurnstile(
           marker: event.marker,
           ...suppressed,
         })
-        journaler.traceEvent("test-runner", "gate", event.marker)
+        journaler.traceEvent("test-runner", "gate", event.marker, sid)
       } else {
         journaler.journal({
           type: "verdict",
@@ -231,7 +244,7 @@ export function createTurnstile(
           source,
           ...suppressed,
         })
-        journaler.traceEvent("reviewer", "verdict", event.marker)
+        journaler.traceEvent("reviewer", "verdict", event.marker, sid)
       }
     }
   }
@@ -386,7 +399,7 @@ export function createTurnstile(
                   ? String(event.input?.description ?? "").slice(0, 200)
                   : "",
               })
-              journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`)
+              journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
 
               // An empty agent name is the only reliable misconfiguration
               // signal: the host input shape no longer uses

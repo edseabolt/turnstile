@@ -10,6 +10,10 @@
 //   opencode-turnstile uninstall  Remove installed artifacts (agents + block)
 //   opencode-turnstile version    Print the installed package version
 //
+// `init -- --print-model-config` writes nothing: the router runs install.mjs,
+// which prints the snippet and short-circuits before any install work, so the
+// router skips the agents step and returns install.mjs's exit code verbatim.
+//
 // Unknown subcommand or no args prints usage and exits 2.
 
 import { spawn } from "node:child_process"
@@ -26,7 +30,10 @@ const USAGE = `Usage: opencode-turnstile <command>
 
 Commands:
   init      Install or sync artifacts into ~/.config/opencode
+            (with --print-model-config, prints a {"agents": {...}} snippet and writes nothing)
   check     Verify installed artifacts against the manifest
+            (check --repair prints which targets would be auto-repaired,
+             writing nothing — a dry run of the --repair apply mode)
   uninstall Remove installed artifacts (agents + block)
   version   Print the installed package version
 
@@ -68,17 +75,19 @@ async function main() {
       // uninstall's two-step shape in reverse. Passthrough flags go to the
       // manifest installer; the agents installer needs none of them.
       //
-      // --print-model-config is passthrough too: install.mjs prints the
-      // snippet and short-circuits before any manifest work, but the router
-      // still runs BOTH steps, so the contract block is idempotently
-      // installed as usual. Print mode writes nothing; the two-step install
-      // is the router's idempotent contract-block behavior, which is out of
-      // scope for the write-free printer flag.
+      // Printer-mode short-circuit: --print-model-config makes init write
+      // completely free. install.mjs prints the snippet and short-circuits
+      // before any manifest work, so the router runs only install.mjs and
+      // returns its exit code — it skips the agents step entirely. This is
+      // what makes "print mode writes nothing" literally true.
       //
       // A leading "--" separates the subcommand from its flags
       // (`init -- --print-model-config`); install.mjs rejects a literal "--"
       // as an unknown argument, so drop it before forwarding.
       const initPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      if (initPassthrough.includes("--print-model-config")) {
+        return process.exit(await spawnInstaller(installScript, initPassthrough))
+      }
       const byInstall = await spawnInstaller(installScript, initPassthrough)
       const byAgents = await spawnInstaller(agentsScript, [])
       return process.exit(byInstall || byAgents ? 1 : 0)

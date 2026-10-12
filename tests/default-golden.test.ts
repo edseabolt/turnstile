@@ -151,7 +151,7 @@ test("golden: trace line format", async () => {
   assert.ok(line)
   assert.match(
     line,
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \| test-runner \| gate \| GATE: PASS tests=1 passed=1 failed=0$/,
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \| test-runner \| gate \| GATE: PASS tests=1 passed=1 failed=0 \| p1$/,
   )
   dispose()
 })

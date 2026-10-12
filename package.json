@@ -36,7 +36,8 @@
     "install:agents:check": "node scripts/install-agents.mjs --check",
     "pack:dry": "npm pack --dry-run",
     "ci:host": "npm run lint && npm run format:check && npm run typecheck && npm run check:markers && npm test",
-    "ci": "npm run ci:host && npm run install:check && npm run install:agents:check"
+    "ci": "npm run ci:host",
+    "ci:installed": "npm run install:check && npm run install:agents:check"
   },
   "repository": {
     "type": "git",

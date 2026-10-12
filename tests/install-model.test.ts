@@ -11,6 +11,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -423,19 +425,115 @@ test("CLI --validate without --print-model-config exits 2, orphan message", () =
 })
 
 /**
- * The router strips a leading "--" from the init passthrough, so
- * `init -- --print-model-config` reaches install.mjs and exits 0 instead of
- * install.mjs rejecting the literal "--" as an unknown argument (exit 2,
- * router regression).
+ * Spawns bin/cli.mjs under a fresh temp HOME so every write the spawned
+ * installers make is confined to tmpdir(): no path can drift toward the
+ * developer's real ~/.config/opencode. Runs fn(home) and always cleans up, so
+ * the "agents step skipped" assertion is observable against the returned path.
  */
-test("router init -- --print-model-config: strips the leading -- and exits 0", () => {
-  const res = spawnSync(
-    process.execPath,
-    [join(repoRoot, "bin/cli.mjs"), "init", "--", "--print-model-config"],
-    { encoding: "utf8" },
-  )
-  assert.equal(res.status, 0)
-  // install.mjs prints the JSON snippet before the agents installer runs; its
-  // presence in stdout proves the flag reached install.mjs through the router.
-  assert.match(res.stdout, /"agents": \{/)
+function runCliUnderHome(fn: (home: string) => void) {
+  const home = mkdtempSync(join(tmpdir(), "router-home-"))
+  try {
+    fn(home)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Router printer-mode short-circuit (AC-11): `init -- --print-model-config`
+ * prints the snippet, exits 0, and writes NOTHING. install.mjs short-circuits
+ * before any manifest work (no agent files, no ledger) and the router skips
+ * the agents installer (no AGENTS.md block) — confirming the short-circuit is
+ * genuinely write-free, not just "the printer prints but the router still
+ * installs" (which is what the pre-chunk-7 router did).
+ */
+test("router init -- --print-model-config: prints, exits 0, writes nothing", () => {
+  runCliUnderHome((home) => {
+    const res = spawnSync(
+      process.execPath,
+      [join(repoRoot, "bin/cli.mjs"), "init", "--", "--print-model-config"],
+      { encoding: "utf8", env: { ...process.env, HOME: home } },
+    )
+    assert.equal(res.status, 0)
+    // install.mjs prints the JSON snippet; its presence proves the flag
+    // reached install.mjs through the router (regression: the leading --).
+    assert.match(res.stdout, /"agents": \{/)
+    // Printer mode skips the agents step: no agent files and no contract
+    // block were created under the sandboxed HOME.
+    assert.equal(existsSync(join(home, ".config/opencode/agents")), false)
+    assert.equal(existsSync(join(home, ".config/opencode/AGENTS.md")), false)
+  })
+})
+
+/**
+ * Non-printer `init` is unchanged: the router runs BOTH installers, so the
+ * agent files (from install.mjs) and the managed AGENTS.md block (from
+ * install-agents.mjs) are both created under the sandboxed HOME. Proves the
+ * short-circuit is specific to printer mode.
+ */
+test("router plain init: installs both the agent files and the contract block", () => {
+  runCliUnderHome((home) => {
+    const res = spawnSync(process.execPath, [join(repoRoot, "bin/cli.mjs"), "init"], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    })
+    assert.equal(res.status, 0)
+    assert.ok(existsSync(join(home, ".config/opencode/agents")), "agent files should be installed")
+    assert.ok(
+      existsSync(join(home, ".config/opencode/AGENTS.md")),
+      "contract block should be installed",
+    )
+  })
+})
+
+// ---- --manifest / --model value guards (AC-9) ------------------------------
+
+// Value guards exit in parseArgs, before any manifest read or HOME access, but
+// every spawned-script test is still confined to a temp HOME so no path drifts
+// toward real-user writes.
+function runGuard(args: string[]) {
+  const home = mkdtempSync(join(tmpdir(), "install-guard-home-"))
+  try {
+    return spawnSync(process.execPath, [join(repoRoot, "scripts/install.mjs"), ...args], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+/** A `--manifest` with no value exits 2, naming the flag (AC-9). */
+test("CLI --manifest with no value exits 2, naming the flag (AC-9)", () => {
+  const res = runGuard(["--manifest"])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /install: --manifest requires a path/)
+})
+
+/** A `--manifest` whose next token is a flag exits 2, naming the flag (AC-9). */
+test("CLI --manifest with a -- value exits 2, naming the flag (AC-9)", () => {
+  const res = runGuard(["--manifest", "--check"])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /install: --manifest requires a path/)
+})
+
+/** A `--model` with no value exits 2, naming the flag even in non-printer mode (AC-9). */
+test("CLI --model with no value exits 2, naming the flag (AC-9)", () => {
+  const res = runGuard(["--model"])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /install: --model requires a spec/)
+})
+
+/** A `--model` whose next token is a flag exits 2, naming the flag (AC-9). */
+test("CLI --model with a -- value exits 2, naming the flag (AC-9)", () => {
+  const res = runGuard(["--model", "--check"])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /install: --model requires a spec/)
+})
+
+/** A `--model` with no value in printer mode exits 2 naming the flag, not a late parseModelSpecs crash (AC-9). */
+test("CLI printer --model with no value exits 2 naming the flag (AC-9)", () => {
+  const res = runGuard(["--print-model-config", "--model"])
+  assert.equal(res.status, 2)
+  assert.match(res.stderr, /install: --model requires a spec/)
 })

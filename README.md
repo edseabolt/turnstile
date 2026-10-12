@@ -16,7 +16,8 @@ Verify with:
 
 ```sh
 npm install
-npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) + install:check + install:agents:check (contract block)
+npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) — host chain only; green on a fresh clone
+npm run ci:installed  # install:check && install:agents:check — run after `npm run init` on a machine with installed artifacts
 ```
 
 ## What it enforces
@@ -299,9 +300,10 @@ Paste the output into `~/.config/opencode/opencode.json` (see the
 [Set the agents' models](#set-the-agents-models) section).
 `opencode-turnstile init -- --print-model-config` routes the same flags
 through `scripts/install.mjs` and adds nothing of its own: `install.mjs`
-recognizes `--print-model-config` and prints before writing, while the router
-still idempotently installs the contract block in
-`~/.config/opencode/AGENTS.md` in the same run.
+recognizes `--print-model-config` and prints before writing, and the router
+skips the agents install step entirely in that case — so the whole command
+writes nothing (no ledger, no links, no contract block). Plain `init` still
+installs everything as usual.
 
 ### Customizing the pipeline agents
 
@@ -358,10 +360,13 @@ Shared caveats:
   delete the checkout; if you relocate it, re-run `npm run init`.
 - `npm run install:check` reports drift between the manifest and what is
   actually installed; `npm run install:agents:check` reports drift between
-  the installed contract block and `templates/global-AGENTS.md`; local
-  `npm run ci` gates on both. GitHub CI runs `npm run ci:host`, the same
-  chain without the install checks, because a runner has no installs to
-  check. Verify a copy install with
+  the installed contract block and `templates/global-AGENTS.md`. These install
+  checks are gated by `npm run ci:installed`, which chains both and must run
+  after `npm run init` on a machine with artifacts installed — a fresh clone
+  has nothing to check. The host chain (`npm run ci` = `npm run ci:host`)
+  covers lint, format:check, typecheck, check:markers, and test without the
+  install checks. GitHub CI runs `npm run ci:host`, the host chain only,
+  because a runner has no installs to check. Verify a copy install with
   `npm run install:check -- --copy`.
 
 ### Install the AGENTS.md contracts
@@ -474,8 +479,10 @@ journal itself as sensitive data (see SECURITY.md).
   - `turnstile.jsonl`: full JSONL trace; rotates at 5 MB, keeps 5
     generations
   - `gate-events.jsonl`: human-readable
-    `YYYY-MM-DD HH:MM | agent | event | detail` lines (suppressed entirely
-    by `trace: false`)
+    `YYYY-MM-DD HH:MM | agent | event | detail` lines, with an optional
+    trailing ` | <sessionID>` segment when the trace line is wired to a
+    session (the first four segments are unchanged when it is absent);
+    suppressed entirely by `trace: false`
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
   ~30 MB per journal, worst case ~60 MB total.
 - `.opencode/plans/*.md` containing `## Decomposition` are load-bearing:

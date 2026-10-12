@@ -49,8 +49,16 @@ sensitivity; do not self-reset.
 
 Trace (works with the plugin off): append every dispatch/verdict to
 `~/.local/share/opencode/metrics/gate-events.jsonl` as
-`YYYY-MM-DD HH:MM | agent | event | detail`. The plugin also writes
+`YYYY-MM-DD HH:MM | agent | event | detail` (session-bound lines carry an
+optional trailing ` | <sessionID>` segment). The plugin also writes
 `~/.local/share/opencode/metrics/turnstile.jsonl`
 (`{ts,sessionID,type,...}`). Read: grep/glob/rg first, whole-file reads last.
+
+Verification: the host chain (`npm run ci`, which is `npm run ci:host`) covers
+lint, format:check, typecheck, check:markers, and test on a fresh checkout and
+writes nothing under `~/.config`; the install-drift chain
+(`npm run ci:installed`, which is `npm run install:check && npm run
+install:agents:check`) runs after `npm run init`, where a machine already has
+artifacts installed to check.
 
 <!-- turnstile:end -->
