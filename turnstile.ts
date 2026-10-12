@@ -42,7 +42,9 @@
  *   journal entries are keyed by the parent session so replay restores where
  *   the gates look.
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
- *   calls, bash commands, errors.
+ *   calls, bash commands, errors, and the load heartbeat
+ *   (a "setup" entry: plugin version, config digest, hook count). Errors also
+ *   cover the stream-end and unresolvable-agent signals; all telemetry only.
  * - Decoding: executor/test-runner/debugger temperature clamped ≤ 0.2;
  *   reviewer temperature = 0.
  * - Config: layered and read once at setup: code defaults ⊕

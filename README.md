@@ -16,7 +16,7 @@ Verify with:
 
 ```sh
 npm install
-npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) + install:check
+npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) + install:check + install:agents:check (contract block)
 ```
 
 ## What it enforces
@@ -29,7 +29,7 @@ npm run ci          # ci:host (lint, format:check, typecheck, check:markers, tes
 | Decomposition gate     | `executor` dispatches must cite `chunk-N` / `AC-n` when any plan in `.opencode/plans/*.md` has a `## Decomposition` block                                                                                                                                                                                                                                                              |
 | Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob)                                                                                                                                                                                                                                                                                                        |
 | Marker parsing         | `GATE:` / `VERDICT:` markers are parsed from task results and child-session text, deduped per task; marker-less outputs from marker-contracted agents (test-runner/reviewer/plan-reviewer) are journaled                                                                                                                                                                               |
-| Trace                  | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, bash commands, errors                                                                                                                                                                                                                                                                                          |
+| Trace                  | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, bash commands, errors; `setup` heartbeat per session (plugin version, config digest, hook count), stream-death errors, unresolvable-agent dispatch errors                                                                                                                                                      |
 | Decoding clamps        | executor/test-runner/debugger temperature ≤ 0.2; reviewer and plan-reviewer temperature = 0                                                                                                                                                                                                                                                                                            |
 | Compaction             | Injects a "preserve verbatim" instruction for markers and findings                                                                                                                                                                                                                                                                                                                     |
 
@@ -357,9 +357,11 @@ Shared caveats:
 - Symlinks point at the clone's absolute path. Do not move, rename, or
   delete the checkout; if you relocate it, re-run `npm run init`.
 - `npm run install:check` reports drift between the manifest and what is
-  actually installed; local `npm run ci` gates on it. GitHub CI runs
-  `npm run ci:host`, the same chain without the install check, because a
-  runner has no installs to check. Verify a copy install with
+  actually installed; `npm run install:agents:check` reports drift between
+  the installed contract block and `templates/global-AGENTS.md`; local
+  `npm run ci` gates on both. GitHub CI runs `npm run ci:host`, the same
+  chain without the install checks, because a runner has no installs to
+  check. Verify a copy install with
   `npm run install:check -- --copy`.
 
 ### Install the AGENTS.md contracts
