@@ -151,9 +151,9 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       })
       throw new BlockError(
         "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
-          "Run the test-runner subagent first; dispatch reviewer only after its first line is " +
+          `Run the ${config.agents.testRunner} subagent first; dispatch ${config.agents.reviewer} only after its first line is ` +
           "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-          "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+          `(the dispatch prompt must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
       )
     }
     // Check-then-increment: the Nth dispatch is allowed and the (N+1)th is
@@ -366,9 +366,9 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
           plan,
         })
         throw new BlockError(
-          `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the plan-reviewer subagent first; proceed with executor only after the plan-reviewer's first line is ` +
+          `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
             "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-            "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+            `(the dispatch prompt must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
         )
       }
     } catch (e) {

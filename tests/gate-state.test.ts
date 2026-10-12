@@ -1063,3 +1063,73 @@ test("replay ignores non-gate entries and restores gate state from a mixed journ
   })
   dispose()
 })
+
+/** With custom agent names and waiver marker, the no-gate-pass message interpolates all three. */
+test("block messages: custom config interpolates into the no-gate-pass message", async () => {
+  const { h, dispose, metricsDir } = await boot({
+    waiverMarker: "OVERRIDE:",
+    agents: { testRunner: "qa-runner", reviewer: "qa-reviewer" },
+  })
+  // Dispatch the customized reviewer name without the waiver marker to trigger the gate.
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "qa-reviewer", prompt: "review it" },
+      }),
+    (e: Error) =>
+      e.message ===
+      "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
+        "Run the qa-runner subagent first; dispatch qa-reviewer only after its first line is " +
+        "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
+        "(the dispatch prompt must contain the literal marker 'OVERRIDE:' followed by the user's words).",
+  )
+  // The customized waiver marker bypasses the gate and is journaled; the
+  // dispatch entry still records the customized agent name.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "qa-reviewer", prompt: "OVERRIDE: user said ship it" },
+  })
+  const dispatched = journalEntries(metricsDir).find(
+    (l) => l.type === "dispatch" && l.agent === "qa-reviewer",
+  )
+  assert.ok(dispatched)
+  const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
+  assert.ok(waived)
+  assert.equal(waived.waiver, "OVERRIDE: user said ship it")
+  dispose()
+})
+
+/** With custom agent names and waiver marker, the plan-approval message interpolates all three. */
+test("block messages: custom config interpolates into the plan-approval message", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const { h, dispose } = await boot({
+      waiverMarker: "OVERRIDE:",
+      agents: { planReviewer: "plan-check", executor: "qa-executor" },
+    })
+    // Dispatch the customized executor name without the waiver marker to trigger the gate.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "qa-executor", prompt: "do the work" },
+        }),
+      (e: Error) =>
+        e.message ===
+        `BLOCKED by turnstile: no plan approval for "plan.md". Dispatch the plan-check subagent first; proceed with qa-executor only after the plan-check's first line is ` +
+          "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
+          "(the dispatch prompt must contain the literal marker 'OVERRIDE:' followed by the user's words).",
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
