@@ -931,7 +931,7 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   const { dispose, metricsDir } = await boot()
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
-  const entry = setups[0]
+  const entry = setups[0]!
   // version is a non-empty string or null (the review finding dropped the
   // strict semver regex so prerelease versions cannot fail this).
   assert.ok(entry.version === null || (typeof entry.version === "string" && entry.version !== ""))
