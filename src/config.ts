@@ -15,7 +15,7 @@ import * as path from "node:path"
 
 import { appendLine, defaultMetricsDir } from "./journal.ts"
 import { GATE_RE, VERDICT_RE } from "./markers.ts"
-import type { TurnstileAgents, TurnstileConfig } from "./types.ts"
+import type { GateEvidenceMode, TurnstileAgents, TurnstileConfig } from "./types.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -26,6 +26,14 @@ export const ENV_KEYS = {
   metricsDir: "TURNSTILE_METRICS_DIR",
   config: "TURNSTILE_CONFIG",
 } as const
+
+/**
+ * Default case-insensitive evidence pattern: plausible test commands across
+ * the common JS and non-JS toolchains. Compiled with `"i"`; a host can override
+ * `evidencePattern` for toolchains the default does not cover.
+ */
+export const DEFAULT_EVIDENCE_PATTERN =
+  "\\b(npm\\s+(run\\s+)?test|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+--test|npx\\s+node\\s+--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
 
 /**
  * Builds the code defaults for every config key.
@@ -57,6 +65,8 @@ export function defaultConfig(
     },
     gateMarker: GATE_RE.source,
     verdictMarker: VERDICT_RE.source,
+    gateEvidence: "enforce",
+    evidencePattern: DEFAULT_EVIDENCE_PATTERN,
   }
 }
 
@@ -75,6 +85,17 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
     return typeof value === "string" && value.trim().length > 0
   }
   if (key === "gateMarker" || key === "verdictMarker") return typeof value === "string"
+  if (key === "gateEvidence" && (value === "enforce" || value === "flag" || value === "off"))
+    return true
+  if (key === "evidencePattern" && typeof value === "string") {
+    // A non-compiling pattern is rejected so `new RegExp` never throws later.
+    try {
+      new RegExp(value, "i")
+      return true
+    } catch {
+      return false
+    }
+  }
   return typeof value === "number" && Number.isFinite(value) && value > 0
 }
 
@@ -103,6 +124,8 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "plansDir") config.plansDir = value as string
   else if (key === "gateMarker") config.gateMarker = value as string
   else if (key === "verdictMarker") config.verdictMarker = value as string
+  else if (key === "gateEvidence") config.gateEvidence = value as GateEvidenceMode
+  else if (key === "evidencePattern") config.evidencePattern = value as string
   else config[key as NumericConfigKey] = value as number
 }
 
@@ -166,6 +189,16 @@ export function mergeConfig(
     }
     if (!(key in config)) {
       warnings.push(`config: unknown key "${key}" ignored`)
+      continue
+    }
+    if (key === "gateEvidence") {
+      // Validated/assigned by the shared helpers; only the warning wording is
+      // special-cased to name the three accepted literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push(`config: gateEvidence must be "enforce", "flag", or "off"; keeping default`)
+      }
       continue
     }
     if (isValidScalar(key as keyof TurnstileConfig, value)) {

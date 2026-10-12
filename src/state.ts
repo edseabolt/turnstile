@@ -15,6 +15,7 @@ import type { ChildVerdict, GateState } from "./types.ts"
 export function newState(): GateState {
   return {
     hasGatePass: false,
+    unverifiedPass: "",
     hasPlanVerdict: false,
     seenFrom: new Map(),
     suppressedPending: 0,
@@ -57,6 +58,14 @@ export interface GateLedger {
    * @returns The session's mutable gate state.
    */
   state(sessionID: string): GateState
+  /**
+   * Returns the gate state for a session without creating one, for read-only
+   * checks that must not insert a fresh bucket into the LRU (e.g. promotion
+   * lookups for unknown bash sessions).
+   * @param sessionID The session ID to look up.
+   * @returns The session's mutable gate state, or `undefined` when none exists.
+   */
+  peek(sessionID: string): GateState | undefined
   /**
    * Resets a session's gate state for a new user prompt (a new prompt starts a
    * new task). The first prompt after a restart carries the journal-replayed
@@ -107,16 +116,26 @@ export interface GateLedger {
 /**
  * Replays the journal's tail so completed `GATE: PASS` entries restore
  * gate state after a restart. Reads the last 2000 lines; skips malformed
- * lines. Only the *last* gate result per session decides the restored
- * state, mirroring the runtime latest-wins rule: a trailing `GATE: FAIL`
- * keeps the gate red. Fail-open. Both restore loops tag the bucket with
- * `replayGrace` — the one-prompt survival window for the first post-restart
- * prompt; both loops touch the same bucket object when a session has both a
- * gate and a plan result, so the tag is set once. A restored `hasPlanVerdict`
- * is trusted for exactly the current plans-dir state (no signature is journaled,
- * so it stamps an empty ""), which the grace prompt's executor dispatch accepts
- * once and re-stamps via reconcilePlanStamp — edits _after_ restart still
- * invalidate the restored approval.
+ * lines. Only the *last flipping* gate result per session decides the
+ * restored state, mirroring the runtime latest-wins rule (a trailing
+ * `GATE: FAIL` keeps the gate red). Fail-open.
+ *
+ * A replayed green is journaled audited evidence, not runtime proof: the
+ * flipping-entry filter skips enforce-mode `verified:false` PASSes (they
+ * never flipped at runtime, so they must not restore), while flag-mode
+ * `verified:false` PASSes restore green (they DID flip at runtime) and
+ * field-less legacy PASSes restore (fail-open). `unverifiedPass` is never
+ * restored here and is task-scoped like `seen`/`reads`: as a consequence, a
+ * runtime `gate-unverified` block (unverified PASS awaiting evidence) can
+ * become a `no-gate-pass` block after a restart — same enforcement strength,
+ * different diagnostic message. Both restore loops
+ * tag the bucket with `replayGrace` — the one-prompt survival window for the
+ * first post-restart prompt; both loops touch the same bucket object when a
+ * session has both a gate and a plan result, so the tag is set once. A
+ * restored `hasPlanVerdict` is trusted for exactly the current plans-dir state
+ * (no signature is journaled, so it stamps an empty ""), which the grace
+ * prompt's executor dispatch accepts once and re-stamps via reconcilePlanStamp
+ * — edits _after_ restart still invalidate the restored approval.
  * @param states The session→state map to populate.
  * @param journalPath Absolute path of the JSONL journal to replay; the prior
  *     generation (`${journalPath}.1`) is read first so the 2000-line tail
@@ -138,8 +157,20 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
       const lastPlanResult = new Map<string, string>()
       for (const line of lines.slice(-2000)) {
         try {
-          const e = JSON.parse(line) as { type?: unknown; sessionID?: unknown; result?: unknown }
+          const e = JSON.parse(line) as {
+            type?: unknown
+            sessionID?: unknown
+            result?: unknown
+            verified?: unknown
+            mode?: unknown
+          }
           if (e.type === "gate" && e.sessionID && (e.result === "PASS" || e.result === "FAIL")) {
+            // Flipping-entry rule (map-fill, not the restore loop): an
+            // enforce-mode unverified PASS never flips (nor did it at runtime),
+            // so it is not recorded as the deciding last result. A flag-mode
+            // verified:false PASS DID flip at runtime and restores green; a
+            // legacy field-less PASS restores (fail-open, documented).
+            if (e.result === "PASS" && e.verified === false && e.mode !== "flag") continue
             lastGateResult.set(e.sessionID as string, e.result)
           }
           if (
@@ -231,6 +262,10 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
         cap(states)
       }
       return s
+    },
+    peek(sessionID: string): GateState | undefined {
+      // Pure read: no insertion, no LRU reorder.
+      return states.get(sessionID)
     },
     resetState(sessionID: string): void {
       // delete+set keeps the LRU MRU position and the cap, as a plain reset.

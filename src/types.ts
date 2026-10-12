@@ -76,9 +76,24 @@ export interface StreamEvent {
   properties?: EventProperties
 }
 
+/**
+ * Evidence-correlation mode for the reviewer gate. `enforce` (default) refuses
+ * to flip `hasGatePass` on a `GATE: PASS` with no correlated exit-0
+ * bash/shell test execution; `flag` flips but still stamps `verified`;
+ * `off` behaves exactly as before (no correlation).
+ */
+export type GateEvidenceMode = "enforce" | "flag" | "off"
+
 /** Gate state for one parent session. */
 export interface GateState {
   hasGatePass: boolean
+  /**
+   * Last `GATE: PASS` rejected for lack of correlated test execution (an
+   * unverified claim under `enforce`); "" when none. Cleared on a green flip,
+   * on `GATE: FAIL`, and on a task reset. Task-scoped: never carried through
+   * `mergeAfterReplay`.
+   */
+  unverifiedPass: string
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
   /**
@@ -119,6 +134,14 @@ export interface MarkerEvent {
   marker: string
   result?: "PASS" | "FAIL"
   rounds?: number
+  /**
+   * Evidence verdict of a `PASS` gate event: true (correlated exit-0 test
+   * execution exists for this session) or false (flagged, unverified). Present
+   * only on `PASS` gate events when the evidence mode is not `"off"`.
+   */
+  verified?: boolean
+  /** Evidence mode at the time this event was stamped, when `verified` is. */
+  mode?: GateEvidenceMode
   /** Marker matches observed in the same text but not journaled
    *  (latest-wins policy); 0 when this was the only match. */
   suppressed: number
@@ -184,6 +207,20 @@ export interface TurnstileConfig {
   gateMarker: string
   /** Verdict marker regex source (compiled with `gm`). */
   verdictMarker: string
+  /**
+   * Evidence-correlation mode for the reviewer gate: `enforce` (default)
+   * requires a correlated exit-0 bash/shell test execution before a
+   * `GATE: PASS` flips the gate; `flag` flips yet stamps `verified`; `off`
+   * keeps the pre-evidence behavior. See `src/evidence.ts`.
+   */
+  gateEvidence: GateEvidenceMode
+  /**
+   * Case-insensitive regex source a successful (exit-0) bash/shell command
+   * must match to count as test execution. Overridable for non-JS/other
+   * toolchains; the default covers npm/pnpm/yarn/bun/deno/node --test/
+   * pytest/make test/go test/cargo test.
+   */
+  evidencePattern: string
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */

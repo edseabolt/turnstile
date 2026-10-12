@@ -14,8 +14,15 @@ import * as path from "node:path"
 const xdgTmp = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-xdg-"))
 process.env.XDG_DATA_HOME = xdgTmp
 
-const { configDigest, defaultConfig, CONFIG_PATH, ENV_KEYS, loadConfig, mergeConfig } =
-  await import("../src/config.ts")
+const {
+  configDigest,
+  defaultConfig,
+  CONFIG_PATH,
+  ENV_KEYS,
+  loadConfig,
+  mergeConfig,
+  DEFAULT_EVIDENCE_PATTERN,
+} = await import("../src/config.ts")
 const { DEFAULT_JOURNAL_PATH } = await import("../src/journal.ts")
 const { GATE_RE } = await import("../src/markers.ts")
 
@@ -30,6 +37,8 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.trace, true)
   assert.equal(cfg.journalMaxBytes, 5 * 1024 * 1024)
   assert.equal(cfg.journalMaxGenerations, 5)
+  assert.equal(cfg.gateEvidence, "enforce")
+  assert.equal(cfg.evidencePattern, DEFAULT_EVIDENCE_PATTERN)
   assert.deepEqual(cfg.agents, {
     reviewer: "reviewer",
     planReviewer: "plan-reviewer",
@@ -275,4 +284,49 @@ test("loadConfig re-derives when an explicit bareOutput equals the default liter
   )
   const { config } = loadConfig({ [ENV_KEYS.config]: file })
   assert.deepEqual(config.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
+})
+
+/** (AC-8) an invalid gateEvidence value keeps the default, names the key, and warns once. */
+test("mergeConfig rejects an invalid gateEvidence and keeps the enforce default", () => {
+  const base = defaultConfig({})
+  assert.equal(base.gateEvidence, "enforce")
+  const { config, warnings } = mergeConfig(base, { gateEvidence: "strict" })
+  assert.equal(config.gateEvidence, "enforce")
+  assert.deepEqual(warnings, [
+    'config: gateEvidence must be "enforce", "flag", or "off"; keeping default',
+  ])
+})
+
+/** (AC-8) every valid gateEvidence literal is accepted verbatim. */
+test("mergeConfig accepts each valid gateEvidence literal", () => {
+  for (const mode of ["enforce", "flag", "off"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { gateEvidence: mode })
+    assert.equal(config.gateEvidence, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** (AC-8) a non-compiling evidencePattern keeps the default and warns naming the key. */
+test("mergeConfig rejects a non-compiling evidencePattern and keeps the default", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { evidencePattern: "(" })
+  assert.equal(config.evidencePattern, base.evidencePattern)
+  assert.ok(
+    warnings.some((w) => w === 'config: invalid value for "evidencePattern"; keeping default'),
+  )
+})
+
+/** (AC-8) a compiling evidencePattern is accepted, even one overriding the default toolchain. */
+test("mergeConfig accepts a compiling custom evidencePattern", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { evidencePattern: "\\brspec\\b" })
+  assert.equal(config.evidencePattern, "\\brspec\\b")
+  assert.equal(warnings.length, 0)
+})
+
+/** (AC-8) the digest flips when gateEvidence or evidencePattern override defaults. */
+test("configDigest flips on evidence-key overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, gateEvidence: "flag" }))
+  assert.notEqual(configDigest(base), configDigest({ ...base, evidencePattern: "\\brspec\\b" }))
 })

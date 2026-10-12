@@ -18,9 +18,15 @@
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
  *   it), or an explicit user waiver (the dispatch prompt must contain the
- *   literal marker `USER WAIVER:`). A journal-replayed `GATE: PASS` survives
- *   the first prompt after a restart (the resume prompt) and then every later
- *   prompt starts a clean cycle.
+ *   literal marker `USER WAIVER:`). Under the default `gateEvidence:enforce`
+ *   mode a `GATE: PASS` satisfies the gate only when the current task's
+ *   bash/shell executions include a matching exit-0 test command (plausibility
+ *   via `evidencePattern`); an unverified PASS is journaled `verified:false`
+ *   and does not flip the gate. `flag` degrades to the historical
+ *   flip-on-trust semantics while still stamping `verified`, and `off`
+ *   journals without the field — both documented in the README. A
+ *   journal-replayed `GATE: PASS` survives the first prompt after a restart
+ *   (the resume prompt) and then every later prompt starts a clean cycle.
  * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
  *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
  *   counting toward it; a new user prompt resets it.
