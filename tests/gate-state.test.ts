@@ -12,6 +12,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { BlockError } from "../src/gates.ts"
+import { newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,
@@ -20,6 +21,7 @@ import {
   journalEntries,
   makeFakeHost,
   tmpDir,
+  traceText,
   waitUntil,
   type FakeHost,
 } from "./helpers.ts"
@@ -220,6 +222,101 @@ test("only the last marker per text is journaled; earlier matches counted as sup
   assert.ok(gates[0])
   assert.equal(gates[0].result, "PASS")
   assert.equal(gates[0].suppressed, 1)
+  dispose()
+})
+
+/** A second same-parent child delivering a byte-identical GATE: PASS is a
+ *  cross-child dedup hit: it is silent, and the pending suppression surfaces
+ *  on the parent's next emitted marker event (suppressed >= 1). The first
+ *  same-child event is not suppressed. */
+test("a cross-child dedup hit surfaces as suppressed on the parent's next marker event", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  // Two children share parent p1; both stream byte-identical GATE: PASS.
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c2", error: "warmup" } })
+  await waitUntil(
+    () =>
+      journalEntries(metricsDir).filter((l) => l.type === "error" && l.error === "warmup").length >=
+      2,
+  )
+  const text = "GATE: PASS tests=2 passed=2 failed=0"
+  // c1 first-sight (suppressed 0); c2 byte-identical dedup hit (different raw).
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text } })
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text } })
+  // c1 emits a genuinely new marker: the parent's next marker event.
+  h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: "c1", text: "GATE: PASS tests=3 passed=3 failed=0" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && (l.suppressed ?? 0) >= 1),
+  )
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate")
+  assert.ok(gates[0], "expected the first-sight gate to be journaled")
+  // The first-sight event carries no suppression...
+  assert.equal(gates[0].suppressed ?? 0, 0)
+  // ...but the next marker event after c2's cross-child hit accounts for it.
+  assert.ok(gates.some((l) => (l.suppressed ?? 0) >= 1))
+  dispose()
+})
+
+/** Repeated re-delivery of the same text by one child is a same-child dedup
+ *  hit: the pending counter is never incremented, so a later new marker from
+ *  that child journals suppressed 0. */
+test("same-child re-delivery never counts as suppression", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  const text = "GATE: PASS tests=2 passed=2 failed=0"
+  // Repeated streaming of the same text from the same child.
+  for (let i = 0; i < 3; i++) {
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text } })
+  }
+  // A genuinely new marker from the same child journals no cross-child loss.
+  h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: "c1", text: "GATE: PASS tests=4 passed=4 failed=0" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  // Settle: give the loop a beat to process the re-deliveries before asserting.
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate")
+  const newGate = gates.find((l) => l.marker === "GATE: PASS tests=4 passed=4 failed=0")
+  assert.ok(newGate, "expected the new marker to be journaled")
+  assert.equal(newGate.suppressed ?? 0, 0)
+  dispose()
+})
+
+/** Task-result deliveries use a unique dedup scope per delivery, so two
+ *  concurrent task-result deliveries of byte-identical markers are both journaled
+ *  with suppressed 0 (the unique-scope guard must not regress to cross-charging). */
+test("two concurrent task-result deliveries with identical markers journal suppressed 0", async () => {
+  const { h, dispose, metricsDir } = await boot({ maxReviewerRounds: 2 })
+  const result = { output: "VERDICT: BLOCK crit=1 high=0 med=0 low=0\nmore text" }
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result,
+  })
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result,
+  })
+  const verdicts = journalEntries(metricsDir).filter((l) => l.type === "verdict")
+  // Each execute.after is a distinct delivery: byte-identical markers still
+  // leave independent journal evidence (unique per-delivery scope).
+  assert.equal(verdicts.length, 2)
+  assert.ok(verdicts.every((l) => (l.suppressed ?? 0) === 0))
   dispose()
 })
 
@@ -944,6 +1041,15 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   dispose()
 })
 
+/** (o) a renamed testRunner (no explicit bareOutput) shows derived bareOutput in the heartbeat. */
+test("heartbeat trace-mode agents derive bareOutput from a renamed testRunner", async () => {
+  const { dispose, metricsDir } = await boot({ agents: { testRunner: "ci-bot" } })
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  assert.deepEqual(setups[0]?.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
+  dispose()
+})
+
 /** Without trace, only the digest represents the config in the heartbeat. */
 test("setup heartbeat redacts trace fields when trace is false", async () => {
   const { dispose, metricsDir } = await boot({ trace: false })
@@ -1132,4 +1238,309 @@ test("block messages: custom config interpolates into the plan-approval message"
   } finally {
     process.chdir(prev)
   }
+})
+
+/** A fresh GateState initializes the dedup-provenance map and the pending
+ *  cross-child suppression counter, and no longer carries the removed
+ *  verdicts list. */
+test("newState initializes seenFrom and suppressedPending and omits verdicts", () => {
+  const s = newState()
+  assert.ok(s.seenFrom instanceof Map)
+  assert.equal(s.seenFrom.size, 0)
+  assert.equal(s.suppressedPending, 0)
+  assert.equal("verdicts" in s, false)
+})
+
+/** An invalid `gateMarker` config falls back to the canonical regex and journals
+ * exactly one `type:"error"` naming the key; enforcement still matches canonical
+ * GATE: PASS output. */
+test("observability: invalid gateMarker journals one error naming the key and canonical markers still match", async () => {
+  const { h, dispose, metricsDir } = await boot({ gateMarker: "([" })
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+  })
+  const errors = journalEntries(metricsDir).filter((l) => l.type === "error")
+  assert.equal(errors.length, 1, "the compile fallback journals exactly one error")
+  assert.match(errors[0]!.error, /gateMarker/, "the error names the offending key")
+  // Enforcement continues with the canonical regex despite the bad config.
+  const gate = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "PASS")
+  assert.ok(gate, "the canonical GATE: PASS marker still matches")
+  dispose()
+})
+
+/** An invalid `verdictMarker` config falls back to the canonical regex and journals
+ * exactly one `type:"error"` naming the key; enforcement still matches canonical
+ * VERDICT: output. */
+test("observability: invalid verdictMarker journals one error naming the key and canonical markers still match", async () => {
+  const { h, dispose, metricsDir } = await boot({ verdictMarker: "(*" })
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer" },
+    result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+  })
+  const errors = journalEntries(metricsDir).filter((l) => l.type === "error")
+  assert.equal(errors.length, 1, "the compile fallback journals exactly one error")
+  assert.match(errors[0]!.error, /verdictMarker/, "the error names the offending key")
+  const verdict = journalEntries(metricsDir).find(
+    (l) => l.type === "verdict" && l.marker?.startsWith("VERDICT: APPROVE"),
+  )
+  assert.ok(verdict, "the canonical VERDICT marker still matches")
+  dispose()
+})
+
+/** Every session-bound trace line ends with the wired session's ` | <id>`
+ * tail; dispatch, gate, waiver and plan-waiver are reachable from callTool. */
+test("trace lines carry a trailing ` | <sessionID>` when wired to a session", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  // dispatch: a task execute.before fires the orchestrator dispatch trace.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+  })
+  // gate: a test-runner GATE: PASS execution fires the test-runner gate trace.
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+  })
+  // waiver: a USER WAIVER prompt on a reviewer dispatch fires the gate waiver
+  // trace (guardReviewerDispatch handles the waiver before plan approval).
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "USER WAIVER: the user shipped it" },
+  })
+  // plan-waiver: the same marker on an executor dispatch fires the
+  // plan-approval waiver trace (enforcePlanApproval). The chunk-3 ref lets
+  // it clear the decomposition gate so the waiver trace is the only outcome.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "executor", prompt: "USER WAIVER: please proceed, chunk-3" },
+  })
+  const lines = traceText(metricsDir).trim().split("\n").filter(Boolean)
+  const carriesTail = (needle: string): boolean =>
+    lines.some((l) => l.includes(needle) && l.endsWith(" | p1"))
+  assert.ok(
+    carriesTail("| orchestrator | dispatch | task -> test-runner"),
+    "the dispatch trace carries the sessionID tail",
+  )
+  assert.ok(
+    carriesTail("| test-runner | gate | GATE: PASS"),
+    "the gate trace carries the sessionID tail",
+  )
+  assert.ok(
+    carriesTail("| user | waiver | USER WAIVER"),
+    "the waiver trace carries the sessionID tail",
+  )
+  assert.ok(
+    carriesTail("| user | plan-waiver | USER WAIVER"),
+    "the plan-waiver trace carries the sessionID tail",
+  )
+  dispose()
+})
+
+/** A child-session verdict attributes to the parent and its trace line ends
+ * with the parent session's ` | <id>` tail. */
+test("trace lines carry a trailing ` | <sessionID>` for a child verdict", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({ sessionRecords: new Map([["c1", { parentID: "p1" }]]) })
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  h.pushEvent({
+    type: "message.part.updated",
+    data: {
+      sessionID: "c1",
+      part: { type: "text", text: "VERDICT: APPROVE crit=0 high=0 med=1 low=2" },
+    },
+  })
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+  const verdictLine = traceText(metricsDir)
+    .trim()
+    .split("\n")
+    .find((l) => l.includes("| reviewer | verdict |"))
+  assert.ok(verdictLine, "a reviewer verdict trace line is emitted")
+  assert.ok(verdictLine?.endsWith(" | p1"), "the verdict trace carries the parent sessionID tail")
+  dispose()
+})
+
+/** An unreadable plan file throws mid-scan: the fail-open catches in
+ *  `enforcePlanApproval` + `enforceDecomposition` now journal a `type:"error"`
+ *  (they were silent before) while the executor dispatch still passes through
+ *  with no BlockError. The real Decomposition block path still propagates a
+ *  BlockError when the plans dir is readable. Skipped as root, where the
+ *  permission bits are bypassed. */
+test("executor dispatch journals a fail-open error on an unreadable plan and does not block", async () => {
+  if (process.getuid?.() === 0) return
+  const project = tmpDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  const planPath = path.join(plansDir, "plan.md")
+  fs.writeFileSync(planPath, "# P\n## Decomposition\n- chunk-1\n")
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const { h, dispose, metricsDir } = await boot()
+    // Real block path: a readable Decomposition plan, approved → executor blocked.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      (e: Error) =>
+        e.message ===
+        'BLOCKED by turnstile: plan "plan.md" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.',
+    )
+    // Now the plan is unreadable: scanPlans throws EACCES, both enforce gates
+    // journal a fail-open error and the executor dispatch passes through.
+    const mode = fs.statSync(planPath).mode
+    fs.chmodSync(planPath, 0o000)
+    try {
+      await callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      })
+      const errors = journalEntries(metricsDir).filter((l) => l.type === "error")
+      assert.ok(
+        errors.some((l) => l.error?.includes("plans dir unreadable")),
+        "a fail-open plans-dir error is journaled (no silent suppression)",
+      )
+    } finally {
+      fs.chmodSync(planPath, mode)
+    }
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/** Replay reads the rotated generation: a GATE: PASS buried in
+ *  `turnstile.jsonl.1` alone (no current journal) restores the parent-keyed
+ *  gate across a restart. */
+test("journal replay restores a GATE: PASS from the previous generation alone", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl.1"),
+    `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  dispose()
+})
+
+/** Replay latest-wins carries across files: a current-file GATE: FAIL for a
+ *  session overrides the same session's PASS in the previous generation,
+ *  keeping the gate red. */
+test("journal replay: current-file entry wins over the previous generation for the same session", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl.1"),
+    `${JSON.stringify({ ts: "t1", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t2", type: "gate", sessionID: "p1", raw: "c2", result: "FAIL" })}\n`,
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "reviewer", prompt: "review it" },
+      }),
+    (e: Error) => e.message === NO_GATE_MESSAGE,
+  )
+  dispose()
+})
+
+/** Replay skips malformed lines in both generations and still restores a valid
+ *  GATE: PASS alongside them. */
+test("journal replay skips malformed lines in both generations and restores the valid PASS", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl.1"),
+    `not json\n${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c2", result: "PASS" })}\n`,
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  dispose()
+})
+
+/** Replay's 2000-line tail is bound across both generations, not per file: a
+ *  GATE: PASS whose only entry lands before the combined last 2000 lines (here
+ *  1500 in `.1` + 600 current = 2100, dropping the first 100) is dropped, so
+ *  the session's gate stays red. */
+test("journal replay tail is bounded at 2000 lines across both generations", async () => {
+  const metricsDir = tmpDir()
+  // `.1`: 1500 lines; only the first (pDropped) is uniquely ours.
+  const prior = new Array(1500)
+    .fill(null)
+    .map((_, i) =>
+      JSON.stringify({
+        ts: "t",
+        type: "gate",
+        sessionID: i === 0 ? "pDropped" : "pFiller",
+        raw: `c${i}`,
+        result: "PASS",
+      }),
+    )
+    .join("\n")
+  fs.writeFileSync(path.join(metricsDir, "turnstile.jsonl.1"), `${prior}\n`)
+  // current: 600 PASS for the filler, so pDropped's sole entry is dropped.
+  const current = new Array(600)
+    .fill(null)
+    .map((_, i) =>
+      JSON.stringify({ ts: "t", type: "gate", sessionID: "pFiller", raw: `d${i}`, result: "PASS" }),
+    )
+    .join("\n")
+  fs.writeFileSync(path.join(metricsDir, "turnstile.jsonl"), `${current}\n`)
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  // pDropped's only entry (line 1 of `.1`) is beyond the last 2000 combined
+  // lines, so it is not restored and the reviewer dispatch is blocked.
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "pDropped",
+        input: { agent: "reviewer", prompt: "review it" },
+      }),
+    (e: Error) => e.message === NO_GATE_MESSAGE,
+  )
+  dispose()
 })

@@ -15,7 +15,7 @@ import * as path from "node:path"
 
 import { appendLine, defaultMetricsDir } from "./journal.ts"
 import { GATE_RE, VERDICT_RE } from "./markers.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { TurnstileAgents, TurnstileConfig } from "./types.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -69,6 +69,9 @@ export function defaultConfig(
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "trace") return typeof value === "boolean"
   if (key === "metricsDir" || key === "waiverMarker" || key === "plansDir") {
+    if (key === "metricsDir") {
+      return typeof value === "string" && value.trim().length > 0 && path.isAbsolute(value)
+    }
     return typeof value === "string" && value.trim().length > 0
   }
   if (key === "gateMarker" || key === "verdictMarker") return typeof value === "string"
@@ -235,10 +238,63 @@ function applyEnvLayer(config: TurnstileConfig, env: Record<string, string | und
   }
   const metricsDir = env[ENV_KEYS.metricsDir]
   if (metricsDir !== undefined) {
-    if (metricsDir.trim().length > 0) config.metricsDir = metricsDir
-    else warnings.push(`env ${ENV_KEYS.metricsDir} empty; keeping current value`)
+    if (metricsDir.trim().length === 0) {
+      warnings.push(`env ${ENV_KEYS.metricsDir} empty; keeping current value`)
+    } else if (!path.isAbsolute(metricsDir)) {
+      warnings.push(`env ${ENV_KEYS.metricsDir}="${metricsDir}" is relative; keeping current value`)
+    } else {
+      config.metricsDir = metricsDir
+    }
   }
   return warnings
+}
+
+/**
+ * Defends the fully-resolved config against inter-key and path invariants that
+ * no single layer validator catches, so hand-constructed configs cannot slip a
+ * bad value past the merge-time checks. Mutates `config` in place (clamping
+ * `readWarn` below `readBlock`, warning on a relative `metricsDir`) and
+ * returns one warning string per correction.
+ *
+ * Called once at the end of `loadConfig` after every layer has merged, so the
+ * defaults (8 < 15, absolute dir) never trip it and the golden digest stays
+ * stable.
+ * @param config The resolved config to validate.
+ * @returns One warning string per corrected/resolved invariant.
+ */
+function validateResolved(config: TurnstileConfig): string[] {
+  const warnings: string[] = []
+  if (config.readWarn >= config.readBlock) {
+    const warn = config.readWarn
+    const block = config.readBlock
+    config.readWarn = Math.max(block - 1, 0)
+    warnings.push(
+      `config: readWarn (${warn}) >= readBlock (${block}); clamping readWarn to ${config.readWarn}`,
+    )
+  }
+  if (!path.isAbsolute(config.metricsDir)) {
+    warnings.push(
+      `config: metricsDir "${config.metricsDir}" is relative; journaling resolves against the process cwd`,
+    )
+  }
+  return warnings
+}
+
+/**
+ * Re-derives `bareOutput` from the configured agent names when the resolved
+ * list is still the unchanged default literal (i.e. nobody configured it), so
+ * a renamed agent stays bare-output-qualified automatically. Explicit lists
+ * are kept verbatim so no configured name ever vanishes. Mutates
+ * `agents.bareOutput` in place.
+ * @param agents The resolved agents block to update in place.
+ * @param defaultBareOutput The current default bare-output literal.
+ */
+function deriveBareOutput(agents: TurnstileAgents, defaultBareOutput: string[]): void {
+  if (JSON.stringify(agents.bareOutput) !== JSON.stringify(defaultBareOutput)) return
+  const derived = [agents.testRunner, agents.reviewer, agents.planReviewer].filter(
+    (name): name is string => typeof name === "string" && name.trim().length > 0,
+  )
+  agents.bareOutput = derived.filter((name, i) => derived.indexOf(name) === i)
 }
 
 /**
@@ -255,8 +311,9 @@ export function loadConfig(
   overrides?: Partial<TurnstileConfig>,
 ): { config: TurnstileConfig; warnings: string[] } {
   const warnings: string[] = []
+  const defaults = defaultConfig(env)
   const fileLayer = readFileLayer(env)
-  const fileMerge = mergeConfig(defaultConfig(env), fileLayer.patch)
+  const fileMerge = mergeConfig(defaults, fileLayer.patch)
   const config = fileMerge.config
   warnings.push(...fileLayer.warnings, ...fileMerge.warnings)
   warnings.push(...applyEnvLayer(config, env))
@@ -266,6 +323,8 @@ export function loadConfig(
     resolved = merged.config
     warnings.push(...merged.warnings)
   }
+  warnings.push(...validateResolved(resolved))
+  deriveBareOutput(resolved.agents, defaults.agents.bareOutput)
   for (const warning of warnings) {
     if (!warning.startsWith("config file")) journalConfigError(warning, env)
   }

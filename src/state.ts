@@ -16,7 +16,8 @@ export function newState(): GateState {
   return {
     hasGatePass: false,
     hasPlanVerdict: false,
-    verdicts: [],
+    seenFrom: new Map(),
+    suppressedPending: 0,
     reviewRounds: 0,
     reads: 0,
     seen: new Set(),
@@ -31,8 +32,9 @@ export function newState(): GateState {
  * Builds the gate state for the first post-restart prompt (the grace prompt):
  * carries the replayed bucket's current flag _values_ forward — not provenance
  * — so a live `GATE: FAIL` after replay is never resurrected. All other fields
- * (`verdicts`, `reviewRounds`, `reads`, `seen`, the empty `plansSignature`
- * stamp) come fresh; the returned bucket's `replayGrace` is consumed (false).
+ * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reads`, `seen`, the empty
+ * `plansSignature` stamp) come fresh; the returned bucket's `replayGrace` is
+ * consumed (false).
  * @param prior The replayed bucket being reset.
  * @returns A reset bucket with the prior flags; grace consumed.
  */
@@ -60,8 +62,9 @@ export interface GateLedger {
    * new task). The first prompt after a restart carries the journal-replayed
    * flags forward with a single-prompt grace (values, not provenance — a live
    * GATE: FAIL after replay is carried as false); every later prompt fully
-   * resets (fresh flags; `reviewRounds`/`reads`/`seen`/`verdicts` are always
-   * fresh). Fail-open: pure object map operations.
+   * resets (fresh flags; `reviewRounds`/`reads`/`seen`/`seenFrom`/
+   * `suppressedPending` are always fresh). Fail-open: pure object map
+   * operations.
    * @param sessionID The parent session ID to reset.
    */
   resetState(sessionID: string): void
@@ -115,12 +118,22 @@ export interface GateLedger {
  * once and re-stamps via reconcilePlanStamp — edits _after_ restart still
  * invalidate the restored approval.
  * @param states The session→state map to populate.
- * @param journalPath Absolute path of the JSONL journal to replay.
+ * @param journalPath Absolute path of the JSONL journal to replay; the prior
+ *     generation (`${journalPath}.1`) is read first so the 2000-line tail
+ *     bound holds across both files. Exactly one generation deep — README:474
+ *     keeps 5, but a 5-file replay would cost ~25 MB of boot I/O worst case,
+ *     so one generation is replayed.
  */
 function replayGatePasses(states: Map<string, GateState>, journalPath: string): void {
   try {
-    if (fs.existsSync(journalPath)) {
-      const lines = fs.readFileSync(journalPath, "utf8").split("\n").filter(Boolean)
+    // Read the rotated generation first (`.1`, older) then the current file,
+    // oldest-first, so the slice(-2000) tail bound holds across both files.
+    // Generations are time-ordered, so latest-wins still falls out naturally.
+    const generations = [`${journalPath}.1`, journalPath].filter((p) => fs.existsSync(p))
+    if (generations.length > 0) {
+      const lines = generations.flatMap((p) =>
+        fs.readFileSync(p, "utf8").split("\n").filter(Boolean),
+      )
       const lastGateResult = new Map<string, string>()
       const lastPlanResult = new Map<string, string>()
       for (const line of lines.slice(-2000)) {

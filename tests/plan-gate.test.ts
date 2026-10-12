@@ -945,8 +945,10 @@ test("plan gate: deleting a plan invalidates via the name set", async () => {
 
 /**
  * AC-3 (fail-open widening): an unreadable plan file throws mid-scan, and
- * enforcePlanApproval's silent fail-open catch lets the dispatch through
- * (no BlockError). Skipped as root, where permission bits are bypassed.
+ * enforcePlanApproval's fail-open catch lets the dispatch through (no
+ * BlockError) while now journaling a `type:"error"` so the suppression is
+ * observable rather than silent. Skipped as root, where permission bits are
+ * bypassed.
  */
 test("plan gate: unreadable plan file mid-scan fails open (executor allowed)", async () => {
   if (process.getuid?.() === 0) return
@@ -973,8 +975,17 @@ test("plan gate: unreadable plan file mid-scan fails open (executor allowed)", a
         sessionID: "p1",
         input: { agent: "executor", prompt: "do the work" },
       })
-      // Catches stay silent: the failed scan journals nothing new.
-      assert.ok(!journalEntries(metricsDir).some((l) => l.type === "blocked" || l.type === "error"))
+      // The failed scan fails open (executor not blocked) and journals a
+      // `type:"error"` so the silent suppression is observable.
+      assert.equal(
+        journalEntries(metricsDir).filter((l) => l.type === "blocked").length,
+        0,
+        "the executor is not blocked on an unreadable plan",
+      )
+      assert.ok(
+        journalEntries(metricsDir).some((l) => l.type === "error"),
+        "the fail-open catch journals the error",
+      )
     } finally {
       fs.chmodSync(planPath, mode)
     }

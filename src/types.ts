@@ -81,7 +81,20 @@ export interface GateState {
   hasGatePass: boolean
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
-  verdicts: string[]
+  /**
+   * Dedup key → raw session ID that first observed the marker; written
+   * alongside `seen.add` by `observeMarker`. Tracks first-sight provenance so
+   * a dedup hit from a different raw session can be accounted as cross-child
+   * suppression (a different raw session than the stored provenance).
+   */
+  seenFrom: Map<string, string>
+  /**
+   * Cross-child suppressions pending attribution on the next emitted
+   * `MarkerEvent` (a dedup hit whose raw session differs from the provenance
+   * stored in `seenFrom`). Read and zeroed when an event emits; 0 on a fresh
+   * bucket.
+   */
+  suppressedPending: number
   reviewRounds: number
   reads: number
   seen: Set<string>

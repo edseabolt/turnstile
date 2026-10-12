@@ -129,7 +129,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         // the trace is enabled (SECURITY.md redaction contract).
         waiver: config.trace ? prompt.slice(at, at + 200) : "<present>",
       })
-      journaler.traceEvent("user", "waiver", prompt.slice(at, at + 120))
+      journaler.traceEvent("user", "waiver", prompt.slice(at, at + 120), sessionID)
     }
     if (s.reviewRounds >= config.maxReviewerRounds && !waived) {
       journaler.journal({
@@ -303,7 +303,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       }
     } catch (e) {
       if (e instanceof BlockError) throw e
-      // unreadable plans dir: fail-open
+      // Journal the fail-open so an unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
     }
   }
 
@@ -320,8 +321,9 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     if (!fs.existsSync(plansDir)) return null
     try {
       return scanPlans(plansDir).key
-    } catch {
-      // unreadable plans dir: fail-open (unstampable approval → "")
+    } catch (e) {
+      // Journal the fail-open so the unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
       return null
     }
   }
@@ -342,7 +344,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         // the trace is enabled (SECURITY.md redaction contract).
         waiver: config.trace ? prompt.slice(at, at + 200) : "<present>",
       })
-      journaler.traceEvent("user", "plan-waiver", prompt.slice(at, at + 120))
+      journaler.traceEvent("user", "plan-waiver", prompt.slice(at, at + 120), sessionID)
       return
     }
     const plansDir = path.join(projectDir, config.plansDir)
@@ -373,7 +375,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       }
     } catch (e) {
       if (e instanceof BlockError) throw e
-      // unreadable plans dir: fail-open
+      // Journal the fail-open so an unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
     }
   }
 

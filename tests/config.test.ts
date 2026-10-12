@@ -168,3 +168,111 @@ test("configDigest flips when a key value changes", () => {
   const flipped = { ...base, trace: !base.trace }
   assert.notEqual(configDigest(base), configDigest(flipped))
 })
+
+/** (f) readWarn >= readBlock clamps readWarn to readBlock-1 with exactly one warning. */
+test("loadConfig clamps readWarn down to readBlock-1 with exactly one warning", () => {
+  const file = path.join(xdgTmp, "warn-clamp.json")
+  fs.writeFileSync(file, "{}")
+  const { config, warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { readWarn: 20, readBlock: 15 },
+  )
+  assert.equal(config.readWarn, 14)
+  assert.equal(config.readBlock, 15)
+  assert.equal(warnings.length, 1)
+  assert.equal(warnings[0], "config: readWarn (20) >= readBlock (15); clamping readWarn to 14")
+})
+
+/** (o)/(f) default config never clamps and its digest stays byte-identical to defaultConfig. */
+test("loadConfig leaves the default bareOutput and digest unchanged", () => {
+  const file = path.join(xdgTmp, "default-stable.json")
+  fs.writeFileSync(file, "{}")
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["test-runner", "reviewer", "plan-reviewer"])
+  assert.equal(config.readWarn, 8)
+  assert.equal(config.readBlock, 15)
+  assert.equal(configDigest(config), configDigest(defaultConfig({})))
+})
+
+/** (g) a relative metricsDir from the file layer is rejected, default kept, warned. */
+test("loadConfig rejects a relative metricsDir from the file layer", () => {
+  const file = path.join(xdgTmp, "rel-file.json")
+  fs.writeFileSync(file, JSON.stringify({ metricsDir: "./metrics" }))
+  const { config, warnings } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.ok(path.isAbsolute(config.metricsDir))
+  assert.ok(warnings.some((w) => w === 'config: invalid value for "metricsDir"; keeping default'))
+})
+
+/** (g) a relative metricsDir from the env layer is rejected, default kept, warned.
+ *  Runs in a temp cwd so the documented cwd-relative journal write stays out of
+ *  the repo working tree. */
+test("loadConfig rejects a relative metricsDir from the env layer", async () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-rel-"))
+  const prev = process.cwd()
+  process.chdir(sandbox)
+  try {
+    const { config, warnings } = loadConfig({ [ENV_KEYS.metricsDir]: "rel/metrics" })
+    assert.ok(path.isAbsolute(config.metricsDir))
+    assert.ok(
+      warnings.some(
+        (w) => w === `env ${ENV_KEYS.metricsDir}="rel/metrics" is relative; keeping current value`,
+      ),
+    )
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/** (g) an absolute metricsDir from the env layer passes with no relative warning. */
+test("loadConfig accepts an absolute metricsDir from the env layer", () => {
+  const abs = path.join(xdgTmp, "abs-metrics")
+  const { config, warnings } = loadConfig({ [ENV_KEYS.metricsDir]: abs })
+  assert.equal(config.metricsDir, abs)
+  const rel = warnings.filter((w) => w.includes("metricsDir") && w.includes("relative"))
+  assert.equal(rel.length, 0)
+})
+
+/** (o) renamed agents without an explicit bareOutput re-derive into bareOutput. */
+test("loadConfig derives bareOutput from renamed agents when bareOutput is unset", () => {
+  const file = path.join(xdgTmp, "rename.json")
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      agents: { testRunner: "ci-bot", reviewer: "ci-rev", planReviewer: "ci-plan" },
+    }),
+  )
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["ci-bot", "ci-rev", "ci-plan"])
+})
+
+/** (o) derived bareOutput dedups identical agent names (plan-reviewer default kept). */
+test("loadConfig dedups derived bareOutput", () => {
+  const file = path.join(xdgTmp, "dedupe.json")
+  fs.writeFileSync(file, JSON.stringify({ agents: { testRunner: "ci", reviewer: "ci" } }))
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["ci", "plan-reviewer"])
+})
+
+/** (o) an explicit non-default bareOutput list is kept verbatim, renames ignored. */
+test("loadConfig keeps an explicit non-default bareOutput list verbatim", () => {
+  const file = path.join(xdgTmp, "explicit.json")
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ agents: { testRunner: "ci-bot", bareOutput: ["ci-bot", "custom-agent"] } }),
+  )
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["ci-bot", "custom-agent"])
+})
+
+/** (o) an explicit list byte-identical to the default literal is treated as unset and re-derived. */
+test("loadConfig re-derives when an explicit bareOutput equals the default literal", () => {
+  const file = path.join(xdgTmp, "default-list.json")
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      agents: { testRunner: "ci-bot", bareOutput: ["test-runner", "reviewer", "plan-reviewer"] },
+    }),
+  )
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
+})

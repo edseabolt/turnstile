@@ -7,14 +7,23 @@
 //
 // Usage:
 //   node scripts/install.mjs [--manifest <path>] [--check] [--force]
-//                            [--uninstall] [--link | --copy]
+//                            [--uninstall] [--link | --copy] [--repair]
 //
-//   --manifest     Manifest to install (default: install.json at the repo root)
-//   --check        Verify all targets without writing; exit 1 on drift
+//   --manifest     Manifest to install (default: install.json at the repo root).
+//                  Missing value, or a `--`-prefixed next token, exits 2 here
+//                  ("requires a path") rather than crashing downstream.
+//   --check        Verify all targets without writing; exit 1 on drift. With
+//                  --repair, reportable drift is printed as `would repair`
+//                  (write-free dry run) instead of failing.
 //   --force        Convert conflicting targets after backing them up
 //   --uninstall    Reverse the manifest: remove repo-owned links / ledger-owned
 //                  copies for every entry (then retire leftovers); exit 1 only
 //                  when something could not be removed (conflict/unowned).
+//   --repair       Apply-mode: relink/copy each repairable entry (`missing`/`stale`
+//                  link-mode; `missing`/ledger-`stale` copy-mode) via the same
+//                  path as install, print `install: repair <dest> (<code>)`,
+//                  exit 1 only if something unrepairable remains. `conflict`
+//                  stays gated behind --force (no unprompted backup).
 //   --link/--copy  Override the mode. Resolution: CLI flag > manifest "mode"
 //                  field > auto-detect (.git present => link, else copy)
 //
@@ -78,7 +87,7 @@ try {
 /**
  * Parses command-line arguments.
  * @param {string[]} argv Raw argv (process.argv).
- * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null, model: string[], printModelConfig: boolean, validate: boolean, modelSpecs: Record<string,string>}} Parsed arguments. A `--model`/`--validate` without `--print-model-config` is an error and exits 2 (checked before any parsing or I/O). Model specs are validated here only when the printer flag is set; a malformed or unknown-name spec prints an actionable message and exits 2 (matching the unknown-arg contract), and the parsed map is stashed as `modelSpecs` for `main`.
+ * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null, model: string[], printModelConfig: boolean, validate: boolean, modelSpecs: Record<string,string>, repair: boolean}} Parsed arguments. A `--model`/`--validate` without `--print-model-config` is an error and exits 2 (checked before any parsing or I/O). Model specs are validated here only when the printer flag is set; a malformed or unknown-name spec prints an actionable message and exits 2 (matching the unknown-arg contract), and the parsed map is stashed as `modelSpecs` for `main`. A missing or flag-shaped value for `--manifest` or `--model` also exits 2 at the assignment site, naming the offending flag (so neither path reaches a late fs parse-crash).
  */
 function parseArgs(argv) {
   const args = {
@@ -91,15 +100,29 @@ function parseArgs(argv) {
     printModelConfig: false,
     validate: false,
     modelSpecs: {},
+    repair: false,
   }
   for (let i = 2; i < argv.length; i++) {
-    if (argv[i] === "--manifest") args.manifest = argv[++i]
-    else if (argv[i] === "--check") args.check = true
+    if (argv[i] === "--manifest") {
+      const val = argv[++i]
+      if (val === undefined || val.startsWith("--")) {
+        console.error("install: --manifest requires a path")
+        process.exit(2)
+      }
+      args.manifest = val
+    } else if (argv[i] === "--check") args.check = true
     else if (argv[i] === "--force") args.force = true
     else if (argv[i] === "--uninstall") args.uninstall = true
     else if (argv[i] === "--link") args.mode = "link"
     else if (argv[i] === "--copy") args.mode = "copy"
-    else if (argv[i] === "--model") args.model.push(argv[++i])
+    else if (argv[i] === "--model") {
+      const val = argv[++i]
+      if (val === undefined || val.startsWith("--")) {
+        console.error("install: --model requires a spec")
+        process.exit(2)
+      }
+      args.model.push(val)
+    } else if (argv[i] === "--repair") args.repair = true
     else if (argv[i] === "--print-model-config") args.printModelConfig = true
     else if (argv[i] === "--validate") args.validate = true
     else {
@@ -476,6 +499,20 @@ async function inspectEntry(entry, mode, ledger) {
 }
 
 /**
+ * Decides whether a drift code is repairable by `--repair` without prompting.
+ * Link mode reports `missing`/`stale`; `inspectCopy` only returns `stale` for
+ * a ledger-recorded match, so the same predicate covers both modes. A
+ * `conflict` is deliberately excluded: repairing it would back up user files,
+ * which `--repair` must never do unprompted (that path stays gated behind
+ * `--force`).
+ * @param {string} code Drift code from `inspectEntry`.
+ * @returns {boolean} True when `--repair` would fix it.
+ */
+function isRepairable(code) {
+  return code === "missing" || code === "stale"
+}
+
+/**
  * Backs up a real file by renaming it aside with a timestamp suffix.
  * @param {string} dest Destination path to back up.
  * @returns {Promise<string>} The backup path.
@@ -665,14 +702,71 @@ async function apply(manifest, args) {
 }
 
 /**
+ * Repairs repairable drift across every manifest entry, relinking `missing`
+ * /`stale` link-mode entries and re-copying `missing`/ledger-`stale` copy-mode
+ * entries via the same `installLink`/`installCopy` path `apply()` uses.
+ * `conflict` stays gated behind `--force`: `--repair` must never back up user
+ * files unprompted, so a conflict left without `--force` is reported as
+ * unrepairable and fails. Runs in apply mode; the `--check --repair` dry run
+ * is handled by `check()`.
+ * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
+ * @param {{force: boolean, repair: boolean}} args Parsed arguments.
+ * @returns {Promise<{ok: boolean, changed: boolean}>} Success flag and whether anything changed.
+ */
+async function repair(manifest, args) {
+  const ledger = loadLedger(manifest.ledgerPath)
+  let ok = true
+  let changed = false
+
+  for (const entry of manifest.links) {
+    const report = await inspectEntry(entry, manifest.mode, ledger)
+    if (report.code === "ok") {
+      console.log(`install: up to date ${entry.dest}`)
+      continue
+    }
+    // Conflict without --force, or an invalid (missing-source) entry, can not
+    // be repaired here: neither would back up user files or invent a source.
+    if (!isRepairable(report.code) && !args.force) {
+      ok = false
+      console.error(
+        `install: ${entry.dest} — ${report.code}${
+          report.detail ? `: ${report.detail}` : ""
+        } (unrepairable; rerun with --force for conflicts)`,
+      )
+      continue
+    }
+    try {
+      const result =
+        manifest.mode === "copy"
+          ? await installCopy(entry, args, ledger, pkgVersion, manifest.mode)
+          : await installLink(entry, args, ledger)
+      if (result.acted) {
+        changed = true
+        console.log(`install: repair ${entry.dest} (${report.code})`)
+      } else console.log(`install: up to date ${entry.dest}`)
+    } catch (error) {
+      ok = false
+      console.error(String(error.message ?? error))
+    }
+  }
+  saveLedger(manifest.ledgerPath, ledger)
+  return { ok, changed }
+}
+
+/**
  * Runs the installer in check mode: reports drift, writes nothing.
  * A ledger record whose version is older than the current package version
- * is reported as a warning and does not fail the check.
+ * is reported as a warning and does not fail the check. When `repairMode`
+ * is set (`--check --repair`), repairable drift (`missing`/`stale`) is
+ * reported as `would repair` instead of an error and does not fail the
+ * check (the entry is going to be fixed); unrepairable drift still fails
+ * as before. `check` alone (`repairMode` false) is byte-for-byte unchanged.
  * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
  * @param {string} version Current package version.
- * @returns {Promise<boolean>} True when no drift was found.
+ * @param {boolean} [repairMode] When true, report repairable drift as `would repair` rather than failing.
+ * @returns {Promise<boolean>} True when no unrepairable drift was found.
  */
-async function check(manifest, version) {
+async function check(manifest, version, repairMode = false) {
   const ledger = loadLedger(manifest.ledgerPath)
   let ok = true
   for (const entry of manifest.links) {
@@ -686,6 +780,8 @@ async function check(manifest, version) {
     if (record && record.version && record.version !== version)
       console.log(`check: outdated ${entry.dest} (installed ${record.version}, package ${version})`)
     if (report.code === "ok") console.log(`check: OK ${entry.dest}`)
+    else if (repairMode && isRepairable(report.code))
+      console.log(`install: would repair ${entry.dest} (${report.code})`)
     else {
       ok = false
       console.error(
@@ -735,7 +831,12 @@ async function main(argv = process.argv) {
   console.log(
     `install: mode=${manifest.mode} (${manifest.mode === "link" ? "checkout" : "package"})`,
   )
-  if (args.check) return await check(manifest, pkgVersion)
+  if (args.check) return await check(manifest, pkgVersion, args.repair)
+  if (args.repair) {
+    const { ok, changed } = await repair(manifest, args)
+    if (changed) console.log("restart OpenCode sessions to pick up changes.")
+    return ok
+  }
   const { ok, changed } = await apply(manifest, args)
   if (changed) console.log("restart OpenCode sessions to pick up changes.")
   return ok
