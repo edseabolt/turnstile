@@ -83,9 +83,13 @@ test("plan gate: executor blocked until a plan-reviewer APPROVE verdict", async 
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
           "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
     )
+    // The plan-reviewer runs as the child session id; attribute the APPROVE to
+    // the parent's gate via the child→parent edge (issue #51, option (a)).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\nAC-1 ok\n` },
     })
@@ -166,9 +170,14 @@ test("plan gate: USER WAIVER: bypasses approval; next unapproved dispatch blocke
 test("plan gate: plan-file change invalidates a prior approval", async () => {
   const { h, restore, project } = await bootWithPlan()
   try {
+    // A plan-reviewer delivery attributed to the parent must arrive on the
+    // child session id (issue #51): register the child→parent edge first, so
+    // the approval journals raw=c1 and actually greens the parent's gate.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -246,22 +255,35 @@ test("plan gate: journal replay restores plan approval", async () => {
   }
 })
 
-/** Plan attribution is keyed by the parent session, not the child. */
+/** A plan-reviewer verdict streamed on the child's own text attributes through a
+ *  marker-less summarized delivery on the child session id: the child→parent
+ *  edge (session.created) resolves the child, and the journaled plan entry is
+ *  keyed raw=c1, source=child-text (issue #51, option (a): no parent-keyed
+ *  plan entry is ever journaled — the pre-fix "green via parent" shape is gone). */
 test("plan gate: child plan-reviewer result greens the parent's gate", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
-    // session.created edge from the stream is not needed here: the task
-    // result arrives with the CHILD session id; parentOf falls back to the
-    // session itself, so simulate the dispatch-side parent id directly.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `\nreview\n\n${APPROVE}\n` },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    // Summarized delivery: no marker anywhere in the output.
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
-      result: { output: `${APPROVE}\n` },
+      result: { output: "Review complete; see journal." },
     })
-    const plan = journalEntries(metricsDir).find((l) => l.type === "plan" && l.result === "APPROVE")
+    const plan = journalEntries(metricsDir).find((l) => l.type === "plan")
     assert.ok(plan)
     assert.equal(plan.sessionID, "p1")
+    assert.equal(plan.raw, "c1")
+    assert.equal(plan.source, "child-text")
+    // Executor dispatch proceeds (plan file present → requires the green gate).
     await callTool(h, "execute.before", {
       tool: "task",
       sessionID: "p1",
@@ -276,9 +298,11 @@ test("plan gate: child plan-reviewer result greens the parent's gate", async () 
 test("plan gate: preamble before APPROVE attributes with source task-result", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: {
         output: `\nreviewed the plan, structure is fine\n\n${APPROVE}\n## AC traceability\n`,
@@ -381,15 +405,18 @@ test("plan gate: child-text-delta verdict attributes through a marker-less deliv
 test("plan gate: task-result marker is not stored; later marker-less still blocks", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
+    // Deliver on the child (issue #51): the edge makes the delivery attributable.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${BLOCK}\nAC-1 GAP\n` },
     })
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: "reviewed, looks fine\n" },
     })
@@ -539,6 +566,11 @@ test("plan gate: stale verdict for one child does not attribute to another child
     h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
     h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
     await waitUntil(() => journalEntries(metricsDir).some((e) => e.type === "verdict"))
+    // c2 is a distinct child of the same parent, but it is unrelated to c1's
+    // verdict: register its edge so the marker-less delivery is attributable
+    // rather than self-keyed (issue #51, HIGH-2).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+    await settle()
     // c2 has no stream events → its store is empty.
     await callTool(h, "execute.after", {
       tool: "task",
@@ -574,10 +606,15 @@ test("plan gate: stale verdict for one child does not attribute to another child
 test("plan gate: plan-file change invalidates every approved session", async () => {
   const { h, restore, project } = await bootWithPlan()
   try {
-    // Two independent sessions each approve and run a green dispatch.
+    // Two independent sessions each approve and run a green dispatch. Each
+    // approval is delivered on a child of its parent (issue #51, option (a)):
+    // parent-keyed self-keyed deliveries can no longer journal a plan entry.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p2" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -588,7 +625,7 @@ test("plan gate: plan-file change invalidates every approved session", async () 
     })
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p2",
+      sessionID: "c2",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -623,13 +660,13 @@ test("plan gate: plan-file change invalidates every approved session", async () 
     // Re-approving both releases both.
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p2",
+      sessionID: "c2",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -656,9 +693,14 @@ test("plan gate: plan-file change invalidates every approved session", async () 
 test("plan gate: approve then edit blocks the first dispatch", async () => {
   const { h, restore, project } = await bootWithPlan()
   try {
+    // A plan-reviewer delivery attributed to the parent must arrive on the
+    // child session id (issue #51): register the child→parent edge first, so
+    // the approval journals raw=c1 and actually greens the parent's gate.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -725,9 +767,12 @@ test("plan gate: replayed approval stamps then invalidates on edit", async () =>
       /no plan approval for "plan\.md"/,
     )
     // Re-approving re-stamps, so the session runs again (proves re-stamp).
+    // Delivered on the child so the plan entry is keyed raw=c1 (issue #51).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -757,9 +802,12 @@ test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stam
     const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
     const dispose = (await setup(h.host)) as () => void
     // Approve while the plans dir is absent → stamp "" (unknown, fail-open).
+    // Delivered on the child so the plan entry is keyed raw=c1 (issue #51).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -805,9 +853,14 @@ test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stam
 test("plan gate: content-preserving utimes touch keeps approval green", async () => {
   const { h, metricsDir, restore, project } = await bootWithPlan("# P\n")
   try {
+    // A plan-reviewer delivery attributed to the parent must arrive on the
+    // child session id (issue #51): register the child→parent edge first, so
+    // the approval journals raw=c1 and actually greens the parent's gate.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -844,9 +897,14 @@ test("plan gate: content-preserving utimes touch keeps approval green", async ()
 test("plan gate: same-mtime same-size edit invalidates the approval", async () => {
   const { h, restore, project } = await bootWithPlan("# P\n")
   try {
+    // A plan-reviewer delivery attributed to the parent must arrive on the
+    // child session id (issue #51): register the child→parent edge first, so
+    // the approval journals raw=c1 and actually greens the parent's gate.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -915,9 +973,12 @@ test("plan gate: deleting a plan invalidates via the name set", async () => {
   try {
     // A second plan joins the dir before approval so the key carries both.
     fs.writeFileSync(path.join(project, ".opencode", "plans", "extra.md"), "# E\n")
+    // Deliver the approval on the child so the plan entry is keyed raw=c1 (issue #51).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })
@@ -954,9 +1015,14 @@ test("plan gate: unreadable plan file mid-scan fails open (executor allowed)", a
   if (process.getuid?.() === 0) return
   const { h, restore, metricsDir, project } = await bootWithPlan("# P\n")
   try {
+    // A plan-reviewer delivery attributed to the parent must arrive on the
+    // child session id (issue #51): register the child→parent edge first, so
+    // the approval journals raw=c1 and actually greens the parent's gate.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: `${APPROVE}\n` },
     })

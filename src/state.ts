@@ -93,17 +93,26 @@ export interface GateLedger {
    */
   setParent(sessionID: string, parentID: string): void
   /**
+   *
    * Overwrites the child's latest `VERDICT:` marker observation and its
    * provenance source label. Recording is verdict-kind only (only `VERDICT:`
    * markers are ever stored; never `GATE:`) and is unconditioned on agent
    * type: the plan gate is the sole consumer, and because attribution is
    * keyed by child ID this cannot leak a verdict to a different child or let
    * a GATE-only child suppress a plan-reviewer bare-output violation.
+   *
+   * Returns whether the stored observation actually changed (its `marker` or
+   * `source` differed from the prior entry): the setup/store layer journals a
+   * streamed verdict observation iff this is true, so per (child, marker,
+   * source) first-sight journaling is owned here rather than by the parent
+   * bucket's dedup set.
    * @param childID The child session ID.
    * @param marker The last `VERDICT:` marker observed in the child's text.
    * @param source Pipeline provenance label the marker was observed in.
+   * @returns True when the stored `marker` or `source` changed; false on an
+   *     identical re-record (a dedup hit for streamed sources).
    */
-  recordChildVerdict(childID: string, marker: string, source: string): void
+  recordChildVerdict(childID: string, marker: string, source: string): boolean
   /**
    * Returns the child's latest `VERDICT:` marker observation, or an empty
    * verdict ({ marker: "", source: "" }) when the child has none. Touches
@@ -220,7 +229,10 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
   const childToParent = new Map<string, string>()
   // Latest VERDICT marker observation per child session, LRU-capped and
   // promote-on-touch like the other session maps. Verdict-kind only, keyed by
-  // child ID so it never leaks across children.
+  // child ID so it never leaks across children. A re-observation that changes
+  // marker/source re-journals its verdict entry (the store is the dedup
+  // ledger, not a deduplicator); eviction above maxSessions re-journals on a
+  // later re-observation — bounded and acceptable, documented at recordChildVerdict.
   const childVerdicts = new Map<string, ChildVerdict>()
 
   /**
@@ -274,6 +286,15 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       states.delete(sessionID)
       states.set(sessionID, prior?.replayGrace ? mergeAfterReplay(prior) : newState())
       cap(states)
+      // Cross-task staleness (issue #51, MED): child-verdict evidence is scoped
+      // to a task. A new prompt for this parent drops the previous task's
+      // child verdicts so a marker-less re-fire can never re-attribute (or
+      // clobber against) a stale streamed APPROVE. Scoped to this parent's
+      // registered children only, so a concurrent task on another parent keeps
+      // its own child-verdict evidence intact.
+      for (const c of childToParent.keys()) {
+        if (childToParent.get(c) === sessionID) childVerdicts.delete(c)
+      }
     },
     parentOf(sessionID: string | undefined): string {
       if (!sessionID) return ""
@@ -288,10 +309,16 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       childToParent.set(sessionID, parentID)
       cap(childToParent)
     },
-    recordChildVerdict(childID: string, marker: string, source: string): void {
+    recordChildVerdict(childID: string, marker: string, source: string): boolean {
+      // changed = the marker or source actually moved; the setup layer journals
+      // a streamed verdict observation iff this is true (per (child, marker,
+      // source) first-sight dedup). LRU promotion + cap are unchanged.
+      const prev = childVerdicts.get(childID) ?? { marker: "", source: "" }
+      const changed = prev.marker !== marker || prev.source !== source
       promote(childVerdicts, childID)
       childVerdicts.set(childID, { marker, source })
       cap(childVerdicts)
+      return changed
     },
     childVerdict(childID: string): ChildVerdict {
       promote(childVerdicts, childID)

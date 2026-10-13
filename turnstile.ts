@@ -55,6 +55,20 @@
  *   source keeps the gate red (parent-keyed, journaled as type `plan`); gate
  *   journal entries are keyed by the parent session so replay restores where
  *   the gates look.
+ * - Verdict attribution (issue #51): every journaled `type:"plan"` entry is
+ *   keyed `raw` = an actual child session id, never the parent/session id; a
+ *   marker-less parent-keyed re-fire can never journal a `{raw: p1}` phantom
+ *   that clobbers a live verification. Attribution is gated on the delivery's
+ *   agent being `plan-reviewer`: the child→parent edge is awaited (host
+ *   `session.get` when `session.created` has not yet landed), then, for a
+ *   marker-less delivery whose own id is not a registered child, candidate
+ *   discovery attributes it to the unique evidenced registered child (via the
+ *   child-text verdict store); zero or more-than-one candidate journals an
+ *   unattributable `type:"error"` and returns (fail-open, gate unchanged,
+ *   nothing mutated). Child-text verdict observations dedup per (child, marker,
+ *   source) via the child-verdict store: identical re-delivery journals nothing,
+ *   a marker or source flip is journaled, and a prompt reset drops the previous
+ *   task's children's evidence (scoped to the reset parent, other parents intact).
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors, and the load heartbeat
  *   (a "setup" entry: plugin version, config digest, hook count). Errors also

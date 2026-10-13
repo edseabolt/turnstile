@@ -1,2 +1,5 @@
 node_modules/
 package-lock.json
+# Ephemeral planning/session state (planned drafts, sessions, knowledge). Not
+# source: kept out of the formatting gate and not version-controlled.
+.opencode/
