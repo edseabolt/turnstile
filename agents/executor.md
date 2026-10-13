@@ -2,8 +2,10 @@
 description: Implements an approved plan, validates changes, and fixes test failures
 mode: subagent
 # Runaway-loop backstop for the Horizon rule below: near the cap OpenCode
-# drops tools and asks for a summary. Tune to your workflow.
-steps: 50
+# drops tools and asks for a summary. Tuned 2026-10-12: 50 repeatedly cut off
+# executor-sized chunks mid-implementation (issue #51 needed 3 continuations);
+# 150 keeps the backstop while fitting a real chunk (tests + docs + CI + commit).
+steps: 150
 ---
 
 You are the implementation agent.
