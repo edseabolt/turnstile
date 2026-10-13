@@ -1386,6 +1386,64 @@ test("newState initializes seenFrom and suppressedPending and omits verdicts", (
   assert.equal(s.policyInjected, false)
 })
 
+/** A fresh bucket initializes the three new primitives to their defaults:
+ *  empty waiver and once-grant strings and a false human-provenance flag. */
+test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defaults", () => {
+  const s = newState()
+  assert.equal(s.userWaiver, "")
+  assert.equal(s.humanApproval, false)
+  assert.equal(s.pendingOnceGrant, "")
+})
+
+/** resetState drops the task-scoped waiver and once-grant strings and resets
+ *  humanApproval to false on an ordinary (non-grace) prompt reset. */
+test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const s = ledger.state("p1")
+  s.userWaiver = "USER WAIVER: proceed"
+  s.humanApproval = true
+  s.pendingOnceGrant = "req-42"
+  ledger.resetState("p1")
+  const cur = ledger.state("p1")
+  assert.equal(cur.userWaiver, "", "userWaiver clears on reset")
+  assert.equal(cur.pendingOnceGrant, "", "pendingOnceGrant clears on reset")
+  assert.equal(cur.humanApproval, false, "humanApproval resets on prompt")
+})
+
+/** humanApproval is restart-sticky exactly like hasPlanVerdict: a
+ *  journal-restored flag survives the first post-restart (grace) prompt via
+ *  mergeAfterReplay, then clears on the next full reset. Waiver/once-grant
+ *  strings stay task-scoped and never carry through the merge. */
+test("grace prompt carries restored humanApproval forward then clears it", () => {
+  const metricsDir = tmpDir()
+  // A journaled plan APPROVE restores hasPlanVerdict + the one-prompt grace.
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE" })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  // Seed the journal-restored provenance value (chunk-3 owns the journaling
+  // source); mergeAfterReplay must carry it across the grace prompt.
+  const s = ledger.state("p1")
+  assert.equal(s.hasPlanVerdict, true, "replay restored hasPlanVerdict")
+  s.humanApproval = true
+  s.userWaiver = "USER WAIVER: keep"
+  s.pendingOnceGrant = "req-keep"
+  // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward,
+  // never wipes it; the task-scoped strings drop as usual.
+  ledger.resetState("p1")
+  const afterGrace = ledger.state("p1")
+  assert.equal(afterGrace.hasPlanVerdict, true, "hasPlanVerdict carried by grace")
+  assert.equal(afterGrace.humanApproval, true, "humanApproval carried by grace")
+  assert.equal(afterGrace.userWaiver, "", "userWaiver never carried through merge")
+  assert.equal(afterGrace.pendingOnceGrant, "", "pendingOnceGrant never carried through merge")
+  // Second prompt: a full reset clears everything.
+  ledger.resetState("p1")
+  const afterReset = ledger.state("p1")
+  assert.equal(afterReset.hasPlanVerdict, false, "hasPlanVerdict cleared on full reset")
+  assert.equal(afterReset.humanApproval, false, "humanApproval cleared on full reset")
+})
+
 /** An invalid `gateMarker` config falls back to the canonical regex and journals
  * exactly one `type:"error"` naming the key; enforcement still matches canonical
  * GATE: PASS output. */

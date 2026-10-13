@@ -17,6 +17,9 @@ export function newState(): GateState {
     hasGatePass: false,
     unverifiedPass: "",
     hasPlanVerdict: false,
+    userWaiver: "",
+    humanApproval: false,
+    pendingOnceGrant: "",
     policyInjected: false,
     seenFrom: new Map(),
     suppressedPending: 0,
@@ -44,6 +47,11 @@ function mergeAfterReplay(prior: GateState): GateState {
   const s = newState()
   s.hasGatePass = prior.hasGatePass
   s.hasPlanVerdict = prior.hasPlanVerdict
+  // Restart-sticky like hasPlanVerdict: a restored human approval survives the
+  // first post-restart prompt (restart-sticky provenance, never task-scoped).
+  // userWaiver/pendingOnceGrant stay fresh here: they are task-scoped and never
+  // carried through the replay-merge path.
+  s.humanApproval = prior.humanApproval
   s.plansSignature = prior.hasPlanVerdict ? prior.plansSignature : ""
   return s
 }

@@ -53,6 +53,15 @@ export interface ToolHookEvent {
 /** Payload of the `session.prompt` hook. */
 export interface PromptHookProperties {
   sessionID?: unknown
+  /**
+   * Candidate key for the raw user prompt text on v2.0.27. The host does not
+   * type this field, hence `unknown`; `src/setup.ts` reads it (against the
+   * candidate `text ?? prompt`) to capture user-authored waiver/approval markers
+   * at prompt admission. Fails open when absent.
+   */
+  text?: unknown
+  /** Alternate candidate key for the raw user prompt text. */
+  prompt?: unknown
 }
 
 /** Generation draft passed to the `session.generate` hook. */
@@ -140,6 +149,29 @@ export interface GateState {
   unverifiedPass: string
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
+  /**
+   * Latest user-authored prompt text containing the waiver marker; "" when
+   * none. Non-empty ⇒ the current task's reviewer/dispatch gates are waived.
+   * Task-scoped: cleared on every prompt reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  userWaiver: string
+  /**
+   * Provenance flag: true once a human (prompt marker or permission reply)
+   * rather than the plan-reviewer subagent released the plan gate. Provenance
+   * only — `execute.before` never consults it; it is read by the status CLI and
+   * trace lines. Fresh `false` on each prompt reset, but restart-restored values
+   * survive the first post-restart prompt via `mergeAfterReplay`, exactly like
+   * `hasPlanVerdict`.
+   */
+  humanApproval: boolean
+  /**
+   * A single-dispatch grant — the matched host `requestID` for a once-granted
+   * human approval; "" when none. Task-scoped: cleared immediately after the
+   * single dispatch consumes it (a stale grant cannot outlive one dispatch) and
+   * never carried through `mergeAfterReplay`.
+   */
+  pendingOnceGrant: string
   /**
    * True once this task's first parent task/subagent result delivery has
    * carried the injected orchestrator policy forward into model context.
@@ -329,4 +361,33 @@ export type Host = {
   event?: {
     subscribe?: (options?: { signal?: AbortSignal }) => AsyncIterable<StreamEvent>
   }
+  permission?: {
+    hook?: (
+      name: string,
+      callback: (event: unknown) => unknown | Promise<unknown>,
+    ) => Promise<unknown>
+  }
+}
+
+/**
+ * Properties carried by a host `permission.evaluate` request at the wire
+ * boundary. Every field is optional and typed `unknown`: the host does not
+ * expose a stable shape for this payload, so a reshaped or partial payload
+ * fails open rather than failing hard. The plugin matches on `action` (the
+ * host's task/subagent dispatch name) and `source` rather than the tool input
+ * (which this payload does not carry), so escalation surfaces the same decision
+ * to a human without leaking the dispatch target to the subagent.
+ */
+export interface PermissionEvaluateEvent {
+  sessionID?: unknown
+  action?: unknown
+  resources?: unknown
+  metadata?: unknown
+  source?: {
+    type?: unknown
+    messageID?: unknown
+    id?: unknown
+  }
+  effect?: unknown
+  message?: unknown
 }
