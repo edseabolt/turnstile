@@ -38,6 +38,11 @@
  * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
  *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
  *   counting toward it; a new user prompt resets it.
+ * - Parent-bucket eviction (issue #42): live-parent gate buckets (hasGatePass,
+ *   hasPlanVerdict, read counter, policyInjected) are registered per
+ *   prompt/dispatch/delivery/edge via `markParent`, and the `states` LRU never
+ *   evicts a registered parent; unresolved child buckets remain evictable and
+ *   can no longer push a live parent out past `maxSessions`.
  * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads),
  *   keyed off the parent session: the child→parent edge is awaited
  *   (host `session.get` when `session.created` has not yet landed) before the

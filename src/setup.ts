@@ -653,6 +653,10 @@ export function createTurnstile(
         const reg = await h.session.hook("prompt", (properties: PromptHookProperties) => {
           const sessionID = properties?.sessionID
           if (typeof sessionID === "string") {
+            // Mark the session a live parent before the reset: resetState
+            // re-caps `states`, and a registered parent is never evicted
+            // (issue #42), so the rebuilt MRU slot stays pinned.
+            ledger.markParent(sessionID)
             ledger.resetState(sessionID)
             // Issue #54: a prompt reset invalidates all prior dispatch-scoped
             // evidence for this parent, so an unresolved-child verdict is only
@@ -730,6 +734,10 @@ export function createTurnstile(
             if (event?.tool === "task" || event?.tool === "subagent") {
               const agent = agentFromTaskInput(event.input)
               const sessionID = asSessionID(event?.sessionID)
+              // Sessions dispatching guarded subagents are parents by
+              // definition (issue #42): mark before the guards so their
+              // state() inserts land pinned against LRU eviction.
+              ledger.markParent(sessionID)
               const prompt = String(event.input?.prompt ?? "")
               journaler.journal({
                 type: "dispatch",
@@ -841,6 +849,11 @@ export function createTurnstile(
               if (agent === config.agents.planReviewer) {
                 await resolveParent(child)
               }
+              // Mark the resolved parent live (issue #42): covers both host
+              // delivery shapes (parent-keyed and child-keyed). A genuinely
+              // unresolved child delivery self-marks, protecting one extra
+              // bucket until the registry LRU ages it out — bounded, documented.
+              ledger.markParent(ledger.parentOf(child))
               parseMarkers(output, child, "task-result", `task-result\u0000${++taskDeliverySeq}`)
               // Plan-approval attribution: only a plan-reviewer result moves
               // the plan gate. See attributePlanVerdict — `raw` is always an
@@ -1031,6 +1044,9 @@ export function createTurnstile(
                 ) {
                   ledger.setParent(properties.sessionID, properties.parentID)
                 } else if (typeof properties.sessionID === "string") {
+                  // Root sessions are live parents (issue #42); the edge
+                  // branch above is covered by setParent marking the parent.
+                  ledger.markParent(properties.sessionID)
                   // Root sessions only: child-session created events must not
                   // move the project dir (any directory they carry belongs to
                   // the parent's context, and last-writer-wins across child
