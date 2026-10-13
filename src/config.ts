@@ -77,13 +77,18 @@ export function defaultConfig(
     toolPolicy: {
       mode: "enforce",
       // Git-protective defaults, encoding src/policy.ts verbatim. Case-insensitive
-      // regex sources over bash/shell commands. The checkout guard excludes the
-      // `git checkout -- <path>` file-restore form (allowed) while blocking
-      // `git checkout <ref>` and `git checkout -b/-C <branch>` (branch work).
+      // regex sources over bash/shell commands. Each git rule uses a global-option
+      // tolerant base (`\\bgit\\b[^;&|]*?\\s<subcommand>`), so a global option
+      // (`-C dir`, `--git-dir=…`, a `git alias`) between `git` and the subcommand
+      // still matches without terminating at a shell operator; the branch guard
+      // excludes the file-restore form so `git [opts] checkout [<ref>] -- <path>`
+      // is allowed while `git [opts] checkout <branch>` / `-b`/`-C` is blocked.
+      // Tradeoff (see README limits): the wider base can over-match on the bare
+      // subcommand word elsewhere, e.g. `git commit -m "… merge …"`.
       bashDeny: [
-        "\\bgit\\s+worktree\\s+(add|remove|prune)\\b",
-        "\\bgit\\s+(switch|checkout)\\b(?!\\s+--\\s)",
-        "\\bgit\\s+merge\\b",
+        "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
+        "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
+        "\\bgit\\b[^;&|]*?\\smerge\\b",
         "\\bgh\\s+pr\\s+(create|merge)\\b",
       ],
       // No default path blocks: write/edit are covered (a decision is made and,
@@ -243,10 +248,13 @@ export function mergeConfig(
             )
           }
         } else if (tpKey === "bashDeny" || tpKey === "pathDeny") {
-          if (
-            !Array.isArray(tpValue) ||
-            !tpValue.every((v) => typeof v === "string" && v.trim().length > 0)
-          ) {
+          // Only the value itself being non-array falls back to the default
+          // (fail-safe); otherwise every element is validated so a single bad
+          // element never discards the whole user list, nor silently widens the
+          // policy by letting an empty/blank string through. Bad elements are
+          // dropped individually and journaled ({type:"error"} via loadConfig),
+          // mirroring the non-compiling-regex drop below.
+          if (!Array.isArray(tpValue)) {
             warnings.push(
               `config: toolPolicy.${tpKey} must be an array of non-empty strings; keeping default`,
             )
@@ -254,6 +262,12 @@ export function mergeConfig(
           }
           const sources: string[] = []
           tpValue.forEach((src, i) => {
+            if (typeof src !== "string" || src.trim().length === 0) {
+              warnings.push(
+                `config: toolPolicy.${tpKey}[${i}] is not a non-empty string; dropping element`,
+              )
+              return
+            }
             try {
               new RegExp(src, "i")
               sources.push(src)

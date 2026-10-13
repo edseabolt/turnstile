@@ -338,9 +338,9 @@ test("defaultConfig ships the toolPolicy denylist defaults", () => {
   const cfg = defaultConfig({})
   assert.equal(cfg.toolPolicy.mode, "enforce")
   assert.deepEqual(cfg.toolPolicy.bashDeny, [
-    "\\bgit\\s+worktree\\s+(add|remove|prune)\\b",
-    "\\bgit\\s+(switch|checkout)\\b(?!\\s+--\\s)",
-    "\\bgit\\s+merge\\b",
+    "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
+    "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
+    "\\bgit\\b[^;&|]*?\\smerge\\b",
     "\\bgh\\s+pr\\s+(create|merge)\\b",
   ])
   assert.deepEqual(cfg.toolPolicy.pathDeny, [])
@@ -387,6 +387,59 @@ test("mergeConfig drops one non-compiling toolPolicy.bashDeny element, keeps the
   assert.deepEqual(warnings, [
     "config: toolPolicy.bashDeny[1] is not a valid regex; dropping element",
   ])
+})
+
+/**
+ * Bad elements are dropped element-wise — a non-string, an empty string, and a
+ * blank string are each discarded while the compilable strings survive (issue
+ * #32-3) instead of the whole array being rejected. Each drop is named by index;
+ * the surviving list is just the filtered sources.
+ */
+test("mergeConfig drops non-string and empty bashDeny elements, keeps the rest", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    toolPolicy: {
+      bashDeny: ["\\bnpm\\s+test\\b", 123, "", "   ", "\\bgit\\s+status\\b"],
+    },
+  })
+  assert.deepEqual(config.toolPolicy.bashDeny, ["\\bnpm\\s+test\\b", "\\bgit\\s+status\\b"])
+  assert.deepEqual(warnings, [
+    "config: toolPolicy.bashDeny[1] is not a non-empty string; dropping element",
+    "config: toolPolicy.bashDeny[2] is not a non-empty string; dropping element",
+    "config: toolPolicy.bashDeny[3] is not a non-empty string; dropping element",
+  ])
+})
+
+/**
+ * A dropped element is journaled as {type:"error"} through loadConfig (issue
+ * #32-3): the bad element never reaches the resolved config, and each drop is
+ * recorded as a persistent error, so a config typo weakens the denylist
+ * visibly rather than silently. Non-array values fall back to the default.
+ */
+test("loadConfig journals each dropped bashDeny element as an error", () => {
+  const file = path.join(xdgTmp, "tp-bad-elements.json")
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      toolPolicy: { bashDeny: ["\\bnpm\\s+test\\b", 42, ""], pathDeny: ["valid-regex"] },
+    }),
+  )
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.toolPolicy.bashDeny, ["\\bnpm\\s+test\\b"])
+  assert.deepEqual(config.toolPolicy.pathDeny, ["valid-regex"])
+  const errors = fs
+    .readFileSync(DEFAULT_JOURNAL_PATH, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter(
+      (l) =>
+        l.type === "error" &&
+        (String(l.error).includes("bashDeny[1] is not a non-empty string") ||
+          String(l.error).includes("bashDeny[2] is not a non-empty string")),
+    )
+  assert.equal(errors.length, 2)
 })
 
 /** A non-array toolPolicy.bashDeny keeps the default and warns once. */

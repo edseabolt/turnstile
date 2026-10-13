@@ -121,6 +121,46 @@ test("git checkout -b is blocked while checkout -- path is allowed", async () =>
   allow(() => policy.guardBash("bash", "git checkout -- kept.ts", "s1"))
 })
 
+/**
+ * Global options interleaved between `git` and the subcommand are still caught,
+ * per issue #32 (1a): widen the default regexes so an option (`-C dir`,
+ * `--git-dir=…`, a flag) never shields a branch/merge worktree switch, while the
+ * file-restore form stays allowed.
+ */
+test("git global options before the subcommand are still blocked (issue #32-1a)", async () => {
+  const { policy } = makePolicy()
+  // switch/checkout with a global option before the subcommand.
+  await blocks(() => policy.guardBash("bash", "git -C ../other checkout main", "s1"))
+  await blocks(() => policy.guardBash("bash", "git --git-dir=/tmp/repo checkout main", "s1"))
+  await blocks(() => policy.guardBash("bash", "git -C dir checkout main", "s1"))
+  // worktree and merge with a global option before the subcommand.
+  await blocks(() => policy.guardBash("bash", "git -C dir worktree add ../w", "s1"))
+  await blocks(() => policy.guardBash("bash", "git --no-ff merge feature", "s1"))
+})
+
+/**
+ * The git file-restore form is allowed with or without an intervening global
+ * option, including the `git checkout <ref> -- <path>` shape (issue #32-1a), so
+ * widening the regex does not regress the restore exemption.
+ */
+test("git checkout restore form is allowed, option or not (issue #32-1a)", () => {
+  const { policy } = makePolicy()
+  allow(() => policy.guardBash("bash", "git checkout -- src/app.ts", "s1"))
+  allow(() => policy.guardBash("bash", "git checkout main -- src/app.ts", "s1"))
+  allow(() => policy.guardBash("bash", "git -C /tmp/repo checkout -- src/app.ts", "s1"))
+  allow(() => policy.guardBash("bash", "git -C /tmp/repo checkout main -- src/app.ts", "s1"))
+})
+
+/**
+ * Documented tradeoff of the wider, global-option-tolerant base: the `merge`
+ * rule can over-match on the bare subcommand word elsewhere (e.g. a commit
+ * message), so `git commit -m "… merge …"` blocks. See README limits.
+ */
+test("option-tolerant base over-matches the merge word in a commit message (documented tradeoff)", async () => {
+  const { policy } = makePolicy()
+  await blocks(() => policy.guardBash("bash", 'git commit -m "add merge feature"', "s1"))
+})
+
 /** A configured pathDeny blocks only the matching path, nothing else. */
 test("configured pathDeny blocks the matching path only", async () => {
   const { policy, entries } = makePolicy({
@@ -451,7 +491,10 @@ test("integration: shadow and enforce differ only in the throw and mode field", 
     const enBlock = journalEntries(en.metricsDir).find((e) => e.reason === "tool-policy")
     const shBlock = journalEntries(sh.metricsDir).find((e) => e.reason === "tool-policy")
     assert.ok(enBlock && shBlock)
-    const stripMode = ({ mode: _mode, ...rest }: any) => rest
+    // Two independent boots write the entries at different moments, so the
+    // journaler's prepended `ts` differs; the assertion is about the policy
+    // content (identical modulo `mode`), not the write timestamp.
+    const stripMode = ({ mode: _mode, ts: _ts, ...rest }: any) => rest
     assert.deepEqual(stripMode(enBlock), stripMode(shBlock))
   } finally {
     en.dispose()
