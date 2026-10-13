@@ -93,6 +93,23 @@ export interface GateLedger {
    */
   setParent(sessionID: string, parentID: string): void
   /**
+   * Registers a session as a live parent so the `states` cap never evicts
+   *  its bucket while it stays tracked (issue #42). Registration is the
+   *  eviction-protection signal; refreshed by every prompt, guarded
+   *  dispatch, task delivery, edge resolution, and root-session event, so an
+   *  active parent re-registers long before the registry's LRU churn can evict
+   *  it (bounded by `maxTrackedParents`). No-op on an empty id.
+   * @param sessionID The parent session ID.
+   */
+  markParent(sessionID: string): void
+  /**
+   * Whether a session is a currently-registered live parent (membership with
+   *  LRU promotion — the registry is LRU by use).
+   * @param sessionID The session ID to test.
+   * @returns True when the session is a registered live parent.
+   */
+  isParent(sessionID: string): boolean
+  /**
    *
    * Overwrites the child's latest `VERDICT:` marker observation and its
    * provenance source label. Recording is verdict-kind only (only `VERDICT:`
@@ -229,6 +246,13 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
  * beyond the cap the least-recently-used entry is evicted. A replayed bucket
  * evicted before its grace prompt loses the one-prompt survival (fail-toward-
  * strict); without the tag the next prompt is an ordinary full reset.
+ * Live parents register via `markParent` (per prompt, guarded dispatch, task
+ * delivery, edge resolution, and root-session event). A registered parent is
+ * never evicted from `states` while it stays in the bounded registry (issue
+ * #42) — leaked child buckets now only evict each other. Protection never
+ * creates a bucket (minting is unchanged) and boot replay stays strict (the
+ * registry is empty at replay, so the `replayGrace` loss behavior is
+ * unchanged).
  * @param journalPath Absolute path of the JSONL journal to replay.
  * @param maxSessions LRU cap for tracked sessions (states + parent map).
  * @returns A ledger bound to a fresh in-memory session map.
@@ -243,6 +267,11 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
   // ledger, not a deduplicator); eviction above maxSessions re-journals on a
   // later re-observation — bounded and acceptable, documented at recordChildVerdict.
   const childVerdicts = new Map<string, ChildVerdict>()
+  // Sessions registered as live parents (orchestrator/primary). LRU-touched
+  // like the other maps, bounded by `maxTrackedParents`; registration is the
+  // eviction-protection signal for the `states` cap (issue #42).
+  const parents = new Map<string, true>()
+  const maxTrackedParents = Math.max(256, maxSessions * 4) // mirrors maxTrackedLookups in setup.ts
 
   /**
    * Promotes a key to most-recently-used in an insertion-ordered map.
@@ -258,30 +287,74 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
   }
 
   /**
-   * Evicts least-recently-used entries until the map is within the cap.
+   * Evicts least-recently-used entries until the map is within the cap,
+   * skipping any entry for which `protect` returns true. Scans insertion
+   * order for the first unprotected entry; when every remaining entry is
+   * protected, over-cap is tolerated (bounded by the registry bound).
    * @param map The map to trim.
+   * @param protect Optional predicate on keys; a `true` result is never
+   *     evicted from this map.
    */
-  function cap<K, V>(map: Map<K, V>): void {
+  function cap<K, V>(map: Map<K, V>, protect?: (key: K) => boolean): void {
     while (map.size > maxSessions) {
-      const oldest = map.keys().next()
-      if (oldest.done) break
-      map.delete(oldest.value)
+      let evicted = false
+      for (const key of map.keys()) {
+        // Insertion order: the first unprotected entry is the victim.
+        if (protect?.(key)) continue
+        map.delete(key)
+        evicted = true
+        break
+      }
+      // Every remaining entry is protected; over-cap is tolerated (bounded by
+      // the registry bound), so the scan-found-empty case stops the loop.
+      if (!evicted) break
     }
+  }
+
+  /**
+   * Registers a session as a live parent (issue #42): keep it MRU — promote +
+   * re-set — so an active parent re-registers long before the registry's LRU
+   * churn can evict it. No-op on an empty id. Bounded by `maxTrackedParents`.
+   * @param sessionID The parent session ID.
+   */
+  function markParent(sessionID: string): void {
+    if (!sessionID) return
+    promote(parents, sessionID)
+    parents.set(sessionID, true)
+    while (parents.size > maxTrackedParents) {
+      const oldest = parents.keys().next()
+      if (oldest.done) break
+      parents.delete(oldest.value)
+    }
+  }
+
+  /**
+   * Whether a session is a currently-registered live parent, with LRU
+   * promotion (the registry is LRU by use).
+   * @param sessionID The session ID to test.
+   * @returns True when the session is a registered live parent.
+   */
+  function isParent(sessionID: string): boolean {
+    const known = parents.get(sessionID) === true
+    if (known) promote(parents, sessionID)
+    return known
   }
 
   // Replay runs before capping so the restored set honors the LRU cap too.
   replayGatePasses(states, journalPath)
-  cap(states)
+  cap(states, isParent)
 
   return {
     childToParent,
+    markParent,
+    isParent,
     state(sessionID: string): GateState {
       promote(states, sessionID)
       let s = states.get(sessionID)
       if (!s) {
         s = newState()
         states.set(sessionID, s)
-        cap(states)
+        cap(states, isParent)
       }
       return s
     },
@@ -294,7 +367,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       const prior = states.get(sessionID)
       states.delete(sessionID)
       states.set(sessionID, prior?.replayGrace ? mergeAfterReplay(prior) : newState())
-      cap(states)
+      cap(states, isParent)
       // Cross-task staleness (issue #51, MED): child-verdict evidence is scoped
       // to a task. A new prompt for this parent drops the previous task's
       // child verdicts so a marker-less re-fire can never re-attribute (or
@@ -321,6 +394,10 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     setParent(sessionID: string, parentID: string): void {
       childToParent.set(sessionID, parentID)
       cap(childToParent)
+      // Edge resolution marks the parent live (issue #42): its `states` bucket
+      // is now protected from eviction until an unrelated parent churn evicts
+      // this registration from the registry.
+      markParent(parentID)
     },
     recordChildVerdict(childID: string, marker: string, source: string): boolean {
       // changed = the marker or source actually moved; the setup layer journals
