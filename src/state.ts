@@ -114,13 +114,22 @@ export interface GateLedger {
    */
   recordChildVerdict(childID: string, marker: string, source: string): boolean
   /**
-   * Returns the child's latest `VERDICT:` marker observation, or an empty
-   * verdict ({ marker: "", source: "" }) when the child has none. Touches
-   * the child to keep it most-recently-used (LRU).
-   * @param childID The child session ID.
-   * @returns The stored observation, or { marker: "", source: "" }.
-   */
+   /**
+    * Returns the child's latest `VERDICT:` marker observation, or an empty
+    * verdict (`{ marker: "", source: "", recordedAt: 0 }`) when the child has
+    * none. Touches the child to keep it most-recently-used (LRU).
+    * @param childID The child session ID.
+    * @returns The stored observation, or the empty verdict default.
+    */
   childVerdict(childID: string): ChildVerdict
+  /**
+   * Snapshot of children with a stored (non-empty) verdict, as
+   * `{ child, verdict }` copies. Pure read — never promotes and never caps, so
+   * it is safe to call from the attribution layer without disturbing the LRU
+   * order (issue #54 plausibility scan).
+   * @returns A new array of `{ child, verdict }` pairs with non-empty verdicts.
+   */
+  evidencedChildren(): Array<{ child: string; verdict: ChildVerdict }>
 }
 
 /**
@@ -295,6 +304,10 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       for (const c of childToParent.keys()) {
         if (childToParent.get(c) === sessionID) childVerdicts.delete(c)
       }
+      // Unresolved children (no registered edge) keep their verdicts across a
+      // reset by design: there is no child→parent key to drop them on. Issue
+      // #54 makes this safe — the timestamp join bounds staleness so a previous
+      // task's streamed APPROVE cannot approve the next task.
     },
     parentOf(sessionID: string | undefined): string {
       if (!sessionID) return ""
@@ -312,17 +325,27 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     recordChildVerdict(childID: string, marker: string, source: string): boolean {
       // changed = the marker or source actually moved; the setup layer journals
       // a streamed verdict observation iff this is true (per (child, marker,
-      // source) first-sight dedup). LRU promotion + cap are unchanged.
-      const prev = childVerdicts.get(childID) ?? { marker: "", source: "" }
+      // source) first-sight dedup). LRU promotion + cap are unchanged; the
+      // recordedAt stamp refreshes on every re-observation (issue #54 plausibility
+      // join keeps a verdict plausible while its parent's task is live).
+      const prev = childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
       const changed = prev.marker !== marker || prev.source !== source
       promote(childVerdicts, childID)
-      childVerdicts.set(childID, { marker, source })
+      childVerdicts.set(childID, { marker, source, recordedAt: Date.now() })
       cap(childVerdicts)
       return changed
     },
     childVerdict(childID: string): ChildVerdict {
       promote(childVerdicts, childID)
-      return childVerdicts.get(childID) ?? { marker: "", source: "" }
+      return childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
+    },
+    // Snapshot only: no LRU promotion, no cap (pure read for the attribution
+    // scan). Returns copies so callers cannot mutate the store in place.
+    evidencedChildren(): Array<{ child: string; verdict: ChildVerdict }> {
+      const out: Array<{ child: string; verdict: ChildVerdict }> = []
+      for (const [child, v] of childVerdicts)
+        if (v.marker !== "") out.push({ child, verdict: { ...v } })
+      return out
     },
   }
 }

@@ -6,6 +6,13 @@
  * parent-keyed re-fires fail open (journaled `error`, gate untouched). Also
  * asserts the candidate-recovery path that let-attribute a parent-keyed
  * re-fire to the unique evidenced child.
+ *
+ * Issue #54 (`#54:`-prefixed tests): a self-keyed delivery whose edge is
+ * unresolved now also claims the unique child evidenced only in the streaming
+ * store (plausibility = a recorded plan-reviewer dispatch predates the
+ * observation, unique across parents); every self-keyed delivery journals one
+ * `type:"attribution"` diagnostic; a plausible streamed APPROVE makes a
+ * self-keyed BLOCK unreachable.
  */
 
 import { test } from "node:test"
@@ -15,6 +22,7 @@ import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
 import {
+  callSession,
   callTool,
   isolatedEnv,
   journalEntries,
@@ -33,12 +41,13 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 /** Boots a temp project dir with a plan file so an executor dispatch is gated. */
 async function bootWithPlan(
   planBody = "# P\n",
+  opts?: { throwingGet?: boolean },
 ): Promise<{ h: FakeHost; metricsDir: string; project: string; restore: () => void }> {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), planBody)
   const metricsDir = tmpDir()
-  const h = makeFakeHost()
+  const h = makeFakeHost(opts)
   const prev = process.cwd()
   process.chdir(project)
   const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
@@ -380,5 +389,614 @@ test("AC-5: unattributable parent-keyed delivery fails open to a journaled error
     )
   } finally {
     restore()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Issue #54: self-keyed task-result delivery with an unresolved edge.
+// ---------------------------------------------------------------------------
+
+/** Records a plan-reviewer dispatch for the parent (issue #54 plausibility input). */
+const dispatch = (h: FakeHost, parent: string): Promise<void> =>
+  callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: parent,
+    input: { agent: "plan-reviewer", prompt: "review the plan" },
+  })
+
+/** Streams an APPROVE verdict on the given child's text (default c1). */
+const streamApprove = (h: FakeHost, child = "c1"): void =>
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: child, text: `${APPROVE}\n` } })
+
+/** Marker-less plan-reviewer task-result delivery on the given session id. */
+const deliver = (h: FakeHost, sessionID: string, output = "Task finished."): Promise<void> =>
+  callTool(h, "execute.after", {
+    tool: "task",
+    sessionID,
+    input: { agent: "plan-reviewer" },
+    result: { output },
+  })
+
+/** Every `type:"attribution"` entry (issue #54 forensic diagnostic). */
+const attribution = (metricsDir: string): Array<Record<string, any>> =>
+  journalEntries(metricsDir).filter((l) => l.type === "attribution")
+
+/** The /unattributable/ errors, per the AC-1b/AC-5 single-error count. */
+const errorE = (metricsDir: string): Array<Record<string, any>> =>
+  journalEntries(metricsDir).filter((l) => l.type === "error" && /unattributable/.test(l.error))
+
+/** Bare-output violation entries (marker-less delivery from a marker-contracted agent). */
+const violationE = (metricsDir: string): Array<Record<string, any>> =>
+  journalEntries(metricsDir).filter((l) => l.type === "violation")
+
+/**
+ * AC-1 (issue #54, core repro): an unresolved edge + a streamed APPROVE on the
+ * child must flip the plan gate APPROVE (not leave it red). The delivery is
+ * parent-keyed (self-keyed); the child is never registered, so the plausibility
+ * join claims it via the streaming store. Zero plan entries + executor blocked
+ * before the fix; green after.
+ */
+test("#54: unresolved edge + streamed APPROVE is attributed through the streaming store", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
+  try {
+    // Prompt reset drops p1's task scope; the child is never registered (throwingGet).
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    // Seed the parent's plan-reviewer dispatch (the plausibility input).
+    await dispatch(h, "p1")
+    // Saturate the failed lookup: two benign parts + the APPROVE text = 3 attempts (cap).
+    h.pushEvent({
+      type: "message.part.updated",
+      data: { sessionID: "c1", part: { type: "text", text: "noise one" } },
+    })
+    h.pushEvent({
+      type: "message.part.updated",
+      data: { sessionID: "c1", part: { type: "text", text: "noise two" } },
+    })
+    streamApprove(h)
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    // Parent-keyed, marker-less delivery: self-keyed, plausibility claims c1.
+    await deliver(h, "p1")
+
+    const plans = planEntries(metricsDir)
+    const latest = plans[plans.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.sessionID, "p1")
+    assert.equal(latest.raw, "c1")
+    assert.equal(latest.result, "APPROVE")
+    assert.equal(latest.marker, APPROVE)
+    assert.equal(latest.source, "child-text")
+    // Never a {raw: sessionID} phantom, never a BLOCK.
+    assert.equal(
+      plans.some((p) => p.raw === p.sessionID),
+      false,
+    )
+    assert.equal(
+      plans.some((p) => p.result === "BLOCK"),
+      false,
+    )
+    // Attribution diagnostic entry.
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.decision, "attributed")
+    assert.equal(ats[0]!.deliveryIsParent, true)
+    assert.equal(ats[0]!.sessionApi, true)
+    assert.deepEqual(ats[0]!.candidates, { edge: 0, unresolved: 1, plausible: 1 })
+    assert.equal(ats[0]!.lookup.c1.attempts, 3)
+    assert.equal(ats[0]!.lookup.c1.reason, "not-visible")
+    // Executor allowed (gate flipped green).
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * AC-1b / fail-open (issue #54, #51): no recorded dispatch ⇒ plausibility unmet,
+ * so the streamed APPROVE on an unresolved child is NOT claimed. Zero plan
+ * entries, exactly one unattributable error, executor blocked, an attribution
+ * fail-open entry. The violation entry documents the current-code shape (keyed
+ * by the delivery session, p1).
+ */
+test("#54: unresolved edge without a recorded dispatch fails open", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    // Child streams APPROVE (unresolved); no dispatch is recorded.
+    streamApprove(h)
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    // Attribution fail-open diagnostic.
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.decision, "fail-open")
+    assert.deepEqual(ats[0]!.candidates, { edge: 0, unresolved: 1, plausible: 0 })
+    // The bare-output violation (marker-less plan-reviewer delivery) is keyed by p1.
+    assert.ok(violationE(metricsDir).some((x) => x.sessionID === "p1"))
+    // Executor blocked.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * H3 limitation (issue #54): a delivery keyed by the unresolved child itself
+ * cannot attribute (gate state is parent-keyed by design). Self-keyed
+ * fail-open with the full lookup diagnostic; executor still blocked.
+ */
+test("#54: a child-keyed unresolved delivery cannot attribute (parent-keyed gate by design)", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
+  try {
+    // Saturate c1's failed lookup and record its APPROVE.
+    h.pushEvent({
+      type: "message.part.updated",
+      data: { sessionID: "c1", part: { type: "text", text: "noise one" } },
+    })
+    h.pushEvent({
+      type: "message.part.updated",
+      data: { sessionID: "c1", part: { type: "text", text: "noise two" } },
+    })
+    streamApprove(h)
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h, "c1")
+
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.deliveryIsParent, true)
+    assert.equal(ats[0]!.sessionID, "c1")
+    assert.equal(ats[0]!.decision, "fail-open")
+    assert.equal(ats[0]!.lookup.c1.attempts, 3)
+    assert.equal(ats[0]!.lookup.c1.reason, "not-visible")
+    // Executor blocked.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "c1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Task-scope guard (issue #54): a previous task's streamed APPROVE cannot
+ * approve the next task after a prompt reset (dispatch cleared). Half 1 fails
+ * open (dispatch gone); half 2 re-arms the join via a fresh dispatch + re-stream
+ * and attributes. Proves last-wins + reset-clearing.
+ */
+test("#54: a reset clears dispatch scope so a prior task's streamed verdict cannot approve the next", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    // Task 1: dispatch, then stream the child's APPROVE (unresolved child).
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    streamApprove(h)
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+
+    // Reset drops p1's dispatch scope WITHOUT re-dispatching; the delivery is
+    // now fail-open (the streamed verdict is no longer plausible).
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await deliver(h, "p1")
+    // Fail open: no plan entry, exactly one unattributable error.
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    const ats = attribution(metricsDir)
+    assert.ok(ats.some((a) => a.decision === "fail-open"))
+    assert.ok(ats.some((a) => a.candidates.plausible === 0))
+
+    // Re-dispatch + re-stream re-arms the join; the delivery attributes.
+    await dispatch(h, "p1")
+    await settle()
+    streamApprove(h)
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h, "p1")
+    const plan = planEntries(metricsDir)
+    const latest = plan[plan.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.sessionID, "p1")
+    assert.equal(latest.raw, "c1")
+    assert.equal(latest.result, "APPROVE")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Contradiction → fail-open (issue #54): two plausible unresolved children under
+ * one parent, one APPROVE and one BLOCK, ⇒ contradictory pool ⇒ fail-open, gate
+ * untouched, exactly one /unattributable/ error.
+ */
+test("#54: contradictory plausible verdicts fail open", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    streamApprove(h, "c1")
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: `${BLOCK}\n` } })
+    await waitUntil(
+      () => journalEntries(metricsDir).filter((e) => e.type === "verdict").length >= 2,
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.decision, "fail-open")
+    assert.deepEqual(ats[0]!.candidates, { edge: 0, unresolved: 2, plausible: 2 })
+    // Executor blocked.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Unique-owner exclusion (issue #54): a verdict plausible for two parents
+ * (both dispatched before the stream) is ambiguous for each ⇒ excluded ⇒
+ * fail-open.
+ */
+test("#54: a verdict with two candidate parents is excluded from each", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await callSession(h, "prompt", { sessionID: "p2" })
+    await settle()
+    await dispatch(h, "p2")
+    await settle()
+    streamApprove(h, "c1")
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.deepEqual(ats[0]!.candidates, { edge: 0, unresolved: 1, plausible: 0 })
+    // Executor blocked.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Unanimity beats multiplicity (issue #54): a registered APPROVE child plus a
+ * second agreeing APPROVE (unresolved) child still attributes (edge-first raw),
+ * never regressing today's lone-edge-candidate attribution into a fail-open.
+ */
+test("#54: an agreeing unresolved child never regresses attribution into fail-open", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const h = makeFakeHost() // no session.get; c2 stays unresolved
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    // c1 registered via session.created (edge); c2 unresolved.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    streamApprove(h, "c1")
+    streamApprove(h, "c2")
+    await waitUntil(
+      () => journalEntries(metricsDir).filter((e) => e.type === "verdict").length >= 2,
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    const plan = planEntries(metricsDir)
+    const latest = plan[plan.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.sessionID, "p1")
+    assert.equal(latest.raw, "c1") // edge-first raw preference
+    assert.equal(latest.result, "APPROVE")
+    assert.equal(latest.source, "child-text")
+    // Executor allowed.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * Fail-open, not fail-green (issue #54): an unresolved child streaming BLOCK
+ * still attributes honestly as BLOCK and blocks the executor.
+ */
+test("#54: an unresolved BLOCK stream attributes as BLOCK", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    const plan = planEntries(metricsDir)
+    const latest = plan[plan.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.sessionID, "p1")
+    assert.equal(latest.raw, "c1")
+    assert.equal(latest.result, "BLOCK")
+    assert.equal(latest.source, "child-text")
+    // Executor blocked (BLOCK is not green).
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * #51 invariant preserved (issue #54): a marker-carrying self-keyed delivery
+ * with no candidates still fails open (the delivery's own APPROVE is dropped —
+ * fail-safe), never a phantom plan entry. Zero plan entries, one error.
+ */
+test("#54: a marker-carrying self-keyed delivery with no candidates still fails open", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    await deliver(h, "p1", `\nreviewed\n\n${APPROVE}\n`)
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Replay + restart independence (issue #54, documented regression): a
+ * journal-replayed plan approval for an old parent stays green across a restart
+ * (grace) while a fresh parent attributed via the self-keyed fix goes green
+ * independently. Executor allowed for both — separate buckets.
+ */
+test("#54: a replayed approval stays independent from a self-keyed fix for a new parent", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  // Seed a journal-replayed plan approval for an OLD parent (p1).
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE", marker: APPROVE }) +
+      "\n",
+  )
+  const h = makeFakeHost({ throwingGet: true })
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    // New parent p2 runs the #54 self-keyed repro with an unresolved child c2.
+    await callSession(h, "prompt", { sessionID: "p2" })
+    await settle()
+    await dispatch(h, "p2")
+    await settle()
+    h.pushEvent({
+      type: "message.part.updated",
+      data: { sessionID: "c2", part: { type: "text", text: "noise one" } },
+    })
+    h.pushEvent({
+      type: "message.part.updated",
+      data: { sessionID: "c2", part: { type: "text", text: "noise two" } },
+    })
+    streamApprove(h, "c2")
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c2"),
+    )
+    await settle()
+    await deliver(h, "p2")
+
+    const plans = planEntries(metricsDir)
+    const p2plan = plans.find((p) => p.sessionID === "p2")
+    assert.ok(p2plan)
+    assert.equal(p2plan.raw, "c2")
+    assert.equal(p2plan.result, "APPROVE")
+    assert.equal(p2plan.source, "child-text")
+    // Executor allowed for p2 (fix) and p1 (grace/replay) — independent buckets.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * Diagnostics (issue #54 AC-2): every self-keyed delivery journals exactly one
+ * `type:"attribution"` entry carrying the full diagnostic shape
+ * ({ decision, deliveryIsParent, candidates{edge,unresolved,plausible},
+ * lookup{session:{attempts,reason}} }). Two self-keyed deliveries ⇒ two
+ * attribution entries (counted 2), proving one-per-delivery.
+ */
+test("#54: each self-keyed delivery journals exactly one attribution entry", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
+  try {
+    // Two self-keyed deliveries (no registered child, no evidence).
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await deliver(h, "p1")
+    await deliver(h, "p1")
+
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 2) // one per delivery
+    for (const a of ats) {
+      assert.equal(a.decision, "fail-open")
+      assert.equal(a.deliveryIsParent, true)
+      assert.equal(a.sessionApi, true)
+      assert.deepEqual(a.candidates, { edge: 0, unresolved: 0, plausible: 0 })
+      assert.deepEqual(a.unresolvedIDs, [])
+      // failedLookups forensic: the delivery self keyed, not-visible.
+      assert.equal(a.lookup.p1.reason, "not-visible")
+      assert.ok(typeof a.lookup.p1.attempts === "number")
+    }
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Structural (issue #54 AC-3): a self-keyed delivery that attributes never
+ * journals a `{raw: sessionID}` phantom nor a BLOCK plan entry journal-wide;
+ * plus the H2 hypothesis — a record present but parent-less — is diagnosable as
+ * `"no-parent-id"` in the lookup, yet still attributes from the streaming store.
+ */
+test("#54: an attributed self-keyed delivery never clobbers and H2 resolves as no-parent-id", async () => {
+  // Part A: T1 repro; assert journal-wide invariants.
+  const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    streamApprove(h)
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    const plans = planEntries(metricsDir)
+    assert.ok(plans.length >= 1)
+    // Every plan entry is keyed raw = a real child, never the session id.
+    assert.ok(plans.every((p) => p.raw !== p.sessionID))
+    // No BLOCK plan entry journals: the streamed APPROVE flips it green.
+    assert.equal(
+      plans.some((p) => p.result === "BLOCK"),
+      false,
+    )
+  } finally {
+    restore()
+  }
+
+  // Part B: H2 — record present but parent-less ⇒ reason "no-parent-id".
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir2 = tmpDir()
+  const h2 = makeFakeHost({ sessionRecords: new Map([["c1", {}]]) }) // c1 has no parentID
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h2.host, {
+      env: isolatedEnv(metricsDir2),
+      config: { metricsDir: metricsDir2 },
+    })
+    const dispose = (await setup(h2.host)) as () => void
+    await callSession(h2, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h2, "p1")
+    await settle()
+    streamApprove(h2, "c1")
+    await waitUntil(() =>
+      journalEntries(metricsDir2).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await deliver(h2, "p1")
+
+    const ats = attribution(metricsDir2)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.decision, "attributed")
+    // H2: the lookup records the parent-less reason.
+    assert.equal(ats[0]!.lookup.c1.reason, "no-parent-id")
+    // The attribute still succeeds from the streaming store (edge-less candidate).
+    const plans = planEntries(metricsDir2)
+    const latest = plans[plans.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.raw, "c1")
+    assert.equal(latest.result, "APPROVE")
+    dispose()
+  } finally {
+    process.chdir(prev)
   }
 })

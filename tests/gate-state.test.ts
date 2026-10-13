@@ -2228,10 +2228,12 @@ test("recordChildVerdict flags first-record and marker/source change true, ident
   const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
   // First record: empty → (marker, source) changes, so true.
   assert.equal(ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text"), true)
-  assert.deepEqual(ledger.childVerdict("c1"), {
-    marker: VERDICT_APPROVE,
-    source: "child-text",
-  })
+  const v = ledger.childVerdict("c1")
+  assert.equal(v.marker, VERDICT_APPROVE)
+  assert.equal(v.source, "child-text")
+  // Issue #54: the stored verdict also carries a non-zero recordedAt stamp.
+  assert.equal(typeof v.recordedAt, "number")
+  assert.ok(v.recordedAt > 0)
   // Identical re-record: no change, so false (a dedup hit).
   assert.equal(ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text"), false)
   // Marker flip changes: true; the stored marker updates.
@@ -2257,7 +2259,7 @@ test("resetState clears childVerdicts scoped to the reset parent, preserving oth
   ledger.recordChildVerdict("c2", VERDICT_APPROVE, "child-text")
   // Reset p1: c1's evidence is dropped, c2's (a different parent) survives.
   ledger.resetState("p1")
-  assert.deepEqual(ledger.childVerdict("c1"), { marker: "", source: "" })
+  assert.deepEqual(ledger.childVerdict("c1"), { marker: "", source: "", recordedAt: 0 })
   assert.equal(ledger.childVerdict("c2").marker, VERDICT_APPROVE)
   // p2's gate state is untouched by the p1 reset.
   assert.equal(ledger.state("p2").hasPlanVerdict, false)
