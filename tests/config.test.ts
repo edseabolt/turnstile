@@ -34,6 +34,7 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.readBlock, 15)
   assert.equal(cfg.maxSessions, 64)
   assert.equal(cfg.waiverMarker, "USER WAIVER:")
+  assert.equal(cfg.approvalMarker, "PLAN APPROVED:")
   assert.equal(cfg.trace, true)
   assert.equal(cfg.journalMaxBytes, 5 * 1024 * 1024)
   assert.equal(cfg.journalMaxGenerations, 5)
@@ -84,6 +85,20 @@ test("mergeConfig ignores unknown keys and invalid values with warnings", () => 
   assert.equal(config.readWarn, 8)
   assert.equal(config.trace, true)
   assert.equal(warnings.length, 4)
+})
+
+/** approvalMarker is a valid string key: a non-empty string merges, an
+ *  invalid value is rejected with a warning (mirroring waiverMarker). */
+test("mergeConfig validates approvalMarker like waiverMarker", () => {
+  const base = defaultConfig({})
+  const ok = mergeConfig(base, { approvalMarker: "HUMAN GO:" })
+  assert.equal(ok.config.approvalMarker, "HUMAN GO:")
+  assert.equal(ok.warnings.length, 0)
+  const bad = mergeConfig(base, { approvalMarker: 42 as unknown })
+  assert.equal(bad.config.approvalMarker, "PLAN APPROVED:")
+  assert.ok(
+    bad.warnings.some((w) => w === 'config: invalid value for "approvalMarker"; keeping default'),
+  )
 })
 
 /** One-level-deep agents merge; bareOutput must be an array of strings. */

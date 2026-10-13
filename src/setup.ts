@@ -629,6 +629,13 @@ export function createTurnstile(
     // Count of successfully registered hooks (3 session + 2 tool + 1 event
     // subscriber = 6 on a full host); feeds the load heartbeat below.
     let hooks = 0
+    // Prompt-channel waiver capture (issue #34, AC-1): the waiver must
+    // provenance from the user's prompt, never the dispatch prompt. A counter
+    // tracks prompts where NEITHER candidate text key (`text`/`prompt`) is a
+    // string, so an unresolvable source is reported once (keylessPrompts hits
+    // 1 exactly once) as a misconfiguration (mirrors the bash `command ?? cmd`
+    // telemetry).
+    let keylessPrompts = 0
 
     // Bind the host session API for the shared `resolveParent` helper (hooks
     // already fire post-setup).
@@ -652,6 +659,36 @@ export function createTurnstile(
             // Evidence is task-scoped, exactly like gate state: a new user
             // prompt drops the in-memory correlation.
             evidence.clear(sessionID)
+            // Waiver capture (prompt channel): record the user's text following
+            // the waiver marker so both the reviewer and plan gates read it from
+            // the ledger instead of grepping a dispatch prompt (issue #34, AC-1).
+            // The reset above handed this session a fresh, task-scoped bucket.
+            try {
+              const text = String(properties?.text ?? properties?.prompt ?? "")
+              const at = text.indexOf(config.waiverMarker)
+              if (at !== -1) {
+                ledger.state(sessionID).userWaiver = config.trace
+                  ? text.slice(at, at + 200)
+                  : "<present>"
+              }
+            } catch (e) {
+              // Fail-open: capture never blocks a prompt.
+              journaler.journal({ type: "error", error: `waiver capture: ${e}` })
+            }
+            // Misconfiguration telemetry: if neither candidate text key is a
+            // string, the prompt text is unresolvable. Report the first such
+            // prompt once (keylessPrompts hits 1 exactly once) so a host-shape
+            // change stays observable without journaling on every prompt.
+            if (typeof properties?.text !== "string" && typeof properties?.prompt !== "string") {
+              keylessPrompts++
+              if (keylessPrompts === 1)
+                journaler.journal({
+                  type: "error",
+                  sessionID,
+                  error:
+                    "waiver capture: neither prompt text key (text|prompt) is a string; does the host send the user prompt elsewhere?",
+                })
+            }
           }
         })
         track(reg, cleanups)
@@ -760,11 +797,11 @@ export function createTurnstile(
                 })
 
               if (agent === config.agents.reviewer) {
-                gates.guardReviewerDispatch(sessionID, prompt, ledger)
+                gates.guardReviewerDispatch(sessionID, ledger)
               }
 
               if (agent === config.agents.executor) {
-                gates.enforcePlanApproval(sessionID, prompt, projectDir, ledger)
+                gates.enforcePlanApproval(sessionID, projectDir, ledger)
                 gates.enforceDecomposition(sessionID, prompt, projectDir)
               }
               return

@@ -16,6 +16,7 @@ import { createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
 import {
+  callSession,
   callTool,
   isolatedEnv,
   journalEntries,
@@ -81,7 +82,7 @@ test("plan gate: executor blocked until a plan-reviewer APPROVE verdict", async 
         e.message ===
         `BLOCKED by turnstile: no plan approval for "plan.md". Dispatch the plan-reviewer subagent first; proceed with executor only after the plan-reviewer's first line is ` +
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-          "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+          "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words).",
     )
     // The plan-reviewer runs as the child session id; attribute the APPROVE to
     // the parents gate via the child→parent edge.
@@ -141,19 +142,35 @@ test("plan gate: BLOCK verdict and marker-less output do not approve", async () 
   }
 })
 
-/** The literal USER WAIVER: marker bypasses the plan gate per dispatch. */
-test("plan gate: USER WAIVER: bypasses approval; next unapproved dispatch blocked", async () => {
+/**
+ * The waiver provenance is the user prompt, never the dispatch prompt (issue
+ * #34, AC-1). A prompt-channel `USER WAIVER:` waives the plan gate for the
+ * whole task (task-sticky): the first executor dispatch passes, a second
+ * unapproved dispatch without a new prompt still passes, and a fresh prompt
+ * without the marker resets the task so the next dispatch blocks again.
+ */
+test("plan gate: prompt-channel USER WAIVER: waives the plan gate for the task, then resets", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
+    // The waiver comes from the user prompt; the dispatch prompt is inert.
+    await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said go" })
     await callTool(h, "execute.before", {
       tool: "task",
       sessionID: "p1",
-      input: { agent: "executor", prompt: "USER WAIVER: user said go" },
+      input: { agent: "executor", prompt: "do the work" },
     })
     const waived = journalEntries(metricsDir).find(
-      (l) => l.type === "plan" && l.result === "WAIVED",
+      (l) => l.type === "plan" && l.result === "WAIVED" && l.channel === "prompt",
     )
-    assert.ok(waived)
+    assert.ok(waived, "the plan gate journals a prompt-channel waiver")
+    // Task-sticky: a second unapproved dispatch (no new prompt) still passes.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work again" },
+    })
+    // A fresh prompt without the marker resets the task; the next dispatch blocks.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     await assert.rejects(() =>
       callTool(h, "execute.before", {
         tool: "task",

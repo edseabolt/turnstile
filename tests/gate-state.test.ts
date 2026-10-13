@@ -30,7 +30,7 @@ const NO_GATE_MESSAGE =
   "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
   "Run the test-runner subagent first; dispatch reviewer only after its first line is " +
   "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-  "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** The gate-unverified block message: a PASS was recorded without
  *  a correlating journaled test-command execution (enforce mode). */
@@ -38,7 +38,7 @@ const GATE_UNVERIFIED_MESSAGE =
   "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
   "was recorded without a journaled successful test-command execution for this " +
   "session. Run the test-runner subagent first, or obtain an explicit user waiver " +
-  "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(
@@ -72,27 +72,33 @@ test("reviewer dispatch is blocked before any GATE: PASS, with the exact message
   dispose()
 })
 
-/** The literal USER WAIVER: marker allows the dispatch and the quote is journaled. */
+/** The prompt-channel `USER WAIVER:` marker allows the dispatch and the quote
+ *  is journaled with `channel: "prompt"` provenance. */
 test("USER WAIVER: in the prompt waives the gate and is journaled", async () => {
   const { h, dispose, metricsDir } = await boot()
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
   assert.ok(waived)
-  assert.equal(waived.waiver, "USER WAIVER: user said ship it")
+  assert.equal(waived?.channel, "prompt")
+  assert.equal(waived?.waiver, "USER WAIVER: user said ship it")
   dispose()
 })
 
-/** Waivers are per dispatch: the next marker-less prompt is blocked again. */
-test("waiver is per dispatch: a later marker-less prompt is blocked again", async () => {
+/** Waivers are per dispatch for the reviewer gate: after the prompt-channel
+ *  waiver is consumed by the dispatch that unlocks it, a later marker-less
+ *  dispatch is blocked again. */
+test("waiver is per dispatch: a later marker-less dispatch is blocked again", async () => {
   const { h, dispose } = await boot()
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   await assert.rejects(
     () =>
@@ -109,14 +115,19 @@ test("waiver is per dispatch: a later marker-less prompt is blocked again", asyn
 /** With trace:false the waiver quote is redacted to "<present>" in the journal. */
 test("trace:false redacts the waiver quote in the journal", async () => {
   const { h, dispose, metricsDir } = await boot({ trace: false })
+  await callSession(h, "prompt", {
+    sessionID: "p1",
+    text: "USER WAIVER: sensitive user words here",
+  })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: sensitive user words here" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
   assert.ok(waived)
-  assert.equal(waived.waiver, "<present>")
+  assert.equal(waived?.channel, "prompt")
+  assert.equal(waived?.waiver, "<present>")
   dispose()
 })
 
@@ -399,28 +410,36 @@ test("round cap with default 2: third reviewer dispatch blocked at the limit", a
   dispose()
 })
 
-/** Waived dispatches do not consume the round cap: after any number of
- *  waivers, the next unwaived dispatch still proceeds. */
+/** Waived dispatches do not consume the round cap: after a prompt-channel
+ *  waiver the next unwaived dispatch still proceeds. */
 test("round cap: waived dispatches do not consume the cap; an unwaived dispatch proceeds", async () => {
   // flag keeps today's flip semantics so the unwaived dispatch clears the
   // no-gate-pass check after the green gate.
   const { h, dispose } = await boot({ gateEvidence: "flag" })
-  // Green gate so the unwaived dispatch can clear the no-gate-pass check.
+  // Prompt-channel waiver captured first (a prompt resets state, so the green
+  // gate must follow); it waives the first reviewer dispatch without counting
+  // toward the cap.
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
+  // Green gate so the unwaived dispatches can clear the no-gate-pass check.
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
     input: { agent: "test-runner" },
     result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
   })
-  // Two waived dispatches must not drain the unwaived budget.
-  for (let i = 0; i < 2; i++) {
-    await callTool(h, "execute.before", {
-      tool: "task",
-      sessionID: "p1",
-      input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
-    })
-  }
-  // The unwaived dispatch still resolves — HEAD throws the round-limit message.
+  // A waiver dispatch consumes the prompt-channel waiver; the green gate
+  // carries the unwaived dispatches.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  // The unwaived dispatch still resolves.
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
@@ -429,24 +448,27 @@ test("round cap: waived dispatches do not consume the cap; an unwaived dispatch 
   dispose()
 })
 
-/** Waivers neither count toward nor reset the cap: after any number of
- *  waivers exactly `maxReviewerRounds` unwaived dispatches succeed and the
+/** Waivers neither count toward nor reset the cap: after a prompt-channel
+ *  waiver exactly `maxReviewerRounds` unwaived dispatches succeed and the
  *  next rejects with the golden round-limit message. */
 test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is blocked", async () => {
   // flag keeps today's flip semantics so the gate goes green after the PASS.
   const { h, dispose } = await boot({ gateEvidence: "flag" })
+  // Prompt-channel waiver captured first (a prompt resets state, so the green
+  // gate must follow).
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
     input: { agent: "test-runner" },
     result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
   })
-  // A single waiver precedes the unwaived budget: it must neither consume nor
-  // reset it.
+  // A single prompt-channel waiver precedes the unwaived budget: it consumes
+  // the waiver without consuming or resetting the cap.
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   // Two unwaived dispatches still succeed (default cap of 2).
   for (let i = 0; i < 2; i++) {
@@ -1323,14 +1345,16 @@ test("block messages: custom config interpolates into the no-gate-pass message",
       "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
         "Run the qa-runner subagent first; dispatch qa-reviewer only after its first line is " +
         "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-        "(the dispatch prompt must contain the literal marker 'OVERRIDE:' followed by the user's words).",
+        "(a user prompt this task must contain the literal marker 'OVERRIDE:' followed by the user's words).",
   )
-  // The customized waiver marker bypasses the gate and is journaled; the
-  // dispatch entry still records the customized agent name.
+  // The customized waiver marker is captured from the user prompt (never the
+  // dispatch prompt) and bypasses the gate and is journaled; the dispatch
+  // entry still records the customized agent name.
+  await callSession(h, "prompt", { sessionID: "p1", text: "OVERRIDE: user said ship it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "qa-reviewer", prompt: "OVERRIDE: user said ship it" },
+    input: { agent: "qa-reviewer", prompt: "review it" },
   })
   const dispatched = journalEntries(metricsDir).find(
     (l) => l.type === "dispatch" && l.agent === "qa-reviewer",
@@ -1338,7 +1362,8 @@ test("block messages: custom config interpolates into the no-gate-pass message",
   assert.ok(dispatched)
   const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
   assert.ok(waived)
-  assert.equal(waived.waiver, "OVERRIDE: user said ship it")
+  assert.equal(waived?.channel, "prompt")
+  assert.equal(waived?.waiver, "OVERRIDE: user said ship it")
   dispose()
 })
 
@@ -1366,7 +1391,7 @@ test("block messages: custom config interpolates into the plan-approval message"
         e.message ===
         `BLOCKED by turnstile: no plan approval for "plan.md". Dispatch the plan-check subagent first; proceed with qa-executor only after the plan-check's first line is ` +
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-          "(the dispatch prompt must contain the literal marker 'OVERRIDE:' followed by the user's words).",
+          "(a user prompt this task must contain the literal marker 'OVERRIDE:' followed by the user's words).",
     )
     dispose()
   } finally {
@@ -1502,20 +1527,23 @@ test("trace lines carry a trailing ` | <sessionID>` when wired to a session", as
     input: { agent: "test-runner" },
     result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
   })
-  // waiver: a USER WAIVER prompt on a reviewer dispatch fires the gate waiver
-  // trace (guardReviewerDispatch handles the waiver before plan approval).
+  // waiver: a prompt-channel USER WAIVER fires the gate waiver trace
+  // (guardReviewerDispatch handles the waiver before plan approval).
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: the user shipped it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: the user shipped it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
-  // plan-waiver: the same marker on an executor dispatch fires the
-  // plan-approval waiver trace (enforcePlanApproval). The chunk-3 ref lets
-  // it clear the decomposition gate so the waiver trace is the only outcome.
+  // plan-waiver: the same marker in the user prompt fires the plan-approval
+  // waiver trace (enforcePlanApproval). The executor prompt also cites AC-1 so
+  // the decomposition gate stays a no-op and the plan-waiver trace is the only
+  // executor outcome.
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: please proceed" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "executor", prompt: "USER WAIVER: please proceed, chunk-3" },
+    input: { agent: "executor", prompt: "do the work AC-1" },
   })
   const lines = traceText(metricsDir).trim().split("\n").filter(Boolean)
   const carriesTail = (needle: string): boolean =>

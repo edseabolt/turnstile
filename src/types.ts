@@ -301,6 +301,13 @@ export interface TurnstileConfig {
   readBlock: number
   /** Literal marker that waives the reviewer gate when in the prompt. */
   waiverMarker: string
+  /**
+   * Literal marker that releases the plan gate via an explicit human
+   * approval (chunk-3). Present at config resolution so the key is valid and
+   * the digest is stable; not yet consumed by the chunk-2 prompt-channel
+   * waiver. Defaults to `PLAN APPROVED:`.
+   */
+  approvalMarker: string
   /** Project-relative directory scanned for `## Decomposition` plans. */
   plansDir: string
   /** Whether the human-readable trace file is written (JSONL journal always). */

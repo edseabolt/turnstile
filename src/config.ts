@@ -59,6 +59,7 @@ export function defaultConfig(
     readWarn: 8,
     readBlock: 15,
     waiverMarker: "USER WAIVER:",
+    approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
     trace: true,
     agents: {
@@ -107,7 +108,12 @@ export function defaultConfig(
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "trace") return typeof value === "boolean"
-  if (key === "metricsDir" || key === "waiverMarker" || key === "plansDir") {
+  if (
+    key === "metricsDir" ||
+    key === "waiverMarker" ||
+    key === "approvalMarker" ||
+    key === "plansDir"
+  ) {
     if (key === "metricsDir") {
       return typeof value === "string" && value.trim().length > 0 && path.isAbsolute(value)
     }
@@ -150,6 +156,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   if (key === "trace") config.trace = value as boolean
   else if (key === "metricsDir") config.metricsDir = value as string
   else if (key === "waiverMarker") config.waiverMarker = value as string
+  else if (key === "approvalMarker") config.approvalMarker = value as string
   else if (key === "plansDir") config.plansDir = value as string
   else if (key === "gateMarker") config.gateMarker = value as string
   else if (key === "verdictMarker") config.verdictMarker = value as string

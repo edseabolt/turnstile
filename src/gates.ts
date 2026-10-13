@@ -32,17 +32,18 @@ export class BlockError extends Error {
 export interface Gates {
   /**
    * Enforces the reviewer dispatch gate for a pending `task` dispatch:
-   * records a waiver when the prompt carries the waiver marker (per
-   * dispatch, not sticky), then blocks when the dispatch cap is exhausted
-   * or the test gate has not gone green. A waiver bypasses the cap without
-   * counting toward it.
+   * waives the dispatch when the task's prompt-channel waiver
+   * (`ledger.state().userWaiver`, captured from the user prompt in the setup
+   * hook) is set, then blocks when the dispatch cap is exhausted or the test
+   * gate has not gone green. A waiver bypasses the cap without counting toward
+   * it and is consumed by the dispatch that unlocks it (per-dispatch); the
+   * task waiver otherwise stays live.
    * @param sessionID The parent session ID.
-   * @param prompt The dispatch prompt text.
    * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
    *     must not proceed.
    */
-  guardReviewerDispatch(sessionID: string, prompt: string, ledger: GateLedger): void
+  guardReviewerDispatch(sessionID: string, ledger: GateLedger): void
   /**
    * Enforces the whole-file read horizon for a session.
    * @param sessionID The parent session ID.
@@ -69,19 +70,16 @@ export interface Gates {
    * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver).
    * Approval is invalidated when this session's approval was issued against
    * a different plans-dir signature, forcing re-review after a re-plan.
+   * The waiver is the task's prompt-channel waiver
+   * (`ledger.state().userWaiver`, captured from the user prompt): non-empty
+   * waives this gate for the whole task (not per dispatch).
    * @param sessionID The parent session ID.
-   * @param prompt The dispatch prompt text (checked for the waiver marker).
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix when no plan file
    *     exists yet is approved for this task.
    */
-  enforcePlanApproval(
-    sessionID: string,
-    prompt: string,
-    projectDir: string,
-    ledger: GateLedger,
-  ): void
+  enforcePlanApproval(sessionID: string, projectDir: string, ledger: GateLedger): void
   /**
    * Returns the current plans-dir signature for approval-time stamping, or
    * null when the dir is absent or unreadable (fail-open: an unstampable
@@ -102,34 +100,38 @@ export interface Gates {
 export function createGates(config: TurnstileConfig, journaler: Journaler): Gates {
   /**
    * Enforces the reviewer dispatch gate for a pending `task` dispatch.
-   * Records a waiver (with journal + trace) when the prompt carries the
-   * waiver marker, then blocks the dispatch when the dispatch cap is
-   * exhausted or the test gate has not gone green. The cap counts reviewer
-   * dispatches themselves (per the documented "max 2 reviewer dispatches
-   * per task" contract), not BLOCK verdicts. A waiver applies to the
-   * dispatch carrying it only, bypasses the cap without counting toward it,
-   * and expires with that dispatch; every dispatch prompt must contain the
-   * literal marker to be exempt.
+   * Waives the dispatch when the task's prompt-channel waiver
+   * (`s.userWaiver`, captured from the user prompt in the setup hook) is set,
+   * then blocks when the dispatch cap is exhausted or the test gate has not
+   * gone green. The cap counts reviewer dispatches themselves (per the
+   * documented "max 2 reviewer dispatches per task" contract), not BLOCK
+   * verdicts. A waiver bypasses the cap without counting toward it and is
+   * consumed by the dispatch that unlocks it (per-dispatch): a stale waiver
+   * cannot outlive that single reviewer dispatch. Provenance matters (issue
+   * #34, AC-1): the waiver is read from the task prompt, never the dispatch
+   * prompt.
    * @param sessionID The parent session ID.
-   * @param prompt The dispatch prompt text.
    * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
    *     must not proceed.
    */
-  function guardReviewerDispatch(sessionID: string, prompt: string, ledger: GateLedger): void {
+  function guardReviewerDispatch(sessionID: string, ledger: GateLedger): void {
     const s = ledger.state(sessionID)
-    const at = prompt.indexOf(config.waiverMarker)
-    const waived = at !== -1
+    const waived = s.userWaiver !== ""
     if (waived) {
       journaler.journal({
         type: "gate",
         sessionID,
         result: "WAIVED",
+        // Provenance: this waiver opened the gate from the user prompt, not a
+        // dispatch prompt (issue #34, AC-1).
+        channel: "prompt",
         // Waiver quotes carry raw prompt context; journal them only when
-        // the trace is enabled (SECURITY.md redaction contract).
-        waiver: config.trace ? prompt.slice(at, at + 200) : "<present>",
+        // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`
+        // is already trace-gated by the prompt-hook capture.
+        waiver: s.userWaiver,
       })
-      journaler.traceEvent("user", "waiver", prompt.slice(at, at + 120), sessionID)
+      journaler.traceEvent("user", "waiver", s.userWaiver, sessionID)
     }
     if (s.reviewRounds >= config.maxReviewerRounds && !waived) {
       journaler.journal({
@@ -159,7 +161,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
             "was recorded without a journaled successful test-command execution for this " +
             `session. Run the ${config.agents.testRunner} subagent first, or obtain an ` +
             `explicit user waiver ` +
-            `(the dispatch prompt must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+            `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
         )
       }
       journaler.journal({
@@ -172,15 +174,18 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
           `Run the ${config.agents.testRunner} subagent first; dispatch ${config.agents.reviewer} only after its first line is ` +
           "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-          `(the dispatch prompt must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
       )
     }
     // Check-then-increment: the Nth dispatch is allowed and the (N+1)th is
     // blocked, so exactly `maxReviewerRounds` dispatches succeed per task.
     // A waiver is an explicit per-dispatch user escape, so it bypasses the
     // cap without counting toward it — the cap bounds the unwaived re-dispatch
-    // loop only.
+    // loop only. The waiver is consumed by the dispatch that unlocks it (per
+    // the historical quote-consumption semantics), so a stale task waiver
+    // cannot grant a later reviewer dispatch.
     if (!waived) s.reviewRounds++
+    else s.userWaiver = ""
   }
 
   /**
@@ -347,23 +352,22 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     }
   }
 
-  function enforcePlanApproval(
-    sessionID: string,
-    prompt: string,
-    projectDir: string,
-    ledger: GateLedger,
-  ): void {
-    const at = prompt.indexOf(config.waiverMarker)
-    if (at !== -1) {
+  function enforcePlanApproval(sessionID: string, projectDir: string, ledger: GateLedger): void {
+    const s = ledger.state(sessionID)
+    if (s.userWaiver !== "") {
       journaler.journal({
         type: "plan",
         sessionID,
         result: "WAIVED",
+        // Provenance: this waiver opened the gate from the user prompt, not a
+        // dispatch prompt (issue #34, AC-1).
+        channel: "prompt",
         // Waiver quotes carry raw prompt context; journal them only when
-        // the trace is enabled (SECURITY.md redaction contract).
-        waiver: config.trace ? prompt.slice(at, at + 200) : "<present>",
+        // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`
+        // is already trace-gated by the prompt-hook capture.
+        waiver: s.userWaiver,
       })
-      journaler.traceEvent("user", "plan-waiver", prompt.slice(at, at + 120), sessionID)
+      journaler.traceEvent("user", "plan-waiver", s.userWaiver, sessionID)
       return
     }
     const plansDir = path.join(projectDir, config.plansDir)
@@ -371,7 +375,6 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       if (!fs.existsSync(plansDir)) return
       const scan = scanPlans(plansDir)
       if (scan.names.length === 0) return
-      const s = ledger.state(sessionID)
       // Reconcile this session's approval with the current scan: a stamp that
       // differs from the current key means re-plan → stale verdict; a green
       // pass re-stamps (and how a replay-restored "" becomes validated). Both
@@ -389,7 +392,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         throw new BlockError(
           `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
             "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-            `(the dispatch prompt must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+            `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
         )
       }
     } catch (e) {

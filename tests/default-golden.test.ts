@@ -248,7 +248,7 @@ test("golden: the three block messages are byte-identical", async () => {
       "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
         "Run the test-runner subagent first; dispatch reviewer only after its first line is " +
         "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-        "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+        "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words).",
   )
   // Round limit: gate green first, then the cap counts reviewer dispatches
   // (two allowed, third blocked). Under enforce mode the gate
