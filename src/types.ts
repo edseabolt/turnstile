@@ -16,6 +16,14 @@ export interface TaskInput {
   description?: unknown
   command?: unknown
   cmd?: unknown
+  /**
+   * Target path as delivered by the host's `write`/`edit` tools. The shape is
+   * unconfirmed on v2.0.27, hence `unknown`; `src/tool-policy.ts` reads it as a
+   * documented candidate (`filePath ?? path`) and fails open when absent.
+   */
+  filePath?: unknown
+  /** Alternate candidate key for the same write/edit target path. */
+  path?: unknown
 }
 
 /** Tool result as delivered by the host's `execute.after` hook. */
@@ -90,6 +98,34 @@ export interface StreamEvent {
  * `off` behaves exactly as before (no correlation).
  */
 export type GateEvidenceMode = "enforce" | "flag" | "off"
+
+/**
+ * Enforcement mode for the tool-call denylist policy in `src/tool-policy.ts`.
+ * `enforce` (default) blocks matching bash/shell commands and write/edit paths;
+ * `shadow` journals the would-block without throwing (adoption path); `off` is
+ * a silent no-op escape hatch. Mirrors `GateEvidenceMode`.
+ */
+export type ToolPolicyMode = "enforce" | "shadow" | "off"
+
+/**
+ * Denylist policy governing the tools that flow through `execute.before`:
+ * bash/shell commands and write/edit target paths. Defaults encode the
+ * git-protective prose of `src/policy.ts` verbatim in `bashDeny` and leave
+ * `pathDeny` empty (ordinary editing is covered — a decision is made and, on
+ * block, journaled — with no default blocks, so it never breaks until a user
+ * configures `pathDeny`). Regex sources are case-insensitive, compiled once at
+ * setup, and matched with `RegExp.test`.
+ */
+export interface TurnstileToolPolicy {
+  /** Enforcement mode: `enforce` (default), `shadow`, or `off`. */
+  mode: ToolPolicyMode
+  /** Case-insensitive regex sources matched against bash/shell commands. */
+  bashDeny: string[]
+  /** Case-insensitive regex sources matched against write/edit target paths. */
+  pathDeny: string[]
+  /** Journal `session_move` dispatches (never blocks). */
+  observeSessionMove: boolean
+}
 
 /** Gate state for one parent session. */
 export interface GateState {
@@ -248,6 +284,14 @@ export interface TurnstileConfig {
    * pytest/make test/go test/cargo test.
    */
   evidencePattern: string
+  /**
+   * Denylist policy for bash/shell and write/edit tools in `execute.before`.
+   * Default `mode` is `enforce`; the default `bashDeny` encodes the
+   * git-protective prose of `src/policy.ts`, `pathDeny` defaults empty, and
+   * `observeSessionMove` journals `session_move` dispatches without blocking.
+   * See `src/tool-policy.ts`.
+   */
+  toolPolicy: TurnstileToolPolicy
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */

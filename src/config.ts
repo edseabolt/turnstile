@@ -15,7 +15,13 @@ import * as path from "node:path"
 
 import { appendLine, defaultMetricsDir } from "./journal.ts"
 import { GATE_RE, VERDICT_RE } from "./markers.ts"
-import type { GateEvidenceMode, TurnstileAgents, TurnstileConfig } from "./types.ts"
+import type {
+  GateEvidenceMode,
+  TurnstileAgents,
+  TurnstileConfig,
+  TurnstileToolPolicy,
+  ToolPolicyMode,
+} from "./types.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -68,6 +74,28 @@ export function defaultConfig(
     verdictMarker: VERDICT_RE.source,
     gateEvidence: "enforce",
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
+    toolPolicy: {
+      mode: "enforce",
+      // Git-protective defaults, encoding src/policy.ts verbatim. Case-insensitive
+      // regex sources over bash/shell commands. Each git rule uses a global-option
+      // tolerant base (`\\bgit\\b[^;&|]*?\\s<subcommand>`), so a global option
+      // (`-C dir`, `--git-dir=…`, a `git alias`) between `git` and the subcommand
+      // still matches without terminating at a shell operator; the branch guard
+      // excludes the file-restore form so `git [opts] checkout [<ref>] -- <path>`
+      // is allowed while `git [opts] checkout <branch>` / `-b`/`-C` is blocked.
+      // Tradeoff (see README limits): the wider base can over-match on the bare
+      // subcommand word elsewhere, e.g. `git commit -m "… merge …"`.
+      bashDeny: [
+        "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
+        "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
+        "\\bgit\\b[^;&|]*?\\smerge\\b",
+        "\\bgh\\s+pr\\s+(create|merge)\\b",
+      ],
+      // No default path blocks: write/edit are covered (a decision is made and,
+      // on block, journaled) without breaking ordinary editing.
+      pathDeny: [],
+      observeSessionMove: true,
+    },
   }
 }
 
@@ -143,7 +171,11 @@ export function mergeConfig(
   patch: unknown,
 ): { config: TurnstileConfig; warnings: string[] } {
   const warnings: string[] = []
-  const config: TurnstileConfig = { ...base, agents: { ...base.agents } }
+  const config: TurnstileConfig = {
+    ...base,
+    agents: { ...base.agents },
+    toolPolicy: { ...base.toolPolicy },
+  }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {
       warnings.push(
@@ -186,6 +218,71 @@ export function mergeConfig(
           warnings.push(`config: agents.${agentKey} must be a non-empty string; keeping default`)
         }
       }
+      continue
+    }
+    if (key === "toolPolicy") {
+      // Merge one level deep like `agents`. A non-object keeps all defaults; each
+      // known sub-key is validated, and invalid bashDeny/pathDeny elements are
+      // dropped individually (compiled with "i") with one warning each so a
+      // config typo weakens the policy visibly in the journal, never silently.
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        warnings.push("config: toolPolicy must be an object; keeping defaults")
+        continue
+      }
+      const merged: TurnstileToolPolicy = { ...config.toolPolicy }
+      for (const [tpKey, tpValue] of Object.entries(value as Record<string, unknown>)) {
+        if (tpKey === "mode") {
+          if (tpValue === "enforce" || tpValue === "shadow" || tpValue === "off") {
+            merged.mode = tpValue as ToolPolicyMode
+          } else {
+            warnings.push(
+              'config: toolPolicy.mode must be "enforce", "shadow", or "off"; keeping default',
+            )
+          }
+        } else if (tpKey === "observeSessionMove") {
+          if (typeof tpValue === "boolean") {
+            merged.observeSessionMove = tpValue
+          } else {
+            warnings.push(
+              "config: toolPolicy.observeSessionMove must be a boolean; keeping default",
+            )
+          }
+        } else if (tpKey === "bashDeny" || tpKey === "pathDeny") {
+          // Only the value itself being non-array falls back to the default
+          // (fail-safe); otherwise every element is validated so a single bad
+          // element never discards the whole user list, nor silently widens the
+          // policy by letting an empty/blank string through. Bad elements are
+          // dropped individually and journaled ({type:"error"} via loadConfig),
+          // mirroring the non-compiling-regex drop below.
+          if (!Array.isArray(tpValue)) {
+            warnings.push(
+              `config: toolPolicy.${tpKey} must be an array of non-empty strings; keeping default`,
+            )
+            continue
+          }
+          const sources: string[] = []
+          tpValue.forEach((src, i) => {
+            if (typeof src !== "string" || src.trim().length === 0) {
+              warnings.push(
+                `config: toolPolicy.${tpKey}[${i}] is not a non-empty string; dropping element`,
+              )
+              return
+            }
+            try {
+              new RegExp(src, "i")
+              sources.push(src)
+            } catch {
+              warnings.push(
+                `config: toolPolicy.${tpKey}[${i}] is not a valid regex; dropping element`,
+              )
+            }
+          })
+          merged[tpKey] = sources
+        } else {
+          warnings.push(`config: unknown toolPolicy key "${tpKey}" ignored`)
+        }
+      }
+      config.toolPolicy = merged
       continue
     }
     if (!(key in config)) {

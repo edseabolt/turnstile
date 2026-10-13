@@ -26,6 +26,7 @@ import {
 } from "./markers.ts"
 import { BlockError, createGates, type Gates } from "./gates.ts"
 import { createEvidenceTracker } from "./evidence.ts"
+import { createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
 import { createLedger, type GateLedger } from "./state.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
@@ -131,6 +132,10 @@ export function createTurnstile(
   }
   const ledger: GateLedger = createLedger(journaler.journalPath, config.maxSessions)
   const gates: Gates = createGates(config, journaler)
+  // Stateless denylist for bash/shell and write/edit tools in execute.before
+  // (issue #32): regexes compile once here; it throws the same BlockError gates
+  // throw, so the hook's existing catch rethrows blocks and journals the rest.
+  const toolPolicy: ToolPolicy = createToolPolicy(config, journaler)
   // Evidence tracker: correlates a GATE: PASS against journaled exit-0
   // bash/shell test executions attributed to the parent. Owns only the
   // *evidence* dimension (issue #33); marker authority (#46) is separate.
@@ -554,6 +559,36 @@ export function createTurnstile(
               // Keyed off the parent session: a subagent's reads draw down
               // the parent's budget (AGENTS.md contract), not a per-child one.
               gates.guardReadLimit(ledger.parentOf(asSessionID(event?.sessionID)), ledger)
+            }
+
+            // Tool-call denylist (issue #32): bash/shell commands and write/edit
+            // target paths are matched against the configured denylist. The
+            // extraction coerces the unconfirmed host payload (candidate keys
+            // documented on each guard); an empty result fails open with
+            // misconfiguration telemetry. A block throws BlockError (rethrown by
+            // the catch below); shadow journals only; off is a no-op.
+            if (event?.tool === "bash" || event?.tool === "shell") {
+              toolPolicy.guardBash(
+                event.tool,
+                event.input?.command ?? event.input?.cmd,
+                asSessionID(event?.sessionID),
+              )
+              return
+            }
+            if (event?.tool === "write" || event?.tool === "edit") {
+              toolPolicy.guardPath(
+                event.tool,
+                event.input?.filePath ?? event.input?.path,
+                asSessionID(event?.sessionID),
+              )
+              return
+            }
+            if (event?.tool === "session_move") {
+              // Telemetry only (never blocks): journal the dispatched move. The
+              // target directory comes from the (unconfirmed) tool payload.
+              const moveDir = (event.input as { directory?: unknown } | undefined)?.directory
+              toolPolicy.observeSessionMove(asSessionID(event?.sessionID), moveDir)
+              return
             }
           } catch (e) {
             if (e instanceof BlockError) throw e

@@ -41,6 +41,15 @@
  * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads).
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.
+ * - Tool-call policy (issue #32): `bash`/`shell` commands and `write`/`edit`
+ *   target paths are matched in `execute.before` against a configurable
+ *   denylist (`src/tool-policy.ts`). Under `toolPolicy.mode: enforce` a match
+ *   throws `BLOCKED by turnstile:`; `shadow` journals the would-block without
+ *   throwing and `off` is a no-op. Default `bashDeny` blocks the git-protective
+ *   operations in `src/policy.ts` (worktree, branch `switch`/`checkout`, `merge`,
+ *   `gh pr create|merge`); `pathDeny` defaults empty. `session_move` is journaled
+ *   as telemetry only, never blocked. A misconfigured/absent host payload fails
+ *   open with a journal entry rather than blocking.
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
  *   assistant text, deduped per task (streaming re-delivery is ignored);
  *   marker-less outputs from marker-contracted agents (test-runner/reviewer/
@@ -94,6 +103,8 @@
  * - `src/markers.ts`: GATE/VERDICT parsing and dedup.
  * - `src/gates.ts`: enforcement decisions (plan-approval gate, reviewer
  *   gate, read horizon, decomposition).
+ * - `src/tool-policy.ts`: stateless denylist matching for bash/shell and
+ *   write/edit tools in `execute.before`.
  * - `src/setup.ts`: hook registration and the stream-event loop.
  */
 import { createTurnstile } from "./src/setup.ts"
