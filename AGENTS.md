@@ -4,7 +4,8 @@
 
 OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
-file (`types`, `config`, `journal`, `state`, `markers`, `gates`, `setup`). It
+file (`types`, `config`, `policy`, `journal`, `state`, `markers`, `evidence`,
+`gates`, `tool-policy`, `setup`). It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
 into the primary session at runtime by the plugin (from `src/policy.ts`
@@ -33,7 +34,10 @@ writes nothing — it short-circuits before any install work — and the router
 skips the agents install step entirely in that case (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
-drift):
+drift). `npm test` enforces 100% line, branch, and function coverage over
+`src/` + `turnstile.ts` via node:test's built-in V8 coverage thresholds
+(100 for lines, branches, and functions) — no coverage extension needed; the
+installer scripts (`bin/`, `scripts/`) are outside the gate:
 
 ```
 npm run ci           # ci:host (lint -> format:check -> typecheck -> check:markers -> test) — host chain only
@@ -76,7 +80,10 @@ Write tests for critical paths and complex logic. Aim for high test coverage
 on business logic. Use descriptive test names that explain the expected
 behavior. All tests should have docstrings too. (The gate state machine in `src/state.ts` and `src/markers.ts` is
 the critical path; the harness is `node:test` with
-`--experimental-strip-types`, wired into `npm run ci`.)
+`--experimental-strip-types`, wired into `npm run ci`. Coverage is enforced
+at 100% lines, branches, and functions over `src/` + `turnstile.ts` by the
+same command — a coverage extension is not needed, the Node test runner's
+built-in thresholds gate it. `bin/` and `scripts/` sit outside the gate.)
 
 ### Error handling
 

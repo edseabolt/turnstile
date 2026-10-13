@@ -123,11 +123,11 @@ test("git checkout -b is blocked while checkout -- path is allowed", async () =>
 
 /**
  * Global options interleaved between `git` and the subcommand are still caught,
- * per issue #32 (1a): widen the default regexes so an option (`-C dir`,
+ * Widen the default regexes so an option (`-C dir`,
  * `--git-dir=…`, a flag) never shields a branch/merge worktree switch, while the
  * file-restore form stays allowed.
  */
-test("git global options before the subcommand are still blocked (issue #32-1a)", async () => {
+test("git global options before the subcommand are still blocked", async () => {
   const { policy } = makePolicy()
   // switch/checkout with a global option before the subcommand.
   await blocks(() => policy.guardBash("bash", "git -C ../other checkout main", "s1"))
@@ -140,10 +140,10 @@ test("git global options before the subcommand are still blocked (issue #32-1a)"
 
 /**
  * The git file-restore form is allowed with or without an intervening global
- * option, including the `git checkout <ref> -- <path>` shape (issue #32-1a), so
+ * option, including the `git checkout <ref> -- <path>` shape, so
  * widening the regex does not regress the restore exemption.
  */
-test("git checkout restore form is allowed, option or not (issue #32-1a)", () => {
+test("git checkout restore form is allowed, option or not", () => {
   const { policy } = makePolicy()
   allow(() => policy.guardBash("bash", "git checkout -- src/app.ts", "s1"))
   allow(() => policy.guardBash("bash", "git checkout main -- src/app.ts", "s1"))

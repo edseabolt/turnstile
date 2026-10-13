@@ -1,5 +1,5 @@
 /**
- * @fileoverview Orchestrator-policy injection tests (chunk 2, Approach B): the
+ * @fileoverview Orchestrator-policy injection tests: the
  * `tool.execute.after` handler prepends `ORCHESTRATOR_POLICY` to the model-
  * facing output text of the first per-parent per-task result delivery, once,
  * for the primary session only. Cases: exact-once prepend + repeat no-op +

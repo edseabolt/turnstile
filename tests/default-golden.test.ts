@@ -49,7 +49,7 @@ test("golden: dispatch entry shape", async () => {
 
 /** Golden: gate PASS entry is parent-keyed with raw, source, and the marker text.
  *  Under the default enforce mode a PASS with no correlated bash execution is
- *  journaled verified:false, mode:"enforce" (issue #33). */
+ *  journaled verified:false, mode:enforce. */
 test("golden: gate entry shape (parent-keyed with raw)", async () => {
   const { h, dispose, metricsDir } = await bootDefault()
   await callTool(h, "execute.after", {
@@ -78,7 +78,7 @@ test("golden: gate entry shape (parent-keyed with raw)", async () => {
 })
 
 /** Golden: a PASS correlated with a journaled exit-0 `npm test` flips green and
- *  is journaled verified:true, mode:"enforce" (issue #33). */
+ *  is journaled verified:true, mode:enforce. */
 test("golden: gate entry shape with correlated bash evidence", async () => {
   const { h, dispose, metricsDir } = await bootDefault()
   await callTool(h, "execute.after", {
@@ -113,7 +113,7 @@ test("golden: gate entry shape with correlated bash evidence", async () => {
 })
 
 /** Golden: a PASS under gateEvidence:"flag" flips (today's semantics) yet still
- *  stamps verified:false, mode:"flag" (issue #33). */
+ *  stamps verified:false, mode:flag. */
 test("golden: gate entry shape stamping flag under gateEvidence:flag", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost()
@@ -251,7 +251,7 @@ test("golden: the three block messages are byte-identical", async () => {
         "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
   )
   // Round limit: gate green first, then the cap counts reviewer dispatches
-  // (two allowed, third blocked). Under enforce mode (issue #33) the gate
+  // (two allowed, third blocked). Under enforce mode the gate
   // needs a journaled exit-0 bash test execution before a PASS verifies, so
   // give it evidence first.
   await callTool(h, "execute.after", {

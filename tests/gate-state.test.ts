@@ -32,7 +32,7 @@ const NO_GATE_MESSAGE =
   "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
   "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
-/** (issue #33) The gate-unverified block message: a PASS was recorded without
+/** The gate-unverified block message: a PASS was recorded without
  *  a correlating journaled test-command execution (enforce mode). */
 const GATE_UNVERIFIED_MESSAGE =
   "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
@@ -307,7 +307,7 @@ test("same-child re-delivery never counts as suppression", async () => {
 })
 
 /** A verdict-kind cross-child dedup hit must not count as a gate suppression
- *  (issue #51, MED): the pending counter charges only gate-kind hits, so a
+ *  (the pending counter charges only gate-kind hits, so a
  *  subsequent gate event journals suppressed 0. The sibling test above pins
  *  the gate-kind direction; this one pins that a VERDICT cross-child hit stays
  *  out of the next gate event's suppressed field instead of bleeding into it.
@@ -400,7 +400,7 @@ test("round cap with default 2: third reviewer dispatch blocked at the limit", a
 })
 
 /** Waived dispatches do not consume the round cap: after any number of
- *  waivers, the next unwaived dispatch still proceeds (issue #19). */
+ *  waivers, the next unwaived dispatch still proceeds. */
 test("round cap: waived dispatches do not consume the cap; an unwaived dispatch proceeds", async () => {
   // flag keeps today's flip semantics so the unwaived dispatch clears the
   // no-gate-pass check after the green gate.
@@ -431,7 +431,7 @@ test("round cap: waived dispatches do not consume the cap; an unwaived dispatch 
 
 /** Waivers neither count toward nor reset the cap: after any number of
  *  waivers exactly `maxReviewerRounds` unwaived dispatches succeed and the
- *  next rejects with the golden round-limit message (issue #19). */
+ *  next rejects with the golden round-limit message. */
 test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is blocked", async () => {
   // flag keeps today's flip semantics so the gate goes green after the PASS.
   const { h, dispose } = await boot({ gateEvidence: "flag" })
@@ -553,7 +553,7 @@ test("read horizon: warns at readWarn, blocks at readBlock", async () => {
   dispose()
 })
 
-/** (issue #41) An in-flight child whose edge has not landed yet keys the
+/** An in-flight child whose edge has not landed yet keys the
  *  parent's budget (via host session.get), not its own — the before-hook
  *  resolves the edge before the guard. */
 test("read horizon: an unresolved child's first read keys the parent's budget", async () => {
@@ -579,7 +579,7 @@ test("read horizon: an unresolved child's first read keys the parent's budget", 
       "BLOCKED by turnstile: 3 whole-file reads this session. Switch to grep/glob for targeted retrieval, or report being stuck and escalate to the user.",
   )
   // The edge was cached by the before-read: a follow-up child read keys the
-  // parent (count-vs-budget invariant still holds; issue #41, AC-3).
+  // parent (count-vs-budget invariant still holds).
   await callTool(h, "execute.after", { tool: "read", sessionID: "c1", result: { output: "child" } })
   const reads = journalEntries(metricsDir).filter((l) => l.type === "tool" && l.tool === "read")
   assert.equal(reads.length, 4)
@@ -587,7 +587,7 @@ test("read horizon: an unresolved child's first read keys the parent's budget", 
   dispose()
 })
 
-/** (issue #41) A child whose record is not yet visible to session.get
+/** A child whose record is not yet visible to session.get
  *  self-keys and stays fail-open, journaling a bounded fallback signal at
  *  most maxLookupAttempts-1 times (attempts saturate, then it stays silent). */
 test("read horizon: an unresolvable child self-keys and journals a bounded signal", async () => {
@@ -611,7 +611,7 @@ test("read horizon: an unresolvable child self-keys and journals a bounded signa
   dispose()
 })
 
-/** (issue #41) A confirmed parent-less root self-keys silently: no fallback
+/** A confirmed parent-less root self-keys silently: no fallback
  *  signal on every root read (the attempts===cap sentinel stays quiet). */
 test("read horizon: a parent-less root read self-keys without journaling", async () => {
   const metricsDir = tmpDir()
@@ -702,7 +702,7 @@ test("decomposition gate: executor must cite chunk-N when a plan has Decompositi
       (e: Error) => e.message.includes('no plan approval for "plan.md"'),
     )
     // Plan approved: the decomposition gate takes over and demands a chunk.
-    // Delivered on the child so the approval keys raw=c1 (issue #51).
+    // Delivered on the child so the approval keys raw=c1.
     h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
     h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
     await waitUntil(() =>
@@ -759,7 +759,7 @@ test("a new user prompt resets gate state", async () => {
 })
 
 /** Replay-recovered GATE: PASS survives the first post-restart prompt: the
- *  resume prompt preserves the restored flag rather than wiping it (issue #15).
+ *  resume prompt preserves the restored flag rather than wiping it.
  *  Red on HEAD — HEAD wipes on the prompt, so this dispatch goes red. */
 test("replayed GATE: PASS survives the first post-restart prompt", async () => {
   const metricsDir = tmpDir()
@@ -841,7 +841,7 @@ test("live GATE: FAIL after replay is not resurrected by the grace prompt", asyn
 })
 
 /** A journaled plan APPROVE survives the grace prompt: the empty stamp is
- *  accepted once and stamped, so executor dispatches resolve (issue #15's
+ *  accepted once and stamped, so executor dispatches resolve (the
  *  plan-gate half). Red on HEAD — HEAD wipes hasPlanVerdict on the prompt. */
 test("replayed APPROVE survives the grace prompt and stamps", async () => {
   const project = tmpDir()
@@ -1025,7 +1025,7 @@ test("event loop: child session.created events do not move the project dir", asy
       journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
     )
     // Deliver on the child so the approval keys raw=c1 and the decomposition
-    // gate (not the plan gate) is what blocks the executor (issue #51).
+    // gate (not the plan gate) is what blocks the executor.
     await callTool(h, "execute.after", {
       tool: "task",
       sessionID: "c1",
@@ -1523,7 +1523,7 @@ test("executor dispatch journals a fail-open error on an unreadable plan and doe
   try {
     const { h, dispose, metricsDir } = await boot()
     // Real block path: a readable Decomposition plan, approved → executor blocked.
-    // Delivered on the child so the approval keys raw=c1 (issue #51).
+    // Delivered on the child so the approval keys raw=c1.
     h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
     h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
     await waitUntil(() =>
@@ -1687,7 +1687,7 @@ test("journal replay tail is bounded at 2000 lines across both generations", asy
 })
 
 // ---------------------------------------------------------------------------
-// Issue #33 — evidence correlation (verified verdicts, gate-unverified gating)
+// Evidence correlation (verified verdicts, gate-unverified gating)
 // ---------------------------------------------------------------------------
 
 /** (AC-1) enforce mode: an unverified PASS (no correlating evidence) does not
@@ -2057,7 +2057,7 @@ test("off mode: gate entries carry no verified/mode and no evidence entries are 
 })
 
 // ---------------------------------------------------------------------------
-// Issue #33 — replay follows the flipping-entry rule (AC-6)
+// Replay follows the flipping-entry rule
 // ---------------------------------------------------------------------------
 
 /** Writes a journal file whose replayed gate entries restore state on boot. */
@@ -2231,7 +2231,7 @@ test("recordChildVerdict flags first-record and marker/source change true, ident
   const v = ledger.childVerdict("c1")
   assert.equal(v.marker, VERDICT_APPROVE)
   assert.equal(v.source, "child-text")
-  // Issue #54: the stored verdict also carries a non-zero recordedAt stamp.
+  // The stored verdict also carries a non-zero recordedAt stamp.
   assert.equal(typeof v.recordedAt, "number")
   assert.ok(v.recordedAt > 0)
   // Identical re-record: no change, so false (a dedup hit).
@@ -2246,7 +2246,7 @@ test("recordChildVerdict flags first-record and marker/source change true, ident
   assert.equal(ledger.recordChildVerdict("c1", VERDICT_BLOCK, "task-result"), false)
 })
 
-/** resetState (issue #51, MED) drops a reset parent's registered children's
+/** resetState drops a reset parents registered childrens
  *  verdict evidence so a marker-less re-fire cannot re-attribute a stale
  *  streamed APPROVE, but leaves a concurrent task on another parent's child
  *  evidence intact (scoped clear, not a global wipe). */

@@ -76,7 +76,7 @@ export function agentFromTaskInput(input: TaskInput | undefined | null): string 
 function observeMarker(state: GateState, key: string, raw: string, gate: boolean): boolean {
   if (state.seen.has(key)) {
     // Cross-child suppression is charged to `suppressedPending` only for
-    // gate-kind hits (issue #51, MED): a verdict-kind dedup hit is suppressed
+    // gate-kind hits: a verdict-kind dedup hit is suppressed
     // here and owned by the marker-gated store-diff layer, so it must not bleed
     // into the next emitted event's `suppressed` field (which, for a gate
     // event, is the gate-event `suppressed` reported in the journal).
@@ -125,7 +125,8 @@ function takePending(state: GateState): number {
  * `(scope, marker)`, so identical re-delivery and a cross-source same-marker
  * replay are both suppressed here, and only a marker flip is emitted for the
  * setup layer to journal; the store records source changes for attribution but
- * journaling stays marker-gated (issue #51, AC-3).
+ * journaling stays marker-gated (the store records source changes for
+ * attribution; the journal sees only marker flips).
  *
  * @param state Mutable gate state for the parent session.
  * @param text The assistant text to scan.

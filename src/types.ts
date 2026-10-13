@@ -40,8 +40,9 @@ export interface ToolHookEvent {
   /**
    * Dispatched subagent/agent name, observed on v2.0.27
    * execute.before/after payloads. The host contract does not type this
-   * field, hence `unknown`; chunk 2 uses it (with a config-name set) to skip
-   * injecting orchestrator policy into child sessions.
+   * field, hence `unknown`; `src/setup.ts` reads it (against the configured
+   * agent-name set) to skip injecting orchestrator policy into child
+   * sessions.
    */
   agent?: unknown
   sessionID?: unknown
@@ -154,7 +155,7 @@ export interface GateState {
    * suppression (a different raw session than the stored provenance).
    *
    * Holds gate-kind provenance only: verdict-kind streaming dedup lives in the
-   * per-child `childVerdicts` store (issue #51), not here.
+   * per-child `childVerdicts` store, not here.
    */
   seenFrom: Map<string, string>
   /**
@@ -208,11 +209,11 @@ export interface MarkerEvent {
  * verdict-kind only: only `VERDICT:` markers are stored (never `GATE:`), so a
  * GATE-only child can never suppress a plan-reviewer bare-output violation.
  *
- * It is also the streamed-verdict dedup ledger: `recordChildVerdict` returns
- * whether the observation changed, and the setup layer journals a streamed
- * verdict observation iff it did (per `(child, marker, source)` first-sight).
- * Gate-kind (`GATE:`) dedup still lives in `GateState.seen`; this store is
- * verdict-kind only.
+ * It is also the streamed-verdict observation ledger: `recordChildVerdict`
+ * returns whether the observation changed (first-record, marker flip, or
+ * source change), so a caller can distinguish a flip from an identical
+ * re-record without re-reading the store. Gate-kind (`GATE:`) dedup still
+ * lives in `GateState.seen`; this store is verdict-kind only.
  */
 export interface ChildVerdict {
   /** Last `VERDICT:` marker observed for the child, or "" when none. */
@@ -222,7 +223,7 @@ export interface ChildVerdict {
   /**
    * `Date.now()` when this verdict was last recorded; `0` on the empty default.
    *
-   * Used by the plausibility join (issue #54): an unresolved-child verdict is
+   * Used by the plausibility join: an unresolved-child verdict is
    * plausible for a parent only when it was recorded at-or-after that parent's
    * most recent plan-reviewer dispatch.
    */

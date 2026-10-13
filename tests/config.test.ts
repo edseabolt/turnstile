@@ -391,8 +391,8 @@ test("mergeConfig drops one non-compiling toolPolicy.bashDeny element, keeps the
 
 /**
  * Bad elements are dropped element-wise — a non-string, an empty string, and a
- * blank string are each discarded while the compilable strings survive (issue
- * #32-3) instead of the whole array being rejected. Each drop is named by index;
+ * blank string are each discarded while the compilable strings survive
+ * instead of the whole array being rejected. Each drop is named by index;
  * the surviving list is just the filtered sources.
  */
 test("mergeConfig drops non-string and empty bashDeny elements, keeps the rest", () => {
@@ -411,8 +411,8 @@ test("mergeConfig drops non-string and empty bashDeny elements, keeps the rest",
 })
 
 /**
- * A dropped element is journaled as {type:"error"} through loadConfig (issue
- * #32-3): the bad element never reaches the resolved config, and each drop is
+ * A dropped element is journaled as {type:"error"} through loadConfig: the
+ * bad element never reaches the resolved config, and each drop is
  * recorded as a persistent error, so a config typo weakens the denylist
  * visibly rather than silently. Non-array values fall back to the default.
  */

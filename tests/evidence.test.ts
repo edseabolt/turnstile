@@ -92,14 +92,42 @@ test("evidence evicts the least-recently-used bucket beyond maxSessions", () => 
   assert.equal(t.has("c"), true)
 })
 
-/** (AC-8) a bad evidencePattern fires onFallback once and still matches npm test
+/** The per-session ring trims to the last MAX_HITS_PER_SESSION hits. */
+test("evidence trims the per-session hit ring to the cap", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  for (let i = 0; i < 12; i++) assert.equal(t.observe("c1", "npm test", 0), true)
+  assert.equal(t.has("c1"), true)
+})
+
+/** A zero maxSessions cap evicts every hit immediately. */
+test("a zero maxSessions cap evicts every recorded hit", () => {
+  const t = createEvidenceTracker({ ...cfg(), maxSessions: 0 }, identityParent)
+  t.observe("a", "npm test", 0)
+  assert.equal(t.has("a"), false)
+})
+
+/** clear("") and clear of an unknown parent are safe no-ops. */
+test("evidence.clear no-ops on an empty id and tolerates children of others", () => {
+  const t = createEvidenceTracker(cfg(), parentOfP1())
+  t.clear("")
+  t.observe("c1", "pytest", 0)
+  t.clear("other-parent")
+  assert.equal(t.has("p1"), true)
+})
+
+/** (AC-8) a bad evidencePattern journals the fallback once and still matches npm test
  *  via the default fallback pattern. */
 test("evidence falls back to the default pattern on a bad evidencePattern", () => {
-  const causes: unknown[] = []
-  const t = createEvidenceTracker({ ...cfg(), evidencePattern: "(" }, identityParent, (cause) =>
-    causes.push(cause),
-  )
-  assert.equal(causes.length, 1)
+  const entries: Array<Record<string, unknown>> = []
+  const t = createEvidenceTracker({ ...cfg(), evidencePattern: "(" }, identityParent, {
+    journal: (entry: Record<string, unknown>): void => {
+      entries.push(entry)
+    },
+  })
+  assert.equal(entries.length, 1)
+  const first = entries[0] as Record<string, unknown>
+  assert.equal(first.type, "error")
+  assert.match(String(first.error), /evidencePattern/)
   assert.equal(t.has("c1"), false)
   t.observe("c1", "npm test", 0)
   assert.equal(t.has("c1"), true)

@@ -94,7 +94,7 @@ export interface GateLedger {
   setParent(sessionID: string, parentID: string): void
   /**
    * Registers a session as a live parent so the `states` cap never evicts
-   *  its bucket while it stays tracked (issue #42). Registration is the
+   *  its bucket while it stays tracked. Registration is the
    *  eviction-protection signal; refreshed by every prompt, guarded
    *  dispatch, task delivery, edge resolution, and root-session event, so an
    *  active parent re-registers long before the registry's LRU churn can evict
@@ -143,7 +143,7 @@ export interface GateLedger {
    * Snapshot of children with a stored (non-empty) verdict, as
    * `{ child, verdict }` copies. Pure read — never promotes and never caps, so
    * it is safe to call from the attribution layer without disturbing the LRU
-   * order (issue #54 plausibility scan).
+   * order (the plausibility scan reads, never writes).
    * @returns A new array of `{ child, verdict }` pairs with non-empty verdicts.
    */
   evidencedChildren(): Array<{ child: string; verdict: ChildVerdict }>
@@ -175,9 +175,9 @@ export interface GateLedger {
  * @param states The session→state map to populate.
  * @param journalPath Absolute path of the JSONL journal to replay; the prior
  *     generation (`${journalPath}.1`) is read first so the 2000-line tail
- *     bound holds across both files. Exactly one generation deep — README:474
- *     keeps 5, but a 5-file replay would cost ~25 MB of boot I/O worst case,
- *     so one generation is replayed.
+ *     bound holds across both files. Exactly one generation is replayed: the
+ *     README documents 5 kept generations, but replaying all five would cost
+ *     ~25 MB of boot I/O worst case.
  */
 function replayGatePasses(states: Map<string, GateState>, journalPath: string): void {
   try {
@@ -248,8 +248,7 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
  * strict); without the tag the next prompt is an ordinary full reset.
  * Live parents register via `markParent` (per prompt, guarded dispatch, task
  * delivery, edge resolution, and root-session event). A registered parent is
- * never evicted from `states` while it stays in the bounded registry (issue
- * #42) — leaked child buckets now only evict each other. Protection never
+ * never evicted from `states` while it stays in the bounded registry — leaked child buckets now only evict each other. Protection never
  * creates a bucket (minting is unchanged) and boot replay stays strict (the
  * registry is empty at replay, so the `replayGrace` loss behavior is
  * unchanged).
@@ -269,7 +268,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
   const childVerdicts = new Map<string, ChildVerdict>()
   // Sessions registered as live parents (orchestrator/primary). LRU-touched
   // like the other maps, bounded by `maxTrackedParents`; registration is the
-  // eviction-protection signal for the `states` cap (issue #42).
+  // eviction-protection signal for the `states` cap.
   const parents = new Map<string, true>()
   const maxTrackedParents = Math.max(256, maxSessions * 4) // mirrors maxTrackedLookups in setup.ts
 
@@ -312,7 +311,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
   }
 
   /**
-   * Registers a session as a live parent (issue #42): keep it MRU — promote +
+   * Registers a session as a live parent: keep it MRU — promote +
    * re-set — so an active parent re-registers long before the registry's LRU
    * churn can evict it. No-op on an empty id. Bounded by `maxTrackedParents`.
    * @param sessionID The parent session ID.
@@ -322,9 +321,9 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     promote(parents, sessionID)
     parents.set(sessionID, true)
     while (parents.size > maxTrackedParents) {
-      const oldest = parents.keys().next()
-      if (oldest.done) break
-      parents.delete(oldest.value)
+      // The loop condition guarantees a first entry exists.
+      const oldest = parents.keys().next().value as string
+      parents.delete(oldest)
     }
   }
 
@@ -368,7 +367,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       states.delete(sessionID)
       states.set(sessionID, prior?.replayGrace ? mergeAfterReplay(prior) : newState())
       cap(states, isParent)
-      // Cross-task staleness (issue #51, MED): child-verdict evidence is scoped
+      // Cross-task staleness: child-verdict evidence is scoped
       // to a task. A new prompt for this parent drops the previous task's
       // child verdicts so a marker-less re-fire can never re-attribute (or
       // clobber against) a stale streamed APPROVE. Scoped to this parent's
@@ -378,8 +377,8 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
         if (childToParent.get(c) === sessionID) childVerdicts.delete(c)
       }
       // Unresolved children (no registered edge) keep their verdicts across a
-      // reset by design: there is no child→parent key to drop them on. Issue
-      // #54 makes this safe — the timestamp join bounds staleness so a previous
+      // reset by design: there is no child→parent key to drop them on. The
+      // timestamp join makes this safe — a previous
       // task's streamed APPROVE cannot approve the next task.
     },
     parentOf(sessionID: string | undefined): string {
@@ -394,7 +393,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     setParent(sessionID: string, parentID: string): void {
       childToParent.set(sessionID, parentID)
       cap(childToParent)
-      // Edge resolution marks the parent live (issue #42): its `states` bucket
+      // Edge resolution marks the parent live: its `states` bucket
       // is now protected from eviction until an unrelated parent churn evicts
       // this registration from the registry.
       markParent(parentID)
@@ -403,7 +402,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       // changed = the marker or source actually moved; the setup layer journals
       // a streamed verdict observation iff this is true (per (child, marker,
       // source) first-sight dedup). LRU promotion + cap are unchanged; the
-      // recordedAt stamp refreshes on every re-observation (issue #54 plausibility
+      // recordedAt stamp refreshes on every re-observation (the plausibility
       // join keeps a verdict plausible while its parent's task is live).
       const prev = childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
       const changed = prev.marker !== marker || prev.source !== source

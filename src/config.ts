@@ -389,11 +389,12 @@ function applyEnvLayer(config: TurnstileConfig, env: Record<string, string | und
  *
  * Called once at the end of `loadConfig` after every layer has merged, so the
  * defaults (8 < 15, absolute dir) never trip it and the golden digest stays
- * stable.
+ * stable. Exported for tests: every merge layer forces an absolute
+ * `metricsDir`, so the relative-dir warning is reachable only directly.
  * @param config The resolved config to validate.
  * @returns One warning string per corrected/resolved invariant.
  */
-function validateResolved(config: TurnstileConfig): string[] {
+export function validateResolved(config: TurnstileConfig): string[] {
   const warnings: string[] = []
   if (config.readWarn >= config.readBlock) {
     const warn = config.readWarn

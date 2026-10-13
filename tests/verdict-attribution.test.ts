@@ -1,5 +1,5 @@
 /**
- * @fileoverview Issue #51 verdict-attribution repro tests: every journaled
+ * @fileoverview Verdict-attribution tests: every journaled
  * `plan` entry must be keyed raw = an actual child session id (never the
  * parent/session id), streamed verdicts dedup per (child, marker, source),
  * continued subagent sessions emit verdict observations, and unattributable
@@ -7,7 +7,7 @@
  * asserts the candidate-recovery path that let-attribute a parent-keyed
  * re-fire to the unique evidenced child.
  *
- * Issue #54 (`#54:`-prefixed tests): a self-keyed delivery whose edge is
+ * The self-keyed-edge tests: a self-keyed delivery whose edge is
  * unresolved now also claims the unique child evidenced only in the streaming
  * store (plausibility = a recorded plan-reviewer dispatch predates the
  * observation, unique across parents); every self-keyed delivery journals one
@@ -89,7 +89,7 @@ test("AC-1: marker-less parent re-fire cannot clobber a live child-text approval
       input: { agent: "plan-reviewer" },
       result: { output: "Review complete; see journal." },
     })
-    // Re-fire, modeled from #51's live journal evidence: a parent-keyed
+    // Re-fire, modeled from the live journal evidence: a parent-keyed
     // execute.after re-fire (sessionID: p1) carrying marker-less output. A
     // child-keyed-but-no-edge re-fire of the same shape is not this bug — it
     // deliberately resolves through the candidate-discovery scan (documented
@@ -393,10 +393,10 @@ test("AC-5: unattributable parent-keyed delivery fails open to a journaled error
 })
 
 // ---------------------------------------------------------------------------
-// Issue #54: self-keyed task-result delivery with an unresolved edge.
+// Self-keyed task-result delivery with an unresolved edge.
 // ---------------------------------------------------------------------------
 
-/** Records a plan-reviewer dispatch for the parent (issue #54 plausibility input). */
+/** Records a plan-reviewer dispatch for the parent (plausibility input). */
 const dispatch = (h: FakeHost, parent: string): Promise<void> =>
   callTool(h, "execute.before", {
     tool: "task",
@@ -417,7 +417,7 @@ const deliver = (h: FakeHost, sessionID: string, output = "Task finished."): Pro
     result: { output },
   })
 
-/** Every `type:"attribution"` entry (issue #54 forensic diagnostic). */
+/** Every `type:"attribution"` entry. */
 const attribution = (metricsDir: string): Array<Record<string, any>> =>
   journalEntries(metricsDir).filter((l) => l.type === "attribution")
 
@@ -430,7 +430,7 @@ const violationE = (metricsDir: string): Array<Record<string, any>> =>
   journalEntries(metricsDir).filter((l) => l.type === "violation")
 
 /**
- * AC-1 (issue #54, core repro): an unresolved edge + a streamed APPROVE on the
+ * Core repro: an unresolved edge plus a streamed APPROVE on the
  * child must flip the plan gate APPROVE (not leave it red). The delivery is
  * parent-keyed (self-keyed); the child is never registered, so the plausibility
  * join claims it via the streaming store. Zero plan entries + executor blocked
@@ -499,7 +499,7 @@ test("#54: unresolved edge + streamed APPROVE is attributed through the streamin
 })
 
 /**
- * AC-1b / fail-open (issue #54, #51): no recorded dispatch ⇒ plausibility unmet,
+ * Fail-open: no recorded dispatch means plausibility unmet,
  * so the streamed APPROVE on an unresolved child is NOT claimed. Zero plan
  * entries, exactly one unattributable error, executor blocked, an attribution
  * fail-open entry. The violation entry documents the current-code shape (keyed
@@ -539,7 +539,7 @@ test("#54: unresolved edge without a recorded dispatch fails open", async () => 
 })
 
 /**
- * H3 limitation (issue #54): a delivery keyed by the unresolved child itself
+ * Limitation: a delivery keyed by the unresolved child itself
  * cannot attribute (gate state is parent-keyed by design). Self-keyed
  * fail-open with the full lookup diagnostic; executor still blocked.
  */
@@ -585,7 +585,7 @@ test("#54: a child-keyed unresolved delivery cannot attribute (parent-keyed gate
 })
 
 /**
- * Task-scope guard (issue #54): a previous task's streamed APPROVE cannot
+ * Task-scope guard: a previous tasks streamed APPROVE cannot
  * approve the next task after a prompt reset (dispatch cleared). Half 1 fails
  * open (dispatch gone); half 2 re-arms the join via a fresh dispatch + re-stream
  * and attributes. Proves last-wins + reset-clearing.
@@ -637,7 +637,7 @@ test("#54: a reset clears dispatch scope so a prior task's streamed verdict cann
 })
 
 /**
- * Contradiction → fail-open (issue #54): two plausible unresolved children under
+ * Contradiction, fail-open: two plausible unresolved children under
  * one parent, one APPROVE and one BLOCK, ⇒ contradictory pool ⇒ fail-open, gate
  * untouched, exactly one /unattributable/ error.
  */
@@ -676,7 +676,7 @@ test("#54: contradictory plausible verdicts fail open", async () => {
 })
 
 /**
- * Unique-owner exclusion (issue #54): a verdict plausible for two parents
+ * Unique-owner exclusion: a verdict plausible for two parents
  * (both dispatched before the stream) is ambiguous for each ⇒ excluded ⇒
  * fail-open.
  */
@@ -716,7 +716,7 @@ test("#54: a verdict with two candidate parents is excluded from each", async ()
 })
 
 /**
- * Unanimity beats multiplicity (issue #54): a registered APPROVE child plus a
+ * Unanimity beats multiplicity: a registered APPROVE child plus a
  * second agreeing APPROVE (unresolved) child still attributes (edge-first raw),
  * never regressing today's lone-edge-candidate attribution into a fail-open.
  */
@@ -766,7 +766,7 @@ test("#54: an agreeing unresolved child never regresses attribution into fail-op
 })
 
 /**
- * Fail-open, not fail-green (issue #54): an unresolved child streaming BLOCK
+ * Fail-open, not fail-green: an unresolved child streaming BLOCK
  * still attributes honestly as BLOCK and blocks the executor.
  */
 test("#54: an unresolved BLOCK stream attributes as BLOCK", async () => {
@@ -804,7 +804,7 @@ test("#54: an unresolved BLOCK stream attributes as BLOCK", async () => {
 })
 
 /**
- * #51 invariant preserved (issue #54): a marker-carrying self-keyed delivery
+ * Invariant preserved: a marker-carrying self-keyed delivery
  * with no candidates still fails open (the delivery's own APPROVE is dropped —
  * fail-safe), never a phantom plan entry. Zero plan entries, one error.
  */
@@ -827,7 +827,7 @@ test("#54: a marker-carrying self-keyed delivery with no candidates still fails 
 })
 
 /**
- * Replay + restart independence (issue #54, documented regression): a
+ * Replay and restart independence (documented regression): a
  * journal-replayed plan approval for an old parent stays green across a restart
  * (grace) while a fresh parent attributed via the self-keyed fix goes green
  * independently. Executor allowed for both — separate buckets.
@@ -849,7 +849,7 @@ test("#54: a replayed approval stays independent from a self-keyed fix for a new
   try {
     const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
     const dispose = (await setup(h.host)) as () => void
-    // New parent p2 runs the #54 self-keyed repro with an unresolved child c2.
+    // New parent p2 runs the self-keyed repro with an unresolved child c2.
     await callSession(h, "prompt", { sessionID: "p2" })
     await settle()
     await dispatch(h, "p2")
@@ -893,7 +893,7 @@ test("#54: a replayed approval stays independent from a self-keyed fix for a new
 })
 
 /**
- * Diagnostics (issue #54 AC-2): every self-keyed delivery journals exactly one
+ * Diagnostics: every self-keyed delivery journals exactly one
  * `type:"attribution"` entry carrying the full diagnostic shape
  * ({ decision, deliveryIsParent, candidates{edge,unresolved,plausible},
  * lookup{session:{attempts,reason}} }). Two self-keyed deliveries ⇒ two
@@ -926,7 +926,7 @@ test("#54: each self-keyed delivery journals exactly one attribution entry", asy
 })
 
 /**
- * Structural (issue #54 AC-3): a self-keyed delivery that attributes never
+ * Structural: a self-keyed delivery that attributes never
  * journals a `{raw: sessionID}` phantom nor a BLOCK plan entry journal-wide;
  * plus the H2 hypothesis — a record present but parent-less — is diagnosable as
  * `"no-parent-id"` in the lookup, yet still attributes from the streaming store.
