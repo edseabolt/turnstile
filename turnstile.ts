@@ -7,7 +7,7 @@
  *   per task, with per-task idempotency via `GateState.policyInjected`, fully
  *   guarded and fail-open (a broken injection journals `type:"policy"` and
  *   proceeds). Nothing is written to an instructions file at install time — the
- *   AGENTS.md contract block is a historical install step, removed in issue #28.
+ *   AGENTS.md contract block is a historical install step, removed.
  *
  * Written for OpenCode v2.x promise-plugin host (`{ id, setup }`):
  * - `ctx.tool.hook("execute.before" | "execute.after", cb)`
@@ -38,7 +38,7 @@
  * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
  *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
  *   counting toward it; a new user prompt resets it.
- * - Parent-bucket eviction (issue #42): live-parent gate buckets (hasGatePass,
+ * - Parent-bucket eviction: live-parent gate buckets (hasGatePass,
  *   hasPlanVerdict, read counter, policyInjected) are registered per
  *   prompt/dispatch/delivery/edge via `markParent`, and the `states` LRU never
  *   evicts a registered parent; unresolved child buckets remain evictable and
@@ -50,7 +50,7 @@
  *   still-unresolved child self-keys and journals a bounded signal.
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.
- * - Tool-call policy (issue #32): `bash`/`shell` commands and `write`/`edit`
+ * - Tool-call policy: `bash`/`shell` commands and `write`/`edit`
  *   target paths are matched in `execute.before` against a configurable
  *   denylist (`src/tool-policy.ts`). Under `toolPolicy.mode: enforce` a match
  *   throws `BLOCKED by turnstile:`; `shadow` journals the would-block without
@@ -73,7 +73,7 @@
  *   source keeps the gate red (parent-keyed, journaled as type `plan`); gate
  *   journal entries are keyed by the parent session so replay restores where
  *   the gates look.
- * - Verdict attribution (issue #51): every journaled `type:"plan"` entry is
+ * - Verdict attribution: every journaled `type:"plan"` entry is
  *   keyed `raw` = an actual child session id, never the parent/session id; a
  *   marker-less parent-keyed re-fire can never journal a `{raw: p1}` phantom
  *   that clobbers a live verification. Attribution is gated on the delivery's
@@ -89,7 +89,7 @@
  *   cross-source same-marker replay are both suppressed; only a marker flip
  *   journals, and a prompt reset drops the previous
  *   task's children's evidence (scoped to the reset parent, other parents intact).
- * - Verdict attribution, unresolved edge (issue #54): a self-keyed delivery whose
+ * - Verdict attribution, unresolved edge: a self-keyed delivery whose
  *   child→parent edge is unresolved now also claims the unique child evidenced
  *   only in the streaming store — plausibility = a recorded plan-reviewer
  *   dispatch for the parent predates (at-or-before) the observation's recordedAt,
@@ -101,9 +101,10 @@
  *   plausible} counts, unresolvedIDs, lookup:{session:{attempts,reason}}}`) so the
  *   field can tell the three root-cause hypotheses apart; the attribution is
  *   unanimous-pool driven. A plausible streamed `VERDICT: APPROVE` makes a
- *   self-keyed `BLOCK` unreachable (structural fail-open over BLOCK, R-5). The
+ *   self-keyed `BLOCK` unreachable (structural fail-open over BLOCK). The
  *   edge-resolved branch and the never-BLOCK-on-zero-candidates guarantee are
- *   unchanged, so the #51 `/unattributable/` count stays one on fail-open paths.
+ *   unchanged, so an unattributable parent-keyed delivery stays a single
+ *   `/unattributable/` error on fail-open paths.
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors, and the load heartbeat
  *   (a "setup" entry: plugin version, config digest, hook count). Errors also

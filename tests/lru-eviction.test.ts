@@ -1,6 +1,6 @@
 /**
- * @fileoverview LRU eviction protection for live-parent gate buckets (issue
- * #42): the `states` map caps the least-recently-used entry past `maxSessions`
+ * @fileoverview LRU eviction protection for live-parent gate buckets:
+ * the `states` map caps the least-recently-used entry past `maxSessions`
  * and, without protection, a live parent's bucket (holding `hasGatePass`,
  * `hasPlanVerdict`, the read counter, or `policyInjected`) can be evicted mid
  * session by churn from dozens of unrelated child sessions, so a later
@@ -121,7 +121,7 @@ test("T1: a registered parent bucket survives unrelated churn and un-registering
 /** T2 — AC-B: a registered parent's GATE: PASS survives past 64 noisy
  *  unregistered children streaming markers; the reviewer dispatch is not
  *  blocked. On HEAD the 64th noise bucket evicts p1 and re-mints it empty. */
-test("T2: a registered parent's GATE: PASS survives >64 noisy unregistered children (issue #42)", async () => {
+test("T2: a registered parents GATE: PASS survives >64 noisy unregistered children", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
   try {
     // Flip p1's gate via a test-runner task-result delivery. The execute.after
@@ -159,7 +159,7 @@ test("T2: a registered parent's GATE: PASS survives >64 noisy unregistered child
  *  past 64 noisy unregistered children; the executor dispatch is not blocked
  *  with `no-plan-verdict`. Also asserts the gates still fire for an
  *  unregistered pressure session, so protection is selective, not "never evict". */
-test("T3: a registered parent's plan approval survives >64 noisy children and protection is selective (issue #42)", async () => {
+test("T3: a registered parents plan approval survives >64 noisy children and protection is selective", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // Register the edge c1 -> p1 via a created event, then have c1 stream an

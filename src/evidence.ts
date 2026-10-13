@@ -4,13 +4,14 @@
  * to the emitting session's parent within the current task window.
  *
  * This owns only the *evidence* dimension — whether the claimed tests ran.
- * Marker authority (issue #46: *who* may flip gates) is deliberately separate
+ * Marker authority (*who* may flip gates) is deliberately separate
  * and out of scope here. The ledger is in-memory only (never command text);
  * audited verdicts are journaled so replay restores evidence-bearing state
  * rather than re-proving it. Pure w.r.t. journal/fs by design.
  */
 
 import { DEFAULT_EVIDENCE_PATTERN } from "./config.ts"
+import type { Journaler } from "./journal.ts"
 import type { TurnstileConfig } from "./types.ts"
 
 /** Per-session hit cap: a ring buffer of exit-0 hit timestamps. */
@@ -71,21 +72,27 @@ export interface EvidenceTracker {
 
 /**
  * Creates an in-memory evidence tracker bound to a config + parent resolver.
+ * A configured `evidencePattern` that fails to compile falls back to the
+ * default pattern and journals the fallback via `journaler`.
  * @param config The resolved config (provides `evidencePattern`, `maxSessions`).
  * @param parentOf Resolves a raw session ID to its parent (the ledger's `parentOf`).
- * @param onFallback Invoked with the compile failure when `evidencePattern`
- *     is invalid, before the default pattern falls back in.
+ * @param journaler Optional telemetry writer; used only to journal the
+ *     pattern-fallback (a compile failure) when set.
  * @returns The observe/has/clear tracker.
  */
 export function createEvidenceTracker(
   config: TurnstileConfig,
   parentOf: (raw: string) => string,
-  onFallback?: (cause: unknown) => void,
+  journaler?: Pick<Journaler, "journal">,
 ): EvidenceTracker {
   const pattern = compileEvidencePattern(
     config.evidencePattern,
     FALLBACK_EVIDENCE_PATTERN,
-    onFallback,
+    (cause) =>
+      journaler?.journal({
+        type: "error",
+        error: `config evidencePattern: invalid regex, using default: ${String(cause)}`,
+      }),
   )
   // Raw session ID → ring of exit-0 hit timestamps; insertion-order LRU,
   // capped at `config.maxSessions` (mirroring state.ts bookkeeping).
@@ -110,9 +117,9 @@ export function createEvidenceTracker(
    */
   function cap(map: Map<string, number[]>): void {
     while (map.size > config.maxSessions) {
-      const oldest = map.keys().next()
-      if (oldest.done) break
-      map.delete(oldest.value)
+      // The loop condition guarantees a first entry exists.
+      const oldest = map.keys().next().value as string
+      map.delete(oldest)
     }
   }
 
@@ -129,19 +136,15 @@ export function createEvidenceTracker(
 
   function has(sid: string): boolean {
     if (!sid) return false
-    if (hits.has(sid)) {
-      promote(hits, sid)
-      return true
-    }
-    for (const child of hits.keys()) {
+    // Touch unconditionally: present keys reorder to MRU, absent keys no-op.
+    promote(hits, sid)
+    if (hits.has(sid)) return true
+    for (const [child, bucket] of hits) {
       if (parentOf(child) === sid) {
-        const bucket = hits.get(child)
-        if (bucket !== undefined && bucket.length > 0) {
-          hits.delete(child)
-          hits.set(sid, bucket)
-          promote(hits, sid)
-          return true
-        }
+        hits.delete(child)
+        hits.set(sid, bucket)
+        promote(hits, sid)
+        return true
       }
     }
     return false
@@ -150,7 +153,7 @@ export function createEvidenceTracker(
   function clear(sid: string): void {
     if (!sid) return
     hits.delete(sid)
-    for (const child of [...hits.keys()]) {
+    for (const [child] of hits) {
       if (parentOf(child) === sid) hits.delete(child)
     }
   }

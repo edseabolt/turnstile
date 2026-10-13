@@ -10,14 +10,15 @@ install time. Per-agent instruction lines live in each `agents/<name>.md`. The
 policy steers the agents, and turnstile blocks the dispatches that violate it.
 
 The entry point is `turnstile.ts`; behavior lives in focused modules under
-`src/` (one boundary per file: types, journal, state, markers, gates,
-setup). The plugin has zero runtime dependencies and fails open.
+`src/` (one boundary per file: types, config, policy, journal, state,
+markers, evidence, gates, tool-policy, setup). The plugin has zero runtime
+dependencies and fails open.
 
 Verify with:
 
 ```sh
 npm install
-npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test) — host chain only; green on a fresh clone
+npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test with a 100% coverage gate) — host chain only; green on a fresh clone
 npm run ci:installed  # install:check — run after `npm run init` on a machine with installed artifacts
 ```
 
@@ -39,7 +40,8 @@ npm run ci:installed  # install:check — run after `npm run init` on a machine 
 A new user prompt resets the session's gate state. Replayed gate state
 survives a restart and the next user prompt (the resume prompt), then
 reverts: every later prompt starts a clean gate cycle. Replay reads the
-last 2000 lines of the journal (`GATE: PASS` and plan `VERDICT: APPROVE`
+last 2000 lines of the journal, spanning the current file and its previous
+rotated generation (`GATE: PASS` and plan `VERDICT: APPROVE`
 entries).
 
 ## How it fits the ecosystem
@@ -438,15 +440,16 @@ Defaults live in code (`src/config.ts`); override via
 **Quick start: copy the example config** — [`examples/turnstile.example.json`](examples/turnstile.example.json)
 to `~/.config/opencode/turnstile.json` and edit from there. Every key in it
 is optional and matches the code defaults; delete any key to fall back to the
-default. Two keys are deliberately omitted from the example:
+default. One key is deliberately omitted from the example:
 
 - `metricsDir`: computed at load time (`$XDG_DATA_HOME/opencode/metrics`,
   fallback `~/.local/share/opencode/metrics`); if you set it yourself it must
   be an absolute path (`~` is not expanded)
-- `gateMarker` / `verdictMarker`: included in the example verbatim so you can
-  see the format, but leave them alone unless you are intentionally changing
-  the marker syntax (the shipped subagent definitions emit the canonical
-  markers)
+
+The example also carries `gateMarker` / `verdictMarker` verbatim so you can
+see the format; leave them alone unless you are intentionally changing
+the marker syntax (the shipped subagent definitions emit the canonical
+markers).
 
 Precedence: defaults < config file < env. The plugin reads config once, at
 setup; restart sessions to apply. Invalid keys are ignored and journaled
@@ -458,6 +461,7 @@ setup; restart sessions to apply. Invalid keys are ignored and journaled
 | `journalMaxBytes`                                                                                       | 5242880                                                                        | rotate a journal file past this size                                                                                                        |
 | `journalMaxGenerations`                                                                                 | 5                                                                              | rotated generations kept per journal                                                                                                        |
 | `maxReviewerRounds`                                                                                     | 2                                                                              | reviewer dispatches per task, regardless of gate state (waived dispatches exempt)                                                           |
+| `maxSessions`                                                                                           | 64                                                                             | LRU cap on tracked sessions (gate state, child→parent edges, verdicts); registered live parents are never evicted                           |
 | `readWarn` / `readBlock`                                                                                | 8 / 15                                                                         | whole-file read horizon                                                                                                                     |
 | `waiverMarker`                                                                                          | `USER WAIVER:`                                                                 | literal waiver marker                                                                                                                       |
 | `plansDir`                                                                                              | `.opencode/plans`                                                              | executor decomposition scan directory                                                                                                       |
@@ -481,7 +485,7 @@ Environment variables (override the file):
 ## Markers
 
 Subagents must emit these as the first line of their output. These examples
-are the canonical syntax; CI asserts the parser in `turnstile.ts` accepts
+are the canonical syntax; CI asserts the parser in `src/markers.ts` accepts
 exactly them.
 
 ```

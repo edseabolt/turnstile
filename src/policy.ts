@@ -1,6 +1,6 @@
 /**
  * @fileoverview Orchestrator-side turnstile policy, exported for runtime
- * injection by the plugin (chunk 2: prepend into the parent session's
+ * injection by the plugin (prepended into the parent session's
  * task/subagent result). This is the runtime source of truth, not a file
  * written to AGENTS.md at install: a fresh install can never lose orchestrator
  * policy because the plugin supplies it whenever it is loaded. Per-agent
