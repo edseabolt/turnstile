@@ -80,7 +80,11 @@ test("AC-1: marker-less parent re-fire cannot clobber a live child-text approval
       input: { agent: "plan-reviewer" },
       result: { output: "Review complete; see journal." },
     })
-    // Re-fire marker-less reporting the PARENT's own session id (the bug path).
+    // Re-fire, modeled from #51's live journal evidence: a parent-keyed
+    // execute.after re-fire (sessionID: p1) carrying marker-less output. A
+    // child-keyed-but-no-edge re-fire of the same shape is not this bug — it
+    // deliberately resolves through the candidate-discovery scan (documented
+    // behavior), so both shapes are handled by attributePlanVerdict.
     await callTool(h, "execute.after", {
       tool: "task",
       sessionID: "p1",

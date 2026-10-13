@@ -60,14 +60,16 @@
  *   marker-less parent-keyed re-fire can never journal a `{raw: p1}` phantom
  *   that clobbers a live verification. Attribution is gated on the delivery's
  *   agent being `plan-reviewer`: the child→parent edge is awaited (host
- *   `session.get` when `session.created` has not yet landed), then, for a
- *   marker-less delivery whose own id is not a registered child, candidate
- *   discovery attributes it to the unique evidenced registered child (via the
- *   child-text verdict store); zero or more-than-one candidate journals an
- *   unattributable `type:"error"` and returns (fail-open, gate unchanged,
- *   nothing mutated). Child-text verdict observations dedup per (child, marker,
- *   source) via the child-verdict store: identical re-delivery journals nothing,
- *   a marker or source flip is journaled, and a prompt reset drops the previous
+ *   `session.get` when `session.created` has not yet landed), then, for any
+ *   self-keyed delivery (its own id is not a registered child, marker-less or
+ *   not), candidate discovery attributes it to the unique evidenced registered
+ *   child (via the child-text verdict store); an own VERDICT: APPROVE with zero
+ *   evidenced candidates is dropped to the error journal (fail-safe), and zero
+ *   or more-than-one candidate journals an unattributable `type:"error"` and
+ *   returns (fail-open, gate unchanged, nothing mutated). Child-text verdict
+ *   observations dedup per (child, marker, source): identical re-delivery and a
+ *   cross-source same-marker replay are both suppressed; only a marker flip
+ *   journals, and a prompt reset drops the previous
  *   task's children's evidence (scoped to the reset parent, other parents intact).
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors, and the load heartbeat

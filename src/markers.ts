@@ -119,11 +119,13 @@ function takePending(state: GateState): number {
  * the empty scope.
  *
  * Provenance note: the bucket `seen`/`seenFrom`/`suppressedPending` set now
- * tracks gate-kind first-sight and cross-child suppression. Streaming
- * VERDICT-kind dedup moved to the setup/store layer (issue #51, AC-3):
- * `parseGateMarkers` still emits verdict events, but `setup.parseMarkers`
- * journals a streamed verdict only when `(marker, source)` changed for that
- * child, so identical re-delivery is suppressed there instead of here.
+ * tracks gate-kind first-sight and cross-child suppression (the pending
+ * counter charges only gate-kind hits, so verdict-kind cross-child hits never
+ * surface as a gate-event suppression). Streaming VERDICT dedup keys on
+ * `(scope, marker)`, so identical re-delivery and a cross-source same-marker
+ * replay are both suppressed here, and only a marker flip is emitted for the
+ * setup layer to journal; the store records source changes for attribution but
+ * journaling stays marker-gated (issue #51, AC-3).
  *
  * @param state Mutable gate state for the parent session.
  * @param text The assistant text to scan.

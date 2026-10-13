@@ -342,10 +342,10 @@ export function createTurnstile(
     // preserves "a marker-less task-result delivery keeps the gate red".
     //
     // Store-diff verdict journaling (issue #51, AC-3): capture the prior
-    // observation first, then record; a streamed verdict-kind event is
-    // journaled iff the (marker, source) actually changed. Identical
-    // re-delivery is silently suppressed; a marker flip journals; a source
-    // change with an unchanged marker (delta→ended) journals again.
+    // observation first, then record; the bucket dedup (markers.ts) keys on
+    // (scope, marker), so identical re-delivery and a cross-source same-marker
+    // replay (a source change with an unchanged marker, e.g. delta→ended) are
+    // both silently suppressed; only a marker flip reaches the journal.
     let prev: ChildVerdict = { marker: "", source: "" }
     if (sessionID && source !== "task-result") {
       prev = ledger.childVerdict(sessionID)
