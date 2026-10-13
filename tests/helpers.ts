@@ -74,10 +74,15 @@ function makeEventBus(): {
  * Creates a fake host whose `tool.hook`/`session.hook` store callbacks and
  * whose `event.subscribe` yields pushed events.
  * @param opts Optional host behavior: `sessionRecords` backs the
- *     `session.get` API with a session-ID → record map.
+ *     `session.get` API with a session-ID → record map; `throwingGet` makes
+ *     `session.get` reject (models a record not yet visible).
  * @returns The host plus the recorded callback tables and event pusher.
  */
-export function makeFakeHost(opts?: { sessionRecords?: Map<string, any> }): FakeHost {
+export function makeFakeHost(opts?: {
+  sessionRecords?: Map<string, any>
+  /** When set, `session.get` rejects (models a record not yet visible). */
+  throwingGet?: boolean
+}): FakeHost {
   const toolHooks: Record<string, (event: any) => Promise<void> | void> = {}
   const sessionHooks: Record<string, (input: any) => Promise<void> | void> = {}
   const sessionRecords = opts?.sessionRecords
@@ -94,12 +99,18 @@ export function makeFakeHost(opts?: { sessionRecords?: Map<string, any> }): Fake
         sessionHooks[name] = cb
         return { dispose: (): void => {} }
       },
-      ...(sessionRecords
+      ...(opts?.throwingGet
         ? {
-            get: async ({ sessionID }: { sessionID: string }): Promise<any> =>
-              sessionRecords.get(sessionID),
+            get: async (): Promise<any> => {
+              throw new Error("not visible")
+            },
           }
-        : {}),
+        : sessionRecords
+          ? {
+              get: async ({ sessionID }: { sessionID: string }): Promise<any> =>
+                sessionRecords.get(sessionID),
+            }
+          : {}),
     },
     event: { subscribe },
   }

@@ -38,7 +38,11 @@
  * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
  *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
  *   counting toward it; a new user prompt resets it.
- * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads).
+ * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads),
+ *   keyed off the parent session: the child→parent edge is awaited
+ *   (host `session.get` when `session.created` has not yet landed) before the
+ *   guard fires, so an in-flight child draws down the parent's budget; a
+ *   still-unresolved child self-keys and journals a bounded signal.
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.
  * - Tool-call policy (issue #32): `bash`/`shell` commands and `write`/`edit`
