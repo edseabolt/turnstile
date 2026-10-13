@@ -64,16 +64,23 @@ export function agentFromTaskInput(input: TaskInput | undefined | null): string 
  * cross-child suppression. Returns false when the key was already seen (the
  * marker is a dedup hit), true on first sight. On a dedup hit whose raw
  * session differs from the stored provenance, the pending cross-child
- * suppression counter is incremented; re-delivery by the same raw session
- * stays silent.
+ * suppression counter is incremented — but only for gate-kind keys (see the
+ * MED note below); re-delivery by the same raw session stays silent.
  * @param state Mutable gate state for the parent session.
  * @param key The dedup key (scope + marker identity).
  * @param raw Raw session ID that produced the marker.
+ * @param gate True when the key gates a gate-kind marker (a `GATE:` match),
+ *     false for a verdict-kind marker (a `VERDICT:` match).
  * @returns True on first sight (the caller should record it); false on a dedup hit.
  */
-function observeMarker(state: GateState, key: string, raw: string): boolean {
+function observeMarker(state: GateState, key: string, raw: string, gate: boolean): boolean {
   if (state.seen.has(key)) {
-    if (raw && state.seenFrom.get(key) !== raw) state.suppressedPending += 1
+    // Cross-child suppression is charged to `suppressedPending` only for
+    // gate-kind hits (issue #51, MED): a verdict-kind dedup hit is suppressed
+    // here and owned by the marker-gated store-diff layer, so it must not bleed
+    // into the next emitted event's `suppressed` field (which, for a gate
+    // event, is the gate-event `suppressed` reported in the journal).
+    if (gate && raw && state.seenFrom.get(key) !== raw) state.suppressedPending += 1
     return false
   }
   state.seen.add(key)
@@ -111,6 +118,15 @@ function takePending(state: GateState): number {
  * byte-identical marker is still journaled, while streaming sources share
  * the empty scope.
  *
+ * Provenance note: the bucket `seen`/`seenFrom`/`suppressedPending` set now
+ * tracks gate-kind first-sight and cross-child suppression (the pending
+ * counter charges only gate-kind hits, so verdict-kind cross-child hits never
+ * surface as a gate-event suppression). Streaming VERDICT dedup keys on
+ * `(scope, marker)`, so identical re-delivery and a cross-source same-marker
+ * replay are both suppressed here, and only a marker flip is emitted for the
+ * setup layer to journal; the store records source changes for attribution but
+ * journaling stays marker-gated (issue #51, AC-3).
+ *
  * @param state Mutable gate state for the parent session.
  * @param text The assistant text to scan.
  * @param gateRe The gate marker regex (defaults to the canonical GATE_RE).
@@ -144,7 +160,7 @@ export function parseGateMarkers(
   const verdict = verdicts[verdicts.length - 1] ?? null
   if (gate) {
     const key = `${dedupScope}gate\u0000${gate}`
-    if (observeMarker(state, key, raw)) {
+    if (observeMarker(state, key, raw, true)) {
       const result: "PASS" | "FAIL" = gate.includes("PASS") ? "PASS" : "FAIL"
       if (result === "PASS") {
         // passVerified === false (enforce-only) flags the last unverified
@@ -183,7 +199,7 @@ export function parseGateMarkers(
   }
   if (verdict) {
     const key = `${dedupScope}verdict\u0000${verdict}`
-    if (observeMarker(state, key, raw)) {
+    if (observeMarker(state, key, raw, false)) {
       // `rounds` reflects the dispatch-based reviewer round count; verdicts
       // no longer increment it (cap is enforced per dispatch in gates.ts).
       events.push({

@@ -116,13 +116,17 @@ export interface GateState {
    * alongside `seen.add` by `observeMarker`. Tracks first-sight provenance so
    * a dedup hit from a different raw session can be accounted as cross-child
    * suppression (a different raw session than the stored provenance).
+   *
+   * Holds gate-kind provenance only: verdict-kind streaming dedup lives in the
+   * per-child `childVerdicts` store (issue #51), not here.
    */
   seenFrom: Map<string, string>
   /**
    * Cross-child suppressions pending attribution on the next emitted
-   * `MarkerEvent` (a dedup hit whose raw session differs from the provenance
-   * stored in `seenFrom`). Read and zeroed when an event emits; 0 on a fresh
-   * bucket.
+   * `MarkerEvent` (a `GATE:` dedup hit whose raw session differs from the
+   * provenance stored in `seenFrom`). Read and zeroed when an event emits; 0 on
+   * a fresh bucket. Verdict-kind deliveries use the per-child store instead, so
+   * this counter is now gated on gate-kind hits only.
    */
   suppressedPending: number
   reviewRounds: number
@@ -167,6 +171,12 @@ export interface MarkerEvent {
  * provenance label of the pipeline that carried it. The store is
  * verdict-kind only: only `VERDICT:` markers are stored (never `GATE:`), so a
  * GATE-only child can never suppress a plan-reviewer bare-output violation.
+ *
+ * It is also the streamed-verdict dedup ledger: `recordChildVerdict` returns
+ * whether the observation changed, and the setup layer journals a streamed
+ * verdict observation iff it did (per `(child, marker, source)` first-sight).
+ * Gate-kind (`GATE:`) dedup still lives in `GateState.seen`; this store is
+ * verdict-kind only.
  */
 export interface ChildVerdict {
   /** Last `VERDICT:` marker observed for the child, or "" when none. */

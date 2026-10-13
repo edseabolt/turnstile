@@ -30,6 +30,7 @@ import { createLedger, type GateLedger } from "./state.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
   CompactionDraft,
+  ChildVerdict,
   EventProperties,
   GateState,
   GenerateDraft,
@@ -148,6 +149,67 @@ export function createTurnstile(
   // journaled; streaming sources share the empty scope (re-delivery dedup).
   let taskDeliverySeq = 0
 
+  // Host session API, bound at setup time (hooks already fire post-setup).
+  // Kept in factory scope so the shared `resolveParent` helper can call it
+  // without capturing the per-setup `h`; enables the plan-reviewer delivery
+  // path to await edge resolution via `session.get` (issue #51, #41).
+  let hostSession: Host["session"] | undefined = undefined
+
+  // Parent-lookup bookkeeping, keyed by child session ID. Values are
+  // attempts made; capped so long-lived hosts cannot grow it unboundedly.
+  const failedLookups = new Map<string, number>()
+  // A thrown lookup may mean the child record is not yet visible to the
+  // host API, so failures are retried up to this many times per session.
+  const maxLookupAttempts = 3
+  // Bound on tracked sessions: evict oldest (insertion order) when past.
+  const maxTrackedLookups = 256
+
+  /**
+   * Bounds the failed-lookup map by evicting its oldest entries.
+   */
+  function boundLookups(): void {
+    while (failedLookups.size > maxTrackedLookups) {
+      const oldest = failedLookups.keys().next()
+      if (oldest.done) break
+      failedLookups.delete(oldest.value)
+    }
+  }
+
+  /**
+   * Resolves and caches the parent of a child session via the host API.
+   * Parent-less records are negatively cached (a stable signal: the
+   * session exists and has no parent edge); thrown lookups are retried
+   * up to `maxLookupAttempts` because the record may appear later.
+   * Without a usable edge the caller falls back to keying by the session
+   * itself. Lifted to factory scope so the plan-reviewer delivery path can
+   * await it before attribution (issue #51); byte-identical to the original
+   * per-setup definition.
+   * @param sessionID Child session ID to resolve.
+   */
+  async function resolveParent(sessionID: string | undefined): Promise<void> {
+    if (!sessionID || ledger.childToParent.has(sessionID)) return
+    const attempts = failedLookups.get(sessionID) ?? 0
+    if (attempts >= maxLookupAttempts) return
+    const get = hostSession?.get
+    if (typeof get !== "function") return
+    try {
+      const rec = await get({ sessionID })
+      const parentID = rec?.parentID ?? rec?.data?.parentID
+      if (typeof parentID === "string") {
+        ledger.setParent(sessionID, parentID)
+        failedLookups.delete(sessionID)
+      } else {
+        failedLookups.set(sessionID, maxLookupAttempts)
+        boundLookups()
+      }
+    } catch {
+      // lookup failure: retryable; fall back to keying by the session
+      // itself until the record becomes visible or attempts run out
+      failedLookups.set(sessionID, attempts + 1)
+      boundLookups()
+    }
+  }
+
   /**
    * Returns the last verdict match in `text` for `re` (last-match-wins, the
    * same rule `parseGateMarkers` uses); "" when there is no match. Independent
@@ -175,33 +237,88 @@ export function createTurnstile(
   }
 
   /**
-   * Attributes a plan-reviewer result to the parent's plan-approval gate. The
-   * delivery's own verdict wins over any stored child-text observation; the
-   * journaled `source` names the winning pipeline (task-result or the child
-   * text that carried the marker). A BLOCK or marker-less result keeps the gate
-   * red. Keyed by parent session; never throws (fail-open).
+   * Attributes a plan-reviewer result to the parent's plan-approval gate,
+   * ensuring the journaled `plan` entry's `raw` is always an actual child
+   * session ID (never the parent `sessionID`, issue #51):
+   *
+   * - Edge-resolved (`childToParent.has(child)`): the delivery's own verdict
+   *   wins over any stored child-text observation (delivery-wins only when the
+   *   output itself carries a marker); the `source` names the winning pipeline.
+   *   `raw = child`.
+   * - Self-keyed (`parentOf(child) === child`, e.g. a host re-fire reporting
+   *   the parent's own session ID): never reads `childVerdict(child)` (that is
+   *   the parent's own quoted text, not a child's evidence). Instead it
+   *   discovers an attributable child from already-registered state — children
+   *   whose parent edge is `sid` and whose store carries a marker — and
+   *   attributes through the unique one (`raw = that child`, same delivery-wins
+   *   merge). Zero candidates, or more than one (ambiguous), journals
+   *   `type:"error"` and mutates nothing: a marker-less, unattributable
+   *   parent-keyed delivery can never clobber a live approval with a BLOCK, and
+   *   a stale parent-store entry can never approve the gate.
+   *
+   * Never throws (fail-open).
    * @param child The raw child session ID, for the `plan` entry's `raw` field.
    * @param output The delivery's own result text.
    */
-  function attributePlanVerdict(child: string, output: string): void {
+  async function attributePlanVerdict(child: string, output: string): Promise<void> {
     const sid = ledger.parentOf(child)
-    const s = ledger.state(sid)
     const own = lastMatch(output, verdictRe)
-    const rec = ledger.childVerdict(child)
-    const marker = own || rec.marker
-    const markerSource = own ? "task-result" : rec.source || "task-result"
-    const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
-    s.hasPlanVerdict = result === "APPROVE"
-    stampPlanApproval(s, result, projectDir)
+    // Edge-resolved: attribute through the child directly, delivery-wins merge.
+    if (ledger.childToParent.has(child)) {
+      const s = ledger.state(sid)
+      const rec = ledger.childVerdict(child)
+      const marker = own || rec.marker
+      const markerSource = own ? "task-result" : rec.source || "task-result"
+      const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+      s.hasPlanVerdict = result === "APPROVE"
+      stampPlanApproval(s, result, projectDir)
+      journaler.journal({
+        type: "plan",
+        sessionID: sid,
+        raw: child,
+        result,
+        marker: marker || "<none>",
+        source: markerSource,
+      })
+      journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
+      return
+    }
+    // Self-keyed: discover an attributable child from registered edges only.
+    let attributed: string | undefined = undefined
+    let candidateCount = 0
+    for (const c of ledger.childToParent.keys()) {
+      if (ledger.childToParent.get(c) === sid && ledger.childVerdict(c).marker !== "") {
+        candidateCount++
+        attributed = c
+      }
+    }
+    if (candidateCount === 1 && attributed) {
+      const s = ledger.state(sid)
+      const rec = ledger.childVerdict(attributed)
+      const marker = own || rec.marker
+      const markerSource = own ? "task-result" : rec.source || "task-result"
+      const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+      s.hasPlanVerdict = result === "APPROVE"
+      stampPlanApproval(s, result, projectDir)
+      journaler.journal({
+        type: "plan",
+        sessionID: sid,
+        raw: attributed,
+        result,
+        marker: marker || "<none>",
+        source: markerSource,
+      })
+      journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
+      return
+    }
+    // Zero candidates or more than one (ambiguous): unattributable. Journal an
+    // error and leave the gate untouched — never a BLOCK, never a parent-keyed
+    // plan entry, never a clobber of a live approval (fail-open).
     journaler.journal({
-      type: "plan",
+      type: "error",
       sessionID: sid,
-      raw: child,
-      result,
-      marker: marker || "<none>",
-      source: markerSource,
+      error: `plan attribution: unattributable parent-keyed delivery; gate unchanged (${candidateCount} evidenced candidate${candidateCount === 1 ? "" : "s"})`,
     })
-    journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
   }
 
   /**
@@ -223,7 +340,15 @@ export function createTurnstile(
     // non-task-result sources enter the store: task-result markers are handled
     // by the delivery's own match during attribution, and keeping them out
     // preserves "a marker-less task-result delivery keeps the gate red".
+    //
+    // Store-diff verdict journaling (issue #51, AC-3): capture the prior
+    // observation first, then record; the bucket dedup (markers.ts) keys on
+    // (scope, marker), so identical re-delivery and a cross-source same-marker
+    // replay (a source change with an unchanged marker, e.g. delta→ended) are
+    // both silently suppressed; only a marker flip reaches the journal.
+    let prev: ChildVerdict = { marker: "", source: "" }
     if (sessionID && source !== "task-result") {
+      prev = ledger.childVerdict(sessionID)
       const m = lastMatch(text, verdictRe)
       if (m) ledger.recordChildVerdict(sessionID, m, source)
     }
@@ -270,6 +395,15 @@ export function createTurnstile(
           ...suppressed,
         })
         journaler.traceEvent("test-runner", "gate", event.marker, sid)
+      } else if (
+        source !== "task-result" &&
+        event.marker === prev.marker &&
+        source === prev.source
+      ) {
+        // Streaming verdict dedup is now per (child, marker, source) via the
+        // store: identical re-delivery journals nothing (silent suppression,
+        // the same as a dedup hit). Gate-kind events above are unaffected.
+        continue
       } else {
         journaler.journal({
           type: "verdict",
@@ -297,58 +431,9 @@ export function createTurnstile(
     // subscriber = 6 on a full host); feeds the load heartbeat below.
     let hooks = 0
 
-    // Parent-lookup bookkeeping, keyed by child session ID. Values are
-    // attempts made; capped so long-lived hosts cannot grow it unboundedly.
-    const failedLookups = new Map<string, number>()
-    // A thrown lookup may mean the child record is not yet visible to the
-    // host API, so failures are retried up to this many times per session.
-    const maxLookupAttempts = 3
-    // Bound on tracked sessions: evict oldest (insertion order) when past.
-    const maxTrackedLookups = 256
-
-    /**
-     * Bounds the failed-lookup map by evicting its oldest entries.
-     */
-    function boundLookups(): void {
-      while (failedLookups.size > maxTrackedLookups) {
-        const oldest = failedLookups.keys().next()
-        if (oldest.done) break
-        failedLookups.delete(oldest.value)
-      }
-    }
-
-    /**
-     * Resolves and caches the parent of a child session via the host API.
-     * Parent-less records are negatively cached (a stable signal: the
-     * session exists and has no parent edge); thrown lookups are retried
-     * up to `maxLookupAttempts` because the record may appear later.
-     * Without a usable edge the caller falls back to keying by the session
-     * itself.
-     * @param sessionID Child session ID to resolve.
-     */
-    async function resolveParent(sessionID: string | undefined): Promise<void> {
-      if (!sessionID || ledger.childToParent.has(sessionID)) return
-      const attempts = failedLookups.get(sessionID) ?? 0
-      if (attempts >= maxLookupAttempts) return
-      const get = h.session?.get
-      if (typeof get !== "function") return
-      try {
-        const rec = await get({ sessionID })
-        const parentID = rec?.parentID ?? rec?.data?.parentID
-        if (typeof parentID === "string") {
-          ledger.setParent(sessionID, parentID)
-          failedLookups.delete(sessionID)
-        } else {
-          failedLookups.set(sessionID, maxLookupAttempts)
-          boundLookups()
-        }
-      } catch {
-        // lookup failure: retryable; fall back to keying by the session
-        // itself until the record becomes visible or attempts run out
-        failedLookups.set(sessionID, attempts + 1)
-        boundLookups()
-      }
-    }
+    // Bind the host session API for the shared `resolveParent` helper (hooks
+    // already fire post-setup).
+    hostSession = h.session
 
     // Task-state reset: a new user prompt starts a new task.
     if (typeof h.session?.hook === "function") {
@@ -487,16 +572,25 @@ export function createTurnstile(
             if (event?.tool === "task" || event?.tool === "subagent") {
               const output = String(event.result?.output ?? "")
               const child = asSessionID(event?.sessionID)
-              parseMarkers(output, child, "task-result", `task-result\u0000${++taskDeliverySeq}`)
               const agent =
                 agentFromTaskInput(event.input) ||
                 agentFromTaskInput(event.result?.input as TaskInput | undefined)
-              // Plan-approval attribution: only a plan-reviewer result moves
-              // the plan gate. The delivery's own verdict wins over a stored
-              // child-text observation; a BLOCK or marker-less result keeps
-              // the gate red. Keyed by parent session like the other state.
+              // Plan-reviewer delivery path only: await the child→parent edge
+              // before marker parsing and attribution, so a continued subagent
+              // session (no new session.created; edge resolved via session.get)
+              // still attributes. Every other agent keeps today's byte-identical
+              // sync ordering (issue #51, MED-2).
               if (agent === config.agents.planReviewer) {
-                attributePlanVerdict(child, output)
+                await resolveParent(child)
+              }
+              parseMarkers(output, child, "task-result", `task-result\u0000${++taskDeliverySeq}`)
+              // Plan-approval attribution: only a plan-reviewer result moves
+              // the plan gate. See attributePlanVerdict — `raw` is always an
+              // actual child session ID, never the parent; an unattributable,
+              // marker-less parent-keyed re-fire journals type:"error" and
+              // leaves the gate untouched (never clobbers a live approval).
+              if (agent === config.agents.planReviewer) {
+                await attributePlanVerdict(child, output)
               }
               // The bare-output suppression — a streamed verdict in the
               // child's own text hiding a summarized, marker-less delivery —

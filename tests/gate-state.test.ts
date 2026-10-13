@@ -12,7 +12,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { BlockError } from "../src/gates.ts"
-import { newState } from "../src/state.ts"
+import { createLedger, newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,
@@ -306,6 +306,40 @@ test("same-child re-delivery never counts as suppression", async () => {
   dispose()
 })
 
+/** A verdict-kind cross-child dedup hit must not count as a gate suppression
+ *  (issue #51, MED): the pending counter charges only gate-kind hits, so a
+ *  subsequent gate event journals suppressed 0. The sibling test above pins
+ *  the gate-kind direction; this one pins that a VERDICT cross-child hit stays
+ *  out of the next gate event's suppressed field instead of bleeding into it.
+ */
+test("a verdict cross-child dedup hit stays out of the next gate event's suppressed", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  // Two children share parent p1; both stream byte-identical APPROVE.
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+  // c1 first-sight (a verdict event); c2 a cross-child verdict hit (silent,
+  // never charged to the pending counter — verdict-kind hits don't feed the
+  // gate-event suppressed field).
+  const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: `${APPROVE}\n` } })
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+  // c1 then emits a genuinely new GATE: PASS: the parent's next marker event.
+  h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: "c1", text: "GATE: PASS tests=2 passed=2 failed=0" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate")
+  const newGate = gates[gates.length - 1]
+  assert.ok(newGate, "expected the new gate to be journaled")
+  // The verdict cross-child hit above must NOT surface as a gate suppression.
+  assert.equal(newGate.suppressed ?? 0, 0)
+  dispose()
+})
+
 /** Task-result deliveries use a unique dedup scope per delivery, so two
  *  concurrent task-result deliveries of byte-identical markers are both journaled
  *  with suppressed 0 (the unique-scope guard must not regress to cross-charging). */
@@ -582,7 +616,7 @@ test("decomposition gate: executor must cite chunk-N when a plan has Decompositi
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const { h, dispose } = await boot()
+    const { h, dispose, metricsDir } = await boot()
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {
@@ -593,9 +627,15 @@ test("decomposition gate: executor must cite chunk-N when a plan has Decompositi
       (e: Error) => e.message.includes('no plan approval for "plan.md"'),
     )
     // Plan approved: the decomposition gate takes over and demands a chunk.
+    // Delivered on the child so the approval keys raw=c1 (issue #51).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+    )
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
     })
@@ -909,9 +949,11 @@ test("event loop: child session.created events do not move the project dir", asy
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
     )
+    // Deliver on the child so the approval keys raw=c1 and the decomposition
+    // gate (not the plan gate) is what blocks the executor (issue #51).
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
     })
@@ -1406,9 +1448,15 @@ test("executor dispatch journals a fail-open error on an unreadable plan and doe
   try {
     const { h, dispose, metricsDir } = await boot()
     // Real block path: a readable Decomposition plan, approved → executor blocked.
+    // Delivered on the child so the approval keys raw=c1 (issue #51).
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+    )
     await callTool(h, "execute.after", {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c1",
       input: { agent: "plan-reviewer" },
       result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
     })
@@ -2092,4 +2140,50 @@ test("replay does not restore unverifiedPass (AC-6)", async () => {
     (e: Error) => e.message === NO_GATE_MESSAGE,
   )
   dispose()
+})
+
+/** The VERDICT marker reused for recordChildVerdict unit tests. */
+const VERDICT_APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+const VERDICT_BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
+
+/** recordChildVerdict is a pure store-diff ledger: it flags first-record and
+ *  marker/source changes true (the setup layer journals a streamed verdict iff
+ *  so) and identical re-records false (a per-(child, marker, source) hit). */
+test("recordChildVerdict flags first-record and marker/source change true, identical re-record false", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  // First record: empty → (marker, source) changes, so true.
+  assert.equal(ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text"), true)
+  assert.deepEqual(ledger.childVerdict("c1"), {
+    marker: VERDICT_APPROVE,
+    source: "child-text",
+  })
+  // Identical re-record: no change, so false (a dedup hit).
+  assert.equal(ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text"), false)
+  // Marker flip changes: true; the stored marker updates.
+  assert.equal(ledger.recordChildVerdict("c1", VERDICT_BLOCK, "child-text"), true)
+  assert.equal(ledger.childVerdict("c1").marker, VERDICT_BLOCK)
+  // Source flip with the same marker also changes: true; the source updates.
+  assert.equal(ledger.recordChildVerdict("c1", VERDICT_BLOCK, "task-result"), true)
+  assert.equal(ledger.childVerdict("c1").source, "task-result")
+  // Identical again: false.
+  assert.equal(ledger.recordChildVerdict("c1", VERDICT_BLOCK, "task-result"), false)
+})
+
+/** resetState (issue #51, MED) drops a reset parent's registered children's
+ *  verdict evidence so a marker-less re-fire cannot re-attribute a stale
+ *  streamed APPROVE, but leaves a concurrent task on another parent's child
+ *  evidence intact (scoped clear, not a global wipe). */
+test("resetState clears childVerdicts scoped to the reset parent, preserving other parents' children", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  // Two concurrent tasks: c1→p1 and c2→p2, each with a streamed verdict.
+  ledger.setParent("c1", "p1")
+  ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text")
+  ledger.setParent("c2", "p2")
+  ledger.recordChildVerdict("c2", VERDICT_APPROVE, "child-text")
+  // Reset p1: c1's evidence is dropped, c2's (a different parent) survives.
+  ledger.resetState("p1")
+  assert.deepEqual(ledger.childVerdict("c1"), { marker: "", source: "" })
+  assert.equal(ledger.childVerdict("c2").marker, VERDICT_APPROVE)
+  // p2's gate state is untouched by the p1 reset.
+  assert.equal(ledger.state("p2").hasPlanVerdict, false)
 })

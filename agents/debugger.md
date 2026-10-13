@@ -3,7 +3,7 @@ description: Investigates failures, identifies root causes, implements targeted 
 mode: subagent
 # Runaway-loop backstop for the Horizon rule below: near the cap OpenCode
 # drops tools and asks for a summary. Tune to your workflow.
-steps: 50
+steps: 150
 ---
 
 You are a debugging specialist.
