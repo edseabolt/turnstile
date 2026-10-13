@@ -216,6 +216,37 @@ export function createTurnstile(
   }
 
   /**
+   * Resolves the read-budget key for a whole-file read: awaits the child→parent
+   * edge, then returns the parent session (or the session itself when the edge
+   * is genuinely absent). Journals a bounded signal only when a lookup was
+   * attempted but stayed inconclusive — a child whose record is not yet visible
+   * to `session.get`. Root sessions that resolve cleanly as parent-less, and
+   * children already resolved to a parent, never signal (no journal spam).
+   * (issue #41)
+   * @param sid The reading session ID, already normalized via `asSessionID`.
+   * @returns The session ID the read budget should be keyed against.
+   */
+  async function readBudgetKey(sid: string): Promise<string> {
+    await resolveParent(sid)
+    const key = ledger.parentOf(sid)
+    if (key === sid) {
+      const attempts = failedLookups.get(sid) ?? 0
+      // Inconclusive window only: a lookup was tried and the record was not yet
+      // visible (attempts climb 1..max-1). Zero means no host session API
+      // (never knowable); at the cap means a resolved parent-less root. Bounded
+      // to ≤ maxLookupAttempts-1 signals per session.
+      if (attempts > 0 && attempts < maxLookupAttempts) {
+        journaler.journal({
+          type: "error",
+          sessionID: sid,
+          error: `read budget keyed by session; parent unresolved after ${attempts}/${maxLookupAttempts} lookup attempt(s)`,
+        })
+      }
+    }
+    return key
+  }
+
+  /**
    * Returns the last verdict match in `text` for `re` (last-match-wins, the
    * same rule `parseGateMarkers` uses); "" when there is no match. Independent
    * of `String.match`'s global-regex lastIndex state because `.match` resets it.
@@ -556,9 +587,12 @@ export function createTurnstile(
             }
 
             if (event?.tool === "read") {
-              // Keyed off the parent session: a subagent's reads draw down
-              // the parent's budget (AGENTS.md contract), not a per-child one.
-              gates.guardReadLimit(ledger.parentOf(asSessionID(event?.sessionID)), ledger)
+              // Keyed off the parent session: a subagent's reads draw down the
+              // parent's budget (AGENTS.md contract), not a per-child one.
+              // Resolve the child→parent edge first so an in-flight child keys
+              // the parent's budget, not its own; a still-unresolved child
+              // self-keys and journals a bounded signal (issue #41).
+              gates.guardReadLimit(await readBudgetKey(asSessionID(event?.sessionID)), ledger)
             }
 
             // Tool-call denylist (issue #32): bash/shell commands and write/edit
@@ -693,7 +727,10 @@ export function createTurnstile(
             }
             if (event?.tool === "read") {
               // Same parent keying as the guard: count and budget stay in
-              // step regardless of which session ID the host reports.
+              // step regardless of which session ID the host reports. This
+              // stays synchronous on purpose — the before-hook already awaited
+              // resolveParent(sid) for this same sessionID, so the edge is
+              // cached by the time it fires (issue #41).
               const sessionID = ledger.parentOf(asSessionID(event?.sessionID))
               const s = ledger.state(sessionID)
               s.reads++

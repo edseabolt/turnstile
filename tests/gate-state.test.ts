@@ -553,6 +553,81 @@ test("read horizon: warns at readWarn, blocks at readBlock", async () => {
   dispose()
 })
 
+/** (issue #41) An in-flight child whose edge has not landed yet keys the
+ *  parent's budget (via host session.get), not its own — the before-hook
+ *  resolves the edge before the guard. */
+test("read horizon: an unresolved child's first read keys the parent's budget", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({ sessionRecords: new Map([["c1", { parentID: "p1" }]]) })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { readWarn: 2, readBlock: 3, metricsDir },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  // Three self-keyed reads on the parent p1 drain its budget to the block.
+  for (let i = 0; i < 3; i++) {
+    await callTool(h, "execute.after", {
+      tool: "read",
+      sessionID: "p1",
+      result: { output: `body ${i}` },
+    })
+  }
+  await assert.rejects(
+    () => callTool(h, "execute.before", { tool: "read", sessionID: "c1" }),
+    (e: Error) =>
+      e.message ===
+      "BLOCKED by turnstile: 3 whole-file reads this session. Switch to grep/glob for targeted retrieval, or report being stuck and escalate to the user.",
+  )
+  // The edge was cached by the before-read: a follow-up child read keys the
+  // parent (count-vs-budget invariant still holds; issue #41, AC-3).
+  await callTool(h, "execute.after", { tool: "read", sessionID: "c1", result: { output: "child" } })
+  const reads = journalEntries(metricsDir).filter((l) => l.type === "tool" && l.tool === "read")
+  assert.equal(reads.length, 4)
+  assert.ok(reads.every((l) => l.sessionID === "p1"))
+  dispose()
+})
+
+/** (issue #41) A child whose record is not yet visible to session.get
+ *  self-keys and stays fail-open, journaling a bounded fallback signal at
+ *  most maxLookupAttempts-1 times (attempts saturate, then it stays silent). */
+test("read horizon: an unresolvable child self-keys and journals a bounded signal", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({ throwingGet: true })
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  // Four+ unresolved before-reads: each resolves, self-keys, and fires the
+  // bounded signal — but never rejects (fail-open).
+  for (let i = 0; i < 5; i++) {
+    await callTool(h, "execute.before", { tool: "read", sessionID: "c1" })
+  }
+  const signals = journalEntries(metricsDir).filter(
+    (l) =>
+      l.type === "error" &&
+      l.sessionID === "c1" &&
+      /read budget keyed by session; parent unresolved/.test(l.error),
+  )
+  // Bounded to maxLookupAttempts-1 (3-1) signals per stuck session.
+  assert.equal(signals.length, 2)
+  dispose()
+})
+
+/** (issue #41) A confirmed parent-less root self-keys silently: no fallback
+ *  signal on every root read (the attempts===cap sentinel stays quiet). */
+test("read horizon: a parent-less root read self-keys without journaling", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({ sessionRecords: new Map([["p1", {}]]) })
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  for (let i = 0; i < 5; i++) {
+    await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  }
+  const signals = journalEntries(metricsDir).filter(
+    (l) => l.type === "error" && /read budget keyed by session/.test(l.error),
+  )
+  assert.equal(signals.length, 0)
+  dispose()
+})
+
 /** Bare-output violations fire only for agents in bareOutput (test-runner here, not planner). */
 test("bare-output violation fires only for marker-contracted agents", async () => {
   const { h, dispose, metricsDir } = await boot()
