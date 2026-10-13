@@ -84,6 +84,21 @@
  *   cross-source same-marker replay are both suppressed; only a marker flip
  *   journals, and a prompt reset drops the previous
  *   task's children's evidence (scoped to the reset parent, other parents intact).
+ * - Verdict attribution, unresolved edge (issue #54): a self-keyed delivery whose
+ *   child→parent edge is unresolved now also claims the unique child evidenced
+ *   only in the streaming store — plausibility = a recorded plan-reviewer
+ *   dispatch for the parent predates (at-or-before) the observation's recordedAt,
+ *   plausibly unique across parents (a verdict with two candidate parents is
+ *   ambiguous and excluded). Timestamps are last-wins and cleared on prompt reset,
+ *   so a verdict is plausible only within the parent's current task scope. Every
+ *   self-keyed delivery journals one `type:"attribution"` entry before any mutation
+ *   (`{decision, deliveryIsParent, sessionApi, candidates:{edge,unresolved,
+ *   plausible} counts, unresolvedIDs, lookup:{session:{attempts,reason}}}`) so the
+ *   field can tell the three root-cause hypotheses apart; the attribution is
+ *   unanimous-pool driven. A plausible streamed `VERDICT: APPROVE` makes a
+ *   self-keyed `BLOCK` unreachable (structural fail-open over BLOCK, R-5). The
+ *   edge-resolved branch and the never-BLOCK-on-zero-candidates guarantee are
+ *   unchanged, so the #51 `/unattributable/` count stays one on fail-open paths.
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors, and the load heartbeat
  *   (a "setup" entry: plugin version, config digest, hook count). Errors also

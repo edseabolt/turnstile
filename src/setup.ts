@@ -160,9 +160,23 @@ export function createTurnstile(
   // path to await edge resolution via `session.get` (issue #51, #41).
   let hostSession: Host["session"] | undefined = undefined
 
-  // Parent-lookup bookkeeping, keyed by child session ID. Values are
-  // attempts made; capped so long-lived hosts cannot grow it unboundedly.
-  const failedLookups = new Map<string, number>()
+  // Parent-lookup bookkeeping, keyed by child session ID (issue #54, R-4).
+  // Values record how many lookups were attempted and why the record stayed
+  // unresolved: `"not-visible"` (host `session.get` threw) or `"no-parent-id"`
+  // (the record exists but has no parent edge); cleared on success. Capped so
+  // long-lived hosts cannot grow it unboundedly.
+  const failedLookups = new Map<string, { attempts: number; reason: string }>()
+  // `"not-visible"`: host `session.get` threw the lookup is retryable.
+  const LOOKUP_REASON_NOT_VISIBLE = "not-visible"
+  // `"no-parent-id"`: the record exists but has no parent edge (negative cache).
+  const LOOKUP_REASON_NO_PARENT_ID = "no-parent-id"
+  // Parent session ID → Date.now() of its LATEST plan-reviewer dispatch
+  // (last-wins; cleared on prompt reset for that parent). Issue #54 plausibility
+  // input: an unresolved-child verdict is plausible only within the parent's
+  // current task scope (recorded at-or-after this time, and unique across
+  // parents). Capped via boundDispatches, the same eviction idiom as
+  // boundLookups.
+  const planReviewerDispatch = new Map<string, number>()
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -181,10 +195,25 @@ export function createTurnstile(
   }
 
   /**
+   * Bounds the dispatch-timestamp map by evicting its oldest entries.
+   * Mirrors boundLookups; see planReviewerDispatch.
+   */
+  function boundDispatches(): void {
+    while (planReviewerDispatch.size > maxTrackedLookups) {
+      const oldest = planReviewerDispatch.keys().next()
+      if (oldest.done) break
+      planReviewerDispatch.delete(oldest.value)
+    }
+  }
+
+  /**
    * Resolves and caches the parent of a child session via the host API.
-   * Parent-less records are negatively cached (a stable signal: the
-   * session exists and has no parent edge); thrown lookups are retried
-   * up to `maxLookupAttempts` because the record may appear later.
+   * Parent-less records are negatively cached (a stable signal: the session
+   * exists and has no parent edge); thrown lookups are retried up to
+   * `maxLookupAttempts` because the record may appear later. Each failure is
+   * recorded as `{ attempts, reason }` (issue #54 R-4): `"not-visible"` when
+   * `session.get` threw, `"no-parent-id"` when the record has no parent edge;
+   * cleared on success.
    * Without a usable edge the caller falls back to keying by the session
    * itself. Lifted to factory scope so the plan-reviewer delivery path can
    * await it before attribution (issue #51); byte-identical to the original
@@ -193,7 +222,7 @@ export function createTurnstile(
    */
   async function resolveParent(sessionID: string | undefined): Promise<void> {
     if (!sessionID || ledger.childToParent.has(sessionID)) return
-    const attempts = failedLookups.get(sessionID) ?? 0
+    const attempts = failedLookups.get(sessionID)?.attempts ?? 0
     if (attempts >= maxLookupAttempts) return
     const get = hostSession?.get
     if (typeof get !== "function") return
@@ -204,13 +233,17 @@ export function createTurnstile(
         ledger.setParent(sessionID, parentID)
         failedLookups.delete(sessionID)
       } else {
-        failedLookups.set(sessionID, maxLookupAttempts)
+        // Record present but parent-less: negatively cached (a stable signal).
+        failedLookups.set(sessionID, {
+          attempts: maxLookupAttempts,
+          reason: LOOKUP_REASON_NO_PARENT_ID,
+        })
         boundLookups()
       }
     } catch {
       // lookup failure: retryable; fall back to keying by the session
       // itself until the record becomes visible or attempts run out
-      failedLookups.set(sessionID, attempts + 1)
+      failedLookups.set(sessionID, { attempts: attempts + 1, reason: LOOKUP_REASON_NOT_VISIBLE })
       boundLookups()
     }
   }
@@ -230,7 +263,10 @@ export function createTurnstile(
     await resolveParent(sid)
     const key = ledger.parentOf(sid)
     if (key === sid) {
-      const attempts = failedLookups.get(sid) ?? 0
+      // Byte-identical read (issue #54 R-2): reads the attempts count off the
+      // structured record; the gate (`attempts > 0 && attempts < max`) is
+      // unchanged, so this signal is byte-identical to the pre-enrichment form.
+      const attempts = failedLookups.get(sid)?.attempts ?? 0
       // Inconclusive window only: a lookup was tried and the record was not yet
       // visible (attempts climb 1..max-1). Zero means no host session API
       // (never knowable); at the cap means a resolved parent-less root. Bounded
@@ -273,6 +309,114 @@ export function createTurnstile(
   }
 
   /**
+   * Splits a self-keyed delivery's attributable children into the
+   * registered-edge scan (`edge`, today's scan) and every child with a stored
+   * verdict that is not the delivery session itself (`unresolved`). `edge`
+   * keeps its LRU promotion; `unresolved` is a pure snapshot that feeds the
+   * plausibility join in plausibleUnresolved.
+   * @param sid The delivery's parent id (=== child in the self-keyed branch).
+   * @returns Registered candidates and verdict-bearing children (minus sid).
+   */
+  function discoverCandidates(sid: string): {
+    edge: string[]
+    unresolved: Array<{ child: string; verdict: ChildVerdict }>
+  } {
+    const edge: string[] = []
+    for (const c of ledger.childToParent.keys()) {
+      if (ledger.childToParent.get(c) === sid && ledger.childVerdict(c).marker !== "") edge.push(c)
+    }
+    return {
+      edge,
+      unresolved: ledger.evidencedChildren().filter(({ child }) => child !== sid),
+    }
+  }
+
+  /**
+   * Unresolved children plausibly this parent's next task: a plan-reviewer
+   * dispatch is recorded for `sid` AND the verdict was recorded at-or-after it
+   * (inclusive, tolerating same-millisecond ties) AND no OTHER parent
+   * dispatched at-or-before that verdict (unique-owner rule; a verdict with two
+   * candidate parents is ambiguous and excluded → fail-open). Pure read.
+   * @param sid The delivery's parent id.
+   * @param unresolved The `{ child, verdict }` candidates from discoverCandidates.
+   * @returns The child ids plausibly belonging to `sid`.
+   */
+  function plausibleUnresolved(
+    sid: string,
+    unresolved: Array<{ child: string; verdict: ChildVerdict }>,
+  ): string[] {
+    const dispatchTs = planReviewerDispatch.get(sid)
+    if (dispatchTs === undefined) return []
+    const out: string[] = []
+    for (const { child, verdict } of unresolved) {
+      if (verdict.recordedAt < dispatchTs) continue
+      // Unique-owner: another parent dispatched at-or-before this verdict's
+      // recordedAt ⇒ ambiguous ⇒ excluded (never-guess).
+      let ambiguous = false
+      for (const [other, ts] of planReviewerDispatch) {
+        if (other === sid) continue
+        if (ts <= verdict.recordedAt) {
+          ambiguous = true
+          break
+        }
+      }
+      if (!ambiguous) out.push(child)
+    }
+    return out
+  }
+
+  /**
+   * The most-recently-recorded child among the given ids, by stored
+   * `recordedAt` (ties keep insertion order); undefined when none. Pure read.
+   * @param children The candidate child ids (from the plausible list).
+   * @returns The most recently recorded child id, or undefined.
+   */
+  function mostRecentUnresolved(children: string[]): string | undefined {
+    let best: string | undefined
+    let bestAt = -1
+    for (const c of children) {
+      const at = ledger.childVerdict(c).recordedAt
+      if (at > bestAt) {
+        bestAt = at
+        best = c
+      }
+    }
+    return best
+  }
+
+  /**
+   * Parent-lookup diagnostic for the delivery child, its parent (sid, when
+   * distinct), and each unresolved candidate: `{ attempts, reason }` — the
+   * current parent-lookup attempt count and why it stayed unresolved
+   * (`"not-visible"` / `"no-parent-id"`, or `"resolved-or-never-tried"` when
+   * clean). Distinct sessions are kept in the entry so the field can tell the
+   * three root-cause hypotheses in the issue apart. Pure read; clears nothing.
+   * @param child The delivery's session id.
+   * @param sid The parent session id (=== child in the self-keyed branch).
+   * @param unresolved The unresolved candidate child ids.
+   * @returns A per-session `{ attempts, reason }` map.
+   */
+  function lookupDiag(
+    child: string,
+    sid: string,
+    unresolved: string[],
+  ): Record<string, { attempts: number; reason: string }> {
+    const out: Record<string, { attempts: number; reason: string }> = {}
+    const keys = child === sid ? [child] : [child, sid]
+    for (const s of keys)
+      out[s] = {
+        attempts: failedLookups.get(s)?.attempts ?? 0,
+        reason: failedLookups.get(s)?.reason ?? "resolved-or-never-tried",
+      }
+    for (const c of unresolved)
+      out[c] = {
+        attempts: failedLookups.get(c)?.attempts ?? 0,
+        reason: failedLookups.get(c)?.reason ?? "resolved-or-never-tried",
+      }
+    return out
+  }
+
+  /**
    * Attributes a plan-reviewer result to the parent's plan-approval gate,
    * ensuring the journaled `plan` entry's `raw` is always an actual child
    * session ID (never the parent `sessionID`, issue #51):
@@ -283,14 +427,18 @@ export function createTurnstile(
    *   `raw = child`.
    * - Self-keyed (`parentOf(child) === child`, e.g. a host re-fire reporting
    *   the parent's own session ID): never reads `childVerdict(child)` (that is
-   *   the parent's own quoted text, not a child's evidence). Instead it
-   *   discovers an attributable child from already-registered state — children
-   *   whose parent edge is `sid` and whose store carries a marker — and
-   *   attributes through the unique one (`raw = that child`, same delivery-wins
-   *   merge). Zero candidates, or more than one (ambiguous), journals
-   *   `type:"error"` and mutates nothing: a marker-less, unattributable
-   *   parent-keyed delivery can never clobber a live approval with a BLOCK, and
-   *   a stale parent-store entry can never approve the gate.
+   *   the parent's own quoted text, not a child's evidence). It journals a
+   *   forensic `type:"attribution"` entry first (before any mutation,
+   *   replay-inert, never containing the word "unattributable" so the AC-1b/AC-5
+   *   /unattributable/ count stays one), then discovers attributable children
+   *   from registered edges AND from unresolved children whose streamed verdict
+   *   plausibly belongs to this parent (issue #54 plausibility join), and
+   *   attributes through the unique unanimous pool (`raw = first edge child,
+   *   else most-recently-recorded unresolved child`). Zero candidates, or more
+   *   than one (contradictory), journals the existing `type:"error"` and
+   *   mutates nothing: a marker-less, unattributable parent-keyed delivery can
+   *   never clobber a live approval with a BLOCK, and any plausible streamed
+   *   APPROVE makes a self-keyed BLOCK unreachable (structural fail-open, R-5).
    *
    * Never throws (fail-open).
    * @param child The raw child session ID, for the `plan` entry's `raw` field.
@@ -319,16 +467,44 @@ export function createTurnstile(
       journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
       return
     }
-    // Self-keyed: discover an attributable child from registered edges only.
-    let attributed: string | undefined = undefined
-    let candidateCount = 0
-    for (const c of ledger.childToParent.keys()) {
-      if (ledger.childToParent.get(c) === sid && ledger.childVerdict(c).marker !== "") {
-        candidateCount++
-        attributed = c
-      }
-    }
-    if (candidateCount === 1 && attributed) {
+    // Self-keyed: the delivery's own session id is not a registered child.
+    const { edge, unresolved } = discoverCandidates(sid)
+    const unresolvedIDs = unresolved.map(({ child: cid }) => cid)
+    const plausible = plausibleUnresolved(sid, unresolved)
+    const edgeCandidates = edge
+    const pool = [...edgeCandidates, ...plausible]
+    const verdictOf = (c: string): "APPROVE" | "BLOCK" =>
+      ledger.childVerdict(c).marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+    const unanimous = new Set(pool.map(verdictOf))
+    // Attribute only on a non-empty unanimous pool: today's lone-edge-candidate
+    // attribution (edge-only) is unchanged; a plausible streamed APPROVE either
+    // becomes the sole candidate (approved) or contradicts a BLOCK pool
+    // (fail-open) — so a self-keyed BLOCK is unreachable while such evidence
+    // exists (issue #54, R-5).
+    const attributed =
+      pool.length > 0 && unanimous.size === 1
+        ? (edgeCandidates[0] ?? mostRecentUnresolved(plausible))
+        : undefined
+    const decision = attributed ? "attributed" : "fail-open"
+    // Journal the forensic entry first (before any gate mutation). A new journal
+    // type is replay-inert; its wording avoids "unattributable" so the
+    // AC-1b/AC-5 single-error count is stable.
+    journaler.journal({
+      type: "attribution",
+      sessionID: sid,
+      raw: child,
+      decision,
+      deliveryIsParent: child === sid,
+      sessionApi: typeof hostSession?.get === "function",
+      candidates: {
+        edge: edgeCandidates.length,
+        unresolved: unresolved.length,
+        plausible: plausible.length,
+      },
+      unresolvedIDs,
+      lookup: lookupDiag(child, sid, unresolvedIDs),
+    })
+    if (attributed) {
       const s = ledger.state(sid)
       const rec = ledger.childVerdict(attributed)
       const marker = own || rec.marker
@@ -347,13 +523,13 @@ export function createTurnstile(
       journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
       return
     }
-    // Zero candidates or more than one (ambiguous): unattributable. Journal an
-    // error and leave the gate untouched — never a BLOCK, never a parent-keyed
-    // plan entry, never a clobber of a live approval (fail-open).
+    // Empty or contradictory evidence: fail-open. Gate untouched — never a
+    // BLOCK, never a parent-keyed plan entry, never a clobber of a live
+    // approval (the attribution entry above carries the diagnostics).
     journaler.journal({
       type: "error",
       sessionID: sid,
-      error: `plan attribution: unattributable parent-keyed delivery; gate unchanged (${candidateCount} evidenced candidate${candidateCount === 1 ? "" : "s"})`,
+      error: `plan attribution: unattributable parent-keyed delivery; gate unchanged (${pool.length} evidenced candidate${pool.length === 1 ? "" : "s"})`,
     })
   }
 
@@ -382,7 +558,7 @@ export function createTurnstile(
     // (scope, marker), so identical re-delivery and a cross-source same-marker
     // replay (a source change with an unchanged marker, e.g. delta→ended) are
     // both silently suppressed; only a marker flip reaches the journal.
-    let prev: ChildVerdict = { marker: "", source: "" }
+    let prev: ChildVerdict = { marker: "", source: "", recordedAt: 0 }
     if (sessionID && source !== "task-result") {
       prev = ledger.childVerdict(sessionID)
       const m = lastMatch(text, verdictRe)
@@ -478,6 +654,10 @@ export function createTurnstile(
           const sessionID = properties?.sessionID
           if (typeof sessionID === "string") {
             ledger.resetState(sessionID)
+            // Issue #54: a prompt reset invalidates all prior dispatch-scoped
+            // evidence for this parent, so an unresolved-child verdict is only
+            // plausible within the parent's current task scope.
+            planReviewerDispatch.delete(sessionID)
             // Evidence is task-scoped, exactly like gate state: a new user
             // prompt drops the in-memory correlation.
             evidence.clear(sessionID)
@@ -562,6 +742,15 @@ export function createTurnstile(
                   : "",
               })
               journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+
+              // Issue #54 (last-wins): record this parent's LATEST plan-reviewer
+              // dispatch time for the plausibility join. A prompt reset clears it
+              // (see the prompt hook), so a verdict is only plausible within the
+              // parent's current task scope. Bounded by boundDispatches.
+              if (agent === config.agents.planReviewer) {
+                planReviewerDispatch.set(sessionID, Date.now())
+                boundDispatches()
+              }
 
               // An empty agent name is the only reliable misconfiguration
               // signal: the host input shape no longer uses

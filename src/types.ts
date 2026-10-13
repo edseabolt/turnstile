@@ -219,6 +219,14 @@ export interface ChildVerdict {
   marker: string
   /** Pipeline provenance label, e.g. "child-text" or "child-message". */
   source: string
+  /**
+   * `Date.now()` when this verdict was last recorded; `0` on the empty default.
+   *
+   * Used by the plausibility join (issue #54): an unresolved-child verdict is
+   * plausible for a parent only when it was recorded at-or-after that parent's
+   * most recent plan-reviewer dispatch.
+   */
+  recordedAt: number
 }
 
 /** Agent names turnstile recognizes in dispatches and generation drafts. */
