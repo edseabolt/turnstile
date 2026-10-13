@@ -332,3 +332,99 @@ test("configDigest flips on evidence-key overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, gateEvidence: "flag" }))
   assert.notEqual(configDigest(base), configDigest({ ...base, evidencePattern: "\\brspec\\b" }))
 })
+
+/** (AC-2) default config ships the git-protective toolPolicy denylist. */
+test("defaultConfig ships the toolPolicy denylist defaults", () => {
+  const cfg = defaultConfig({})
+  assert.equal(cfg.toolPolicy.mode, "enforce")
+  assert.deepEqual(cfg.toolPolicy.bashDeny, [
+    "\\bgit\\s+worktree\\s+(add|remove|prune)\\b",
+    "\\bgit\\s+(switch|checkout)\\b(?!\\s+--\\s)",
+    "\\bgit\\s+merge\\b",
+    "\\bgh\\s+pr\\s+(create|merge)\\b",
+  ])
+  assert.deepEqual(cfg.toolPolicy.pathDeny, [])
+  assert.equal(cfg.toolPolicy.observeSessionMove, true)
+})
+
+/** A non-object toolPolicy keeps every default and warns once. */
+test("mergeConfig rejects a non-object toolPolicy and keeps defaults", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { toolPolicy: "nope" as unknown })
+  assert.deepEqual(config.toolPolicy, base.toolPolicy)
+  assert.deepEqual(warnings, ["config: toolPolicy must be an object; keeping defaults"])
+})
+
+/** An invalid toolPolicy.mode keeps the enforce default and names it. */
+test("mergeConfig rejects an invalid toolPolicy.mode and keeps enforce", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { toolPolicy: { mode: "strict" } })
+  assert.equal(config.toolPolicy.mode, "enforce")
+  assert.deepEqual(warnings, [
+    'config: toolPolicy.mode must be "enforce", "shadow", or "off"; keeping default',
+  ])
+})
+
+/** observeSessionMove must be a boolean; a non-boolean keeps the default. */
+test("mergeConfig rejects a non-boolean toolPolicy.observeSessionMove", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    toolPolicy: { observeSessionMove: "yes" },
+  })
+  assert.equal(config.toolPolicy.observeSessionMove, true)
+  assert.deepEqual(warnings, [
+    "config: toolPolicy.observeSessionMove must be a boolean; keeping default",
+  ])
+})
+
+/** A well-shaped list drops only the non-compiling element, keeps the rest. */
+test("mergeConfig drops one non-compiling toolPolicy.bashDeny element, keeps the rest", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    toolPolicy: { bashDeny: ["\\bnpm\\s+test\\b", "("] },
+  })
+  assert.deepEqual(config.toolPolicy.bashDeny, ["\\bnpm\\s+test\\b"])
+  assert.deepEqual(warnings, [
+    "config: toolPolicy.bashDeny[1] is not a valid regex; dropping element",
+  ])
+})
+
+/** A non-array toolPolicy.bashDeny keeps the default and warns once. */
+test("mergeConfig rejects a non-array toolPolicy.pathDeny and keeps defaults", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    toolPolicy: { pathDeny: "not-an-array" },
+  })
+  assert.deepEqual(config.toolPolicy.pathDeny, [])
+  assert.deepEqual(warnings, [
+    "config: toolPolicy.pathDeny must be an array of non-empty strings; keeping default",
+  ])
+})
+
+/** Unknown toolPolicy sub-keys are ignored with one warning. */
+test("mergeConfig ignores unknown toolPolicy sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    toolPolicy: { mode: "shadow", bogus: true },
+  })
+  assert.equal(config.toolPolicy.mode, "shadow")
+  assert.deepEqual(warnings, ['config: unknown toolPolicy key "bogus" ignored'])
+})
+
+/** Overrides merge one level deep: a supplied mode keeps unmentioned defaults. */
+test("loadConfig merges toolPolicy one level deep", () => {
+  const file = path.join(xdgTmp, "tp-deep.json")
+  fs.writeFileSync(file, JSON.stringify({ toolPolicy: { mode: "shadow" } }))
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.equal(config.toolPolicy.mode, "shadow")
+  assert.deepEqual(config.toolPolicy.bashDeny, defaultConfig({}).toolPolicy.bashDeny)
+})
+
+/** The config digest flips when toolPolicy.mode changes from the default. */
+test("configDigest flips when toolPolicy.mode changes", () => {
+  const base = defaultConfig({})
+  assert.notEqual(
+    configDigest(base),
+    configDigest({ ...base, toolPolicy: { ...base.toolPolicy, mode: "shadow" } }),
+  )
+})
