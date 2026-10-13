@@ -306,6 +306,40 @@ test("same-child re-delivery never counts as suppression", async () => {
   dispose()
 })
 
+/** A verdict-kind cross-child dedup hit must not count as a gate suppression
+ *  (issue #51, MED): the pending counter charges only gate-kind hits, so a
+ *  subsequent gate event journals suppressed 0. The sibling test above pins
+ *  the gate-kind direction; this one pins that a VERDICT cross-child hit stays
+ *  out of the next gate event's suppressed field instead of bleeding into it.
+ */
+test("a verdict cross-child dedup hit stays out of the next gate event's suppressed", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  // Two children share parent p1; both stream byte-identical APPROVE.
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+  // c1 first-sight (a verdict event); c2 a cross-child verdict hit (silent,
+  // never charged to the pending counter — verdict-kind hits don't feed the
+  // gate-event suppressed field).
+  const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+  h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: `${APPROVE}\n` } })
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+  // c1 then emits a genuinely new GATE: PASS: the parent's next marker event.
+  h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: "c1", text: "GATE: PASS tests=2 passed=2 failed=0" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate")
+  const newGate = gates[gates.length - 1]
+  assert.ok(newGate, "expected the new gate to be journaled")
+  // The verdict cross-child hit above must NOT surface as a gate suppression.
+  assert.equal(newGate.suppressed ?? 0, 0)
+  dispose()
+})
+
 /** Task-result deliveries use a unique dedup scope per delivery, so two
  *  concurrent task-result deliveries of byte-identical markers are both journaled
  *  with suppressed 0 (the unique-scope guard must not regress to cross-charging). */
