@@ -5,11 +5,16 @@
  * (it gains an `agent` key by design, unlike the other block messages).
  */
 
+import * as fs from "node:fs"
+import * as path from "node:path"
+
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
 import {
+  callPermission,
+  callSession,
   callTool,
   isolatedEnv,
   journalEntries,
@@ -292,6 +297,130 @@ test("golden: the three block messages are byte-identical", async () => {
     (e: Error) =>
       e.message ===
       "BLOCKED by turnstile: 15 whole-file reads this session. Switch to grep/glob for targeted retrieval, or report being stuck and escalate to the user.",
+  )
+  dispose()
+})
+
+/** Boots a temp project dir whose `.opencode/plans` holds one plan file, and
+ *  the plugin over a fake host with a temp metrics dir (chdir-scoped), so the
+ *  gate state keys off a private project rather than the repo root. */
+async function bootDefaultPlan(): Promise<{
+  h: FakeHost
+  dispose: () => void
+  metricsDir: string
+}> {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# Plan\n\nBody text.\n")
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  return {
+    h,
+    dispose: (): void => {
+      dispose()
+      process.chdir(prev)
+    },
+    metricsDir,
+  }
+}
+
+/** Golden: a `PLAN APPROVED:` marker in the user prompt journals a plan
+ *  APPROVE entry from the prompt channel (`source:"session-prompt"`). */
+test("golden: prompt-channel PLAN APPROVED plan entry shape", async () => {
+  const { h, dispose, metricsDir } = await bootDefaultPlan()
+  await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: looks good" })
+  const plan = journalEntries(metricsDir).find(
+    (l) => l.type === "plan" && l.result === "APPROVE" && l.source === "session-prompt",
+  )
+  assert.ok(plan)
+  assert.deepEqual(
+    { ...plan, ts: undefined },
+    {
+      ts: undefined,
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      source: "session-prompt",
+      marker: "PLAN APPROVED:",
+    },
+  )
+  dispose()
+})
+
+/** Golden: a prompt-channel `USER WAIVER:` journals a WAIVED entry
+ *  (`channel:"prompt"`) from BOTH the plan gate (type "plan") and the reviewer
+ *  gate (type "gate"). */
+test("golden: prompt-channel waiver journals channel:prompt WAIVED entries", async () => {
+  const { h, dispose, metricsDir } = await bootDefaultPlan()
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: proceed" })
+  // Plan gate first: task-sticky, leaves the waiver live for the task.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "executor", prompt: "do the work" },
+  })
+  // Reviewer gate next: still sees the live waiver, then consumes it.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  const planWaived = journalEntries(metricsDir).find(
+    (l) => l.type === "plan" && l.result === "WAIVED" && l.channel === "prompt",
+  )
+  assert.deepEqual(
+    { ...planWaived, ts: undefined },
+    {
+      ts: undefined,
+      type: "plan",
+      sessionID: "p1",
+      result: "WAIVED",
+      channel: "prompt",
+      waiver: "USER WAIVER: proceed",
+    },
+  )
+  const gateWaived = journalEntries(metricsDir).find(
+    (l) => l.type === "gate" && l.result === "WAIVED" && l.channel === "prompt",
+  )
+  assert.deepEqual(
+    { ...gateWaived, ts: undefined },
+    {
+      ts: undefined,
+      type: "gate",
+      sessionID: "p1",
+      result: "WAIVED",
+      channel: "prompt",
+      waiver: "USER WAIVER: proceed",
+    },
+  )
+  dispose()
+})
+
+/** Golden: a red plan gate escalates to the human via a journaled
+ *  `type:"permission"` ask (reason plan-gate, naming the plan file). */
+test("golden: permission plan-gate ask entry shape", async () => {
+  const { h, dispose, metricsDir } = await bootDefaultPlan()
+  const event: Record<string, any> = { sessionID: "p1", action: "task" }
+  await callPermission(h, "evaluate", event)
+  const ask = journalEntries(metricsDir).find((l) => l.type === "permission" && l.action === "ask")
+  assert.ok(ask)
+  assert.deepEqual(
+    { ...ask, ts: undefined },
+    {
+      ts: undefined,
+      type: "permission",
+      sessionID: "p1",
+      action: "ask",
+      reason: "plan-gate",
+      plan: "plan.md",
+    },
   )
   dispose()
 })

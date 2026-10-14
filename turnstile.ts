@@ -16,17 +16,28 @@
  *
  * Enforced mechanically:
  * - Plan-approval gate: `task` dispatches to `executor` require a current
- *   plan-reviewer `VERDICT: APPROVE` for the task whenever a plan file
- *   exists in `.opencode/plans/`, or an explicit user waiver (`USER
- *   WAIVER:` literal in the prompt). Plan-content changes invalidate approvals
- *   issued against the previous plans-dir signature (replayed approvals are
- *   accepted once, then stamped). A journal-replayed approval survives the
- *   first prompt after a restart (the resume prompt) and then every later
- *   prompt starts a clean cycle.
+ *   plan approval whenever a plan file exists in `.opencode/plans/`: a
+ *   plan-reviewer `VERDICT: APPROVE`, a prompt-channel human approval, or a
+ *   permission-prompt human approval. A prompt-channel approval is a
+ *   user-authored prompt (a `PLAN APPROVED:` literal in the user's prompt sets
+ *   the plan verdict and records human provenance) and replays identically to
+ *   a plan-reviewer verdict. When none holds, the first executor dispatch
+ *   escalates to the human through the host permission surface:
+ *   `permission.evaluate` forced `ask` with the plan file + head; a reply
+ *   `always` sets the verdict, `once` grants exactly one dispatch, and
+ *   `reject` keeps the gate red (that single reply is consumed). The explicit
+ *   user waiver is prompt-channel too (see the hard-gate bullet): a
+ *   `USER WAIVER:` literal in the user's prompt waives the gate; a
+ *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert —
+ *   issue #34's injection hole, now closed. Plan-content changes invalidate
+ *   approvals issued against the previous plans-dir signature (replayed
+ *   approvals are accepted once, then stamped). A journal-replayed approval
+ *   survives the first prompt after a restart (the resume prompt) and then
+ *   every later prompt starts a clean cycle.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
- *   it), or an explicit user waiver (the dispatch prompt must contain the
- *   literal marker `USER WAIVER:`). Under the default `gateEvidence:enforce`
+ *   it), or an explicit user waiver (`USER WAIVER:` literal in the user's
+ *   prompt). Under the default `gateEvidence:enforce`
  *   mode a `GATE: PASS` satisfies the gate only when the current task's
  *   bash/shell executions include a matching exit-0 test command (plausibility
  *   via `evidencePattern`); an unverified PASS is journaled `verified:false`
@@ -36,8 +47,9 @@
  *   journal-replayed `GATE: PASS` survives the first prompt after a restart
  *   (the resume prompt) and then every later prompt starts a clean cycle.
  * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
- *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
- *   counting toward it; a new user prompt resets it.
+ *   state; a prompt-channel user waiver bypasses the cap without counting
+ *   toward it (a dispatch prompt with the `USER WAIVER:` marker is inert); a
+ *   new user prompt resets it.
  * - Parent-bucket eviction: live-parent gate buckets (hasGatePass,
  *   hasPlanVerdict, read counter, policyInjected) are registered per
  *   prompt/dispatch/delivery/edge via `markParent`, and the `states` LRU never
@@ -50,6 +62,11 @@
  *   still-unresolved child self-keys and journals a bounded signal.
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.
+ * - Status: `turnstile status` (the `opencode-turnstile status` CLI) reads
+ *   the journal read-only — it never writes — and reports gate + plan state
+ *   per parent session: gate flags restored like replay, prompt-channel plan
+ *   approvals and waiver events (with channel), last markers, and
+ *   dispatch/block/permission counts (a human table or `--json`).
  * - Tool-call policy: `bash`/`shell` commands and `write`/`edit`
  *   target paths are matched in `execute.before` against a configurable
  *   denylist (`src/tool-policy.ts`). Under `toolPolicy.mode: enforce` a match
