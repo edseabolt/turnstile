@@ -36,6 +36,7 @@ import type {
   GateState,
   GenerateDraft,
   Host,
+  PermissionEvaluateEvent,
   PromptHookProperties,
   TaskInput,
   ToolHookEvent,
@@ -172,6 +173,11 @@ export function createTurnstile(
   // parents). Capped via boundDispatches, the same eviction idiom as
   // boundLookups.
   const planReviewerDispatch = new Map<string, number>()
+  // The host request id of the outstanding plan-gate permission ask (Phase 1
+  // has only the "plan-gate" reason), so a `permission.replied` can be matched
+  // to the ask it answers. Set from `permission.asked`, consumed on the matching
+  // `permission.replied`; empty when no plan ask is pending.
+  let planAskRequestID = ""
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -659,21 +665,51 @@ export function createTurnstile(
             // Evidence is task-scoped, exactly like gate state: a new user
             // prompt drops the in-memory correlation.
             evidence.clear(sessionID)
-            // Waiver capture (prompt channel): record the user's text following
-            // the waiver marker so both the reviewer and plan gates read it from
-            // the ledger instead of grepping a dispatch prompt (issue #34, AC-1).
-            // The reset above handed this session a fresh, task-scoped bucket.
+            // Waiver capture (prompt channel): the user's text following the
+            // waiver marker waives both gates for the whole task. Read + capture
+            // in one guarded block; a coercion that throws (a malformed prompt
+            // value) is journaled under the historical "waiver capture" key and
+            // swallowed — fail-open.
             try {
-              const text = String(properties?.text ?? properties?.prompt ?? "")
-              const at = text.indexOf(config.waiverMarker)
+              const waiverText = String(properties?.text ?? properties?.prompt ?? "")
+              const at = waiverText.indexOf(config.waiverMarker)
               if (at !== -1) {
                 ledger.state(sessionID).userWaiver = config.trace
-                  ? text.slice(at, at + 200)
+                  ? waiverText.slice(at, at + 200)
                   : "<present>"
               }
             } catch (e) {
               // Fail-open: capture never blocks a prompt.
               journaler.journal({ type: "error", error: `waiver capture: ${e}` })
+            }
+            // Human approval (item 7): a `PLAN APPROVED:` marker in the user
+            // prompt releases the plan gate — the same release signal the
+            // plan-reviewer verdict sets. Read + capture in one guarded block:
+            // set hasPlanVerdict (execute.before reads it) and humanApproval
+            // (provenance), and journal an APPROVE entry that replays identically
+            // to a verdict (replayGatePasses accepts any type:"plan" APPROVE;
+            // mergeAfterReplay carries it). A coercion that throws is journaled
+            // and swallowed — fail-open.
+            try {
+              const approvalText = String(properties?.text ?? properties?.prompt ?? "")
+              const atPlan = approvalText.indexOf(config.approvalMarker)
+              if (atPlan !== -1) {
+                const s = ledger.state(sessionID)
+                s.hasPlanVerdict = true
+                s.humanApproval = true
+                journaler.journal({
+                  type: "plan",
+                  sessionID,
+                  result: "APPROVE",
+                  // Provenance only: replay reads only type+result, so this
+                  // restores exactly like a VERDICT: APPROVE verdict.
+                  source: "session-prompt",
+                  marker: config.approvalMarker,
+                })
+              }
+            } catch (e) {
+              // Fail-open: approval capture never blocks a prompt.
+              journaler.journal({ type: "error", error: `approval capture: ${e}` })
             }
             // Misconfiguration telemetry: if neither candidate text key is a
             // string, the prompt text is unresolvable. Report the first such
@@ -750,6 +786,62 @@ export function createTurnstile(
       }
     }
 
+    // Permission escalation (Phase 1): on a `task` dispatch the host asks the
+    // plugin to evaluate whether the call should proceed. The payload carries
+    // NO tool input, so escalation is driven by the parent session's plan-gate
+    // state (planGateStatus), never the dispatch target. Optional surface: an
+    // absent permission.hook degrades to today's behavior exactly.
+    if (typeof h.permission?.hook === "function") {
+      try {
+        const reg = await h.permission.hook("evaluate", (event: unknown) => {
+          try {
+            const pe = event as PermissionEvaluateEvent
+            const sessionID = asSessionID(pe?.sessionID)
+            // Only the task/subagent dispatch exposes `action === "task"`; the
+            // payload carries no tool input, so this cannot read the target and
+            // escalation is driven purely by the parent's plan-gate state.
+            if (pe?.action !== "task") return
+            const parent = ledger.parentOf(sessionID)
+            const status = gates.planGateStatus(projectDir, ledger, parent)
+            if (!status.red) return
+            // Red ⇒ summary is present by construction (planGateStatus builds
+            // it from a scan whose names[0] was already read). Escalate: force
+            // the host to ask the human, naming the plan file + head. Journal
+            // the ask so a reply can be matched (the requestID rides the
+            // permission.asked stream event).
+            const file = status.summary!.file
+            // The plan body is prompt context; journal/quote it only when the
+            // trace is enabled (SECURITY.md redaction contract), mirroring how
+            // the waiver quote is trace-gated at capture. Without it the ask
+            // still names the plan file.
+            const head = config.trace ? status.summary!.head : ""
+            pe.effect = "ask"
+            pe.message = head
+              ? `turnstile: plan approval required — ${file}: ${head}`
+              : `turnstile: plan approval required — ${file}`
+            journaler.journal({
+              type: "permission",
+              sessionID: parent,
+              action: "ask",
+              // Phase 1 has only the plan reason; the requestID is attached to
+              // the subsequent permission.asked stream event (item 9).
+              reason: "plan-gate",
+              plan: file,
+            })
+          } catch (e) {
+            // Fail-open: the evaluate handler NEVER blocks the host.
+            journaler.journal({ type: "error", error: `permission evaluate: ${e}` })
+          }
+        })
+        track(reg, cleanups)
+        hooks++
+      } catch (e) {
+        // A registration failure journals (fail-open); a bad hook leaves
+        // today's behavior exactly.
+        journaler.journal({ type: "error", error: `permission.evaluate hook registration: ${e}` })
+      }
+    }
+
     // Tool-level gate + trace.
     if (typeof h.tool?.hook === "function") {
       try {
@@ -795,6 +887,17 @@ export function createTurnstile(
                   error:
                     "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
                 })
+
+              // Once-granted human approval (from a `permission.replied` reply)
+              // grants exactly this one dispatch and is cleared immediately, so
+              // a stale grant cannot outlive the single dispatch it was given
+              // for, short-circuiting the plan-gate block below. execute.before
+              // consults only hasPlanVerdict / pendingOnceGrant — never
+              // humanApproval, which is provenance only.
+              if (ledger.state(sessionID).pendingOnceGrant !== "") {
+                ledger.state(sessionID).pendingOnceGrant = ""
+                return
+              }
 
               if (agent === config.agents.reviewer) {
                 gates.guardReviewerDispatch(sessionID, ledger)
@@ -1116,6 +1219,46 @@ export function createTurnstile(
                   sessionID: properties.sessionID,
                   error: String(properties.error ?? "").slice(0, 500),
                 })
+                break
+              }
+              case "permission.asked": {
+                // Phase 1 has only the plan-gate ask: record the host request id
+                // so the next reply can be matched. Fail-open — the outer loop
+                // journals any throw — and a missing/non-string id is inert
+                // (planAskRequestID stays as it was).
+                const id = properties.id ?? properties.requestID
+                if (typeof id === "string" && id !== "") planAskRequestID = id
+                break
+              }
+              case "permission.replied": {
+                // Match the reply to the outstanding plan ask by request id, then
+                // apply it. A reply with no matching pending ask (stale, or one
+                // for a prior ask) is inert. Fail-open: the outer loop journals
+                // any throw.
+                const rid = String(properties.requestID ?? "")
+                const reply = properties.reply
+                const parent = ledger.parentOf(asSessionID(properties.sessionID))
+                if (planAskRequestID && rid === planAskRequestID) {
+                  planAskRequestID = ""
+                  const s = ledger.state(parent)
+                  if (reply === "always") {
+                    // A standing human approval releases the plan gate for the
+                    // rest of the task and records provenance.
+                    s.humanApproval = true
+                    s.hasPlanVerdict = true
+                    journaler.journal({ type: "permission", sessionID: parent, decision: "always" })
+                  } else if (reply === "once") {
+                    // A single-dispatch grant: consumed by exactly one dispatch
+                    // in execute.before (cleared there), so a stale grant cannot
+                    // outlive that single dispatch.
+                    s.pendingOnceGrant = rid
+                    journaler.journal({ type: "permission", sessionID: parent, decision: "once" })
+                  } else {
+                    // reject (or any non-allow reply) leaves the gate red: the
+                    // next execute.before dispatch re-blocks.
+                    journaler.journal({ type: "permission", sessionID: parent, decision: "reject" })
+                  }
+                }
                 break
               }
               default:

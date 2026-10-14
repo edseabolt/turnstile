@@ -92,6 +92,17 @@ export interface EventProperties {
   text?: unknown
   delta?: unknown
   error?: unknown
+  /**
+   * Host request id on `permission.asked`; the matched id on `permission.replied`.
+   * Present only on the permission stream events (opencode v2.0.27+).
+   */
+  id?: unknown
+  requestID?: unknown
+  /**
+   * A human reply to a permission ask: `"once"`, `"always"`, or `"reject"`.
+   * Present only on `permission.replied`.
+   */
+  reply?: unknown
 }
 
 /** A single host stream event delivered by `event.subscribe`. */

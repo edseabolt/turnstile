@@ -89,6 +89,37 @@ export interface Gates {
    * @returns The plans-dir content signature, or null when absent/unreadable.
    */
   plansSignature(projectDir: string): string | null
+  /**
+   * Returns the first plan file's name and a short body preview, or undefined
+   * when the plans dir is absent, unreadable, or empty (fail-open). The preview
+   * is the first ~40 non-heading lines; shared by the escalatable plan gate so
+   * the ask the evaluate handler surfaces names the same file and shows its
+   * body.
+   * @param projectDir The current project directory.
+   * @returns `{ file, head }` for the first sorted plan, or undefined.
+   */
+  planSummary(projectDir: string): { file: string; head: string } | undefined
+  /**
+   * Returns whether the plan-approval gate is currently red for a parent, and
+   * when red, the plan file + body preview to surface in a permission ask.
+   * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, or an
+   * approved verdict is not red; otherwise red) so the evaluate handler and the
+   * enforcing dispatch decide escalation from the exact same scan. Waiver and
+   * approval are folded into `red`: a red result implies a non-empty waiver is
+   * absent and `hasPlanVerdict` is false, so the caller only tests `red`.
+   * @param projectDir The current project directory.
+   * @param ledger The gate ledger to read (and reconcile) state from.
+   * @param sessionID The parent session whose plan-gate state is read.
+   * @returns `{ red: false }` when the gate is not red, or `{ red: true, summary }` when it is.
+   */
+  planGateStatus(
+    projectDir: string,
+    ledger: GateLedger,
+    sessionID: string,
+  ): {
+    red: boolean
+    summary?: { file: string; head: string }
+  }
 }
 
 /**
@@ -307,6 +338,111 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     if (s.hasPlanVerdict) s.plansSignature = scan.key
   }
 
+  /**
+   * The leading preview of one plan file's body: the first ~40 non-heading
+   * lines (lines not beginning with '#' after optional leading whitespace),
+   * joined and trimmed. Feeds the permission-ask message so the human sees the
+   * plan's body without the heading scaffold.
+   * @param bytes The plan file bytes.
+   * @returns The head text, or "" when the file has no non-heading lines.
+   */
+  function planHead(bytes: Buffer): string {
+    const lines = bytes.toString("utf8").split("\n")
+    const body = lines
+      .filter((line) => !/^\s*#/.test(line))
+      .slice(0, 40)
+      .join("\n")
+    return body.trim()
+  }
+
+  /**
+   * Builds the `{ file, head }` preview for the first sorted plan of a scan,
+   * reading that plan's bytes once (they were already read to compute the scan
+   * key). Shared by both `planSummary` and the escalatable plan gate so the
+   * ask names exactly the plan `enforcePlanApproval` would block on.
+   * @param scan The current plans-dir scan.
+   * @param plansDir The absolute plans directory of `scan`.
+   * @returns The first plan's `{ file, head }`.
+   */
+  function firstPlanSummary(scan: PlansScan, plansDir: string): { file: string; head: string } {
+    // The callers guard names.length === 0 before calling, so names[0] exists;
+    // the non-null assertion is enforced by that guard, not silently assumed.
+    const name = scan.names[0]!
+    const bytes = fs.readFileSync(path.join(plansDir, name))
+    return { file: name, head: planHead(bytes) }
+  }
+
+  /**
+   * Returns the first plan file's name and a short body preview, or undefined
+   * when the plans dir is absent, unreadable, or empty (fail-open). The preview
+   * is the first ~40 non-heading lines; shared with the escalatable plan gate
+   * so the ask the evaluate handler surfaces names the same file and shows its
+   * body.
+   * @param projectDir The current project directory.
+   * @returns `{ file, head }` for the first sorted plan, or undefined.
+   */
+  function planSummary(projectDir: string): { file: string; head: string } | undefined {
+    const plansDir = path.join(projectDir, config.plansDir)
+    try {
+      if (!fs.existsSync(plansDir)) return undefined
+      const scan = scanPlans(plansDir)
+      if (scan.names.length === 0) return undefined
+      return firstPlanSummary(scan, plansDir)
+    } catch (e) {
+      // Journal the fail-open so the unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
+      return undefined
+    }
+  }
+
+  /**
+   * Returns whether the plan-approval gate is currently red for a parent, and
+   * when red, the plan file + body preview to surface in a permission ask.
+   * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, or an
+   * approved verdict is not red; otherwise red) so the evaluate handler and the
+   * enforcing dispatch decide escalation from the exact same scan. Waiver and
+   * approval are folded into `red`: a red result implies a non-empty waiver is
+   * absent and `hasPlanVerdict` is false, so the caller only tests `red`.
+   * @param projectDir The current project directory.
+   * @param ledger The gate ledger to read (and reconcile) state from.
+   * @param sessionID The parent session whose plan-gate state is read.
+   * @returns `{ red: false }` when not red, or `{ red: true, summary }` when red.
+   */
+  function planGateStatus(
+    projectDir: string,
+    ledger: GateLedger,
+    sessionID: string,
+  ): { red: boolean; summary?: { file: string; head: string } } {
+    const s = ledger.state(sessionID)
+    if (s.userWaiver !== "") return { red: false }
+    const plansDir = path.join(projectDir, config.plansDir)
+    try {
+      if (!fs.existsSync(plansDir)) return { red: false }
+      const scan = scanPlans(plansDir)
+      if (scan.names.length === 0) return { red: false }
+      // Reconcile this session's approval with the current scan: a stamp that
+      // differs from the current key means re-plan → stale verdict. Same rule
+      // as enforcePlanApproval, so the handler and the dispatch agree.
+      reconcilePlanStamp(s, scan)
+      if (s.hasPlanVerdict) return { red: false }
+      return { red: true, summary: firstPlanSummary(scan, plansDir) }
+    } catch (e) {
+      // Journal the fail-open so an unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
+      return { red: false }
+    }
+  }
+
+  /**
+   * Enforces the decomposition gate: when any plan file in the configured
+   * plans directory carries a `## Decomposition` block, executor
+   * dispatches must cite the chunk-N / AC-n they implement.
+   * @param sessionID The parent session ID (used in journal entries).
+   * @param prompt The dispatch prompt text to check for chunk citations.
+   * @param projectDir The current project directory.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when a decomposed
+   *     plan exists and the prompt cites no chunk.
+   */
   function enforceDecomposition(sessionID: string, prompt: string, projectDir: string): void {
     if (/\b(?:chunk-\d+|AC-\d+)\b/.test(prompt)) return
     const plansDir = path.join(projectDir, config.plansDir)
@@ -370,35 +506,25 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       journaler.traceEvent("user", "plan-waiver", s.userWaiver, sessionID)
       return
     }
-    const plansDir = path.join(projectDir, config.plansDir)
-    try {
-      if (!fs.existsSync(plansDir)) return
-      const scan = scanPlans(plansDir)
-      if (scan.names.length === 0) return
-      // Reconcile this session's approval with the current scan: a stamp that
-      // differs from the current key means re-plan → stale verdict; a green
-      // pass re-stamps (and how a replay-restored "" becomes validated). Both
-      // per-session stamps are checked, so an edit invalidates every session.
-      reconcilePlanStamp(s, scan)
-      if (!s.hasPlanVerdict) {
-        const plan = scan.names[0]
-        journaler.journal({
-          type: "blocked",
-          sessionID,
-          agent: config.agents.executor,
-          reason: "no-plan-verdict",
-          plan,
-        })
-        throw new BlockError(
-          `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
-            "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-            `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
-        )
-      }
-    } catch (e) {
-      if (e instanceof BlockError) throw e
-      // Journal the fail-open so an unreadable plans dir stays observable.
-      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
+    const status = planGateStatus(projectDir, ledger, sessionID)
+    // status.red ⇒ summary is always present: planGateStatus builds it from a
+    // scan whose names[0] was already read to compute the scan key, so the
+    // non-null assertion is sound. The block message is byte-identical to the
+    // pre-refactor scan; only the source of `plan` changed.
+    if (status.red) {
+      const plan = status.summary!.file
+      journaler.journal({
+        type: "blocked",
+        sessionID,
+        agent: config.agents.executor,
+        reason: "no-plan-verdict",
+        plan,
+      })
+      throw new BlockError(
+        `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
+          "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
+          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+      )
     }
   }
 
@@ -408,5 +534,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     enforceDecomposition,
     enforcePlanApproval,
     plansSignature,
+    planSummary,
+    planGateStatus,
   }
 }

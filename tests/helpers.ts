@@ -20,6 +20,8 @@ export interface FakeHost {
   toolHooks: Record<string, (event: any) => Promise<void> | void>
   /** Session hook callbacks keyed by hook name (`prompt`, …). */
   sessionHooks: Record<string, (input: any) => Promise<void> | void>
+  /** Permission hook callbacks keyed by hook name (`evaluate`, …). */
+  permissionHooks: Record<string, (event: any) => unknown | Promise<unknown>>
   /** Pushes a stream event to the host's `event.subscribe` consumer. */
   pushEvent: (event: { type: string; data?: unknown; properties?: unknown }) => void
 }
@@ -82,9 +84,17 @@ export function makeFakeHost(opts?: {
   sessionRecords?: Map<string, any>
   /** When set, `session.get` rejects (models a record not yet visible). */
   throwingGet?: boolean
+  /**
+   * Whether the fake host exposes the `permission` surface (default true: a
+   * full v2.0.27 host passes the evaluate callback). Set false to model the
+   * degraded host without the permission surface.
+   */
+  permission?: boolean
 }): FakeHost {
+  const withPermission = opts?.permission ?? true
   const toolHooks: Record<string, (event: any) => Promise<void> | void> = {}
   const sessionHooks: Record<string, (input: any) => Promise<void> | void> = {}
+  const permissionHooks: Record<string, (event: any) => unknown | Promise<unknown>> = {}
   const sessionRecords = opts?.sessionRecords
   const { push, subscribe } = makeEventBus()
   const host: Host = {
@@ -113,8 +123,18 @@ export function makeFakeHost(opts?: {
           : {}),
     },
     event: { subscribe },
+    ...(withPermission
+      ? {
+          permission: {
+            hook: async (name: string, cb: any): Promise<unknown> => {
+              permissionHooks[name] = cb
+              return { dispose: (): void => {} }
+            },
+          },
+        }
+      : {}),
   }
-  return { host, toolHooks, sessionHooks, pushEvent: push }
+  return { host, toolHooks, sessionHooks, permissionHooks, pushEvent: push }
 }
 
 /**
@@ -179,6 +199,19 @@ export async function callSession(h: FakeHost, name: string, input: unknown): Pr
   const cb = h.sessionHooks[name]
   assert.ok(cb, `no ${name} session hook recorded`)
   await cb(input)
+}
+
+/**
+ * Invokes a recorded permission hook callback, always awaited. Used to drive
+ * the `evaluate` handler directly (the host calls it on a permission request).
+ * @param h The fake host tables.
+ * @param name The hook name (`evaluate`).
+ * @param event The permission payload (mutated in place by the handler).
+ */
+export async function callPermission(h: FakeHost, name: string, event: unknown): Promise<void> {
+  const cb = h.permissionHooks[name]
+  assert.ok(cb, `no ${name} permission hook recorded`)
+  await cb(event)
 }
 
 /**
