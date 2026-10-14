@@ -54,6 +54,22 @@ function asSessionID(value: unknown): string {
 }
 
 /**
+ * Picks the user prompt text from the host's candidate keys: the FIRST
+ * candidate that is a NON-EMPTY string wins. An empty `text` no longer
+ * shadows a marker-bearing `prompt` (and vice versa); when neither key holds a
+ * non-empty string the prompt text is unresolvable and "" is returned (the
+ * keyless-misconfiguration telemetry keys off exactly this).
+ * @param properties The `session.prompt` hook payload.
+ * @returns The resolved prompt text, or "" when unresolvable.
+ */
+function promptTextOf(properties: PromptHookProperties | undefined): string {
+  for (const candidate of [properties?.text, properties?.prompt]) {
+    if (typeof candidate === "string" && candidate !== "") return candidate
+  }
+  return ""
+}
+
+/**
  * Tracks a hook registration handle so it can be disposed on teardown.
  * @param reg Registration handle returned by a host hook call.
  * @param cleanups Disposal list to append to.
@@ -85,6 +101,13 @@ export function readPluginVersion(pkgPath?: string): string | null {
     return null
   }
 }
+
+/**
+ * Message prefix the evaluate handler stamps on every plan-gate ask, so the
+ * stream consumer can recognize a plan ask even when the host omits the
+ * session id on the `permission.asked` event.
+ */
+const PLAN_ASK_MESSAGE_PREFIX = "turnstile: plan approval required"
 
 /**
  * Builds the turnstile plugin for a host: resolves the layered config,
@@ -173,11 +196,21 @@ export function createTurnstile(
   // parents). Capped via boundDispatches, the same eviction idiom as
   // boundLookups.
   const planReviewerDispatch = new Map<string, number>()
-  // The host request id of the outstanding plan-gate permission ask (Phase 1
-  // has only the "plan-gate" reason), so a `permission.replied` can be matched
-  // to the ask it answers. Set from `permission.asked`, consumed on the matching
-  // `permission.replied`; empty when no plan ask is pending.
-  let planAskRequestID = ""
+  // Plan-gate permission asks, keyed by host request id → the parent session
+  // the ask was raised for + when it was recorded. Only asks escalated by the
+  // evaluate handler (reason "plan-gate") are recorded, so a reply to an
+  // unrelated permission ask (bash, write, …) can never match or release the
+  // plan gate, and concurrent sessions cannot clobber each other (values
+  // carry their own session). Bounded: evict oldest past the cap.
+  const planGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+  // Cap on tracked plan-gate asks: evict oldest (insertion order) past it.
+  const maxTrackedPlanAsks = 50
+  // Parents whose evaluate handler has escalated to an ask but whose
+  // `permission.asked` stream event has not arrived yet: parent → escalation
+  // time. The evaluate handler does not know the host request id (it rides the
+  // later stream event), so the next ask for an escalated parent is treated as
+  // the plan ask and recorded. Bounded by boundPlanAsks.
+  const awaitingPlanAsk = new Map<string, number>()
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -204,6 +237,30 @@ export function createTurnstile(
       // The loop condition guarantees a first entry exists.
       const oldest = planReviewerDispatch.keys().next().value as string
       planReviewerDispatch.delete(oldest)
+    }
+  }
+
+  /**
+   * Bounds the plan-gate ask map by evicting its oldest recorded asks.
+   * Mirrors boundLookups; see planGateAsks.
+   */
+  function boundPlanAsks(): void {
+    while (planGateAsks.size > maxTrackedPlanAsks) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = planGateAsks.keys().next().value as string
+      planGateAsks.delete(oldest)
+    }
+  }
+
+  /**
+   * Bounds the awaiting-plan-ask map (parent → escalation time), evicting its
+   * oldest entries. Mirrors boundPlanAsks; see awaitingPlanAsk.
+   */
+  function boundAwaitingAsks(): void {
+    while (awaitingPlanAsk.size > maxTrackedPlanAsks) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = awaitingPlanAsk.keys().next().value as string
+      awaitingPlanAsk.delete(oldest)
     }
   }
 
@@ -637,8 +694,8 @@ export function createTurnstile(
     let hooks = 0
     // Prompt-channel waiver capture (issue #34, AC-1): the waiver must
     // provenance from the user's prompt, never the dispatch prompt. A counter
-    // tracks prompts where NEITHER candidate text key (`text`/`prompt`) is a
-    // string, so an unresolvable source is reported once (keylessPrompts hits
+    // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
+    // non-empty string, so an unresolvable source is reported once (keylessPrompts hits
     // 1 exactly once) as a misconfiguration (mirrors the bash `command ?? cmd`
     // telemetry).
     let keylessPrompts = 0
@@ -671,7 +728,7 @@ export function createTurnstile(
             // value) is journaled under the historical "waiver capture" key and
             // swallowed — fail-open.
             try {
-              const waiverText = String(properties?.text ?? properties?.prompt ?? "")
+              const waiverText = promptTextOf(properties)
               const at = waiverText.indexOf(config.waiverMarker)
               if (at !== -1) {
                 ledger.state(sessionID).userWaiver = config.trace
@@ -691,7 +748,7 @@ export function createTurnstile(
             // mergeAfterReplay carries it). A coercion that throws is journaled
             // and swallowed — fail-open.
             try {
-              const approvalText = String(properties?.text ?? properties?.prompt ?? "")
+              const approvalText = promptTextOf(properties)
               const atPlan = approvalText.indexOf(config.approvalMarker)
               if (atPlan !== -1) {
                 const s = ledger.state(sessionID)
@@ -711,11 +768,20 @@ export function createTurnstile(
               // Fail-open: approval capture never blocks a prompt.
               journaler.journal({ type: "error", error: `approval capture: ${e}` })
             }
-            // Misconfiguration telemetry: if neither candidate text key is a
-            // string, the prompt text is unresolvable. Report the first such
-            // prompt once (keylessPrompts hits 1 exactly once) so a host-shape
-            // change stays observable without journaling on every prompt.
-            if (typeof properties?.text !== "string" && typeof properties?.prompt !== "string") {
+            // Misconfiguration telemetry: if neither candidate text key holds a
+            // non-empty string, the prompt text is unresolvable (an empty
+            // `text` does not count — it cannot carry a marker). Report the
+            // first such prompt once (keylessPrompts hits 1 exactly once) so a
+            // host-shape change stays observable without journaling on every
+            // prompt. An unreadable payload (a hostile getter) counts as
+            // unresolvable and is swallowed — fail-open.
+            let unresolvable: boolean
+            try {
+              unresolvable = promptTextOf(properties) === ""
+            } catch {
+              unresolvable = true
+            }
+            if (unresolvable) {
               keylessPrompts++
               if (keylessPrompts === 1)
                 journaler.journal({
@@ -817,8 +883,13 @@ export function createTurnstile(
             const head = config.trace ? status.summary!.head : ""
             pe.effect = "ask"
             pe.message = head
-              ? `turnstile: plan approval required — ${file}: ${head}`
-              : `turnstile: plan approval required — ${file}`
+              ? `${PLAN_ASK_MESSAGE_PREFIX} — ${file}: ${head}`
+              : `${PLAN_ASK_MESSAGE_PREFIX} — ${file}`
+            // Mark this parent as awaiting its plan ask: the NEXT
+            // permission.asked stream event for this session is recorded as the
+            // plan-gate ask, so only escalated asks can ever match a reply.
+            awaitingPlanAsk.set(parent, Date.now())
+            boundAwaitingAsks()
             journaler.journal({
               type: "permission",
               sessionID: parent,
@@ -889,12 +960,19 @@ export function createTurnstile(
                 })
 
               // Once-granted human approval (from a `permission.replied` reply)
-              // grants exactly this one dispatch and is cleared immediately, so
-              // a stale grant cannot outlive the single dispatch it was given
-              // for, short-circuiting the plan-gate block below. execute.before
+              // grants exactly ONE EXECUTOR dispatch past the plan gate and is
+              // cleared immediately, so a stale grant cannot outlive the single
+              // dispatch it was given for, short-circuiting the plan-gate block
+              // below. Scoped to the executor dispatch class: the grant exists
+              // solely to release the plan-gate block, so any other agent
+              // (reviewer, plan-reviewer, …) leaves it pending and still runs
+              // its own guards (guardReviewerDispatch / …). execute.before
               // consults only hasPlanVerdict / pendingOnceGrant — never
               // humanApproval, which is provenance only.
-              if (ledger.state(sessionID).pendingOnceGrant !== "") {
+              if (
+                agent === config.agents.executor &&
+                ledger.state(sessionID).pendingOnceGrant !== ""
+              ) {
                 ledger.state(sessionID).pendingOnceGrant = ""
                 return
               }
@@ -1222,24 +1300,44 @@ export function createTurnstile(
                 break
               }
               case "permission.asked": {
-                // Phase 1 has only the plan-gate ask: record the host request id
-                // so the next reply can be matched. Fail-open — the outer loop
-                // journals any throw — and a missing/non-string id is inert
-                // (planAskRequestID stays as it was).
+                // Record ONLY plan-gate asks: an ask counts when its session
+                // has a pending evaluate escalation (awaitingPlanAsk) or its
+                // message carries the plan-ask prefix. Any other ask (bash,
+                // write, …) is inert — its id is never recorded, so its reply
+                // can never match or release the plan gate. The value carries
+                // the ask's parent session so replies apply per-session and
+                // concurrent sessions cannot cross-apply. Fail-open — the
+                // outer loop journals any throw — and a missing/non-string id
+                // is inert (nothing is recorded).
                 const id = properties.id ?? properties.requestID
-                if (typeof id === "string" && id !== "") planAskRequestID = id
+                if (typeof id === "string" && id !== "") {
+                  const sid = asSessionID(properties.sessionID)
+                  const message = typeof properties.message === "string" ? properties.message : ""
+                  const escalated = awaitingPlanAsk.has(sid)
+                  if (escalated || message.startsWith(PLAN_ASK_MESSAGE_PREFIX)) {
+                    awaitingPlanAsk.delete(sid)
+                    planGateAsks.set(id, {
+                      sessionID: ledger.parentOf(sid),
+                      recordedAt: Date.now(),
+                    })
+                    boundPlanAsks()
+                  }
+                }
                 break
               }
               case "permission.replied": {
-                // Match the reply to the outstanding plan ask by request id, then
-                // apply it. A reply with no matching pending ask (stale, or one
-                // for a prior ask) is inert. Fail-open: the outer loop journals
-                // any throw.
+                // Match the reply against RECORDED plan-gate asks only: a
+                // requestID absent from the map was never a plan-gate ask, so
+                // the reply is inert (no state change) — an approval of an
+                // unrelated permission ask cannot release the plan gate. A
+                // match is consumed (once) and applied to the mapped parent
+                // session. Fail-open: the outer loop journals any throw.
                 const rid = String(properties.requestID ?? "")
                 const reply = properties.reply
-                const parent = ledger.parentOf(asSessionID(properties.sessionID))
-                if (planAskRequestID && rid === planAskRequestID) {
-                  planAskRequestID = ""
+                const record = planGateAsks.get(rid)
+                if (record) {
+                  planGateAsks.delete(rid)
+                  const parent = record.sessionID
                   const s = ledger.state(parent)
                   if (reply === "always") {
                     // A standing human approval releases the plan gate for the
@@ -1248,9 +1346,9 @@ export function createTurnstile(
                     s.hasPlanVerdict = true
                     journaler.journal({ type: "permission", sessionID: parent, decision: "always" })
                   } else if (reply === "once") {
-                    // A single-dispatch grant: consumed by exactly one dispatch
-                    // in execute.before (cleared there), so a stale grant cannot
-                    // outlive that single dispatch.
+                    // A single-dispatch grant: consumed by exactly one executor
+                    // dispatch in execute.before (cleared there), so a stale
+                    // grant cannot outlive that single dispatch.
                     s.pendingOnceGrant = rid
                     journaler.journal({ type: "permission", sessionID: parent, decision: "once" })
                   } else {

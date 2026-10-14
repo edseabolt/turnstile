@@ -24,8 +24,12 @@
  *   a plan-reviewer verdict. When none holds, the first executor dispatch
  *   escalates to the human through the host permission surface:
  *   `permission.evaluate` forced `ask` with the plan file + head; a reply
- *   `always` sets the verdict, `once` grants exactly one dispatch, and
- *   `reject` keeps the gate red (that single reply is consumed). The explicit
+ *   `always` sets the verdict, `once` grants exactly one executor dispatch
+ *   (any other agent's dispatch leaves the grant pending and still runs its
+ *   own guards), and `reject` keeps the gate red (that single reply is
+ *   consumed). Replies match only asks escalated as plan-gate asks (recorded
+ *   per request id, bounded, per session) — a reply to an unrelated permission
+ *   ask can never release the gate. The explicit
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
  *   `USER WAIVER:` literal in the user's prompt waives the gate; a
  *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert —

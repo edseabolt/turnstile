@@ -103,6 +103,12 @@ export interface EventProperties {
    * Present only on `permission.replied`.
    */
   reply?: unknown
+  /**
+   * The ask message echoed by the host on `permission.asked`. Read to
+   * recognize plan-gate asks (the evaluate handler stamps a known prefix);
+   * unknown-typed, hence `unknown`.
+   */
+  message?: unknown
 }
 
 /** A single host stream event delivered by `event.subscribe`. */

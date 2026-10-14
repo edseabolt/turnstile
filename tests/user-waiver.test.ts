@@ -228,19 +228,25 @@ test("misconfiguration: one error after N keyless prompts (neither text nor prom
 })
 
 /**
- * Fail-open: a malformed prompt value whose coercion throws is journaled and
- * swallowed; the prompt hook completes and never throws at the host.
+ * Fail-open: a malformed prompt value whose read throws (a hostile getter on
+ * the payload) is journaled and swallowed; the prompt hook completes and never
+ * throws at the host. A merely non-string candidate (e.g. an object `text`)
+ * is skipped, not thrown on — only a genuinely unreadable payload journals.
  */
 test("fail-open: a malformed prompt value is journaled, never thrown", async () => {
   const { h, metricsDir, dispose } = await boot()
-  const bad = {
-    toString: () => {
+  // A payload whose `text` read throws: the capture must journal, not throw.
+  const bad: Record<string, unknown> = { sessionID: "p1" }
+  Object.defineProperty(bad, "text", {
+    get: () => {
       throw new Error("boom")
     },
-  }
+  })
+  // A plain non-string candidate is skipped silently (no throw, no journal).
+  await callSession(h, "prompt", { sessionID: "p0", text: { toString: () => "x" } })
   let threw = false
   try {
-    await callSession(h, "prompt", { sessionID: "p1", text: bad })
+    await callSession(h, "prompt", bad)
   } catch {
     threw = true
   }

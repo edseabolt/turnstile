@@ -493,6 +493,214 @@ test("asked: a non-string and an empty request id are not recorded", async () =>
 })
 
 /**
+ * HIGH-1 scoping: a once-grant releases ONLY the executor dispatch class. A
+ * reviewer dispatch with a pending grant still runs guardReviewerDispatch
+ * (blocked on the red reviewer gate), and the grant survives to be consumed by
+ * the next executor dispatch.
+ */
+test("reply: a once-grant does not release a reviewer dispatch and survives for the executor", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-1" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // A reviewer dispatch with the grant pending is still guarded: the reviewer
+    // gate is red (no GATE: PASS), so guardReviewerDispatch blocks.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "reviewer", prompt: "review it" },
+        }),
+      (e: Error) => /BLOCKED by turnstile: no reviewer dispatch/.test(e.message),
+    )
+    // The grant survived the reviewer dispatch and is now consumed by exactly
+    // one executor dispatch.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // Spent: the next executor dispatch re-blocks.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "more work" },
+        }),
+      (e: Error) => /no plan approval for "plan.md"/.test(e.message),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * HIGH-2 scoping: an unrelated permission ask/reply (bash) interleaved between
+ * the plan ask and its reply is fully inert — it neither clobbers the plan ask
+ * record nor applies its own decision to the plan gate.
+ */
+test("reply: an unrelated ask/reply between the plan ask and its reply is inert", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-1" } })
+    // An unrelated bash ask (never escalated): its id must not be recorded.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "bash-1", message: "run rm -rf / ?" },
+    })
+    // The human approves the bash ask — that approval must NOT release the
+    // plan gate.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "bash-1", reply: "always" },
+    })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+      "an unrelated ask approval must not be applied to the plan gate",
+    )
+    // The plan reply still matches its own ask despite the interleaved ask.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * HIGH-2 per-session scoping: two sessions escalate and reply concurrently;
+ * each reply applies only to its own session's plan gate (no cross-apply).
+ */
+test("reply: concurrent sessions do not cross-apply plan-gate replies", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    await callPermission(h, "evaluate", { sessionID: "p2", action: "task" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-1" } })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p2", id: "req-2" } })
+    // p1's human grants once; p2's human rejects.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-1", reply: "once" },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p2", requestID: "req-2", reply: "reject" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // p1: the grant releases exactly one dispatch.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    // p2: its own reject (not p1's grant) holds the gate red.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p2",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      (e: Error) => /no plan approval for "plan.md"/.test(e.message),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * HIGH-2 recognition: a plan ask whose host echoes the evaluate handler's
+ * message (but whose session escalation was not seen) is still recorded via
+ * the message prefix, and the ask map stays bounded — evicting the oldest
+ * recorded asks never drops a live recent one.
+ */
+test("reply: a message-prefixed plan ask is recorded and the map stays bounded", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    // 51 recorded plan asks via the message prefix alone (no session): the
+    // oldest are evicted past the 50 cap.
+    for (let i = 1; i <= 51; i++) {
+      h.pushEvent({
+        type: "permission.asked",
+        properties: {
+          id: `old-${i}`,
+          message: "turnstile: plan approval required — plan.md",
+        },
+      })
+    }
+    // The most recent ask (old-51) is live: its reply still matches.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "old-51", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // A stale evicted id is inert.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "old-1", reply: "always" },
+    })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/** The awaiting-ask map is bounded: past 50 escalated parents the oldest
+ * escalation markers are evicted, and a recent escalation still records. */
+test("evaluate: the awaiting-ask map stays bounded across 51 escalations", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    for (let i = 1; i <= 51; i++) {
+      await callPermission(h, "evaluate", { sessionID: `e${i}`, action: "task" })
+    }
+    // The most recent escalation (e51) still records its ask and matches.
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "e51", id: "req-e51" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "e51", requestID: "req-e51", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "e51",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/**
  * A `type:"plan" APPROVE` written from the prompt channel replays exactly like
  * a plan-reviewer verdict: the approval restores after restart and survives the
  * one-prompt grace, so the executor stays free across a restart.
