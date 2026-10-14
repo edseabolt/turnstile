@@ -1434,6 +1434,14 @@ test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defau
   assert.equal(s.pendingOnceGrant, "")
 })
 
+/** The landing-gate primitives start at their task-scoped defaults: no
+ *  reviewer approval yet, and a zero landing-block counter. */
+test("newState initializes hasReviewApprove and landingBlocks defaults", () => {
+  const s = newState()
+  assert.equal(s.hasReviewApprove, false)
+  assert.equal(s.landingBlocks, 0)
+})
+
 /** resetState drops the task-scoped waiver and once-grant strings and resets
  *  humanApproval to false on an ordinary (non-grace) prompt reset. */
 test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {

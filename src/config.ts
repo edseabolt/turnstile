@@ -19,6 +19,7 @@ import type {
   GateEvidenceMode,
   TurnstileAgents,
   TurnstileConfig,
+  TurnstileGitGates,
   TurnstileToolPolicy,
   ToolPolicyMode,
 } from "./types.ts"
@@ -40,6 +41,18 @@ export const ENV_KEYS = {
  */
 export const DEFAULT_EVIDENCE_PATTERN =
   "\\b(npm\\s+(run\\s+)?test|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+--test|npx\\s+node\\s+--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
+
+/**
+ * Default conventional-commits regex SOURCE string for `gitGates.commitFormat`
+ * (compiled by callers with `new RegExp("^" + source + "$", "s")`). It accepts
+ * a single type from the conventional set `{feat,fix,docs,style,refactor,perf,
+ * test,build,ci,chore,revert}`, an optional `(scope)`, a required `!` or `:`
+ * separator (only one is needed — no `BREAKING CHANGE` trailer), a subject of
+ * up to 72 characters on the first line, and one optional following body line.
+ * Note the source carries no leading `^`/trailing `$`: the caller wraps them.
+ */
+export const DEFAULT_COMMIT_FORMAT =
+  "(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\\([^)]*\\))?(?:[!]:?|:) [^\\r\\n]{1,72}(?:(?:\\r?\\n){1,2}[^\\r\\n]*)?"
 
 /**
  * Builds the code defaults for every config key.
@@ -96,6 +109,17 @@ export function defaultConfig(
       // on block, journaled) without breaking ordinary editing.
       pathDeny: [],
       observeSessionMove: true,
+    },
+    // Git-and-commit gates ship in `shadow` (audit-only) by default: the gates
+    // are active but non-blocking until a user flips a key to `enforce`,
+    // mirroring the tool-policy "adopt shadow first" adoption path. `commitFormat`
+    // is a conventional-commits regex SOURCE (no anchors): callers wrap it with
+    // `^…$` + the `"s"` flag (see src/tool-policy.ts).
+    gitGates: {
+      mode: "shadow",
+      commitMessages: true,
+      commitFormat: DEFAULT_COMMIT_FORMAT,
+      landingGate: true,
     },
   }
 }
@@ -182,6 +206,7 @@ export function mergeConfig(
     ...base,
     agents: { ...base.agents },
     toolPolicy: { ...base.toolPolicy },
+    gitGates: { ...base.gitGates },
   }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {
@@ -290,6 +315,51 @@ export function mergeConfig(
         }
       }
       config.toolPolicy = merged
+      continue
+    }
+    if (key === "gitGates") {
+      // Merge one level deep like `toolPolicy` and `agents`. A non-object keeps
+      // all defaults; each known sub-key is validated individually with a
+      // journaled warning so a config typo weakens the gate visibly, never
+      // silently. `commitFormat` is a regex SOURCE (compilation checked with the
+      // same `^…$` + `"s"` wrap the caller uses, so `new RegExp` never throws).
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        warnings.push("config: gitGates must be an object; keeping defaults")
+        continue
+      }
+      const merged: TurnstileGitGates = { ...config.gitGates }
+      for (const [gk, gv] of Object.entries(value as Record<string, unknown>)) {
+        if (gk === "mode") {
+          if (gv === "enforce" || gv === "shadow" || gv === "off") {
+            merged.mode = gv as ToolPolicyMode
+          } else {
+            warnings.push(
+              'config: gitGates.mode must be "enforce", "shadow", or "off"; keeping default',
+            )
+          }
+        } else if (gk === "commitMessages" || gk === "landingGate") {
+          if (typeof gv === "boolean") {
+            if (gk === "commitMessages") merged.commitMessages = gv
+            else merged.landingGate = gv
+          } else {
+            warnings.push(`config: gitGates.${gk} must be a boolean; keeping default`)
+          }
+        } else if (gk === "commitFormat") {
+          if (typeof gv !== "string") {
+            warnings.push("config: gitGates.commitFormat must be a string; keeping default")
+          } else {
+            try {
+              new RegExp("^" + gv + "$", "s")
+              merged.commitFormat = gv
+            } catch {
+              warnings.push("config: gitGates.commitFormat is not a valid regex; keeping default")
+            }
+          }
+        } else {
+          warnings.push(`config: unknown gitGates key "${gk}" ignored`)
+        }
+      }
+      config.gitGates = merged
       continue
     }
     if (!(key in config)) {

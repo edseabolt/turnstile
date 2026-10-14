@@ -17,6 +17,7 @@ export function newState(): GateState {
     hasGatePass: false,
     unverifiedPass: "",
     hasPlanVerdict: false,
+    hasReviewApprove: false,
     userWaiver: "",
     humanApproval: false,
     pendingOnceGrant: "",
@@ -24,6 +25,9 @@ export function newState(): GateState {
     seenFrom: new Map(),
     suppressedPending: 0,
     reviewRounds: 0,
+    // Task-scoped landing-gate block counter: fresh 0 on every prompt reset.
+    // Restored by journal replay across a restart (chunk-7).
+    landingBlocks: 0,
     reads: 0,
     seen: new Set(),
     plansSignature: "",

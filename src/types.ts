@@ -154,6 +154,31 @@ export interface TurnstileToolPolicy {
   observeSessionMove: boolean
 }
 
+/**
+ * Git-and-commit gate configuration backing the mechanical gates in
+ * `src/tool-policy.ts` (chunk-7/8). The default `mode` is `"shadow"`: the
+ * gates are active but non-blocking (audit-only) until a user flips a key to
+ * `"enforce"`, mirroring the tool-policy "adopt shadow first" adoption path.
+ *
+ * `commitFormat` is a conventional-commits regex SOURCE string (no leading
+ * `^`/trailing `$`): callers compile it with `new RegExp("^" + source + "$",
+ * "s")`. It accepts one of the default types `{feat,fix,docs,style,refactor,
+ * perf,test,build,ci,chore,revert}`, an optional `(scope)`, a required `!` or
+ * `:` separator (only one is needed — no `BREAKING CHANGE` trailer), a subject
+ * of up to 72 characters on the first line, and one optional following body
+ * line.
+ */
+export interface TurnstileGitGates {
+  /** Enforcement mode: `enforce` (blocks), `shadow` (audit-only, default), or `off` (silent no-op). */
+  mode: ToolPolicyMode
+  /** Whether `git commit` messages are linted as conventional commits. */
+  commitMessages: boolean
+  /** Conventional-commit regex SOURCE string (compiled by callers with `"^…$"` + `"s"`). */
+  commitFormat: string
+  /** Whether pushing/PR-landing is gated on a reviewer `VERDICT: APPROVE`. */
+  landingGate: boolean
+}
+
 /** Gate state for one parent session. */
 export interface GateState {
   hasGatePass: boolean
@@ -166,6 +191,14 @@ export interface GateState {
   unverifiedPass: string
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
+  /**
+   * True once this task's reviewer `execute.after` delivery has carried a
+   * `VERDICT: APPROVE` for the parent — the landing gate's release signal.
+   * Restart-sticky like `hasPlanVerdict`: restored by journal replay across a
+   * restart (chunk-7) and carried one prompt via `mergeAfterReplay`; fresh
+   * `false` on an ordinary prompt reset.
+   */
+  hasReviewApprove: boolean
   /**
    * Latest user-authored prompt text containing the waiver marker; "" when
    * none. Non-empty ⇒ the current task's reviewer/dispatch gates are waived.
@@ -216,6 +249,13 @@ export interface GateState {
    */
   suppressedPending: number
   reviewRounds: number
+  /**
+   * Count of `git push`/PR-landing blocks this task under the landing gate —
+   * telemetry that arms the permission-ask escalation on a repeat attempt
+   * (chunk-8). Task-scoped: fresh `0` on each prompt reset and never carried
+   * through `mergeAfterReplay`.
+   */
+  landingBlocks: number
   reads: number
   seen: Set<string>
   /**
@@ -357,6 +397,14 @@ export interface TurnstileConfig {
    * See `src/tool-policy.ts`.
    */
   toolPolicy: TurnstileToolPolicy
+  /**
+   * Git-and-commit gate configuration. Default `mode` is `shadow` (audit-only
+   * until a user opts into `enforce`), `commitMessages` lints `git commit`
+   * messages against the conventional-commits `commitFormat`, and `landingGate`
+   * gates push/PR-landing on a reviewer `VERDICT: APPROVE`. See
+   * `src/tool-policy.ts`.
+   */
+  gitGates: TurnstileGitGates
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */

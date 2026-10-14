@@ -22,6 +22,7 @@ const {
   loadConfig,
   mergeConfig,
   DEFAULT_EVIDENCE_PATTERN,
+  DEFAULT_COMMIT_FORMAT,
 } = await import("../src/config.ts")
 const { DEFAULT_JOURNAL_PATH } = await import("../src/journal.ts")
 const { GATE_RE } = await import("../src/markers.ts")
@@ -360,6 +361,101 @@ test("defaultConfig ships the toolPolicy denylist defaults", () => {
   ])
   assert.deepEqual(cfg.toolPolicy.pathDeny, [])
   assert.equal(cfg.toolPolicy.observeSessionMove, true)
+})
+
+/** gitGates defaults: shadow mode, conventional-commit linting on, landing gate on. */
+test("defaultConfig ships the gitGates defaults (shadow)", () => {
+  const cfg = defaultConfig({})
+  assert.equal(cfg.gitGates.mode, "shadow")
+  assert.equal(cfg.gitGates.commitMessages, true)
+  assert.equal(cfg.gitGates.commitFormat, DEFAULT_COMMIT_FORMAT)
+  assert.equal(cfg.gitGates.landingGate, true)
+})
+
+/** The default commitFormat compiles as a `^…$` + `"s"` pattern. */
+test("defaultConfig commitFormat compiles as a conventional-commit regex", () => {
+  const re = new RegExp(`^${DEFAULT_COMMIT_FORMAT}$`, "s")
+  assert.equal(re.test("feat: fix the bug"), true)
+  assert.equal(re.test("feat(api)!: big change"), true)
+  assert.equal(re.test("feat no separator"), false)
+})
+
+/** A non-object gitGates keeps every default and warns once. */
+test("mergeConfig rejects a non-object gitGates and keeps defaults", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { gitGates: "nope" as unknown })
+  assert.deepEqual(config.gitGates, base.gitGates)
+  assert.deepEqual(warnings, ["config: gitGates must be an object; keeping defaults"])
+})
+
+/** An invalid gitGates.mode keeps the shadow default and names it. */
+test("mergeConfig rejects an invalid gitGates.mode and keeps shadow", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { gitGates: { mode: "strict" } })
+  assert.equal(config.gitGates.mode, "shadow")
+  assert.deepEqual(warnings, [
+    'config: gitGates.mode must be "enforce", "shadow", or "off"; keeping default',
+  ])
+})
+
+/** Valid gitGates overrides are applied one level deep. */
+test("mergeConfig applies valid gitGates overrides", () => {
+  const base = defaultConfig({})
+  const { config } = mergeConfig(base, {
+    gitGates: { mode: "enforce", commitMessages: false, landingGate: false },
+  })
+  assert.equal(config.gitGates.mode, "enforce")
+  assert.equal(config.gitGates.commitMessages, false)
+  assert.equal(config.gitGates.landingGate, false)
+  // Untouched sub-keys keep their defaults.
+  assert.equal(config.gitGates.commitFormat, DEFAULT_COMMIT_FORMAT)
+})
+
+/** A non-boolean commitMessages/landingGate keeps the default and warns. */
+test("mergeConfig rejects non-boolean gitGates sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    gitGates: { commitMessages: "yes", landingGate: 1 },
+  })
+  assert.equal(config.gitGates.commitMessages, true)
+  assert.equal(config.gitGates.landingGate, true)
+  assert.deepEqual(warnings, [
+    "config: gitGates.commitMessages must be a boolean; keeping default",
+    "config: gitGates.landingGate must be a boolean; keeping default",
+  ])
+})
+
+/** A non-compiling commitFormat is dropped with a warning; the default survives. */
+test("mergeConfig rejects a non-compiling gitGates.commitFormat", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { gitGates: { commitFormat: "(" } })
+  assert.equal(config.gitGates.commitFormat, DEFAULT_COMMIT_FORMAT)
+  assert.deepEqual(warnings, [
+    "config: gitGates.commitFormat is not a valid regex; keeping default",
+  ])
+})
+
+/** A well-shaped commitFormat override is kept. */
+test("mergeConfig keeps a valid gitGates.commitFormat override", () => {
+  const base = defaultConfig({})
+  const { config } = mergeConfig(base, { gitGates: { commitFormat: "\\bcowsay\\b" } })
+  assert.equal(config.gitGates.commitFormat, "\\bcowsay\\b")
+})
+
+/** Unknown gitGates sub-keys are ignored with a warning. */
+test("mergeConfig ignores unknown gitGates sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { gitGates: { mode: "shadow", bogus: 1 } })
+  assert.equal(config.gitGates.mode, "shadow")
+  assert.deepEqual(warnings, ['config: unknown gitGates key "bogus" ignored'])
+})
+
+/** (AC-15) flipping a gitGates value flips the config digest. */
+test("configDigest flips when a gitGates value changes", () => {
+  const base = defaultConfig({})
+  const before = configDigest(base)
+  const after = configDigest({ ...base, gitGates: { ...base.gitGates, mode: "enforce" } })
+  assert.notEqual(before, after)
 })
 
 /** A non-object toolPolicy keeps every default and warns once. */
