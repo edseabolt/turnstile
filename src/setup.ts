@@ -1046,11 +1046,36 @@ export function createTurnstile(
             // misconfiguration telemetry. A block throws BlockError (rethrown by
             // the catch below); shadow journals only; off is a no-op.
             if (event?.tool === "bash" || event?.tool === "shell") {
-              toolPolicy.guardBash(
-                event.tool,
-                event.input?.command ?? event.input?.cmd,
-                asSessionID(event?.sessionID),
-              )
+              const command = event.input?.command ?? event.input?.cmd
+              const sid = asSessionID(event?.sessionID)
+              // Denylist first: `gh pr create|merge` is denied wholesale, so it
+              // wins over the landing telemetry/gate below and the two journal
+              // reasons stay disjoint.
+              toolPolicy.guardBash(event.tool, command, sid)
+              // Conventional-commit lint (fail-closed under enforce for
+              // uninspectable forms; audit-only under shadow; silent under off).
+              toolPolicy.guardCommitMessage(event.tool, command, sid)
+              // Landing telemetry (always) then the reviewer-gated landing gate.
+              const text = String(command ?? "")
+              toolPolicy.observeLanding(sid, text)
+              // The stateful ledger stays out of tool-policy: only a shaped
+              // capability is handed over. `st` is the parent session (a
+              // subagent's bash draws on the parent's task scope), so a
+              // still-unattributed child self-keys its own fresh state.
+              const st = ledger.state(ledger.parentOf(sid))
+              toolPolicy.guardLanding(event.tool, text, sid, {
+                hasApproval: () => st.hasReviewApprove,
+                priorBlocks: () => st.landingBlocks,
+                recordBlock: () => {
+                  st.landingBlocks += 1
+                },
+                escalate: () => {
+                  // No-op for the real capability in chunk-8: escalating the
+                  // human ask (the evaluate handler arm) is chunk-9. The pure
+                  // guard signals intent via the journal entry above and this
+                  // call; the landing tests spy on a mock's escalate().
+                },
+              })
               return
             }
             if (event?.tool === "write" || event?.tool === "edit") {
