@@ -36,6 +36,7 @@ import type {
   GateState,
   GenerateDraft,
   Host,
+  MarkerEvent,
   PermissionEvaluateEvent,
   PromptHookProperties,
   TaskInput,
@@ -626,8 +627,14 @@ export function createTurnstile(
    * @param source Provenance label for the text in journal entries.
    * @param dedupScope Key prefix partitioning the marker dedup set.
    */
-  function parseMarkers(text: string, sessionID: string, source: string, dedupScope = ""): void {
-    if (!text) return
+  function parseMarkers(
+    text: string,
+    sessionID: string,
+    source: string,
+    dedupScope = "",
+  ): MarkerEvent[] {
+    const events: MarkerEvent[] = []
+    if (!text) return events
     // Record a child's latest VERDICT from the text itself, before the parent
     // edge is needed, so a child with an unresolved edge still records. Only
     // non-task-result sources enter the store: task-result markers are handled
@@ -645,7 +652,7 @@ export function createTurnstile(
       if (m) ledger.recordChildVerdict(sessionID, m, source)
     }
     const sid = ledger.parentOf(sessionID)
-    if (!sid) return
+    if (!sid) return events
     const s = ledger.state(sid)
     // Evidence verdict computed here: the caller owns the tracker + config.
     // Under "enforce" the flip switch is the observed correlation; under "flag"
@@ -704,7 +711,11 @@ export function createTurnstile(
         })
         journaler.traceEvent("reviewer", "verdict", event.marker, sid)
       }
+      // Collected for the caller: the execute.after reviewer branch uses these
+      // events to detect a first-sight verdict APPROVE and set hasReviewApprove.
+      events.push(event)
     }
+    return events
   }
 
   /**
@@ -1090,7 +1101,26 @@ export function createTurnstile(
               // unresolved child delivery self-marks, protecting one extra
               // bucket until the registry LRU ages it out — bounded, documented.
               ledger.markParent(ledger.parentOf(child))
-              parseMarkers(output, child, "task-result", `task-result\u0000${++taskDeliverySeq}`)
+              const markerEvents = parseMarkers(
+                output,
+                child,
+                "task-result",
+                `task-result\u0000${++taskDeliverySeq}`,
+              )
+              // Reviewer-APPROVE capture (landing gate, chunk-7): a reviewer
+              // task-result delivery whose first-sight verdict is APPROVE sets
+              // hasReviewApprove — the landing gate's release signal. Mirrors
+              // the plan-reviewer verdict lifecycle but for the landing gate.
+              // Streaming child text does NOT set it: this branch runs only on
+              // task-result delivery, keeping the stream attribution-neutral
+              // (AC-12 — a streamed verdict in child text can't release the
+              // landing gate).
+              if (agent === config.agents.reviewer) {
+                const approved = markerEvents.some(
+                  (e) => e.kind === "verdict" && e.marker.includes("APPROVE"),
+                )
+                if (approved) ledger.state(ledger.parentOf(child)).hasReviewApprove = true
+              }
               // Plan-approval attribution: only a plan-reviewer result moves
               // the plan gate. See attributePlanVerdict — `raw` is always an
               // actual child session ID, never the parent; an unattributable,

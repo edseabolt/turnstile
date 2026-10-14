@@ -1442,6 +1442,126 @@ test("newState initializes hasReviewApprove and landingBlocks defaults", () => {
   assert.equal(s.landingBlocks, 0)
 })
 
+/**
+ * Landing-gate flag lifecycle (chunk-7): only a delivery-attributed reviewer
+ * `VERDICT: APPROVE` sets/`hasReviewApprove` (task-result), streaming child
+ * text does not (AC-12), a `GATE: FAIL` never clears it, and replay restores
+ * it across a restart with the same one-prompt grace as a plan verdict.
+ */
+
+/** A reviewer task-result delivery carries a `VERDICT: APPROVE` that becomes
+ *  `hasReviewApprove` — task-result capture round-trips through the journal
+ *  into the next boot's replay. */
+test("a reviewer task-result verdict restores hasReviewApprove across a restart", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+    result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+  })
+  // The reviewer verdict is journaled against the parent with the task-result
+  // source (the discriminator replay credits).
+  const verdict = journalEntries(metricsDir).find(
+    (l) => l.type === "verdict" && typeof l.marker === "string" && l.marker.includes("APPROVE"),
+  )
+  assert.ok(verdict, "the verdict was journaled")
+  assert.equal(verdict.source, "task-result")
+  // The next boot restores the landing-gate approval from that verdict.
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
+  dispose()
+})
+
+/** A reviewer `VERDICT: BLOCK` never releases the landing gate. */
+test("a reviewer task-result verdict BLOCK does not restore hasReviewApprove", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+    result: { output: "VERDICT: BLOCK crit=0 high=0 med=0 low=0\n" },
+  })
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "a BLOCK verdict sets nothing")
+  dispose()
+})
+
+/** (AC-12) A `VERDICT: APPROVE` seen only in streamed child text never restores
+ *  hasReviewApprove: landing release requires a delivery-attributed reviewer
+ *  verdict, and the streamed verdict is journaled with a non-task-result
+ *  source that replay never credits. */
+test("a streamed verdict does not restore hasReviewApprove (AC-12)", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.text.ended",
+    data: {
+      sessionID: "c1",
+      text: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n",
+    },
+  })
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+  const verdict = journalEntries(metricsDir).find((l) => l.type === "verdict")
+  assert.ok(verdict)
+  assert.notEqual(verdict.source, "task-result", "the streamed verdict is not a task-result")
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(
+    ledger.state("p1").hasReviewApprove,
+    false,
+    "streamed verdict never releases the gate",
+  )
+  dispose()
+})
+
+/** Replay restores hasReviewApprove from a journaled reviewer verdict; the
+ *  first post-restart prompt carries it (grace), and a later prompt clears it. */
+test("replay restores hasReviewApprove and the grace prompt carries it once, then clears", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({
+      ts: "t",
+      type: "verdict",
+      sessionID: "p1",
+      raw: "c1",
+      marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+      source: "task-result",
+    })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
+  // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward once.
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "grace carries hasReviewApprove forward")
+  // Second prompt: a full reset clears it (task-scoped again).
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "hasReviewApprove clears on full reset")
+})
+
+/** A trailing `GATE: FAIL` does not clear a restored reviewer approval — the
+ *  recency boundary for hasReviewApprove is the last verdict, not the last
+ *  gate result. */
+test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({
+        ts: "t0",
+        type: "verdict",
+        sessionID: "p1",
+        raw: "c1",
+        marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+        source: "task-result",
+      }),
+      JSON.stringify({ ts: "t1", type: "gate", sessionID: "p1", raw: "c1", result: "FAIL" }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "GATE: FAIL never clears the approval")
+})
+
 /** resetState drops the task-scoped waiver and once-grant strings and resets
  *  humanApproval to false on an ordinary (non-grace) prompt reset. */
 test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {
