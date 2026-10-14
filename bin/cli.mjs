@@ -8,6 +8,7 @@
 //   opencode-turnstile init       Install/sync artifacts into ~/.config/opencode
 //   opencode-turnstile check      Verify artifacts against the manifest
 //   opencode-turnstile uninstall  Remove installed artifacts (manifest artifacts)
+//   opencode-turnstile status     Report gate/plan state from the JSONL journal
 //   opencode-turnstile version    Print the installed package version
 //
 // `init -- --print-model-config` writes nothing: the router runs install.mjs,
@@ -24,6 +25,7 @@ import { fileURLToPath } from "node:url"
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, "..")
 const installScript = join(repoRoot, "scripts/install.mjs")
+const statusScript = join(repoRoot, "scripts/status.mjs")
 
 const USAGE = `Usage: opencode-turnstile <command>
 
@@ -34,6 +36,8 @@ Commands:
             (check --repair prints which targets would be auto-repaired,
              writing nothing — a dry run of the --repair apply mode)
   uninstall Remove installed artifacts (manifest artifacts)
+  status    Report per-session gate/plan state from the journal
+            (status --json prints machine-readable JSON; read-only, nothing is written)
   version   Print the installed package version
 
 init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
@@ -99,6 +103,12 @@ async function main() {
     case "version":
       console.log(JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version)
       return
+    case "status": {
+      // Read-only status surface over the JSONL journal: spawn scripts/status.mjs
+      // with passthrough args (mirrors the init case's leading-"--" stripping).
+      const statusPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      return process.exit(await spawnInstaller(statusScript, statusPassthrough))
+    }
     default:
       console.log(USAGE)
       process.exit(2)

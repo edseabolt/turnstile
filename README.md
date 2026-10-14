@@ -577,6 +577,26 @@ it is read once at setup.
 - `.opencode/plans/*.md` containing `## Decomposition` are load-bearing:
   their presence activates the executor chunk-citation gate.
 
+## Status
+
+`opencode-turnstile status` reports turnstile gate and plan state per parent
+session, read from the journal, as a human-readable table by default or JSON
+with `--json`:
+
+```
+opencode-turnstile status
+opencode-turnstile status --json
+```
+
+It is read-only: it never writes to the journal or config. Per session it
+replays the same gate/plan last-wins rules the runtime uses (a trailing
+`GATE: FAIL` keeps the gate red; an enforce-mode `verified:false` PASS never
+flips), plus last markers, waiver events (with channel), and dispatch/block/
+permission counts. The journal reflects the last prompt-cycle; in-memory state
+can be fresher (a session that has prompted since is newer than the journal
+records), so treat status as the durable state of the previous cycle rather
+than a live snapshot.
+
 ## Behavior contract
 
 - Fail-open by design. Every hook body is guarded; internal errors are
