@@ -209,8 +209,16 @@ export function createTurnstile(
   // `permission.asked` stream event has not arrived yet: parent → escalation
   // time. The evaluate handler does not know the host request id (it rides the
   // later stream event), so the next ask for an escalated parent is treated as
-  // the plan ask and recorded. Bounded by boundPlanAsks.
+  // the plan ask and recorded. Bounded by boundAwaitingAsks, and latches
+  // expire (see awaitingPlanAskTtlMs) so a lost stream event cannot latch a
+  // parent indefinitely.
   const awaitingPlanAsk = new Map<string, number>()
+  // Latch TTL for awaiting-plan-ask markers: an escalation whose stream event
+  // never arrives stops latching after this window, so a stale marker cannot
+  // record an unrelated later ask (whose approval would then release the plan
+  // gate). Fail-toward-strict: expired = not recorded = reply inert = the
+  // gate re-asks on the next dispatch.
+  const awaitingPlanAskTtlMs = 5_000
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -262,6 +270,24 @@ export function createTurnstile(
       const oldest = awaitingPlanAsk.keys().next().value as string
       awaitingPlanAsk.delete(oldest)
     }
+  }
+
+  /**
+   * Reads (and expires) the awaiting-plan-ask latch for a session: a marker
+   * older than the TTL is dropped and reported as absent. Fail-toward-strict:
+   * an expired latch records nothing, so a reply to any later ask stays inert
+   * and the plan gate re-asks on the next dispatch.
+   * @param sid The session whose latch is consulted.
+   * @returns Whether a live (unexpired) latch exists for the session.
+   */
+  function hasLiveAwaitingAsk(sid: string): boolean {
+    const at = awaitingPlanAsk.get(sid)
+    if (at === undefined) return false
+    if (Date.now() - at > awaitingPlanAskTtlMs) {
+      awaitingPlanAsk.delete(sid)
+      return false
+    }
+    return true
   }
 
   /**
@@ -722,6 +748,11 @@ export function createTurnstile(
             // Evidence is task-scoped, exactly like gate state: a new user
             // prompt drops the in-memory correlation.
             evidence.clear(sessionID)
+            // A prompt reset also drops any pending plan-ask latch: the
+            // escalation's stream event belongs to the previous task scope, so
+            // a new prompt must not let a later unrelated ask be recorded as
+            // the plan ask.
+            awaitingPlanAsk.delete(sessionID)
             // Waiver capture (prompt channel): the user's text following the
             // waiver marker waives both gates for the whole task. Read + capture
             // in one guarded block; a coercion that throws (a malformed prompt
@@ -1313,8 +1344,17 @@ export function createTurnstile(
                 if (typeof id === "string" && id !== "") {
                   const sid = asSessionID(properties.sessionID)
                   const message = typeof properties.message === "string" ? properties.message : ""
-                  const escalated = awaitingPlanAsk.has(sid)
-                  if (escalated || message.startsWith(PLAN_ASK_MESSAGE_PREFIX)) {
+                  // Record when the message carries the plan-ask prefix (the
+                  // evaluate echo) or when the session is live-latched and the
+                  // ask carries no message of its own (the escalated echo).
+                  // A non-empty message WITHOUT the prefix is an unrelated ask
+                  // (bash, write, …) even under a latched escalation — the
+                  // evaluate handler always composes the prefix into its
+                  // message, so a prefixed-or-empty message is the expected
+                  // echo and anything else must never be recorded (a human's
+                  // approval of an unrelated ask cannot release the plan gate).
+                  const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
+                  if (prefixed || (message === "" && hasLiveAwaitingAsk(sid))) {
                     awaitingPlanAsk.delete(sid)
                     planGateAsks.set(id, {
                       sessionID: ledger.parentOf(sid),

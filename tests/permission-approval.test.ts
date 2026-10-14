@@ -588,6 +588,132 @@ test("reply: an unrelated ask/reply between the plan ask and its reply is inert"
 })
 
 /**
+ * Latched-escalation tightening: a bash ask carrying a non-empty,
+ * non-prefixed message while the parent's awaiting-plan-ask latch is live is
+ * NOT recorded (its approval is inert), the latch survives the unrelated ask,
+ * and a prefixed ask during the latch IS recorded.
+ */
+test("asked: a non-prefixed message under a live latch is not recorded; a prefixed one is", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    // An unrelated bash ask under the live latch: its non-empty message lacks
+    // the plan-ask prefix, so it must not be recorded.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "bash-1", message: "run rm -rf / ?" },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "bash-1", reply: "always" },
+    })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+      "a bash-ask approval under the latch must not release the plan gate",
+    )
+    // A prefixed ask during the still-live latch IS the plan ask: recorded.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: {
+        sessionID: "p1",
+        id: "req-prefix",
+        message: "turnstile: plan approval required — plan.md: Some plan body text.",
+      },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-prefix", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Latch expiry: an escalation marker older than the TTL is dropped, so a late
+ * empty-message ask is not recorded and its reply is inert (fail-toward-strict:
+ * the gate re-asks).
+ */
+test("asked: an expired awaiting latch does not record the ask", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  const realNow = Date.now
+  let now = realNow()
+  ;(Date as unknown as { now: () => number }).now = () => now
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    // Age the latch past the TTL, then send the ask the escalation awaited.
+    now += 6001
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-late" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-late", reply: "once" },
+    })
+    // Drain the queued events while time is still frozen: the stream consumer
+    // is asynchronous, so restoring the clock before it runs would make the
+    // latch look live again.
+    await settle()
+    now = realNow()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+      "an expired latch must not record the ask",
+    )
+    // The gate is still red.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    ;(Date as unknown as { now: () => number }).now = realNow
+    restore()
+  }
+})
+
+/**
+ * Prompt reset clears the latch: an escalation followed by a new user prompt
+ * drops the pending plan-ask marker, so a later empty-message ask is inert.
+ */
+test("asked: a prompt reset clears the awaiting latch", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    // A new user prompt resets the parent's task scope — including the latch.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start something new" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-post" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-post", reply: "once" },
+    })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+      "a post-reset ask must not be recorded as the plan ask",
+    )
+    // The gate is still red.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
  * HIGH-2 per-session scoping: two sessions escalate and reply concurrently;
  * each reply applies only to its own session's plan gate (no cross-apply).
  */

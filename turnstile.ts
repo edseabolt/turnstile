@@ -29,7 +29,10 @@
  *   own guards), and `reject` keeps the gate red (that single reply is
  *   consumed). Replies match only asks escalated as plan-gate asks (recorded
  *   per request id, bounded, per session) — a reply to an unrelated permission
- *   ask can never release the gate. The explicit
+ *   ask can never release the gate: an ask is recorded only when its message
+ *   carries the plan-ask prefix, or when the parent's escalation latch is
+ *   still live (it expires after a few seconds and is cleared by a prompt
+ *   reset) and the ask carries no message of its own. The explicit
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
  *   `USER WAIVER:` literal in the user's prompt waives the gate; a
  *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert —
