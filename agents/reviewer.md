@@ -26,8 +26,10 @@ Read:
 
 - The user's requirements.
 - The requirements specification (passed verbatim in this task).
-- The implementation plan, at `.opencode/plans/<task-slug>.md` (path given
-  in this task). If it is absent, request it before reviewing; do not
+- The implementation plan (path given in this task — use the path the task
+  provides; the plans directory is configurable via turnstile's `plansDir`,
+  default `.opencode/plans/<task-slug>.md`, so it may live elsewhere). If it
+  is absent, request it before reviewing; do not
   review against a plan you reconstructed from the prompt.
 - Relevant source code.
 - Relevant tests.

@@ -1,0 +1,24 @@
+direction: right
+
+writers: "Writers" {
+  hooks: "hooks & gates"
+}
+
+jsonl: "turnstile.jsonl\n5 MB × 5 generations" {
+  shape: cylinder
+}
+trace: "gate-events.jsonl" {
+  shape: cylinder
+}
+
+replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict,\nhasReviewApprove, ensemble counts\n→ replayGrace = one-prompt survival"
+ledger: "GateLedger in memory"
+enforce: "execute.before guards"
+cli: "opencode-turnstile status\n(read-only aggregation)"
+
+writers.hooks -> jsonl: "every decision,\n~20 entry types"
+writers.hooks -> trace: "trace:true only"
+jsonl -> replay: "at ledger creation:\nlast 2000 lines of current + .1"
+replay -> ledger
+ledger -> enforce
+jsonl -> cli

@@ -1,0 +1,57 @@
+flow: {
+  shape: sequence_diagram
+  user: "User" {
+    shape: person
+  }
+  orch: "Orchestrator\n(parent session)"
+  hooks: "Turnstile hooks"
+  agents: "Child subagents\n(planner → plan-reviewer → executor →\ntest-runner → reviewer)"
+  journal: "Journal\n(turnstile.jsonl)" {
+    shape: cylinder
+  }
+
+  user -> hooks: "prompt (may carry USER WAIVER: / PLAN APPROVED:)"
+  hooks -> journal: "admitPrompt — resetState (+continuation carry), capture waiver/approval"
+  user -> orch: "task request"
+
+  orch -> hooks: "dispatch planner"
+  hooks -> journal: "dispatch journaled — budget + caps checked"
+  hooks -> orch: "allowed (no gate for planner besides caps)" {
+    style.stroke-dash: 4
+  }
+  agents -> hooks: "planner output (numbered AC-n / chunk-N)"
+  hooks -> journal: "parseMarkers — verdict store update"
+
+  orch -> hooks: "dispatch plan-reviewer"
+  hooks -> journal: "planReviewerDispatch stamped (round-scoping)"
+  agents -> hooks: "VERDICT: APPROVE crit=…"
+  hooks -> journal: "plan entry — plansSignature stamped on APPROVE"
+
+  orch -> hooks: "dispatch executor"
+  hooks -> orch: "BLOCKED: no-plan-verdict (plan gate red, no waiver)" {
+    style.stroke: "#c0392b"
+  }
+  hooks -> user: "permission ask ('turnstile: plan approval required')"
+  user -> hooks: "reply: always (verdict stands) / once (one dispatch) / reject"
+
+  agents -> hooks: "executor result cites chunk-N / AC-n"
+  hooks -> agents: "ORCHESTRATOR_POLICY prepended once per task"
+
+  agents -> hooks: "test-runner: GATE: PASS tests=n passed=n failed=n"
+  hooks -> hooks: "gateEvidence=enforce + no exit-0 test seen:\nhasGatePass held as unverifiedPass"
+  hooks -> hooks: "exit-0 bash execution correlated:\nhasGatePass = true (or promoted later)"
+
+  orch -> hooks: "dispatch reviewer"
+  hooks -> journal: "reviewer gate — requires green tests, cap 2 rounds"
+  agents -> hooks: "VERDICT: APPROVE crit=…"
+  hooks -> journal: "reviewEnsemble=enforce: approve credits only at ≥2 reviewer dispatches"
+
+  orch -> hooks: "git push"
+  hooks -> orch: "BLOCKED: no-landing-approval (hasReviewApprove false)" {
+    style.stroke: "#c0392b"
+  }
+  hooks -> user: "landing ask on repeat push"
+  user -> hooks: "always / once / reject"
+
+  hooks -> journal: "every decision journaled"
+}

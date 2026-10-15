@@ -1,109 +1,155 @@
 # turnstile
 
+![turnstile — the enforced pipeline: planner → plan-reviewer → executor → test-runner → reviewer, with gates blocking every dispatch](docs/images/hero.svg)
+
+[![ci](https://github.com/edseabolt/turnstile/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/edseabolt/turnstile/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/opencode-turnstile)](https://www.npmjs.com/package/opencode-turnstile)
+[![coverage](https://img.shields.io/badge/coverage-100%25%20lines%20%C2%B7%20branches%20%C2%B7%20funcs-brightgreen)](package.json)
+[![deps](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
+[![license](https://img.shields.io/npm/l/opencode-turnstile)](LICENSE)
+
 An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
 agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
-The pipeline policy is injected at runtime by the plugin: when the plugin is
-loaded, it prepends the orchestrator policy to the primary session's first
-task result every task (see [Policy injection](#policy-injection)), so a fresh
-install can never lose it and nothing is written to any instructions file at
-install time. Per-agent instruction lines live in each `agents/<name>.md`. The
-policy steers the agents, and turnstile blocks the dispatches that violate it.
+The pipeline policy is injected at runtime by the plugin (nothing is written
+to any instructions file at install time), the policy steers the agents, and
+turnstile **blocks the dispatches that violate it** — decided in tool and
+task-dispatch hooks, outside the model loop.
 
 The entry point is `turnstile.ts`; behavior lives in focused modules under
-`src/` (one boundary per file: types, config, policy, journal, state,
-markers, evidence, gates, tool-policy, setup). The plugin has zero runtime
-dependencies and fails open.
+`src/` (one boundary per file). Zero runtime dependencies, fails open.
 
-Verify with:
+For how the plugin works inside — module map, hook surface, gate state
+machine, journal/replay, diagrams — see
+[`docs/architecture.md`](docs/architecture.md).
+
+## TL;DR — try it in two minutes
 
 ```sh
-npm install
-npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test with a 100% coverage gate) — host chain only; green on a fresh clone
-npm run ci:installed  # install:check — run after `npm run init` on a machine with installed artifacts
+npx opencode-turnstile init      # install the plugin + pipeline agents
+npx opencode-turnstile check     # verify the install; must exit 0
+```
+
+Then **restart OpenCode** (or `opencode service restart`) so the plugin
+loads. Prefer not to install the agent definitions? Add the plugin alone:
+
+```jsonc
+// ~/.config/opencode/opencode.json
+{ "plugins": ["opencode-turnstile"] }
+```
+
+What you'll see after restart:
+
+- The orchestrator dispatches planner → plan-reviewer → executor →
+  test-runner → reviewer; the executor won't dispatch until the plan is
+  approved, the reviewer won't dispatch until tests are green, and `git push`
+  waits for reviewer approval.
+- Blocked work says `BLOCKED by turnstile: <reason>` instead of proceeding.
+- Every decision is journaled to
+  `~/.local/share/opencode/metrics/turnstile.jsonl`; see the readable state
+  with `npx opencode-turnstile status`.
+- Your escape hatch, always: put `USER WAIVER:` in **your own prompt** to
+  bypass the gates for the task (see
+  [Waivers and approvals](#waivers-and-approvals)).
+
+### Let your agent install it
+
+Paste this into any agent session:
+
+```text
+Install the turnstile plugin for my OpenCode (v2) setup:
+
+1. Run: npx opencode-turnstile init
+   - It installs the plugin and the pipeline agent definitions into
+     ~/.config/opencode (plugin(s), agents). On a git checkout it links;
+     otherwise it copies. Don't override the mode unless a step fails.
+2. Run: npx opencode-turnstile check
+   - It must exit 0. If it reports drift or a conflict, show me the output
+     and stop — don't force anything with --force without asking me.
+3. Do not edit any other files under ~/.config/opencode, and do not paste
+   anything into AGENTS.md — turnstile injects its policy at runtime; there
+   is no contract block.
+4. Finish by telling me to restart OpenCode so the plugin loads, and print
+   the three commands I can use to see gate state later:
+   npx opencode-turnstile status [--json]
 ```
 
 ## What it enforces
 
-| Gate                   | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Plan-approval gate     | `executor` subagent dispatches are blocked until this task's plan-reviewer recorded `VERDICT: APPROVE` (when any plan exists in `.opencode/plans/*.md`), or the task has a human approval — a prompt-channel `PLAN APPROVED:` in the user's prompt, a prompt-channel `USER WAIVER:` waiver, or a permission-prompt reply (`always`/`once`/`reject`); plan-content changes invalidate approvals issued against the previous plans-dir signature (replayed approvals are accepted once, then stamped). See [Waivers and approvals](#waivers-and-approvals)                                                                                                                                                                                                                                                                                               |
-| Reviewer dispatch gate | `reviewer` subagent dispatches are blocked until a test-runner result in the session recorded a `GATE: PASS` _verified_ by the current task's bash/shell executions — a matching exit-0 test command under the default `gateEvidence:enforce`; `flag` flips on trust (still stamped), `off` never stamps — or the user's prompt carries a prompt-channel `USER WAIVER:` waiver (a `USER WAIVER:` in an agent-composed dispatch prompt unlocks nothing; see [Waivers and approvals](#waivers-and-approvals))                                                                                                                                                                                                                                                                                                                                            |
-| Reviewer round cap     | Max 2 `reviewer` dispatches per task, regardless of gate state; a prompt-channel `USER WAIVER:` waiver bypasses the cap and does not count toward it (a `USER WAIVER:` in a dispatch prompt does not; see [Waivers and approvals](#waivers-and-approvals))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Reviewer ensemble      | Every unwaived `task -> reviewer` dispatch is counted per task and journaled as `{type:"ensemble"}` (`sessionID`, `agent`, `count`, optional `refusedApprove`); under `reviewEnsemble: enforce` (default) a reviewer `VERDICT: APPROVE` credits the task only when at least two dispatches were journaled for it, otherwise the landing gate stays red, a `blocked` entry (`reason:"ensemble-incomplete"`) is journaled, and a `refusedApprove:true` stamp on the last `ensemble` entry prevents replay from re-crediting the refused APPROVE after a restart — the permission-ask ladder decides the outcome. `advise` tracks and journals the count but credits unconditionally. A human `always` grant is never gated (it journals a `refusedApprove:false` clearing entry) and the count survives restart via journal replay plus one grace prompt |
-| Loop caps              | Per task the plugin also caps `planner`, `plan-reviewer`, and `test-runner` dispatches (defaults 3/3/4) and a total dispatch budget (16) across every leg. A leg cap or the total budget being exhausted throws a `BLOCKED by turnstile:` error, journals a `blocked` entry (`reason: "loop-cap"` or `"dispatch-budget"`) plus a paired `escalation` entry, and tells the dispatcher to STOP and escalate to the user rather than re-dispatch a looping pipeline (waived dispatches are exempt; a new user prompt resets all counters).                                                                                                                                                                                                                                                                                                                |
-| Decomposition gate     | `executor` dispatches must cite `chunk-N` / `AC-n` when any plan in `.opencode/plans/*.md` has a `## Decomposition` block                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Tool-call policy gate  | `bash`/`shell` commands and `write`/`edit` target paths are matched in `execute.before` against a configurable denylist and blocked with `BLOCKED by turnstile:` under `toolPolicy.mode: enforce`; `shadow` journals the would-block without throwing (adoption path), `off` is a silent no-op. Default `bashDeny` blocks the git-protective operations in [`src/policy.ts`](src/policy.ts) (worktree, branch `switch`/`checkout`, `merge`, `gh pr create or merge`); `pathDeny` defaults empty so ordinary editing is never blocked until configured. `session_move` is journaled as telemetry only, never blocked                                                                                                                                                                                                                                    |
-| Commit-lint            | `bash`/`shell` `git commit -m '<subject>'` messages are validated as conventional commits when `gitGates.commitMessages` is on (default): a non-conventional subject throws `BLOCKED by turnstile:` (journaled `reason:"invalid-commit-message"`) under `gitGates.mode: enforce`; `shadow` journals only, `off` is a no-op. An uninspectable form (`-F`/`-t`/`--edit`/interactive; `--amend -m` is inspectable) is blocked under `enforce` (`reason:"commit-message-uninspectable"`) — pass the subject with `git commit -m <subject>`                                                                                                                                                                                                                                                                                                                 |
-| Landing gate           | `git push` without a reviewer `VERDICT: APPROVE` for the current task is `BLOCKED by turnstile:` (journaled `reason:"no-landing-approval"`) under `gitGates.mode: enforce`; `shadow` journals only, `off` is a no-op. Approval comes only from a reviewer delivery `VERDICT: APPROVE` (streamed text is inert); `gh pr create or merge` stays denied by the default `bashDeny` list, and every `git push` is journaled as landing telemetry; a repeat push under `enforce` escalates to a human ask — the repeat push is the decision point                                                                                                                                                                                                                                                                                                            |
-| Marker parsing         | `GATE:` / `VERDICT:` markers are parsed from task results and child-session text, deduped per task; marker-less outputs from marker-contracted agents (test-runner/reviewer/plan-reviewer) are journaled                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Trace                  | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, bash commands, errors; `setup` heartbeat per session (plugin version, config digest, hook count), stream-death errors, unresolvable-agent dispatch errors                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Decoding clamps        | executor/test-runner/debugger temperature ≤ 0.2; reviewer and plan-reviewer temperature = 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Compaction             | Injects a "preserve verbatim" instruction for markers and findings                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+Gates are decided in `execute.before` hooks; every gate has a human escape
+hatch. Full detail — guards, state fields, escape ladders, diagrams — lives in
+[`docs/architecture.md`](docs/architecture.md) (§5 Gate state machine).
 
-A new user prompt resets the session's gate state. Replayed gate state
-survives a restart and the next user prompt (the resume prompt), then
-reverts: every later prompt starts a clean gate cycle. Opting into `continuationCarry` (default off) extends that carry to a prompt re-admitted in an unchanged worktree/branch via the same one-prompt grace; because a genuinely new task on the same branch is indistinguishable from a continuation, the carry is gate-scoped — it preserves the earned restart-sticky gate state (an already-earned `GATE: PASS` first), never an unearned approval. Replay reads the
-last 2000 lines of the journal, spanning the current file and its previous
-rotated generation (`GATE: PASS` and plan `VERDICT: APPROVE`
-entries).
+| Gate                   | In one line                                                                                                                                                                                                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plan approval          | `executor` dispatches are blocked until the plan-reviewer records `VERDICT: APPROVE` (when a plan exists in `.opencode/plans/*.md`), or a human approves — `PLAN APPROVED:` in your prompt, a waiver, or a permission-prompt reply. Plan edits invalidate approvals. |
+| Reviewer dispatch gate | `reviewer` dispatches are blocked until a test-runner `GATE: PASS` **verified** by a matching exit-0 test execution in this task (default `gateEvidence:enforce`), or a waiver.                                                                                      |
+| Reviewer round cap     | Max 2 `reviewer` dispatches per task; waived dispatches bypass and don't count.                                                                                                                                                                                      |
+| Reviewer ensemble      | Under `reviewEnsemble:enforce` (default), a reviewer APPROVE credits the landing gate only at ≥2 unwaived reviewer dispatches; otherwise it is refused and journaled, and the permission ladder decides.                                                             |
+| Loop caps              | Per task: planner 3, plan-reviewer 3, test-runner 4, 16 total dispatches. Exhaustion blocks and journals an `escalation` entry — STOP, don't re-dispatch.                                                                                                            |
+| Decomposition gate     | `executor` dispatches must cite `chunk-N` / `AC-n` when a plan has a `## Decomposition` block.                                                                                                                                                                       |
+| Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob).                                                                                                                                                                                     |
+| Tool-call policy       | `bash`/`shell` commands and `write`/`edit` paths are matched against a denylist (default `enforce`); default denylist is git-protective (worktree, branch switch/checkout, merge, `gh pr`).                                                                          |
+| Commit-lint            | `git commit -m` subjects must be conventional commits when `gitGates.commitMessages` is on (default); uninspectable forms (`-F`, `-t`, `--edit`) are blocked under `gitGates.mode:enforce`.                                                                          |
+| Landing gate           | `git push` without reviewer `VERDICT: APPROVE` is blocked under `gitGates.mode:enforce` (default `shadow`); a repeat push escalates to a human ask — the repeat push is the decision point.                                                                          |
+| Marker parsing         | `GATE:` / `VERDICT:` markers parsed from task results and child text, deduped per task; marker-less outputs from marker-contracted agents are journaled.                                                                                                             |
+| Trace & telemetry      | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, errors; `setup` heartbeat, stream-death errors.                                                                                                                                              |
+| Decoding clamps        | reviewer/plan-reviewer temperature = 0; executor/test-runner/debugger ≤ 0.2.                                                                                                                                                                                         |
+| Compaction             | Injects a "preserve verbatim" instruction for markers and findings.                                                                                                                                                                                                  |
 
-## How it fits the ecosystem
+State lifecycle: a new user prompt resets the session's gate state. Replayed
+gate state survives a restart and the next (resume) prompt, then reverts —
+every later prompt starts a clean cycle. `continuationCarry` (default off)
+extends the carry to a prompt re-admitted in an unchanged worktree/branch;
+because a new task on the same branch is indistinguishable from a
+continuation, the carry is gate-scoped — it preserves earned state (an
+already-earned `GATE: PASS` first), never an unearned approval.
 
-Claude Code's agent workflows are backed by host-side governance:
-permission prompts and tool hooks that can stop a call before it
-happens. I built turnstile to bring that shape to OpenCode: gates the
-runtime enforces, not requests the model honors. It borrows the
-enforcement model without the implementation, and stays
-OpenCode-native: zero dependencies, TypeScript, loaded from your own
-checkout.
+## Waivers and approvals
 
-Most other agent-structure projects on OpenCode are orchestration
-suites: an orchestrator plans work, dispatches specialists, and
-reconciles results. Some add pipeline discipline on top, but the
-discipline is carried by prompts: a phase header the model prints at
-the start of a response, a "review gate" step inside a skill's
-instructions, a warning when a write lands without a prior test run.
-Those asks work when the model complies. Turnstile's gates aim a step
-further: they are decided in tool and task-dispatch hooks, outside the
-model loop, so a dispatch that violates a gate fails before a subagent
-session is created.
+Turnstile reads a waiver or a human plan approval only from the user's OWN
+prompt — the plugin observes it at prompt admission, never from an agent's
+dispatch prompt. The provenance rule is the point: a marker inside an
+agent-composed prompt must never unlock a gate.
 
-Turnstile is a layer under orchestration suites, not a competitor: it
-reads task dispatches to attribute markers and enforce gates; it never
-plans work, routes models, or spawns specialists. An orchestration
-suite that dispatches task calls with agent names will pass through
-turnstile unchanged unless a gate applies. Other adjacent approaches
-gate on written artifacts, like spec workflows, or on a single
-human-approval point; turnstile gates the machine steps around those.
-The bundled planner/executor/test-runner/reviewer agents in
-`agents/` are the reference pipeline, not a requirement; the
-gates key off agent names and markers, and other suites' agents can
-carry their own markers.
+- **Prompt-channel waiver.** Put the literal marker `USER WAIVER:` in the text
+  of your prompt to waive the plan gate and the reviewer gate for the task.
+- **Prompt-channel approval.** Put `PLAN APPROVED:` in your prompt to approve
+  the plan the same way a plan-reviewer `VERDICT: APPROVE` would; it records
+  human provenance and replays across restart like a reviewer verdict.
+- **Permission-prompt escalation.** When no approval holds, the first
+  executor dispatch escalates to you through OpenCode's permission surface,
+  naming the plan file and its head. Reply `always` (approved for the task),
+  `once` (one dispatch), or `reject` (gate stays red).
+- **How the plugin sees your prompt.** Capture happens at prompt admission on
+  whichever host channel carries it — the `session` prompt hook, or the
+  correlated `session.inbox.enqueued` admission (same message id, same
+  marker, same journal shapes). A prompt delivered on neither channel is
+  journaled as one distinguishing error rather than failing silently.
 
-Three properties matter for comparing enforcement layers, and all three
-are visible in this repo's tests:
+Do not create, paste, or relay a `USER WAIVER:` / `PLAN APPROVED:` marker to
+open a gate — only the user's own prompt carries a real waiver or approval.
 
-- Verifiable state. `GATE:` and `VERDICT:` markers are parsed from
-  child session text (`src/markers.ts`), stored per parent session
-  (`src/state.ts`), and replayed from the JSONL journal on restart, so
-  replayed gate state survives a restart and the next user prompt, then
-  every later prompt starts a clean gate cycle rather than living in a
-  prompt.
-- Failure posture. Hooks fail open: an internal error is journaled and
-  the call proceeds. The only refusals are deliberate
-  `BLOCKED by turnstile:` throws at a declared gate. A broken
-  enforcement plugin should degrade to prompt contracts, not break
-  every session.
-- Auditability. Every dispatch, gate transition, verdict, and blocked
-  call is appended to `turnstile.jsonl` (bounded rotation, see
-  SECURITY.md). The journal is the record of what was claimed, which is
-  what makes the gates reviewable after the fact.
+## Markers
 
-The tradeoff is scope: turnstile is host-coupled to the OpenCode v2
-plugin API, verified against v2.0.22, and enforces exactly the
-pipeline above. Multi-harness suites reach further; turnstile goes
-deeper on one host and one pipeline.
+Subagents must emit these as the first line of their output. These examples
+are the canonical syntax; CI asserts the parser in `src/markers.ts` accepts
+exactly them.
+
+```
+GATE: PASS tests=12 passed=11 failed=1
+GATE: FAIL tests=12 passed=10 failed=2
+
+VERDICT: APPROVE crit=0 high=0 med=2 low=1
+VERDICT: BLOCK crit=1 high=0 med=0 low=2
+```
+
+Waiver and approval markers (must appear in the user's prompt, verbatim — a
+dispatch prompt that merely contains the marker unlocks nothing):
+
+```
+USER WAIVER: <the user's words>
+PLAN APPROVED: <the user's words>
+```
 
 ## Install
 
@@ -116,9 +162,10 @@ the CLI install.
 1. **Zero-config enforcement (plugin only).** Add the package to your
    OpenCode config's plugin array and restart. turnstile loads and enforces
    its gates, injecting the orchestrator policy into the primary session at
-   runtime (see [Policy injection](#policy-injection)) — nothing is written to
-   any instructions file, and the pipeline agent definitions are not installed
-   by this option alone:
+   runtime (see
+   [Policy injection](docs/architecture.md#9-policy-injection)) — nothing is
+   written to any instructions file, and the pipeline agent definitions are
+   not installed by this option alone:
 
    ```json
    { "plugins": ["opencode-turnstile"] }
@@ -134,6 +181,14 @@ the CLI install.
 3. **Develop from a clone.** Clone this repo and run `npm run init`
    (symlink mode) so installed artifacts stay live against your edits.
    See [From a clone](#from-a-clone) below.
+
+Verify the source with:
+
+```sh
+npm install
+npm run ci          # ci:host (lint, format:check, typecheck, check:markers, test with a 100% coverage gate) — host chain only; green on a fresh clone
+npm run ci:installed  # install:check — run after `npm run init` on a machine with installed artifacts
+```
 
 ### No postinstall
 
@@ -186,7 +241,7 @@ repo) are left alone, and a second run is a clean no-op. Injected policy is
 gone the moment the plugin is unloaded; a legacy contract block once written
 by hand into `~/.config/opencode/AGENTS.md` is not owned by turnstile and is
 removed separately — see
-[Migrating a legacy AGENTS.md block](#migrating-a-legacy-agentsmd-block).
+[Policy injection](docs/architecture.md#9-policy-injection).
 
 ### From a clone
 
@@ -342,6 +397,13 @@ Two sanctioned ways to change the pipeline:
 - **Fork the repo.** To change the pipeline content itself, fork and edit
   `agents/*.md` there; your installer serves your fork.
 
+One coupling to know when customizing either way: the shipped definitions
+reference `.opencode/plans/` as turnstile's **default** `plansDir`, not a
+constant — the plan path travels in the dispatch prompt, and the agents are
+instructed to honor it over the default. If you reconfigure `plansDir`,
+update your agent definitions' write permission (planner) accordingly; a
+copy-mode user edits their installed copies, a fork edits `agents/*.md`.
+
 ### Updating
 
 Symlink mode: because everything is linked into the checkout, updating is
@@ -386,56 +448,6 @@ Shared caveats:
   installs to check. Verify a copy install with
   `npm run install:check -- --copy`.
 
-### Policy injection
-
-Turnstile does not read orchestrator policy from a file at install time —
-it makes that policy available by injecting it at runtime. When the plugin is
-loaded, `src/setup.ts` prepends the orchestrator policy paragraph from
-`src/policy.ts` to the primary session's first `task` (or `subagent`) result
-delivery, once per task, via the `tool.hook("execute.after")` handler — the
-same hook the plugin already uses to rewrite tool output reaching the model.
-The source of truth is code shipped with the plugin, so a fresh install can
-never lose it, and it follows the plugin through updates and
-uninstall–reinstall cycles.
-
-- **Fail-open.** The injection is fully guarded with an inner try/catch; on
-  failure it journals a `type:"policy"` entry with `injected:false` and
-  proceeds — a broken injection never blocks a tool call.
-- **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
-  each new prompt, so the block re-injects per task) means the policy is
-  prepended exactly once per task, not once per turn.
-- **Marker placeholders.** The injected paragraph quotes the gate/verdict
-  markers with `<n>` placeholders (e.g. `GATE: PASS tests=<n> passed=<n>
-failed=<n>`, `VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`) rather
-  than concrete digits, and never the pipe-joined `PASS|FAIL` form. The
-  plugin parses markers from _any_ session text, so a fully concrete example
-  echoed back by the model could flip a gate; the placeholder form stays
-  unparseable while remaining human-readable.
-- **Per-agent instructions** are not injected by the plugin: they live in
-  each `agents/<name>.md` installed alongside the plugin.
-
-With the plugin **off**, none of this prose is present anywhere — there is no
-AGENTS.md block to fall back on. That is the deliberate tradeoff: loss-proof
-by construction while the plugin loads, and a known, documented gap when it
-does not.
-
-### Migrating a legacy AGENTS.md block
-
-If a previous turnstile install once wrote a managed contract block into
-`~/.config/opencode/AGENTS.md`, that block is now orphaned: the plugin no
-longer reads or manages it, and it will coexist with the injected policy
-(duplicate prose until removed). There is deliberately no installer to remove
-it — turnstile no longer owns that file, so it never rewrites it. Delete the
-sentinel-delimited block by hand, once:
-
-```sh
-# ~/.config/opencode/AGENTS.md — delete the section between the
-# `<!-- turnstile:start -->` and `<!-- turnstile:end -->` sentinels, then save
-```
-
-After that, the injected policy is the single source of orchestrator policy
-for the session.
-
 ## Configuration
 
 Defaults live in code (`src/config.ts`); override via
@@ -459,166 +471,43 @@ Precedence: defaults < config file < env. The plugin reads config once, at
 setup; restart sessions to apply. Invalid keys are ignored and journaled
 (fail-open); a malformed config file never breaks the host.
 
-| Key                                                                                                     | Default                                                                        | Meaning                                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `metricsDir`                                                                                            | `$XDG_DATA_HOME/opencode/metrics`, fallback `~/.local/share/opencode/metrics`  | directory for both telemetry files                                                                                                                                                                                                     |
-| `journalMaxBytes`                                                                                       | 5242880                                                                        | rotate a journal file past this size                                                                                                                                                                                                   |
-| `journalMaxGenerations`                                                                                 | 5                                                                              | rotated generations kept per journal                                                                                                                                                                                                   |
-| `maxReviewerRounds`                                                                                     | 2                                                                              | reviewer dispatches per task, regardless of gate state (waived dispatches exempt)                                                                                                                                                      |
-| `maxPlannerRounds`                                                                                      | 3                                                                              | planner dispatches per task (waived dispatches exempt)                                                                                                                                                                                 |
-| `maxPlanReviewerRounds`                                                                                 | 3                                                                              | plan-reviewer dispatches per task (waived dispatches exempt)                                                                                                                                                                           |
-| `maxTestRunnerRounds`                                                                                   | 4                                                                              | test-runner dispatches per task (waived dispatches exempt)                                                                                                                                                                             |
-| `maxTotalDispatches`                                                                                    | 16                                                                             | total task dispatches per task across every leg — the global loop backstop (waived dispatches exempt)                                                                                                                                  |
-| `maxSessions`                                                                                           | 64                                                                             | LRU cap on tracked sessions (gate state, child→parent edges, verdicts); registered live parents are never evicted                                                                                                                      |
-| `readWarn` / `readBlock`                                                                                | 8 / 15                                                                         | whole-file read horizon                                                                                                                                                                                                                |
-| `waiverMarker`                                                                                          | `USER WAIVER:`                                                                 | literal waiver marker                                                                                                                                                                                                                  |
-| `approvalMarker`                                                                                        | `PLAN APPROVED:`                                                               | literal prompt-channel plan-approval marker                                                                                                                                                                                            |
-| `plansDir`                                                                                              | `.opencode/plans`                                                              | executor decomposition scan directory                                                                                                                                                                                                  |
-| `trace`                                                                                                 | `true`                                                                         | write the human-readable trace file (JSONL journal always writes)                                                                                                                                                                      |
-| `continuationCarry`                                                                                     | `false`                                                                        | carry the task's gate flags across a prompt reset when the worktree/branch is unchanged (continuation), instead of starting a clean cycle                                                                                              |
-| `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger`         | agent names recognized in dispatches                                                                                                                                                                                                   |
-| `agents.bareOutput`                                                                                     | `["test-runner", "reviewer", "plan-reviewer"]`                                 | agents whose marker-less output is a violation                                                                                                                                                                                         |
-| `gateMarker` / `verdictMarker`                                                                          | canonical regex sources                                                        | marker patterns, compiled with `gm`                                                                                                                                                                                                    |
-| `gateEvidence`                                                                                          | `enforce`                                                                      | `enforce` requires a correlating exit-0 test command to flip the gate; `flag` flips on trust (stamps `verified`); `off` journals without it                                                                                            |
-| `reviewEnsemble`                                                                                        | `enforce`                                                                      | `enforce` credits a reviewer `VERDICT: APPROVE` only when at least two unwaived `task -> reviewer` dispatches were journaled this task (`reviewerDispatches >= 2`); `advise` tracks and journals the count but credits unconditionally |
-| `evidencePattern`                                                                                       | a npm/pnpm/yarn/bun/deno/node `--test`/pytest/`make test`/go/cargo pattern     | regex matched (case-insensitively) against bash/shell commands; user-overridable for non-JS toolchains (e.g. Ruby/`rspec`)                                                                                                             |
-| `toolPolicy.mode`                                                                                       | `enforce`                                                                      | `enforce` blocks matching commands/paths; `shadow` journals would-blocks without throwing (adoption path); `off` is a silent no-op                                                                                                     |
-| `toolPolicy.bashDeny`                                                                                   | the git-protective defaults (worktree, branch switch/checkout, merge, `gh pr`) | case-insensitive regex sources matched against `bash`/`shell` commands; an invalid source is dropped and journaled                                                                                                                     |
-| `toolPolicy.pathDeny`                                                                                   | `[]` (empty)                                                                   | case-insensitive regex sources matched against `write`/`edit` target paths; a dropped source is journaled                                                                                                                              |
-| `toolPolicy.observeSessionMove`                                                                         | `true`                                                                         | journal `session_move` dispatches as telemetry (never blocks)                                                                                                                                                                          |
-| `gitGates.mode`                                                                                         | `shadow`                                                                       | `shadow` would-block without throwing; `enforce` blocks invalid commits and unapproved pushes (opt-in), `off` is a silent no-op                                                                                                        |
-| `gitGates.commitMessages`                                                                               | `true`                                                                         | validate `git commit -m` subjects as conventional commits; `shadow` journals, `enforce` blocks, `off` is a no-op                                                                                                                       |
-| `gitGates.commitFormat`                                                                                 | a conventional-commits regex source                                            | conventional-commits regex source (compiled `^...$`) matched against each subject; a bad source is dropped and journaled                                                                                                               |
-| `gitGates.landingGate`                                                                                  | `true`                                                                         | gate `git push` on this task reviewer `VERDICT: APPROVE`; `shadow` journals, `enforce` blocks then escalates, `off` is a no-op                                                                                                         |
+| Key                                                                                                                        | Default                                                                            | Meaning                                                                                                                                                                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metricsDir`                                                                                                               | `$XDG_DATA_HOME/opencode/metrics`, fallback `~/.local/share/opencode/metrics`      | directory for both telemetry files                                                                                                                                                                                                     |
+| `journalMaxBytes`                                                                                                          | 5242880                                                                            | rotate a journal file past this size                                                                                                                                                                                                   |
+| `journalMaxGenerations`                                                                                                    | 5                                                                                  | rotated generations kept per journal                                                                                                                                                                                                   |
+| `maxReviewerRounds`                                                                                                        | 2                                                                                  | reviewer dispatches per task, regardless of gate state (waived dispatches exempt)                                                                                                                                                      |
+| `maxPlannerRounds`                                                                                                         | 3                                                                                  | planner dispatches per task (waived dispatches exempt)                                                                                                                                                                                 |
+| `maxPlanReviewerRounds`                                                                                                    | 3                                                                                  | plan-reviewer dispatches per task (waived dispatches exempt)                                                                                                                                                                           |
+| `maxTestRunnerRounds`                                                                                                      | 4                                                                                  | test-runner dispatches per task (waived dispatches exempt)                                                                                                                                                                             |
+| `maxTotalDispatches`                                                                                                       | 16                                                                                 | total task dispatches per task across every leg — the global loop backstop (waived dispatches exempt)                                                                                                                                  |
+| `maxSessions`                                                                                                              | 64                                                                                 | LRU cap on tracked sessions (gate state, child→parent edges, verdicts); registered live parents are never evicted                                                                                                                      |
+| `readWarn` / `readBlock`                                                                                                   | 8 / 15                                                                             | whole-file read horizon                                                                                                                                                                                                                |
+| `waiverMarker`                                                                                                             | `USER WAIVER:`                                                                     | literal waiver marker                                                                                                                                                                                                                  |
+| `approvalMarker`                                                                                                           | `PLAN APPROVED:`                                                                   | literal prompt-channel plan-approval marker                                                                                                                                                                                            |
+| `plansDir`                                                                                                                 | `.opencode/plans`                                                                  | executor decomposition scan directory                                                                                                                                                                                                  |
+| `trace`                                                                                                                    | `true`                                                                             | write the human-readable trace file (JSONL journal always writes)                                                                                                                                                                      |
+| `continuationCarry`                                                                                                        | `false`                                                                            | carry the task's gate flags across a prompt reset when the worktree/branch is unchanged (continuation), instead of starting a clean cycle                                                                                              |
+| `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` / `agents.planner` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger` / `planner` | agent names recognized in dispatches                                                                                                                                                                                                   |
+| `agents.bareOutput`                                                                                                        | `["test-runner", "reviewer", "plan-reviewer"]`                                     | agents whose marker-less output is a violation                                                                                                                                                                                         |
+| `gateMarker` / `verdictMarker`                                                                                             | canonical regex sources                                                            | marker patterns, compiled with `gm`                                                                                                                                                                                                    |
+| `gateEvidence`                                                                                                             | `enforce`                                                                          | `enforce` requires a correlating exit-0 test command to flip the gate; `flag` flips on trust (stamps `verified`); `off` journals without it                                                                                            |
+| `reviewEnsemble`                                                                                                           | `enforce`                                                                          | `enforce` credits a reviewer `VERDICT: APPROVE` only when at least two unwaived `task -> reviewer` dispatches were journaled this task (`reviewerDispatches >= 2`); `advise` tracks and journals the count but credits unconditionally |
+| `evidencePattern`                                                                                                          | a npm/pnpm/yarn/bun/deno/node `--test`/pytest/`make test`/go/cargo pattern         | regex matched (case-insensitively) against bash/shell commands; user-overridable for non-JS toolchains (e.g. Ruby/`rspec`)                                                                                                             |
+| `toolPolicy.mode`                                                                                                          | `enforce`                                                                          | `enforce` blocks matching commands/paths; `shadow` journals would-blocks without throwing (adoption path); `off` is a silent no-op                                                                                                     |
+| `toolPolicy.bashDeny`                                                                                                      | the git-protective defaults (worktree, branch switch/checkout, merge, `gh pr`)     | case-insensitive regex sources matched against `bash`/`shell` commands; an invalid source is dropped and journaled                                                                                                                     |
+| `toolPolicy.pathDeny`                                                                                                      | `[]` (empty)                                                                       | case-insensitive regex sources matched against `write`/`edit` target paths; a dropped source is journaled                                                                                                                              |
+| `toolPolicy.observeSessionMove`                                                                                            | `true`                                                                             | journal `session_move` dispatches as telemetry (never blocks)                                                                                                                                                                          |
+| `gitGates.mode`                                                                                                            | `shadow`                                                                           | `shadow` would-block without throwing; `enforce` blocks invalid commits and unapproved pushes (opt-in), `off` is a silent no-op                                                                                                        |
+| `gitGates.commitMessages`                                                                                                  | `true`                                                                             | validate `git commit -m` subjects as conventional commits; `shadow` journals, `enforce` blocks, `off` is a no-op                                                                                                                       |
+| `gitGates.commitFormat`                                                                                                    | a conventional-commits regex source                                                | conventional-commits regex source (compiled `^...$`) matched against each subject; a bad source is dropped and journaled                                                                                                               |
+| `gitGates.landingGate`                                                                                                     | `true`                                                                             | gate `git push` on this task reviewer `VERDICT: APPROVE`; `shadow` journals, `enforce` blocks then escalates, `off` is a no-op                                                                                                         |
 
 Environment variables (override the file):
 
 - `TURNSTILE_TRACE=0|1`: disable/enable the trace file
 - `TURNSTILE_METRICS_DIR=<dir>`: relocate the telemetry directory
 - `TURNSTILE_CONFIG=<path>`: use a different config file
-
-## Markers
-
-Subagents must emit these as the first line of their output. These examples
-are the canonical syntax; CI asserts the parser in `src/markers.ts` accepts
-exactly them.
-
-```
-GATE: PASS tests=12 passed=11 failed=1
-GATE: FAIL tests=12 passed=10 failed=2
-
-VERDICT: APPROVE crit=0 high=0 med=2 low=1
-VERDICT: BLOCK crit=1 high=0 med=0 low=2
-```
-
-Waiver and approval markers (must appear in the user's prompt, verbatim — a dispatch prompt that merely contains the marker unlocks nothing; see [Waivers and approvals](#waivers-and-approvals)):
-
-```
-USER WAIVER: <the user's words>
-PLAN APPROVED: <the user's words>
-```
-
-## Waivers and approvals
-
-Turnstile reads a waiver or a human plan approval only from the user's OWN
-prompt — the plugin observes it at prompt admission, never from an agent's
-dispatch prompt. The provenance rule is the point: a marker inside an
-agent-composed prompt must never unlock a gate.
-
-- **How the plugin sees your prompt.** Capture happens at prompt admission, on
-  whichever host channel carries it — the `session` prompt hook, or the
-  correlated `session.inbox.enqueued` admission carrying the same host message
-  id (a surface uses the stream when it does not dispatch the hook). Both
-  channels speak an identical marker, the same user-only provenance rule, and
-  the same journal shapes, so a `USER WAIVER:` / `PLAN APPROVED:` captured either
-  way behaves identically; a prompt delivered on neither channel is journaled as
-  one distinguishing error rather than failing silently.
-- **Prompt-channel waiver.** Put the literal marker `USER WAIVER:` in the text
-  of your prompt to waive the plan gate and the reviewer gate for the task.
-  The waiver is provenance-checked: it must come from the user prompt, and a
-  dispatch prompt that merely contains `USER WAIVER:` unlocks nothing.
-- **Prompt-channel approval.** Put `PLAN APPROVED:` in your prompt to approve
-  the plan the same way a plan-reviewer `VERDICT: APPROVE` would; it sets the
-  plan verdict and records human provenance, and replays across restart
-  exactly like a reviewer verdict.
-- **Permission-prompt escalation.** When no approval holds, the first
-  executor dispatch escalates the plan gate to the human through OpenCode's
-  permission surface: `permission.evaluate` forces an `ask` that names the
-  plan file and its head. The human replies — `always` approves for the rest
-  of the task, `once` grants a single dispatch, and `reject` keeps the gate
-  red (that single reply is consumed).
-
-Do not create, paste, or relay a `USER WAIVER:` / `PLAN APPROVED:` marker to
-open a gate — only the user's own prompt carries a real waiver or approval.
-
-## What turnstile is not
-
-Turnstile is a speed bump and an audit trail, not a security boundary.
-
-- Any text matching the gate marker — including a marker an agent
-  hallucinated or copied from documentation — is journaled `verified:false`
-  under the default `gateEvidence:enforce` mode and does not flip
-  `hasGatePass` unless the current task's bash/shell executions contain a
-  matching exit-0 test command (plausibility checked against
-  `evidencePattern`). An agent that wants a green gate can no longer emit
-  `GATE: PASS tests=1 passed=1 failed=0` without running anything — but
-  `gateEvidence:flag` reverts to the historical flip-on-trust semantics
-  (still stamped `verified:false`), and `gateEvidence:off` journals without
-  the field at all.
-- A `GATE: PASS` is only as trustworthy as the journal: an attacker who can
-  write or replay the metrics directory can craft a `verified:true` entry,
-  and `flag`/`off` make a fabricated marker trust-lossless. Tests that run
-  outside the observable bash/shell surface (external CI, a differently
-  named execution tool) leave enforce mode with no evidence to verify
-  against — operators in that situation use `flag`/`off` at the cost of the
-  guarantee. The journal records what was _claimed_, never proof.
-- The dispatch-prompt waiver-forgery vector is closed: a `USER WAIVER:` (or
-  `PLAN APPROVED:`) substring inside an agent-composed dispatch prompt
-  unlocks nothing — turnstile reads waivers and approvals only from the
-  user's prompt at admission. The residual trust stance is unchanged: the
-  journal is still the record of what was _claimed_ (an attacker who can
-  write or replay the metrics directory can still craft entries), so the
-  journal is treated as sensitive data (see SECURITY.md).
-- `scripts/check-markers.mjs` guards against accidental drift between the
-  parser and documented markers; it cannot guard against forgery, because
-  the markers are plain prose by design.
-- The `bash`/`shell`/`write`/`edit` denylist is a deterrent, not a sandbox: it
-  matches strings, so `bash -c "$X"`, script files, `eval` indirection, and
-  values sourced from the environment still bypass it. A block names the matched
-  _rule_ (never the raw command, per the redaction contract); a dropped or
-  invalid regex _source_ means the operation it guarded is now **allowed**
-  (documented so a config typo weakens the policy visibly in the journal rather
-  than silently). The git rules are global-option tolerant, so `git -C dir
-checkout main` is caught as well as `git checkout main`, and the checkout guard
-  allows the file-restore form `git [global options] checkout [<ref>] -- <path>`
-  while blocking `git [global options] checkout <branch>` and `-b`/`-C`; but two
-  gaps remain by design. `git` **aliases** (e.g. `git co main`, `git cm -m x`)
-  are not matched, because a rule names `git` plus a literal subcommand only; and
-  the wider base can _over-match_ — e.g. `git commit -m "… merge …"` trips the
-  `merge` rule. `session_move` never blocks.
-- MCP tools and other tool names not named in `execute.before` (`task`,
-  `subagent`, `read`, `bash`, `shell`, `write`, `edit`, `session_move`) remain
-  unguarded. Governing them is a follow-on, not part of this policy layer.
-
-Use OpenCode's permission and sandboxing mechanisms against hostile agents.
-Treat turnstile's journal as the record of what was _claimed_, and treat the
-journal itself as sensitive data (see SECURITY.md).
-
-### Adopting the tool-call policy (shadow first)
-
-The default `toolPolicy.mode: enforce` blocks the git-protective operations the
-policy already demands, so it is safe to adopt immediately. To tune it with zero
-risk of breaking work, boot one session in `toolPolicy.mode: shadow` first:
-would-block commands and paths are journaled with `"reason":"tool-policy"` and
-`mode:"shadow"` but never throw. Grep the journal for that reason, review the
-rules that fired, adjust `toolPolicy.bashDeny`/`pathDeny` (each rule is
-case-insensitive), then flip to `enforce`. Restart sessions to apply config —
-it is read once at setup.
-The same shadow-first adoption applies to `gitGates` (default `mode: shadow`):
-under `shadow` an invalid commit message or an unapproved `git push` is journaled
-(`"reason":"invalid-commit-message"` / `"reason":"no-landing-approval"`) without
-throwing, so boot one session in `shadow`, review the journal, then flip to
-`enforce` when you are ready to start blocking.
 
 ## Files and journals
 
@@ -673,6 +562,24 @@ can be fresher (a session that has prompted since is newer than the journal
 records), so treat status as the durable state of the previous cycle rather
 than a live snapshot.
 
+## What turnstile is not
+
+Turnstile is a speed bump and an audit trail, not a security boundary.
+The full threat model — evidence limits, journal trust, denylist gaps,
+unguarded tool surfaces — lives in
+[`docs/architecture.md` §10](docs/architecture.md#10-security-posture-and-limits).
+The short version:
+
+- A `GATE: PASS` without a correlated exit-0 test execution never flips the
+  gate under the default `gateEvidence:enforce`; `flag`/`off` revert to
+  flip-on-trust.
+- The journal is the record of what was _claimed_, never proof — treat it as
+  sensitive data (see SECURITY.md).
+- The dispatch-prompt waiver-forgery vector is closed: waiver/approval
+  markers work only in the user's own prompt.
+- The denylist is a deterrent, not a sandbox; MCP tools remain unguarded.
+- Use OpenCode's permission and sandboxing mechanisms against hostile agents.
+
 ## Behavior contract
 
 - Fail-open by design. Every hook body is guarded; internal errors are
@@ -685,3 +592,11 @@ than a live snapshot.
 - Host API is the OpenCode v2 promise-plugin shape
   (`{ tool.hook, session.hook, event.subscribe }`), verified against
   opencode v2.0.22.
+
+## More documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — how the plugin works
+  inside: module map, hook surface, end-to-end task flow, gate state
+  machine, journal/replay, policy injection, security posture, and
+  ecosystem positioning, with rendered diagrams.
+- [SECURITY.md](SECURITY.md) — journal sensitivity and trust model.
