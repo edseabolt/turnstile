@@ -832,7 +832,9 @@ export function createTurnstile(
     // the hook path and the inbox stream each admit one prompt exactly once
     // (the normal host sequence is hook-then-inbox on the shared message id).
     const admittedIds = new Set<string>()
-    // Cap on tracked dedupe keys (LRU; evict oldest past the cap) — bounded
+    // Cap on tracked dedupe keys (FIFO; evict the first-seen key past the
+    // cap — Set insertion order is never refreshed, which is fine: the host
+    // never re-fires an old admission id, so recency adds nothing) — bounded
     // memory per plugin instance.
     const maxTrackedAdmittedIds = 64
     /**
