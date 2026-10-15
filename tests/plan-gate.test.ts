@@ -1076,3 +1076,68 @@ test("plan gate: unreadable plan file mid-scan fails open (executor allowed)", a
     restore()
   }
 })
+
+/**
+ * A BLOCK verdict followed by a re-dispatched plan-reviewer's APPROVE (in a
+ * later round) clears the plan gate: the self-keyed delivery round-scopes out
+ * the prior-round edge child and credits the round's APPROVE, so the first
+ * executor dispatch is not blocked — the dead-end after a BLOCK verdict.
+ */
+test("plan gate: a re-review APPROVE after a prior BLOCK clears the gate", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    // Round 1: register the child, stream a BLOCK on it, then deliver it on the
+    // child (edge-resolved) so the gate journals a BLOCK and stays red.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Task finished." },
+    })
+    // The gate is red after the BLOCK: the first executor dispatch is blocked.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+    // Round 2: re-dispatch the plan-reviewer, then stream an APPROVE on a fresh
+    // unrelated child, then a marker-less self-keyed delivery on the parent
+    // credits the round's APPROVE.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer", prompt: "review the plan" },
+    })
+    await settle()
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: `${APPROVE}\n` } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c2"),
+    )
+    await settle()
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Task finished." },
+    })
+    // The gate is green: the first executor dispatch is not blocked.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})

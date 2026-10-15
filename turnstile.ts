@@ -173,11 +173,11 @@
  *   dispatch for the parent predates (at-or-before) the observation's recordedAt,
  *   plausibly unique across parents (a verdict with two candidate parents is
  *   ambiguous and excluded). Timestamps are last-wins and cleared on prompt reset,
- *   so a verdict is plausible only within the parent's current task scope. Every
+ *   so a verdict is plausible only within the parent's current task scope. The registered-edge scan is round-scoped the same way — only edge children whose stored verdict was recorded at-or-after the parent's most-recent dispatch are kept, so a prior-round BLOCK left behind by an earlier review is superseded by this round's verdict. Every
  *   self-keyed delivery journals one `type:"attribution"` entry before any mutation
  *   (`{decision, deliveryIsParent, sessionApi, candidates:{edge,unresolved,
  *   plausible} counts, unresolvedIDs, lookup:{session:{attempts,reason}}}`) so the
- *   field can tell the three root-cause hypotheses apart; the attribution is
+ *   field can tell the three root-cause hypotheses apart; the `edge` count is the round-scoped one; the attribution is
  *   unanimous-pool driven. A plausible streamed `VERDICT: APPROVE` makes a
  *   self-keyed `BLOCK` unreachable (structural fail-open over BLOCK). The
  *   edge-resolved branch and the never-BLOCK-on-zero-candidates guarantee are
