@@ -634,7 +634,9 @@ throwing, so boot one session in `shadow`, review the journal, then flip to
   the stamp. Each type is replayed at boot and contributes to the 2000-line
   tail: the last `ensemble` entry per session sets `reviewerDispatches`, and
   when it is stamped `refusedApprove:true` replay does not re-credit that
-  APPROVE's `hasReviewApprove` on restart.
+  APPROVE's `hasReviewApprove` on restart. When the landing gate is already
+  released, a later APPROVE delivery is credited without a stamp: the release
+  (human grant or mechanical) is never re-stamped as a refusal.
 
 ## Status
 

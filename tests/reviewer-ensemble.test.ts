@@ -24,6 +24,7 @@ import {
   journalEntries,
   makeFakeHost,
   tmpDir,
+  traceText as helpersTraceText,
   waitUntil,
   type FakeHost,
 } from "./helpers.ts"
@@ -197,6 +198,11 @@ test("T3: enforce credits a reviewer APPROVE only at ensemble count 2", async ()
       (e) => e.type === "blocked" && e.reason === "ensemble-incomplete",
     )
     assert.ok(blocked && blocked.count === 1 && blocked.need === 2)
+    const traceText = helpersTraceText(metricsDir)
+    assert.ok(
+      traceText.includes("1 of 2 dispatches; not credited"),
+      "the trace interpolates the actual dispatch count instead of a hardcoded string",
+    )
     // Second dispatch completes the ensemble; a re-delivered identical APPROVE
     // (unique task-deliverySeq) credits again.
     await callTool(h, "execute.before", {
@@ -334,6 +340,73 @@ test("T5b: a human always-grant survives restart via the clearing entry", async 
       ledger.state("p1").hasReviewApprove,
       true,
       "replay restores the human grant via the clearing entry",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** T5c: a reviewer APPROVE delivered after a human always-grant must not
+ *  journal a refusal: the short-circuit keeps the release intact, so a fresh
+ *  replay still restores hasReviewApprove. */
+test("T5c: a post-grant APPROVE delivery at a smaller count keeps the human release", async () => {
+  const { h, metricsDir, dispose } = await boot({
+    gateEvidence: "flag",
+    gitGates: { mode: "enforce" },
+  })
+  try {
+    // The human releases the landing gate via an always-grant.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-5c" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-5c", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "permission" && e.decision === "always"),
+    )
+    // One unwaived reviewer dispatch (count 1), then an APPROVE delivery below
+    // the ensemble threshold: the already-approved short-circuit must credit
+    // without journaling any refusal or block.
+    await greenGate(h, "p1")
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+      result: { output: `${APPROVE}\n` },
+    })
+    const entries = journalEntries(metricsDir)
+    assert.ok(
+      !entries.some((e) => e.type === "ensemble" && e.refusedApprove === true),
+      "no refusal stamp is journaled after the human grant",
+    )
+    assert.ok(
+      !entries.some((e) => e.type === "blocked" && e.reason === "ensemble-incomplete"),
+      "no ensemble-incomplete block is journaled after the human grant",
+    )
+    // Fresh replay: the human's clearing entry still wins, so the release
+    // survives the post-grant delivery.
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    assert.equal(
+      ledger.state("p1").hasReviewApprove,
+      true,
+      "replay restores the human grant despite the later count-1 APPROVE delivery",
     )
   } finally {
     dispose()

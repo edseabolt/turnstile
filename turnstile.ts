@@ -77,6 +77,9 @@
  *   (no gate). A human `always` grant is never gated and journals a
  *   `refusedApprove:false` clearing entry so the human release survives restart;
  *   the count survives a restart via journal replay and one grace prompt.
+ *   When the landing gate is already released (`hasReviewApprove` true), a
+ *   later reviewer APPROVE delivery is credited without journaling, so a human
+ *   grant or mechanical release is never re-stamped as a refusal.
  *   Merging findings stays orchestrator work.
  * - Parent-bucket eviction: live-parent gate buckets (hasGatePass,
  *   hasPlanVerdict, read counter, policyInjected) are registered per

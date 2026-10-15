@@ -48,7 +48,11 @@ export interface Gates {
    * Decides whether the landing gate may credit a reviewer `VERDICT: APPROVE`
    * for a task. Under `reviewEnsemble: enforce` the task needs at least two
    * unwaived reviewer dispatches counted this task (`reviewerDispatches >= 2`);
-   * `advise` credits unconditionally. With too few dispatches under `enforce`
+   * `advise` credits unconditionally. When the landing gate is already
+   * released (`hasReviewApprove`), a later APPROVE delivery is credited
+   * without journaling — the release (e.g. a human grant) must not be
+   * re-stamped as a refusal by a smaller-count delivery. With too few
+   * dispatches under `enforce`
    * it journals a `blocked` (`reason:"ensemble-incomplete"`, carrying `count`
    * and `need`), a `refusedApprove`-stamped `ensemble` entry (so replay cannot
    * re-credit the refused APPROVE across a restart), and a diagnostic trace,
@@ -289,7 +293,11 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * Decides whether the landing gate may credit a reviewer `VERDICT: APPROVE`
    * for a task. Under `reviewEnsemble: enforce` the task needs at least two
    * unwaived reviewer dispatches counted this task (`reviewerDispatches >= 2`);
-   * `advise` credits unconditionally. With too few dispatches under `enforce`
+   * `advise` credits unconditionally. When the landing gate is already
+   * released (`hasReviewApprove`), a later APPROVE delivery is credited
+   * without journaling — the release (e.g. a human grant) must not be
+   * re-stamped as a refusal by a smaller-count delivery. With too few
+   * dispatches under `enforce`
    * it journals a `blocked` (`reason:"ensemble-incomplete"`, carrying `count`
    * and `need`), a `refusedApprove`-stamped `ensemble` entry (so replay cannot
    * re-credit the refused APPROVE across a restart), and a diagnostic trace,
@@ -302,6 +310,12 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    */
   function reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean {
     const s = ledger.state(sessionID)
+    // Already-approved short-circuit: when the landing gate is released (e.g.
+    // by a human grant), a later APPROVE delivery at a smaller count must not
+    // journal the refusal stamp — the stamp's last-wins replay would overwrite
+    // the human's clearing entry and drop the release on restart. This branch
+    // journals nothing and credits, so the credit decision is idempotent.
+    if (s.hasReviewApprove) return true
     if (config.reviewEnsemble === "advise" || s.reviewerDispatches >= 2) return true
     journaler.journal({
       type: "blocked",
@@ -326,7 +340,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     journaler.traceEvent(
       config.agents.reviewer,
       "ensemble",
-      "1 of 2 dispatches; not credited",
+      `${s.reviewerDispatches} of 2 dispatches; not credited`,
       sessionID,
     )
     return false
