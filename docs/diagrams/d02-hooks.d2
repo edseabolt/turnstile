@@ -1,0 +1,54 @@
+direction: right
+
+session: "session.hook ×3" {
+  prompt: "prompt"
+  generate: "generate"
+  compaction: "compaction"
+}
+
+admit: "admitPrompt:\ndedupe by message id ▸ markParent ▸ resetState\n(+continuation carry) ▸ capture\nUSER WAIVER: / PLAN APPROVED:"
+
+clamp: "clamp temperature:\nreviewer/plan-reviewer → 0,\nexecutor/test-runner/debugger ≤ 0.2"
+
+preserve: "append 'preserve verbatim'\nsystem block"
+
+permission: "permission.hook('evaluate')\nnever blocks, forces 'ask'" {
+  plan-arm: "action == task\nand plan gate red?"
+  landing-arm: "action == bash/shell\npush without reviewer approve?"
+}
+
+tool: "tool.hook" {
+  before: "execute.before\n(all gating lives here)"
+  after: "execute.after\n(observation only, never blocks)"
+}
+
+before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸ once-grants"
+before-read: "read: parent-keyed read horizon (block 15)"
+before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
+before-write: "write/edit: path denylist"
+
+after-task: "task delivery: parseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ policy prepend (once)"
+after-read: "read: increment parent's reads;\ninject warning at readWarn=8"
+after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
+
+eventloop: "event.subscribe stream loop" {
+  created: "session.created → child→parent edge;\nroot stamps projectDir"
+  text: "message.part.updated / session.text.ended / .delta\n→ parseMarkers"
+  permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
+  inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"
+  errors: "session.error → telemetry"
+}
+
+session.prompt -> admit
+session.generate -> clamp
+session.compaction -> preserve
+tool.before -> before-task
+tool.before -> before-read
+tool.before -> before-bash
+tool.before -> before-write
+tool.after -> after-task
+tool.after -> after-read
+tool.after -> after-bash
+eventloop.inbox -> admit: "same admission path"
+permission.plan-arm -> admit: "reply 'always' → PLAN APPROVED state"
+permission.landing-arm -> tool.before-bash: "consume pendingOnceGrant.landing"

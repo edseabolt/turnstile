@@ -2,13 +2,20 @@
   "journalMaxBytes": 5242880,
   "journalMaxGenerations": 5,
   "maxReviewerRounds": 2,
+  "maxPlannerRounds": 3,
+  "maxPlanReviewerRounds": 3,
+  "maxTestRunnerRounds": 4,
+  "maxTotalDispatches": 16,
   "maxSessions": 64,
   "readWarn": 8,
   "readBlock": 15,
   "waiverMarker": "USER WAIVER:",
+  "approvalMarker": "PLAN APPROVED:",
   "plansDir": ".opencode/plans",
   "trace": true,
+  "continuationCarry": false,
   "agents": {
+    "planner": "planner",
     "reviewer": "reviewer",
     "planReviewer": "plan-reviewer",
     "executor": "executor",
@@ -17,5 +24,25 @@
     "bareOutput": ["test-runner", "reviewer", "plan-reviewer"]
   },
   "gateMarker": "^\\s*[`>#*\\s]*GATE: (PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+",
-  "verdictMarker": "^\\s*[`>#*\\s]*VERDICT: (APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+"
+  "verdictMarker": "^\\s*[`>#*\\s]*VERDICT: (APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+",
+  "gateEvidence": "enforce",
+  "reviewEnsemble": "enforce",
+  "evidencePattern": "\\b(npm\\s+(run\\s+)?test|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+--test|npx\\s+node\\s+--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b",
+  "toolPolicy": {
+    "mode": "enforce",
+    "bashDeny": [
+      "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
+      "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
+      "\\bgit\\b[^;&|]*?\\smerge\\b",
+      "\\bgh\\s+pr\\s+(create|merge)\\b"
+    ],
+    "pathDeny": [],
+    "observeSessionMove": true
+  },
+  "gitGates": {
+    "mode": "shadow",
+    "commitMessages": true,
+    "commitFormat": "(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\\([^)]*\\))?(?:[!]:?|:) [^\\r\\n]{1,72}(?:(?:\\r?\\n){1,2}[^\\r\\n]*)?",
+    "landingGate": true
+  }
 }

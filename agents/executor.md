@@ -23,8 +23,11 @@ with the existing implementation.
 Before editing:
 
 1. Read the requirements specification and the implementation plan. The
-   requirements spec is passed verbatim in this task; the plan is written to
-   `.opencode/plans/<task-slug>.md`, and its path is given in this task. If
+   requirements spec is passed verbatim in this task; the plan's path is
+   given in this task — always use the path the task provides, never a
+   default location (the plans directory is configurable; turnstile's
+   `plansDir` defaults to `.opencode/plans/`, so the plan may live
+   elsewhere). If
    either is missing (non-git directory, no plan produced, or not provided),
    report which is absent and do not proceed from memory.
 2. Read the relevant source files.

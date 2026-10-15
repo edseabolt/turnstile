@@ -19,8 +19,10 @@ observation, not by asking others.
 Read:
 
 - The user's original request (passed verbatim in this task).
-- The plan under review (path given in this task; typically
-  `.opencode/plans/<task-slug>.md`). If it is absent, request it before
+- The plan under review (path given in this task — use the path the task
+  provides; the plans directory is configurable via turnstile's `plansDir`,
+  default `.opencode/plans/<task-slug>.md`, so it may live elsewhere). If it
+  is absent, request it before
   reviewing; do not review a plan you reconstructed from the prompt.
 - Relevant source code and repository knowledge files
   (.opencode/knowledge/) — only as needed to verify the plan's claims

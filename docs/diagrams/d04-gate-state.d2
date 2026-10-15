@@ -1,0 +1,53 @@
+direction: down
+
+fresh: "Fresh (per prompt)" {
+  shape: oval
+}
+planning: "Planning" {
+  shape: oval
+}
+planok: "Plan approved" {
+  shape: oval
+}
+green: "Tests green" {
+  shape: oval
+}
+reviewed: "Review approved" {
+  shape: oval
+}
+end: "next user prompt (new task)" {
+  shape: circle
+}
+
+start: "user prompt admitted\n(resetState + carry)" {
+  shape: circle
+}
+
+start -> fresh
+fresh -> planning: "planner dispatch\ncap 3, budget 16 total"
+planning -> planok: "plan-reviewer APPROVE | PLAN APPROVED: | permission 'always'"
+planning -> planning: "BLOCK → revise → re-review\n(round-scoped attribution)" {
+  style.stroke-dash: 4
+}
+planok -> green: "test-runner GATE: PASS\n(verified by exit-0 evidence when gateEvidence=enforce)"
+green -> planok: "GATE: FAIL (latest-wins)" {
+  style.stroke-dash: 4
+}
+green -> reviewed: "reviewer APPROVE ×2 (reviewEnsemble=enforce) | permission landing 'always'"
+reviewed -> reviewed: "git push allowed"
+green -> end
+
+planok-note: "plansSignature stamped at approval;\nplans-dir edit ⇒ signature mismatch ⇒ verdict stale ⇒ re-review.\npendingOnceGrant.plan releases exactly one executor dispatch." {
+  style.stroke-dash: 4
+  shape: parallelogram
+}
+reviewed-note: "pendingOnceGrant.landing releases exactly one push." {
+  style.stroke-dash: 4
+  shape: parallelogram
+}
+planok-note -> planok: "" {
+  style.opacity: 0
+}
+reviewed-note -> reviewed: "" {
+  style.opacity: 0
+}

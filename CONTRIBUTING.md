@@ -4,14 +4,18 @@
 
 ```sh
 npm install
-npm run ci   # ci:host (lint, format:check, typecheck, check:markers, test) + install:check
+npm run ci           # ci:host (lint, format:check, typecheck, check:markers, test) — host chain only; green on a fresh clone
+npm run ci:installed # install:check — only after `npm run init` on a machine with installed artifacts
 ```
 
 - `npm run lint`: ESLint (flat config, `eslint.config.mjs`)
 - `npm run format` / `format:check`: Prettier (`.prettierrc.json`)
 - `npm run typecheck`: `tsc --noEmit`, strict
 - `npm run check:markers`: marker-drift guard (see below)
-- `npm test`: `node --test --experimental-strip-types tests/*.test.ts`
+- `npm test`: `node --test --experimental-strip-types tests/*.test.ts`, with
+  100% line/branch/function coverage enforced over `src/` + `turnstile.ts`
+  via node:test's built-in thresholds — no coverage extension. `bin/` and
+  `scripts/` sit outside the gate.
 
 The test suite requires Node ≥ 22.6 (`--experimental-strip-types`); the
 plugin runtime itself is Node ≥ 18.
@@ -19,9 +23,10 @@ plugin runtime itself is Node ≥ 18.
 ## Repo rules
 
 1. **Marker drift:** the regex literals in `src/markers.ts` and the marker
-   examples in `README.md` are synced by `scripts/check-markers.mjs`, which
-   extracts the literals by name and asserts the README examples parse.
-   Edit both sides together; `prettier-ignore` comments on the literals
+   examples in `README.md`, `agents/*.md`, and the policy templates in
+   `src/policy.ts` are synced by `scripts/check-markers.mjs`, which extracts
+   the literals by name and asserts every example parses.
+   Edit all sides together; `prettier-ignore` comments on the literals
    keep them single-line so the extraction keeps working.
 2. **Erasable TypeScript only:** `src/` and `tests/` must stay erasable TS
    (no enums, namespaces, or parameter properties): the test harness runs
@@ -45,6 +50,21 @@ plugin runtime itself is Node ≥ 18.
    without a repo clone. Do not add imports beyond Node builtins, and keep
    the publish artifact aligned with `package.json` `files` (verify with
    `npm run pack:dry`).
+8. **Shipped agent definitions treat config values as defaults, not
+   constants:** where `agents/*.md` names a path backed by a config key
+   (`.opencode/plans/` → `plansDir`), the instruction defers to a path given
+   in the dispatch prompt and names the key. See the "Enforcement behavior"
+   section of AGENTS.md; when a config default changes, check
+   `agents/*.md` in the same change set.
+9. **Architecture docs stay in sync:** `docs/architecture.md` (with
+   `docs/images/*.svg` rendered from `docs/diagrams/*.d2`) is the living
+   architecture reference. When a change alters what it describes — module
+   map, hook surface, gates/`GateState`, journal/replay, config surface —
+   update the D2 source (never the SVG), re-render with
+   `d2 --theme 200 <docs/diagrams/X.d2> <docs/images/X.svg>`, update the
+   prose, and commit source + SVG + doc in the same change set. Diagrams
+   cite real function/hook/field names; a stale name is a docs bug. See the
+   "Architecture docs" section of AGENTS.md for the full trigger list.
 
 ## Tests
 

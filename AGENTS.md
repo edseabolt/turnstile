@@ -154,6 +154,16 @@ stated feature; devDependencies are tooling only.)
   together by `scripts/check-markers.mjs`.
 - The read-counter keys off the parent session (`childToParent` map); state
   is per parent, not per child subagent session.
+- Shipped agent definitions (`agents/*.md`) must treat configured values as
+  defaults, not constants: where a definition names a path that maps to a
+  config key (`.opencode/plans/` → `plansDir`), the surrounding instruction
+  must say to honor a path given in the dispatch prompt and name the
+  config key so a customized setup doesn't strand the agent. Frontmatter
+  permission rules that mirror a default (planner's `.opencode/plans/**`
+  allow) carry a comment stating they must be updated when the key changes.
+  `.opencode/knowledge/` is exempt — it is a repo-local convention, not a
+  turnstile config key. When a config default changes, check `agents/*.md`
+  phrasing in the same change set.
 
 ## Operational notes
 
@@ -165,3 +175,64 @@ stated feature; devDependencies are tooling only.)
   writes.
 - Executor dispatch blocking scans `.opencode/plans/*.md` in the project dir
   for `## Decomposition`; plans there are load-bearing, not scratch files.
+- `CONTRIBUTING.md` is the contributor-facing summary of the rules in this
+  file (dev loop, marker-drift source set, erasable TS, fail-open,
+  dependencies, architecture-docs sync). When a rule here changes, update
+  CONTRIBUTING.md in the same change set; if a rule lives only here, leave
+  CONTRIBUTING.md pointing at this file rather than duplicating it.
+
+## Architecture docs (keep in sync when code changes)
+
+`docs/architecture.md` (with `docs/images/*.svg` rendered from
+`docs/diagrams/*.d2`) is the living architecture reference for new users and
+devs. It is not a snapshot: when a change alters what the diagrams or
+document describe, update them in the same change set — not as a follow-up.
+
+- **Trigger for updates** — touch the docs when a change affects any of:
+  - the module map: new/renamed/removed files under `src/`, or changed
+    dependency direction between boundaries;
+  - the hook surface: hooks registered in `src/setup.ts` (session, tool,
+    permission, event types handled), or what fires on each hook;
+  - enforcement: gates added/removed/renamed, `GateState` fields, block
+    reasons, caps/budgets/defaults, marker semantics;
+  - persistence: journal entry types, replay behavior, rotation, the
+    `opencode-turnstile status` output;
+  - configuration: keys, defaults, validation, or the layered resolution.
+    Refactors that move code without changing behavior (renames aside) don't
+    require doc edits.
+- **How to update** — edit the D2 source in `docs/diagrams/` (not the SVG),
+  re-render the matching image, and update `docs/architecture.md` prose/tables
+  to match:
+
+  ```sh
+  d2 --theme 200 docs/diagrams/d01-modules.d2 docs/images/d01-modules.svg
+  ```
+
+  Commit the source, the rendered SVG, and the doc together. Keep the
+  diagram identities stable: `d01-modules` (module map), `d02-hooks` (hook
+  surface), `d03-task-flow` (end-to-end sequence), `d04-gate-state` (state
+  machine), `d05-persistence` (journal/replay). Add a new numbered diagram
+  rather than overloading an existing one. The README hero banner
+  (`docs/images/hero.svg`) is the exception: it is hand-authored SVG with no
+  D2 source — edit the SVG directly (keep it valid XML, dark theme, wide
+  aspect), and update it whenever enforcement points change.
+
+- **Same accuracy bar as code** — diagrams cite real function/hook/field
+  names; if a name in a diagram no longer exists in source, that's a bug in
+  the docs. The doc's claims are verified against source the same way test
+  expectations are.
+- **CONTRIBUTING.md stays aligned too** — it mirrors the repo rules in
+  short form (dev loop, marker-drift source set, architecture-docs rule).
+  When a change above makes CONTRIBUTING.md's claims stale — the CI chain
+  composition, the set of marker-validated sources, or the docs-sync rule —
+  update it in the same change set. CONTRIBUTING.md defers detail to this
+  file; keep it a summary, not a second source of truth.
+- **`examples/turnstile.example.json` mirrors `defaultConfig()`** — the
+  example carries every key from the defaults in `src/config.ts` verbatim,
+  with exactly one deliberate omission (`metricsDir`, computed at load
+  time). When a default value, key, or sub-block (`agents`, `toolPolicy`,
+  `gitGates`) changes in `defaultConfig()`, update the example in the same
+  change set, including the marker regex sources when `GATE_RE` /
+  `VERDICT_RE` change. The README documents the example as matching the
+  code defaults, so a stale example is a documented-behavior bug, not just
+  a stale snippet.
