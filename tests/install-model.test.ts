@@ -149,7 +149,7 @@ test("parseModelSpecs: a trailing #variant binds to a multi-segment id", () => {
 })
 
 /** The exact seeded user id drives planner with the full multi-segment id
- * (AC-6). */
+ *. */
 test("parseModelSpecs: the exact oMLX id seeds planner", () => {
   assert.deepEqual(parseModelSpecs(["planner=oMLX/oQ/GLM-5.3-Flash-oQ4-mtp"]), {
     planner: "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp",
@@ -329,7 +329,7 @@ test("CLI --print-model-config: exits 0 with six canonical agent names", () => {
   assert.deepEqual(Object.keys(out.agents), AGENT_ORDER)
 })
 
-/** --model planner=provider/model seeds only planner (AC-6 one-name seeding). */
+/** --model planner=provider/model seeds only planner. */
 test("CLI --model planner=provider/model seeds only planner", () => {
   const res = spawnSync(
     process.execPath,
@@ -364,7 +364,7 @@ test("CLI --print-model-config: short-circuits before the manifest", () => {
   assert.deepEqual(Object.keys(out.agents).sort(), AGENT_ORDER.sort())
 })
 
-/** A malformed spec exits 2 with an actionable message (AC-6). */
+/** A malformed spec exits 2 with an actionable message. */
 test("CLI malformed --model spec exits 2", () => {
   const res = spawnSync(
     process.execPath,
@@ -375,7 +375,7 @@ test("CLI malformed --model spec exits 2", () => {
   assert.match(res.stderr, /invalid --model spec "not-a-spec"/)
 })
 
-/** An unknown agent name exits 2, listing the six (AC-6). */
+/** An unknown agent name exits 2, listing the six. */
 test("CLI unknown --model agent name exits 2, listing the six", () => {
   const res = spawnSync(
     process.execPath,
@@ -403,7 +403,7 @@ test("CLI an unknown flag still exits 2", () => {
 
 /**
  * --model given without --print-model-config has no effect, so it exits 2 with
- * the orphan message instead of falling through to a real install (AC-6).
+ * the orphan message instead of falling through to a real install.
  */
 test("CLI --model without --print-model-config exits 2, orphan message", () => {
   const res = spawnSync(
@@ -440,7 +440,7 @@ function runCliUnderHome(fn: (home: string) => void) {
 }
 
 /**
- * Router printer-mode short-circuit (AC-11): `init -- --print-model-config`
+ * Router printer-mode short-circuit: `init -- --print-model-config`
  * prints the snippet, exits 0, and writes NOTHING. install.mjs short-circuits
  * before any manifest work (no agent files, no ledger, no AGENTS.md) — the
  * router runs only install.mjs and returns its exit code verbatim, confirming
@@ -470,9 +470,9 @@ test("router init -- --print-model-config: prints, exits 0, writes nothing", () 
  * writes to AGENTS.md — the contract-block installer (install-agents.mjs) is
  * deleted, so plain init is a single install.mjs spawn. So `~/.config/opencode/
  * agents/` exists and `~/.config/opencode/AGENTS.md` does not: this is the
- * literal R1 / AC-1 proof that no installer path writes to any AGENTS.md.
+ * proof that no installer path writes to any AGENTS.md.
  */
-test("router plain init: installs agent files and never writes AGENTS.md (R1/AC-1)", () => {
+test("router plain init: installs agent files and never writes AGENTS.md", () => {
   runCliUnderHome((home) => {
     const res = spawnSync(process.execPath, [join(repoRoot, "bin/cli.mjs"), "init"], {
       encoding: "utf8",
@@ -483,12 +483,12 @@ test("router plain init: installs agent files and never writes AGENTS.md (R1/AC-
     assert.equal(
       existsSync(join(home, ".config/opencode/AGENTS.md")),
       false,
-      "AGENTS.md must never be written by any installer (R1/AC-1)",
+      "AGENTS.md must never be written by any installer",
     )
   })
 })
 
-// ---- --manifest / --model value guards (AC-9) ------------------------------
+// ---- --manifest / --model value guards ------------------------------
 
 // Value guards exit in parseArgs, before any manifest read or HOME access, but
 // every spawned-script test is still confined to a temp HOME so no path drifts
@@ -505,36 +505,36 @@ function runGuard(args: string[]) {
   }
 }
 
-/** A `--manifest` with no value exits 2, naming the flag (AC-9). */
-test("CLI --manifest with no value exits 2, naming the flag (AC-9)", () => {
+/** A `--manifest` with no value exits 2, naming the flag. */
+test("CLI --manifest with no value exits 2, naming the flag", () => {
   const res = runGuard(["--manifest"])
   assert.equal(res.status, 2)
   assert.match(res.stderr, /install: --manifest requires a path/)
 })
 
-/** A `--manifest` whose next token is a flag exits 2, naming the flag (AC-9). */
-test("CLI --manifest with a -- value exits 2, naming the flag (AC-9)", () => {
+/** A `--manifest` whose next token is a flag exits 2, naming the flag. */
+test("CLI --manifest with a -- value exits 2, naming the flag", () => {
   const res = runGuard(["--manifest", "--check"])
   assert.equal(res.status, 2)
   assert.match(res.stderr, /install: --manifest requires a path/)
 })
 
-/** A `--model` with no value exits 2, naming the flag even in non-printer mode (AC-9). */
-test("CLI --model with no value exits 2, naming the flag (AC-9)", () => {
+/** A `--model` with no value exits 2, naming the flag even in non-printer mode. */
+test("CLI --model with no value exits 2, naming the flag", () => {
   const res = runGuard(["--model"])
   assert.equal(res.status, 2)
   assert.match(res.stderr, /install: --model requires a spec/)
 })
 
-/** A `--model` whose next token is a flag exits 2, naming the flag (AC-9). */
-test("CLI --model with a -- value exits 2, naming the flag (AC-9)", () => {
+/** A `--model` whose next token is a flag exits 2, naming the flag. */
+test("CLI --model with a -- value exits 2, naming the flag", () => {
   const res = runGuard(["--model", "--check"])
   assert.equal(res.status, 2)
   assert.match(res.stderr, /install: --model requires a spec/)
 })
 
-/** A `--model` with no value in printer mode exits 2 naming the flag, not a late parseModelSpecs crash (AC-9). */
-test("CLI printer --model with no value exits 2 naming the flag (AC-9)", () => {
+/** A `--model` with no value in printer mode exits 2 naming the flag, not a late parseModelSpecs crash. */
+test("CLI printer --model with no value exits 2 naming the flag", () => {
   const res = runGuard(["--print-model-config", "--model"])
   assert.equal(res.status, 2)
   assert.match(res.stderr, /install: --model requires a spec/)

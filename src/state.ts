@@ -31,7 +31,7 @@ export function newState(): GateState {
     // (restored by journal replay, carried one prompt via mergeAfterReplay),
     // fresh 0 on an ordinary prompt reset.
     reviewerDispatches: 0,
-    // Per-leg loop caps (issue #36): fresh 0 on every prompt reset, task-scoped,
+    // Per-leg loop caps: fresh 0 on every prompt reset, task-scoped,
     // never carried through mergeAfterReplay. A dispatcher that exhausts its leg
     // cap is reported as looping; totalDispatches is the global backstop.
     plannerRounds: 0,
@@ -287,8 +287,8 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
           // uses. Only `source:"task-result"` verdicts are credited — the
           // landing gate releases only on a delivery-attributed reviewer
           // verdict, so a verdict streamed in child text (`source:"child-*"`)
-          // never restores the flag (this is how AC-12 holds across a restart
-          // too). A trailing `VERDICT: BLOCK` leaves the flag off (the recency
+          // never restores the flag (this is how the invariant holds across a
+          // restart too). A trailing `VERDICT: BLOCK` leaves the flag off (the recency
           // boundary is the last verdict, not task reset — a GATE: FAIL never
           // clears it).
           if (

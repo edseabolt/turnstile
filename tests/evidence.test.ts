@@ -50,7 +50,7 @@ test("evidence.has reflects a direct hit", () => {
   assert.equal(t.has("c1"), true)
 })
 
-/** (AC-4) a non-zero exit and a non-matching command never count, alone or combined. */
+/** a non-zero exit and a non-matching command never count, alone or combined. */
 test("evidence never counts a non-zero exit or a non-matching command", () => {
   const t = createEvidenceTracker(cfg(), identityParent)
   t.observe("c1", "ls -la", 1)
@@ -59,7 +59,7 @@ test("evidence never counts a non-zero exit or a non-matching command", () => {
   assert.equal(t.has("c1"), false)
 })
 
-/** (AC-4) clear drops the parent bucket and every child whose edge resolves to it. */
+/** clear drops the parent bucket and every child whose edge resolves to it. */
 test("evidence.clear drops the parent bucket and its children", () => {
   const t = createEvidenceTracker(cfg(), parentOfP1())
   t.observe("c1", "pytest", 0)
@@ -81,7 +81,7 @@ test("evidence.has attributes a child hit to the parent and re-keys it", () => {
   assert.equal(t.has("p1"), true)
 })
 
-/** (AC-7) LRU eviction beyond maxSessions evicts the oldest bucket only. */
+/** LRU eviction beyond maxSessions evicts the oldest bucket only. */
 test("evidence evicts the least-recently-used bucket beyond maxSessions", () => {
   const t = createEvidenceTracker({ ...cfg(), maxSessions: 2 }, identityParent)
   t.observe("a", "npm test", 0) // oldest
@@ -115,7 +115,7 @@ test("evidence.clear no-ops on an empty id and tolerates children of others", ()
   assert.equal(t.has("p1"), true)
 })
 
-/** (AC-8) a bad evidencePattern journals the fallback once and still matches npm test
+/** a bad evidencePattern journals the fallback once and still matches npm test
  *  via the default fallback pattern. */
 test("evidence falls back to the default pattern on a bad evidencePattern", () => {
   const entries: Array<Record<string, unknown>> = []
@@ -133,7 +133,7 @@ test("evidence falls back to the default pattern on a bad evidencePattern", () =
   assert.equal(t.has("c1"), true)
 })
 
-/** (AC-8) the default pattern matches the repo-relevant JS and non-JS runners. */
+/** the default pattern matches the repo-relevant JS and non-JS runners. */
 test("default evidence pattern matches npm test and pytest", () => {
   const t = createEvidenceTracker(cfg(), identityParent)
   assert.equal(t.observe("c1", "npm test", 0), true)

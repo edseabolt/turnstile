@@ -143,8 +143,8 @@ test("plan gate: BLOCK verdict and marker-less output do not approve", async () 
 })
 
 /**
- * The waiver provenance is the user prompt, never the dispatch prompt (issue
- * #34, AC-1). A prompt-channel `USER WAIVER:` waives the plan gate for the
+ * The waiver provenance is the user prompt, never the dispatch prompt. A
+ * prompt-channel `USER WAIVER:` waives the plan gate for the
  * whole task (task-sticky): the first executor dispatch passes, a second
  * unapproved dispatch without a new prompt still passes, and a fresh prompt
  * without the marker resets the task so the next dispatch blocks again.
@@ -311,7 +311,7 @@ test("plan gate: child plan-reviewer result greens the parent's gate", async () 
   }
 })
 
-/** AC-1: a preamble (blank line + prose) before the marker still attributes APPROVE from the task-result pipeline. */
+/** a preamble (blank line + prose) before the marker still attributes APPROVE from the task-result pipeline. */
 test("plan gate: preamble before APPROVE attributes with source task-result", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
@@ -343,7 +343,7 @@ test("plan gate: preamble before APPROVE attributes with source task-result", as
   }
 })
 
-/** AC-2: a verdict on the child's own text is attributed when the delivery output is marker-less (divergence). */
+/** a verdict on the child's own text is attributed when the delivery output is marker-less (divergence). */
 test("plan gate: child-text verdict attributes through a marker-less delivery", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
@@ -380,7 +380,7 @@ test("plan gate: child-text verdict attributes through a marker-less delivery", 
   }
 })
 
-/** AC-2 (delta variant): a verdict on the child's streamed text-delta is
+/** Delta variant: a verdict on the child's streamed text-delta is
  * attributed through a marker-less delivery (divergence via the delta source). */
 test("plan gate: child-text-delta verdict attributes through a marker-less delivery", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
@@ -418,7 +418,7 @@ test("plan gate: child-text-delta verdict attributes through a marker-less deliv
   }
 })
 
-/** AC-3: a task-result marker never enters the child store; a later marker-less delivery still blocks. */
+/** a task-result marker never enters the child store; a later marker-less delivery still blocks. */
 test("plan gate: task-result marker is not stored; later marker-less still blocks", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
@@ -450,7 +450,7 @@ test("plan gate: task-result marker is not stored; later marker-less still block
   }
 })
 
-/** AC-4: latest child-text observation wins; the delivery's own output overrides a stored marker. */
+/** latest child-text observation wins; the delivery's own output overrides a stored marker. */
 test("plan gate: latest child-text wins and delivery text overrides stored marker", async () => {
   // (a) BLOCK then APPROVE child text → marker-less delivery approves.
   {
@@ -540,7 +540,7 @@ test("plan gate: latest child-text wins and delivery text overrides stored marke
   }
 })
 
-/** AC-5: per-child recording is independent of the dedup set; a sibling streaming an identical marker still attributes. */
+/** per-child recording is independent of the dedup set; a sibling streaming an identical marker still attributes. */
 test("plan gate: identical marker for a sibling child still attributes per child", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
@@ -576,7 +576,7 @@ test("plan gate: identical marker for a sibling child still attributes per child
   }
 })
 
-/** AC-6: a stale verdict for one child does not attribute to an unrelated child. */
+/** a stale verdict for one child does not attribute to an unrelated child. */
 test("plan gate: stale verdict for one child does not attribute to another child", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
@@ -616,7 +616,7 @@ test("plan gate: stale verdict for one child does not attribute to another child
 })
 
 /**
- * AC-1 (issue repro): a plans-dir change invalidates every session holding a
+ * a plans-dir change invalidates every session holding a
  * live approval, not just the first to dispatch — the consumed-once global
  * `changed` flag left the second session's stale approval ungated.
  */
@@ -703,7 +703,7 @@ test("plan gate: plan-file change invalidates every approved session", async () 
 })
 
 /**
- * AC-2 (single-session manifestation): approving then editing the plan before
+ * approving then editing the plan before
  * any executor dispatch blocks the session's very first dispatch — no prior
  * scan exists to (on the old code) suppress invalidation on the first scan.
  */
@@ -742,7 +742,7 @@ test("plan gate: approve then edit blocks the first dispatch", async () => {
 })
 
 /**
- * AC-3 (tightens the replay test): a journal-replayed approval survives the
+ * a journal-replayed approval survives the
  * first dispatch (empty stamp is accepted once and stamped), then a later edit
  * invalidates it, and re-approving re-stamps so the session runs again.
  */
@@ -805,7 +805,7 @@ test("plan gate: replayed approval stamps then invalidates on edit", async () =>
 })
 
 /**
- * AC-5 (fail-open null stamp): an approval recorded while the plans dir is
+ * an approval recorded while the plans dir is
  * absent stamps "" (unknown); it is accepted once when the dir later appears
  * and stamped, so a subsequent edit still invalidates it.
  */
@@ -863,7 +863,7 @@ test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stam
 })
 
 /**
- * AC-2 (issue repro b): a content-preserving utimes-only touch (identical
+ * a content-preserving utimes-only touch (identical
  * bytes, only atime/mtime moved) must NOT invalidate a prior approval, so the
  * next executor dispatch stays green and no extra no-plan-verdict is journaled.
  */
@@ -906,7 +906,7 @@ test("plan gate: content-preserving utimes touch keeps approval green", async ()
 })
 
 /**
- * AC-1 (issue repro a): a same-byte-length rewrite whose atime/mtime are
+ * a same-byte-length rewrite whose atime/mtime are
  * restored to the exact prior floats must still invalidate, because the
  * content signature (sha256) differs. The number-seconds utimes form (not
  * Date) avoids moving the restored mtime onto a new APFS tick.
@@ -950,7 +950,7 @@ test("plan gate: same-mtime same-size edit invalidates the approval", async () =
 })
 
 /**
- * AC-3 (structural): plansSignature is a stat-free, dir-prefixed content
+ * plansSignature is a stat-free, dir-prefixed content
  * signature `dir|name:sha256hex(,…)`: empty dir ⇒ `${dir}|`, adding a plan ⇒
  * `${dir}|plan.md:[0-9a-f]{64}`, and re-runs are identical. No mtime term.
  */
@@ -981,7 +981,7 @@ test("plan gate: plansSignature is a content signature (dir|name:sha256hex)", as
 })
 
 /**
- * AC-4 (add/delete regression): deleting one of two plans changes the name
+ * deleting one of two plans changes the name
  * set, so the key changes even though the surviving plan's content bytes
  * never moved — the approval must invalidate (and still name the survivor).
  */
@@ -1022,7 +1022,7 @@ test("plan gate: deleting a plan invalidates via the name set", async () => {
 })
 
 /**
- * AC-3 (fail-open widening): an unreadable plan file throws mid-scan, and
+ * an unreadable plan file throws mid-scan, and
  * enforcePlanApproval's fail-open catch lets the dispatch through (no
  * BlockError) while now journaling a `type:"error"` so the suppression is
  * observable rather than silent. Skipped as root, where permission bits are

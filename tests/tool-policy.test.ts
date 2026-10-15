@@ -1,7 +1,7 @@
 /**
  * @fileoverview Tool-policy tests: direct unit tests against `createToolPolicy`
  * with an injected capturing journaler, plus the fail-open / shadow-enforce
- * matrix. The `execute.before` integration (AC-1) lives in the setup wiring;
+ * matrix. The `execute.before` integration lives in the setup wiring;
  * these cover the decision boundary itself.
  */
 
@@ -330,7 +330,7 @@ test("guards never throw on nullish command/path values", () => {
 
 /**
  * Integration: the policy decision runs through the plugin's registered
- * `execute.before` callback (AC-1), not a direct guard call. Boots with a temp
+ * `execute.before` callback, not a direct guard call. Boots with a temp
  * metrics dir and isolated env.
  */
 
@@ -357,7 +357,7 @@ async function boot(
 }
 
 /** A would-blocked bash command is rejected by the registered execute.before. */
-test("integration: execute.before blocks a denied bash command (AC-1, AC-2)", async () => {
+test("integration: execute.before blocks a denied bash command", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
     await assert.rejects(
@@ -423,11 +423,11 @@ test("integration: execute.before blocks a denied write path", async () => {
   }
 })
 
-/** A null input object fails open: no throw, misconfiguration journaled (AC-3).
+/** A null input object fails open: no throw, misconfiguration journaled.
  *  The three bash-side guards (guardBash, guardCommitMessage, guardLanding) each
  *  independently detect the missing command, so each journals its own
  *  misconfiguration error — three, one per guard — rather than a single one. */
-test("integration: a nullish command fails open with a journaled error (AC-3)", async () => {
+test("integration: a nullish command fails open with a journaled error", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
     // No throw: extraction coerces nullish input to empty and fails open.
@@ -513,8 +513,8 @@ test("integration: shadow and enforce differ only in the throw and mode field", 
   }
 })
 
-/** `npm run ci` golden: execute.after bash telemetry is untouched (AC-4). */
-test("integration: execute.after bash telemetry still records command+exit (AC-4)", async () => {
+/** `npm run ci` golden: execute.after bash telemetry is untouched. */
+test("integration: execute.after bash telemetry still records command+exit", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
     await callTool(h, "execute.after", {
@@ -532,8 +532,8 @@ test("integration: execute.after bash telemetry still records command+exit (AC-4
   }
 })
 
-/** The default three block messages remain byte-identical (AC-4). */
-test("integration: the historical block messages are unchanged (AC-4)", async () => {
+/** The default three block messages remain byte-identical. */
+test("integration: the historical block messages are unchanged", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
     await assert.rejects(

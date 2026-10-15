@@ -1,5 +1,5 @@
 /**
- * @fileoverview Prompt-channel user-waiver tests (issue #34, AC-1): the waiver
+ * @fileoverview Prompt-channel user-waiver tests: the waiver
  * must provably originate from the user's PROMPT, captured in the setup
  * `prompt` hook and stored on `ledger.state().userWaiver`, then read by BOTH
  * the reviewer and plan gates. A dispatch-prompt `USER WAIVER:` is inert.
@@ -139,11 +139,11 @@ test("prompt-channel waiver waives both gates and journals channel:prompt", asyn
 })
 
 /**
- * AC-1 (issue #34 regression): a `USER WAIVER:` in the DISPATCH prompt is
+ * Regression: a `USER WAIVER:` in the DISPATCH prompt is
  * inert. Both gates still block with their golden messages, and nothing is
  * journaled as waived — proving provenance is the prompt, not the dispatch.
  */
-test("AC-1: a USER WAIVER: in the dispatch prompt is inert; both gates block", async () => {
+test("a USER WAIVER: in the dispatch prompt is inert; both gates block", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await assert.rejects(

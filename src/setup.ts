@@ -802,7 +802,7 @@ export function createTurnstile(
     // Count of successfully registered hooks (3 session + 2 tool + 1 event
     // subscriber = 6 on a full host); feeds the load heartbeat below.
     let hooks = 0
-    // Prompt-channel waiver capture (issue #34, AC-1): the waiver must
+    // Prompt-channel waiver capture: the waiver must
     // provenance from the user's prompt, never the dispatch prompt. A counter
     // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
     // non-empty string, so an unresolvable source is reported once (keylessPrompts hits
@@ -1108,7 +1108,7 @@ export function createTurnstile(
                     "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
                 })
 
-              // Per-leg loop caps + total-dispatch budget (issue #36): every
+              // Per-leg loop caps + total-dispatch budget: every
               // task/subagent dispatch — executor, planner, plan-reviewer,
               // test-runner, reviewer, debugger, unknown — draws down the
               // budget here, so the global backstop holds even against
@@ -1274,8 +1274,8 @@ export function createTurnstile(
               // the plan-reviewer verdict lifecycle but for the landing gate.
               // Streaming child text does NOT set it: this branch runs only on
               // task-result delivery, keeping the stream attribution-neutral
-              // (AC-12 — a streamed verdict in child text can't release the
-              // landing gate).
+              // (a streamed verdict in child text can't release the landing
+              // gate).
               if (agent === config.agents.reviewer) {
                 const approved = markerEvents.some(
                   (e) => e.kind === "verdict" && e.marker.includes("APPROVE"),

@@ -69,7 +69,7 @@ export function defaultConfig(
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
     maxReviewerRounds: 2,
-    // Per-leg loop caps (issue #36): a healthy task is ≤1 planner + ≤3
+    // Per-leg loop caps: a healthy task is ≤1 planner + ≤3
     // plan-reviewer + N executor chunks + ≤4 test-runner + ≤2 reviewer; 16
     // total leaves chunk headroom while staying an order of magnitude below an
     // unbounded loop. Waived dispatches are exempt.

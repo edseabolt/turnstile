@@ -1,5 +1,5 @@
 /**
- * @fileoverview Dispatch-loop-cap tests (issue #36): the per-leg loop caps
+ * @fileoverview Dispatch-loop-cap tests: the per-leg loop caps
  * (planner / plan-reviewer / test-runner) and the per-task total-dispatch
  * budget, plus the per-task total budget as a global backstop. Every dispatch
  * leg is now a mechanical loop backstop; exhausting any cap journals a
@@ -49,7 +49,7 @@ const BUDGET_MESSAGE =
   "STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait " +
   "for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget)."
 
-/** Reviewer round-limit block message (kept STOP-and-escalate, issue #36). */
+/** Reviewer round-limit block message (kept STOP-and-escalate). */
 const ROUND_LIMIT_MESSAGE =
   "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. " +
   "STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new " +
@@ -99,7 +99,7 @@ function firstIndex(entries: Array<Record<string, any>>, type: string): number {
   return entries.findIndex((l) => l.type === type)
 }
 
-/** (AC-1, AC-2) With maxPlannerRounds: 2 the first two planner dispatches
+/** With maxPlannerRounds: 2 the first two planner dispatches
  *  pass; the third is blocked with the exact planner loop-cap message and
  *  journals a paired `loop-cap` blocked + `escalation` entry. */
 test("planner leg cap: third planner dispatch is blocked and escalates", async () => {
@@ -130,7 +130,7 @@ test("planner leg cap: third planner dispatch is blocked and escalates", async (
   dispose()
 })
 
-/** (AC-1, AC-2) With maxPlanReviewerRounds: 2 the third plan-reviewer
+/** With maxPlanReviewerRounds: 2 the third plan-reviewer
  *  dispatch is blocked and escalates. The plan-reviewer dispatch timestamp
  *  (set just before the guard) is still recorded, so the blocked entry comes
  *  after the dispatch entry in journal order. */
@@ -155,7 +155,7 @@ test("plan-reviewer leg cap: third dispatch is blocked, escalates, timestamp pre
   dispose()
 })
 
-/** (AC-1) With maxTestRunnerRounds: 2 the first dispatch succeeds even before
+/** With maxTestRunnerRounds: 2 the first dispatch succeeds even before
  *  any gate is green — the cap never blocks the healthy path — and the third
  *  dispatch is blocked and escalates. */
 test("test-runner leg cap: first dispatch succeeds pre-gate, third is blocked", async () => {
@@ -183,7 +183,7 @@ test("test-runner leg cap: first dispatch succeeds pre-gate, third is blocked", 
   dispose()
 })
 
-/** (AC-1) Non-capped agents (executor, debugger, unknown) only draw down the
+/** Non-capped agents (executor, debugger, unknown) only draw down the
  *  total budget; the (cap+1)th dispatch is blocked with the budget message. */
 test("executor/debugger/unknown draw down only the budget, then block", async () => {
   const prev = process.cwd()
@@ -222,7 +222,7 @@ test("executor/debugger/unknown draw down only the budget, then block", async ()
   }
 })
 
-/** (AC-1, AC-2) The reviewer is counted toward the total budget exactly once
+/** The reviewer is counted toward the total budget exactly once
  *  (in guardDispatchBudget, never in guardReviewerDispatch). With
  *  maxTotalDispatches: 2 and a high reviewer round cap, the third reviewer
  *  dispatch is blocked by the budget, not by the reviewer round cap. */
@@ -249,7 +249,7 @@ test("reviewer counts toward the budget once; budget blocks before the round cap
   dispose()
 })
 
-/** (AC-2) When both the reviewer round cap and the budget are exhausted, the
+/** When both the reviewer round cap and the budget are exhausted, the
  *  budget reason wins: the blocking dispatch carries `dispatch-budget`, never
  *  `round-limit`. */
 test("both caps exhausted: budget reason wins over the round cap", async () => {
@@ -274,7 +274,7 @@ test("both caps exhausted: budget reason wins over the round cap", async () => {
   dispose()
 })
 
-/** (AC-4) A live prompt-channel waiver exempts the caps and the budget without
+/** A live prompt-channel waiver exempts the caps and the budget without
  *  counting: many dispatches past every cap all pass and the journal carries
  *  no `blocked` or `escalation` entry. */
 test("waiver exempts the caps and budget entirely", async () => {
@@ -288,7 +288,7 @@ test("waiver exempts the caps and budget entirely", async () => {
   dispose()
 })
 
-/** (AC-4) A waived reviewer dispatch still journals its gate `WAIVED` entry
+/** A waived reviewer dispatch still journals its gate `WAIVED` entry
  *  from guardReviewerDispatch, but that is not a block: no `blocked`/
  *  `escalation` entries appear. */
 test("waived reviewer dispatch journals a gate WAIVED, not a block", async () => {
@@ -303,7 +303,7 @@ test("waived reviewer dispatch journals a gate WAIVED, not a block", async () =>
   dispose()
 })
 
-/** (AC-3) Exhausting a leg cap resets on a new prompt: the next planner
+/** Exhausting a leg cap resets on a new prompt: the next planner
  *  dispatch of the fresh task passes. */
 test("prompt resets the leg counters", async () => {
   const { h, dispose } = await boot({ maxPlannerRounds: 2 })
@@ -319,7 +319,7 @@ test("prompt resets the leg counters", async () => {
   dispose()
 })
 
-/** (AC-2) The reviewer round-limit path still journals the paired escalation
+/** The reviewer round-limit path still journals the paired escalation
  *  entry beside the round-limit block at the default round cap. */
 test("reviewer round limit journals escalation beside the block", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
@@ -332,7 +332,7 @@ test("reviewer round limit journals escalation beside the block", async () => {
   )
   const entries = journalEntries(metricsDir)
   // The blocked round-limit entry keeps its pre-existing shape (no count/cap);
-  // the paired escalation entry carries count/cap (issue #36).
+  // the paired escalation entry carries count/cap.
   assert.ok(entries.some((l) => l.type === "blocked" && l.reason === "round-limit"))
   assert.ok(
     entries.some(
@@ -342,7 +342,7 @@ test("reviewer round limit journals escalation beside the block", async () => {
   dispose()
 })
 
-/** (AC-2, contract) Every loop-cap rejection is a BlockError with the
+/** Every loop-cap rejection is a BlockError with the
  *  `BLOCKED by turnstile:` prefix. */
 test("every loop-cap rejection is a BLOCKED-by-turnstile BlockError", async () => {
   const { h, dispose } = await boot({ maxPlannerRounds: 2 })

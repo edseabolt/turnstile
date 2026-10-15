@@ -336,7 +336,7 @@ test("loadConfig re-derives when an explicit bareOutput equals the default liter
   assert.deepEqual(config.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
 })
 
-/** (AC-8) an invalid gateEvidence value keeps the default, names the key, and warns once. */
+/** an invalid gateEvidence value keeps the default, names the key, and warns once. */
 test("mergeConfig rejects an invalid gateEvidence and keeps the enforce default", () => {
   const base = defaultConfig({})
   assert.equal(base.gateEvidence, "enforce")
@@ -347,7 +347,7 @@ test("mergeConfig rejects an invalid gateEvidence and keeps the enforce default"
   ])
 })
 
-/** (AC-8) every valid gateEvidence literal is accepted verbatim. */
+/** every valid gateEvidence literal is accepted verbatim. */
 test("mergeConfig accepts each valid gateEvidence literal", () => {
   for (const mode of ["enforce", "flag", "off"] as const) {
     const { config, warnings } = mergeConfig(defaultConfig({}), { gateEvidence: mode })
@@ -356,7 +356,7 @@ test("mergeConfig accepts each valid gateEvidence literal", () => {
   }
 })
 
-/** (AC-8) a non-compiling evidencePattern keeps the default and warns naming the key. */
+/** a non-compiling evidencePattern keeps the default and warns naming the key. */
 test("mergeConfig rejects a non-compiling evidencePattern and keeps the default", () => {
   const base = defaultConfig({})
   const { config, warnings } = mergeConfig(base, { evidencePattern: "(" })
@@ -366,7 +366,7 @@ test("mergeConfig rejects a non-compiling evidencePattern and keeps the default"
   )
 })
 
-/** (AC-8) a compiling evidencePattern is accepted, even one overriding the default toolchain. */
+/** a compiling evidencePattern is accepted, even one overriding the default toolchain. */
 test("mergeConfig accepts a compiling custom evidencePattern", () => {
   const base = defaultConfig({})
   const { config, warnings } = mergeConfig(base, { evidencePattern: "\\brspec\\b" })
@@ -374,14 +374,14 @@ test("mergeConfig accepts a compiling custom evidencePattern", () => {
   assert.equal(warnings.length, 0)
 })
 
-/** (AC-8) the digest flips when gateEvidence or evidencePattern override defaults. */
+/** the digest flips when gateEvidence or evidencePattern override defaults. */
 test("configDigest flips on evidence-key overrides", () => {
   const base = defaultConfig({})
   assert.notEqual(configDigest(base), configDigest({ ...base, gateEvidence: "flag" }))
   assert.notEqual(configDigest(base), configDigest({ ...base, evidencePattern: "\\brspec\\b" }))
 })
 
-/** (AC-2) default config ships the git-protective toolPolicy denylist. */
+/** default config ships the git-protective toolPolicy denylist. */
 test("defaultConfig ships the toolPolicy denylist defaults", () => {
   const cfg = defaultConfig({})
   assert.equal(cfg.toolPolicy.mode, "enforce")
@@ -482,7 +482,7 @@ test("mergeConfig ignores unknown gitGates sub-keys", () => {
   assert.deepEqual(warnings, ['config: unknown gitGates key "bogus" ignored'])
 })
 
-/** (AC-15) flipping a gitGates value flips the config digest. */
+/** flipping a gitGates value flips the config digest. */
 test("configDigest flips when a gitGates value changes", () => {
   const base = defaultConfig({})
   const before = configDigest(base)

@@ -1,5 +1,5 @@
 /**
- * @fileoverview Permission-approval tests (Phase 1, issues #34/#35): the
+ * @fileoverview Permission-approval tests (Phase 1): the
  * `permission.evaluate` escalation handler (red plan gate only, action
  * matching, plan file + head message, trace redaction, fail-open), the
  * prompt-channel `PLAN APPROVED:` marker wiring, the `permission.asked`/

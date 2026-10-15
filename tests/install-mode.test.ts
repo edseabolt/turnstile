@@ -4,7 +4,7 @@
  * side-effect-free helpers exported by scripts/install.mjs
  * (detectMode, resolveMode, normalizeLedger) and exercises them directly, with
  * no CLI spawn. The `--repair` section spawns the installer script directly
- * (see DD-8) under a temp `HOME` so every link/copy/ledger write is confined
+ * under a temp `HOME` so every link/copy/ledger write is confined
  * and no real home is touched.
  */
 
@@ -119,11 +119,11 @@ test("normalizeLedger: keeps only src/hash/version/mode and drops extras", () =>
   )
 })
 
-// ---- --repair (DD-8, AC-10): spawn the installer under a temp HOME ----------
+// ---- --repair: spawn the installer under a temp HOME --------------------
 
 // Every spawned-script test is confined to a temp HOME: install.mjs resolves
 // its dests and ledger from homedir(), so a temp HOME makes every write
-// observable and keeps a real ~/.config/opencode untouched (DD-9).
+// observable and keeps a real ~/.config/opencode untouched.
 function freshHome(): string {
   return mkdtempSync(join(tmpdir(), "install-repair-home-"))
 }
@@ -152,8 +152,8 @@ function runInstall(args: string[], home: string) {
 /** A link elsewhere in the checkout, relative to the temp HOME's dest. */
 const STALE_TARGET = join(repoRoot, "scripts/install.mjs")
 
-/** Bare --repair relinks a missing link-mode entry and exits 0 (AC-10). */
-test("repair: relinks a missing link-mode entry and exits 0 (AC-10)", () => {
+/** Bare --repair relinks a missing link-mode entry and exits 0. */
+test("repair: relinks a missing link-mode entry and exits 0", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
   try {
@@ -169,8 +169,8 @@ test("repair: relinks a missing link-mode entry and exits 0 (AC-10)", () => {
   }
 })
 
-/** --repair relinks a stale link-mode entry and exits 0 (AC-10). */
-test("repair: relinks a stale link-mode entry and exits 0 (AC-10)", () => {
+/** --repair relinks a stale link-mode entry and exits 0. */
+test("repair: relinks a stale link-mode entry and exits 0", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
   const dest = join(home, ".config/opencode/agents/x")
@@ -187,8 +187,8 @@ test("repair: relinks a stale link-mode entry and exits 0 (AC-10)", () => {
   }
 })
 
-/** --check --repair is a write-free dry run: prints `would repair`, exits 0 (AC-10). */
-test("--check --repair: dry run writes nothing and prints would repair (AC-10)", () => {
+/** --check --repair is a write-free dry run: prints `would repair`, exits 0. */
+test("--check --repair: dry run writes nothing and prints would repair", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
   try {
@@ -205,8 +205,8 @@ test("--check --repair: dry run writes nothing and prints would repair (AC-10)",
   }
 })
 
-/** A conflict is never backed up by --repair without --force; it stays untouched (AC-10). */
-test("repair: conflict is left untouched without --force and exits non-zero (AC-10)", () => {
+/** A conflict is never backed up by --repair without --force; it stays untouched. */
+test("repair: conflict is left untouched without --force and exits non-zero", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
   const dest = join(home, ".config/opencode/agents/x")
@@ -224,8 +224,8 @@ test("repair: conflict is left untouched without --force and exits non-zero (AC-
   }
 })
 
-/** --check --repair exits non-zero when a conflict is unrepairable (AC-10). */
-test("--check --repair: exits non-zero when a conflict is unrepairable (AC-10)", () => {
+/** --check --repair exits non-zero when a conflict is unrepairable. */
+test("--check --repair: exits non-zero when a conflict is unrepairable", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
   const dest = join(home, ".config/opencode/agents/x")
@@ -241,8 +241,8 @@ test("--check --repair: exits non-zero when a conflict is unrepairable (AC-10)",
   }
 })
 
-/** `check` alone stays byte-for-byte unchanged: a missing entry is still an error (AC-10). */
-test("check alone (unchanged): a missing entry is still reported and exits 1 (AC-10)", () => {
+/** `check` alone stays byte-for-byte unchanged: a missing entry is still an error. */
+test("check alone (unchanged): a missing entry is still reported and exits 1", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
   try {
@@ -256,8 +256,8 @@ test("check alone (unchanged): a missing entry is still reported and exits 1 (AC
   }
 })
 
-/** The router passes `check --repair` through as `install.mjs --check --repair` (AC-10). */
-test("router check --repair: routes to install.mjs --check --repair (AC-10)", () => {
+/** The router passes `check --repair` through as `install.mjs --check --repair`. */
+test("router check --repair: routes to install.mjs --check --repair", () => {
   const home = freshHome()
   const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/router-x")
   try {

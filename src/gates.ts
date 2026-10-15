@@ -180,9 +180,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * documented "max 2 reviewer dispatches per task" contract), not BLOCK
    * verdicts. A waiver bypasses the cap without counting toward it and is
    * consumed by the dispatch that unlocks it (per-dispatch): a stale waiver
-   * cannot outlive that single reviewer dispatch. Provenance matters (issue
-   * #34, AC-1): the waiver is read from the task prompt, never the dispatch
-   * prompt.
+   * cannot outlive that single reviewer dispatch. Provenance matters: the
+   * waiver is read from the task prompt, never the dispatch prompt.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
@@ -197,7 +196,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         sessionID,
         result: "WAIVED",
         // Provenance: this waiver opened the gate from the user prompt, not a
-        // dispatch prompt (issue #34, AC-1).
+        // dispatch prompt.
         channel: "prompt",
         // Waiver quotes carry raw prompt context; journal them only when
         // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`
@@ -213,7 +212,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         agent: config.agents.reviewer,
         reason: "round-limit",
       })
-      // Visible escalation (issue #36): exhausting the round cap means the
+      // Visible escalation: exhausting the round cap means the
       // reviewer is re-dispatched in a loop — journal an `escalation` entry and
       // stop+escalate (a subagent never receives a fresh user prompt to reset
       // the cap, so "wait for a new prompt" would dead-end).
@@ -747,7 +746,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         sessionID,
         result: "WAIVED",
         // Provenance: this waiver opened the gate from the user prompt, not a
-        // dispatch prompt (issue #34, AC-1).
+        // dispatch prompt.
         channel: "prompt",
         // Waiver quotes carry raw prompt context; journal them only when
         // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`

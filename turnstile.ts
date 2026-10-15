@@ -35,8 +35,8 @@
  *   reset) and the ask carries no message of its own. The explicit
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
  *   `USER WAIVER:` literal in the user's prompt waives the gate; a
- *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert —
- *   issue #34's injection hole, now closed. Plan-content changes invalidate
+ *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert,
+ *   closing the injection hole. Plan-content changes invalidate
  *   approvals issued against the previous plans-dir signature (replayed
  *   approvals are accepted once, then stamped). A journal-replayed approval
  *   survives the first prompt after a restart (the resume prompt) and then
