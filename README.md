@@ -26,12 +26,14 @@ npm run ci:installed  # install:check — run after `npm run init` on a machine 
 
 | Gate                   | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan-approval gate     | `executor` subagent dispatches are blocked until a plan-reviewer result in the session recorded `VERDICT: APPROVE` (when any plan exists in `.opencode/plans/*.md`), or the dispatch prompt contains the literal marker `USER WAIVER:`; plan-content changes invalidate approvals issued against the previous plans-dir signature (replayed approvals are accepted once, then stamped)                                                                                                                                                                                                                              |
-| Reviewer dispatch gate | `reviewer` subagent dispatches are blocked until a test-runner result in the session recorded a `GATE: PASS` _verified_ by the current task's bash/shell executions — a matching exit-0 test command under the default `gateEvidence:enforce`; `flag` flips on trust (still stamped), `off` never stamps — or the dispatch prompt contains the literal marker `USER WAIVER:`                                                                                                                                                                                                                                        |
-| Reviewer round cap     | Max 2 `reviewer` dispatches per task, regardless of gate state; dispatches carrying `USER WAIVER:` bypass the cap and do not count toward it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Plan-approval gate     | `executor` subagent dispatches are blocked until this task's plan-reviewer recorded `VERDICT: APPROVE` (when any plan exists in `.opencode/plans/*.md`), or the task has a human approval — a prompt-channel `PLAN APPROVED:` in the user's prompt, a prompt-channel `USER WAIVER:` waiver, or a permission-prompt reply (`always`/`once`/`reject`); plan-content changes invalidate approvals issued against the previous plans-dir signature (replayed approvals are accepted once, then stamped). See [Waivers and approvals](#waivers-and-approvals)                                                            |
+| Reviewer dispatch gate | `reviewer` subagent dispatches are blocked until a test-runner result in the session recorded a `GATE: PASS` _verified_ by the current task's bash/shell executions — a matching exit-0 test command under the default `gateEvidence:enforce`; `flag` flips on trust (still stamped), `off` never stamps — or the user's prompt carries a prompt-channel `USER WAIVER:` waiver (a `USER WAIVER:` in an agent-composed dispatch prompt unlocks nothing; see [Waivers and approvals](#waivers-and-approvals))                                                                                                         |
+| Reviewer round cap     | Max 2 `reviewer` dispatches per task, regardless of gate state; a prompt-channel `USER WAIVER:` waiver bypasses the cap and does not count toward it (a `USER WAIVER:` in a dispatch prompt does not; see [Waivers and approvals](#waivers-and-approvals))                                                                                                                                                                                                                                                                                                                                                          |
 | Decomposition gate     | `executor` dispatches must cite `chunk-N` / `AC-n` when any plan in `.opencode/plans/*.md` has a `## Decomposition` block                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Tool-call policy gate  | `bash`/`shell` commands and `write`/`edit` target paths are matched in `execute.before` against a configurable denylist and blocked with `BLOCKED by turnstile:` under `toolPolicy.mode: enforce`; `shadow` journals the would-block without throwing (adoption path), `off` is a silent no-op. Default `bashDeny` blocks the git-protective operations in [`src/policy.ts`](src/policy.ts) (worktree, branch `switch`/`checkout`, `merge`, `gh pr create or merge`); `pathDeny` defaults empty so ordinary editing is never blocked until configured. `session_move` is journaled as telemetry only, never blocked |
+| Commit-lint            | `bash`/`shell` `git commit -m '<subject>'` messages are validated as conventional commits when `gitGates.commitMessages` is on (default): a non-conventional subject throws `BLOCKED by turnstile:` (journaled `reason:"invalid-commit-message"`) under `gitGates.mode: enforce`; `shadow` journals only, `off` is a no-op. An uninspectable form (`-F`/`-t`/`--edit`/interactive; `--amend -m` is inspectable) is blocked under `enforce` (`reason:"commit-message-uninspectable"`) — pass the subject with `git commit -m <subject>`                                                                              |
+| Landing gate           | `git push` without a reviewer `VERDICT: APPROVE` for the current task is `BLOCKED by turnstile:` (journaled `reason:"no-landing-approval"`) under `gitGates.mode: enforce`; `shadow` journals only, `off` is a no-op. Approval comes only from a reviewer delivery `VERDICT: APPROVE` (streamed text is inert); `gh pr create or merge` stays denied by the default `bashDeny` list, and every `git push` is journaled as landing telemetry; a repeat push under `enforce` escalates to a human ask — the repeat push is the decision point                                                                         |
 | Marker parsing         | `GATE:` / `VERDICT:` markers are parsed from task results and child-session text, deduped per task; marker-less outputs from marker-contracted agents (test-runner/reviewer/plan-reviewer) are journaled                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Trace                  | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, bash commands, errors; `setup` heartbeat per session (plugin version, config digest, hook count), stream-death errors, unresolvable-agent dispatch errors                                                                                                                                                                                                                                                                                                                                                                                   |
 | Decoding clamps        | executor/test-runner/debugger temperature ≤ 0.2; reviewer and plan-reviewer temperature = 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -464,6 +466,7 @@ setup; restart sessions to apply. Invalid keys are ignored and journaled
 | `maxSessions`                                                                                           | 64                                                                             | LRU cap on tracked sessions (gate state, child→parent edges, verdicts); registered live parents are never evicted                           |
 | `readWarn` / `readBlock`                                                                                | 8 / 15                                                                         | whole-file read horizon                                                                                                                     |
 | `waiverMarker`                                                                                          | `USER WAIVER:`                                                                 | literal waiver marker                                                                                                                       |
+| `approvalMarker`                                                                                        | `PLAN APPROVED:`                                                               | literal prompt-channel plan-approval marker                                                                                                 |
 | `plansDir`                                                                                              | `.opencode/plans`                                                              | executor decomposition scan directory                                                                                                       |
 | `trace`                                                                                                 | `true`                                                                         | write the human-readable trace file (JSONL journal always writes)                                                                           |
 | `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger`         | agent names recognized in dispatches                                                                                                        |
@@ -475,6 +478,10 @@ setup; restart sessions to apply. Invalid keys are ignored and journaled
 | `toolPolicy.bashDeny`                                                                                   | the git-protective defaults (worktree, branch switch/checkout, merge, `gh pr`) | case-insensitive regex sources matched against `bash`/`shell` commands; an invalid source is dropped and journaled                          |
 | `toolPolicy.pathDeny`                                                                                   | `[]` (empty)                                                                   | case-insensitive regex sources matched against `write`/`edit` target paths; a dropped source is journaled                                   |
 | `toolPolicy.observeSessionMove`                                                                         | `true`                                                                         | journal `session_move` dispatches as telemetry (never blocks)                                                                               |
+| `gitGates.mode`                                                                                         | `shadow`                                                                       | `shadow` would-block without throwing; `enforce` blocks invalid commits and unapproved pushes (opt-in), `off` is a silent no-op             |
+| `gitGates.commitMessages`                                                                               | `true`                                                                         | validate `git commit -m` subjects as conventional commits; `shadow` journals, `enforce` blocks, `off` is a no-op                            |
+| `gitGates.commitFormat`                                                                                 | a conventional-commits regex source                                            | conventional-commits regex source (compiled `^...$`) matched against each subject; a bad source is dropped and journaled                    |
+| `gitGates.landingGate`                                                                                  | `true`                                                                         | gate `git push` on this task reviewer `VERDICT: APPROVE`; `shadow` journals, `enforce` blocks then escalates, `off` is a no-op              |
 
 Environment variables (override the file):
 
@@ -496,11 +503,37 @@ VERDICT: APPROVE crit=0 high=0 med=2 low=1
 VERDICT: BLOCK crit=1 high=0 med=0 low=2
 ```
 
-Waiver marker (must appear in the reviewer dispatch prompt, verbatim):
+Waiver and approval markers (must appear in the user's prompt, verbatim — a dispatch prompt that merely contains the marker unlocks nothing; see [Waivers and approvals](#waivers-and-approvals)):
 
 ```
 USER WAIVER: <the user's words>
+PLAN APPROVED: <the user's words>
 ```
+
+## Waivers and approvals
+
+Turnstile reads a waiver or a human plan approval only from the user's OWN
+prompt — the plugin observes it at prompt admission, never from an agent's
+dispatch prompt. This is the core of issue #34: a marker inside an
+agent-composed prompt must never unlock a gate.
+
+- **Prompt-channel waiver.** Put the literal marker `USER WAIVER:` in the text
+  of your prompt to waive the plan gate and the reviewer gate for the task.
+  The waiver is provenance-checked: it must come from the user prompt, and a
+  dispatch prompt that merely contains `USER WAIVER:` unlocks nothing.
+- **Prompt-channel approval.** Put `PLAN APPROVED:` in your prompt to approve
+  the plan the same way a plan-reviewer `VERDICT: APPROVE` would; it sets the
+  plan verdict and records human provenance, and replays across restart
+  exactly like a reviewer verdict.
+- **Permission-prompt escalation.** When no approval holds, the first
+  executor dispatch escalates the plan gate to the human through OpenCode's
+  permission surface: `permission.evaluate` forces an `ask` that names the
+  plan file and its head. The human replies — `always` approves for the rest
+  of the task, `once` grants a single dispatch, and `reject` keeps the gate
+  red (that single reply is consumed).
+
+Do not create, paste, or relay a `USER WAIVER:` / `PLAN APPROVED:` marker to
+open a gate — only the user's own prompt carries a real waiver or approval.
 
 ## What turnstile is not
 
@@ -523,9 +556,13 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
   named execution tool) leave enforce mode with no evidence to verify
   against — operators in that situation use `flag`/`off` at the cost of the
   guarantee. The journal records what was _claimed_, never proof.
-- `USER WAIVER:` as a substring anywhere in a dispatch prompt unlocks the
-  reviewer gate. A prompt-injected waiver is indistinguishable from a real
-  one.
+- The dispatch-prompt waiver-forgery vector is closed: a `USER WAIVER:` (or
+  `PLAN APPROVED:`) substring inside an agent-composed dispatch prompt
+  unlocks nothing — turnstile reads waivers and approvals only from the
+  user's prompt at admission. The residual trust stance is unchanged: the
+  journal is still the record of what was _claimed_ (an attacker who can
+  write or replay the metrics directory can still craft entries), so the
+  journal is treated as sensitive data (see SECURITY.md).
 - `scripts/check-markers.mjs` guards against accidental drift between the
   parser and documented markers; it cannot guard against forgery, because
   the markers are plain prose by design.
@@ -561,6 +598,11 @@ would-block commands and paths are journaled with `"reason":"tool-policy"` and
 rules that fired, adjust `toolPolicy.bashDeny`/`pathDeny` (each rule is
 case-insensitive), then flip to `enforce`. Restart sessions to apply config —
 it is read once at setup.
+The same shadow-first adoption applies to `gitGates` (default `mode: shadow`):
+under `shadow` an invalid commit message or an unapproved `git push` is journaled
+(`"reason":"invalid-commit-message"` / `"reason":"no-landing-approval"`) without
+throwing, so boot one session in `shadow`, review the journal, then flip to
+`enforce` when you are ready to start blocking.
 
 ## Files and journals
 
@@ -576,6 +618,26 @@ it is read once at setup.
   ~30 MB per journal, worst case ~60 MB total.
 - `.opencode/plans/*.md` containing `## Decomposition` are load-bearing:
   their presence activates the executor chunk-citation gate.
+
+## Status
+
+`opencode-turnstile status` reports turnstile gate and plan state per parent
+session, read from the journal, as a human-readable table by default or JSON
+with `--json`:
+
+```
+opencode-turnstile status
+opencode-turnstile status --json
+```
+
+It is read-only: it never writes to the journal or config. Per session it
+replays the same gate/plan last-wins rules the runtime uses (a trailing
+`GATE: FAIL` keeps the gate red; an enforce-mode `verified:false` PASS never
+flips), plus last markers, waiver events (with channel), and dispatch/block/
+permission counts. The journal reflects the last prompt-cycle; in-memory state
+can be fresher (a session that has prompted since is newer than the journal
+records), so treat status as the durable state of the previous cycle rather
+than a live snapshot.
 
 ## Behavior contract
 

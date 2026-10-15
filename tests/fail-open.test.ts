@@ -170,6 +170,42 @@ test("tool-policy guards journal their internal failure when the sink throws", (
   assert.ok(errors.some((e) => String(e.error).includes("tool policy guard")))
 })
 
+/**
+ * The git-side guards (guardCommitMessage/observeLanding/guardLanding) carry the
+ * same fail-open contract: a telemetry sink that throws on their block and
+ * landing-telemetry entries must never break tool calls. Each is journaled as an
+ * internal error, and the landing-gate capability here is a plain stub (the real
+ * one lives in setup.ts).
+ */
+test("git-side guards journal their internal failure when the sink throws", () => {
+  const metricsDir = tmpDir()
+  const inner = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const hostile = {
+    journal: (entry: Record<string, unknown>): void => {
+      // The guard's primary journal (blocked entry / landing telemetry) throws;
+      // the fail-open error journal (type:"error") is unaffected, so recovery
+      // itself succeeds.
+      if (entry.type === "blocked" || entry.landing === true) throw new Error("sink down")
+      inner.journal(entry)
+    },
+  } as unknown as Parameters<typeof createToolPolicy>[1]
+  const config = defaultConfig()
+  config.toolPolicy = { mode: "enforce", bashDeny: [], pathDeny: [], observeSessionMove: false }
+  const policy = createToolPolicy(config, hostile)
+  const stub = {
+    hasApproval: (): boolean => false,
+    priorBlocks: (): number => 0,
+    recordBlock: (): void => {},
+    escalate: (): void => {},
+  }
+  assert.doesNotThrow(() => policy.guardCommitMessage("bash", 'git commit -m "garbage"', "p1"))
+  assert.doesNotThrow(() => policy.observeLanding("p1", "git push origin main"))
+  assert.doesNotThrow(() => policy.guardLanding("bash", "git push origin main", "p1", stub))
+  const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
+  assert.equal(errors.length, 3)
+  assert.ok(errors.every((e) => String(e.error).includes("tool policy guard")))
+})
+
 /** observeSessionMove: false disables the telemetry entirely. */
 test("observeSessionMove is a no-op when disabled and redacts under trace:false", () => {
   const metricsDir = tmpDir()

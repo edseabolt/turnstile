@@ -35,7 +35,7 @@ const NO_GATE_MESSAGE =
   "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
   "Run the test-runner subagent first; dispatch reviewer only after its first line is " +
   "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-  "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(

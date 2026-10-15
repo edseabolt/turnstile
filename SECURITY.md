@@ -9,8 +9,14 @@ determined or hostile agent:
 - Gate markers (`GATE: PASS tests=…`, `VERDICT: …`) are parsed from plain
   text. Any text matching the pattern flips gate state, including forged or
   hallucinated markers.
-- The waiver marker (`USER WAIVER:`) is a substring check on dispatch
-  prompts; injected text unlocks the gate just like a real waiver.
+- The waiver and approval markers (`USER WAIVER:`, `PLAN APPROVED:`) are read
+  only from the user's own prompt at admission — a marker inside an
+  agent-composed dispatch prompt unlocks nothing, and a prompt-channel
+  `PLAN APPROVED:` is honored exactly like a plan-reviewer verdict. The
+  approval path via OpenCode's permission prompt is host-side UI, unreachable
+  from session text. The dispatch-prompt waiver-forgery vector is closed; the
+  residual trust stance (the journal is still the record of what was claimed)
+  is unchanged.
 - `scripts/check-markers.mjs` guards against accidental drift, not forgery.
 
 Against hostile agents, use OpenCode's permission and sandboxing

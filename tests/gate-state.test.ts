@@ -30,7 +30,7 @@ const NO_GATE_MESSAGE =
   "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
   "Run the test-runner subagent first; dispatch reviewer only after its first line is " +
   "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-  "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** The gate-unverified block message: a PASS was recorded without
  *  a correlating journaled test-command execution (enforce mode). */
@@ -38,7 +38,7 @@ const GATE_UNVERIFIED_MESSAGE =
   "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
   "was recorded without a journaled successful test-command execution for this " +
   "session. Run the test-runner subagent first, or obtain an explicit user waiver " +
-  "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(
@@ -72,27 +72,33 @@ test("reviewer dispatch is blocked before any GATE: PASS, with the exact message
   dispose()
 })
 
-/** The literal USER WAIVER: marker allows the dispatch and the quote is journaled. */
+/** The prompt-channel `USER WAIVER:` marker allows the dispatch and the quote
+ *  is journaled with `channel: "prompt"` provenance. */
 test("USER WAIVER: in the prompt waives the gate and is journaled", async () => {
   const { h, dispose, metricsDir } = await boot()
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
   assert.ok(waived)
-  assert.equal(waived.waiver, "USER WAIVER: user said ship it")
+  assert.equal(waived?.channel, "prompt")
+  assert.equal(waived?.waiver, "USER WAIVER: user said ship it")
   dispose()
 })
 
-/** Waivers are per dispatch: the next marker-less prompt is blocked again. */
-test("waiver is per dispatch: a later marker-less prompt is blocked again", async () => {
+/** Waivers are per dispatch for the reviewer gate: after the prompt-channel
+ *  waiver is consumed by the dispatch that unlocks it, a later marker-less
+ *  dispatch is blocked again. */
+test("waiver is per dispatch: a later marker-less dispatch is blocked again", async () => {
   const { h, dispose } = await boot()
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   await assert.rejects(
     () =>
@@ -109,14 +115,19 @@ test("waiver is per dispatch: a later marker-less prompt is blocked again", asyn
 /** With trace:false the waiver quote is redacted to "<present>" in the journal. */
 test("trace:false redacts the waiver quote in the journal", async () => {
   const { h, dispose, metricsDir } = await boot({ trace: false })
+  await callSession(h, "prompt", {
+    sessionID: "p1",
+    text: "USER WAIVER: sensitive user words here",
+  })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: sensitive user words here" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
   assert.ok(waived)
-  assert.equal(waived.waiver, "<present>")
+  assert.equal(waived?.channel, "prompt")
+  assert.equal(waived?.waiver, "<present>")
   dispose()
 })
 
@@ -399,28 +410,36 @@ test("round cap with default 2: third reviewer dispatch blocked at the limit", a
   dispose()
 })
 
-/** Waived dispatches do not consume the round cap: after any number of
- *  waivers, the next unwaived dispatch still proceeds. */
+/** Waived dispatches do not consume the round cap: after a prompt-channel
+ *  waiver the next unwaived dispatch still proceeds. */
 test("round cap: waived dispatches do not consume the cap; an unwaived dispatch proceeds", async () => {
   // flag keeps today's flip semantics so the unwaived dispatch clears the
   // no-gate-pass check after the green gate.
   const { h, dispose } = await boot({ gateEvidence: "flag" })
-  // Green gate so the unwaived dispatch can clear the no-gate-pass check.
+  // Prompt-channel waiver captured first (a prompt resets state, so the green
+  // gate must follow); it waives the first reviewer dispatch without counting
+  // toward the cap.
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
+  // Green gate so the unwaived dispatches can clear the no-gate-pass check.
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
     input: { agent: "test-runner" },
     result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
   })
-  // Two waived dispatches must not drain the unwaived budget.
-  for (let i = 0; i < 2; i++) {
-    await callTool(h, "execute.before", {
-      tool: "task",
-      sessionID: "p1",
-      input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
-    })
-  }
-  // The unwaived dispatch still resolves — HEAD throws the round-limit message.
+  // A waiver dispatch consumes the prompt-channel waiver; the green gate
+  // carries the unwaived dispatches.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  // The unwaived dispatch still resolves.
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
@@ -429,24 +448,27 @@ test("round cap: waived dispatches do not consume the cap; an unwaived dispatch 
   dispose()
 })
 
-/** Waivers neither count toward nor reset the cap: after any number of
- *  waivers exactly `maxReviewerRounds` unwaived dispatches succeed and the
+/** Waivers neither count toward nor reset the cap: after a prompt-channel
+ *  waiver exactly `maxReviewerRounds` unwaived dispatches succeed and the
  *  next rejects with the golden round-limit message. */
 test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is blocked", async () => {
   // flag keeps today's flip semantics so the gate goes green after the PASS.
   const { h, dispose } = await boot({ gateEvidence: "flag" })
+  // Prompt-channel waiver captured first (a prompt resets state, so the green
+  // gate must follow).
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
     input: { agent: "test-runner" },
     result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
   })
-  // A single waiver precedes the unwaived budget: it must neither consume nor
-  // reset it.
+  // A single prompt-channel waiver precedes the unwaived budget: it consumes
+  // the waiver without consuming or resetting the cap.
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: user said ship it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
   // Two unwaived dispatches still succeed (default cap of 2).
   for (let i = 0; i < 2; i++) {
@@ -1167,7 +1189,7 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   // strict semver regex so prerelease versions cannot fail this).
   assert.ok(entry.version === null || (typeof entry.version === "string" && entry.version !== ""))
   assert.match(entry.digest, /^[0-9a-f]{12}$/)
-  assert.equal(entry.hooks, 6)
+  assert.equal(entry.hooks, 7)
   // trace:true (boot default) carries the human-readable trace fields.
   assert.equal(entry.trace, true)
   assert.equal(typeof entry.agents, "object")
@@ -1196,8 +1218,8 @@ test("setup heartbeat redacts trace fields when trace is false", async () => {
   dispose()
 })
 
-/** A degraded host without event.subscribe registers 5 hooks. */
-test("setup journals hooks === 5 when event.subscribe is absent", async () => {
+/** A degraded host without event.subscribe registers 6 hooks (permission stays). */
+test("setup journals hooks === 6 when event.subscribe is absent", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost()
   // A degraded host never exposes the event stream.
@@ -1206,7 +1228,44 @@ test("setup journals hooks === 5 when event.subscribe is absent", async () => {
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
-  assert.equal(setups[0]?.hooks, 5)
+  assert.equal(setups[0]?.hooks, 6)
+  dispose()
+})
+
+/** A degraded host without the permission surface registers 6 hooks. */
+test("setup journals hooks === 6 when the permission surface is absent", async () => {
+  const metricsDir = tmpDir()
+  // A host without the permission surface (older host) still registers the
+  // event stream, so it lands one below the full host's 7.
+  const h = makeFakeHost({ permission: false })
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const dispose = (await setup(h.host)) as () => void
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  assert.equal(setups[0]?.hooks, 6)
+  dispose()
+})
+
+/**
+ * A host without the `session` and `tool` surfaces degrades cleanly: setup
+ * registers only the hooks that exist (heartbeat journals the reduced count),
+ * skips the session/tool hook wiring entirely, and never throws. This pins
+ * the `g_session`/`g_tool` degradation guards in `setup.ts` — a host shape
+ * missing those surfaces is observable via the heartbeat, not silent.
+ */
+test("setup degrades cleanly when the session and tool surfaces are absent", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({ session: false, tool: false })
+  assert.equal(h.host.session, undefined)
+  assert.equal(h.host.tool, undefined)
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  // Registration must not throw despite the missing surfaces.
+  const dispose = (await setup(h.host)) as () => void
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  // Only the permission-evaluate hook and the event-stream subscription
+  // register on this host shape (no session hooks, no tool hooks).
+  assert.equal(setups[0]?.hooks, 2)
   dispose()
 })
 
@@ -1323,14 +1382,16 @@ test("block messages: custom config interpolates into the no-gate-pass message",
       "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
         "Run the qa-runner subagent first; dispatch qa-reviewer only after its first line is " +
         "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-        "(the dispatch prompt must contain the literal marker 'OVERRIDE:' followed by the user's words).",
+        "(a user prompt this task must contain the literal marker 'OVERRIDE:' followed by the user's words).",
   )
-  // The customized waiver marker bypasses the gate and is journaled; the
-  // dispatch entry still records the customized agent name.
+  // The customized waiver marker is captured from the user prompt (never the
+  // dispatch prompt) and bypasses the gate and is journaled; the dispatch
+  // entry still records the customized agent name.
+  await callSession(h, "prompt", { sessionID: "p1", text: "OVERRIDE: user said ship it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "qa-reviewer", prompt: "OVERRIDE: user said ship it" },
+    input: { agent: "qa-reviewer", prompt: "review it" },
   })
   const dispatched = journalEntries(metricsDir).find(
     (l) => l.type === "dispatch" && l.agent === "qa-reviewer",
@@ -1338,7 +1399,8 @@ test("block messages: custom config interpolates into the no-gate-pass message",
   assert.ok(dispatched)
   const waived = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "WAIVED")
   assert.ok(waived)
-  assert.equal(waived.waiver, "OVERRIDE: user said ship it")
+  assert.equal(waived?.channel, "prompt")
+  assert.equal(waived?.waiver, "OVERRIDE: user said ship it")
   dispose()
 })
 
@@ -1366,7 +1428,7 @@ test("block messages: custom config interpolates into the plan-approval message"
         e.message ===
         `BLOCKED by turnstile: no plan approval for "plan.md". Dispatch the plan-check subagent first; proceed with qa-executor only after the plan-check's first line is ` +
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-          "(the dispatch prompt must contain the literal marker 'OVERRIDE:' followed by the user's words).",
+          "(a user prompt this task must contain the literal marker 'OVERRIDE:' followed by the user's words).",
     )
     dispose()
   } finally {
@@ -1384,6 +1446,201 @@ test("newState initializes seenFrom and suppressedPending and omits verdicts", (
   assert.equal(s.suppressedPending, 0)
   assert.equal("verdicts" in s, false)
   assert.equal(s.policyInjected, false)
+})
+
+/** A fresh bucket initializes the three new primitives to their defaults:
+ *  empty waiver, empty per-reason once-grants ({ plan, landing }), and a false
+ *  human-provenance flag. */
+test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defaults", () => {
+  const s = newState()
+  assert.equal(s.userWaiver, "")
+  assert.equal(s.humanApproval, false)
+  assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "" })
+})
+
+/** The landing-gate primitives start at their task-scoped defaults: no
+ *  reviewer approval yet, and a zero landing-block counter. */
+test("newState initializes hasReviewApprove and landingBlocks defaults", () => {
+  const s = newState()
+  assert.equal(s.hasReviewApprove, false)
+  assert.equal(s.landingBlocks, 0)
+})
+
+/**
+ * Landing-gate flag lifecycle (chunk-7): only a delivery-attributed reviewer
+ * `VERDICT: APPROVE` sets/`hasReviewApprove` (task-result), streaming child
+ * text does not (AC-12), a `GATE: FAIL` never clears it, and replay restores
+ * it across a restart with the same one-prompt grace as a plan verdict.
+ */
+
+/** A reviewer task-result delivery carries a `VERDICT: APPROVE` that becomes
+ *  `hasReviewApprove` — task-result capture round-trips through the journal
+ *  into the next boot's replay. */
+test("a reviewer task-result verdict restores hasReviewApprove across a restart", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+    result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+  })
+  // The reviewer verdict is journaled against the parent with the task-result
+  // source (the discriminator replay credits).
+  const verdict = journalEntries(metricsDir).find(
+    (l) => l.type === "verdict" && typeof l.marker === "string" && l.marker.includes("APPROVE"),
+  )
+  assert.ok(verdict, "the verdict was journaled")
+  assert.equal(verdict.source, "task-result")
+  // The next boot restores the landing-gate approval from that verdict.
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
+  dispose()
+})
+
+/** A reviewer `VERDICT: BLOCK` never releases the landing gate. */
+test("a reviewer task-result verdict BLOCK does not restore hasReviewApprove", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+    result: { output: "VERDICT: BLOCK crit=0 high=0 med=0 low=0\n" },
+  })
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "a BLOCK verdict sets nothing")
+  dispose()
+})
+
+/** (AC-12) A `VERDICT: APPROVE` seen only in streamed child text never restores
+ *  hasReviewApprove: landing release requires a delivery-attributed reviewer
+ *  verdict, and the streamed verdict is journaled with a non-task-result
+ *  source that replay never credits. */
+test("a streamed verdict does not restore hasReviewApprove (AC-12)", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.text.ended",
+    data: {
+      sessionID: "c1",
+      text: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n",
+    },
+  })
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+  const verdict = journalEntries(metricsDir).find((l) => l.type === "verdict")
+  assert.ok(verdict)
+  assert.notEqual(verdict.source, "task-result", "the streamed verdict is not a task-result")
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(
+    ledger.state("p1").hasReviewApprove,
+    false,
+    "streamed verdict never releases the gate",
+  )
+  dispose()
+})
+
+/** Replay restores hasReviewApprove from a journaled reviewer verdict; the
+ *  first post-restart prompt carries it (grace), and a later prompt clears it. */
+test("replay restores hasReviewApprove and the grace prompt carries it once, then clears", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({
+      ts: "t",
+      type: "verdict",
+      sessionID: "p1",
+      raw: "c1",
+      marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+      source: "task-result",
+    })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
+  // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward once.
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "grace carries hasReviewApprove forward")
+  // Second prompt: a full reset clears it (task-scoped again).
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "hasReviewApprove clears on full reset")
+})
+
+/** A trailing `GATE: FAIL` does not clear a restored reviewer approval — the
+ *  recency boundary for hasReviewApprove is the last verdict, not the last
+ *  gate result. */
+test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({
+        ts: "t0",
+        type: "verdict",
+        sessionID: "p1",
+        raw: "c1",
+        marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+        source: "task-result",
+      }),
+      JSON.stringify({ ts: "t1", type: "gate", sessionID: "p1", raw: "c1", result: "FAIL" }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "GATE: FAIL never clears the approval")
+})
+
+/** resetState drops the task-scoped waiver and per-reason once-grants and
+ *  resets humanApproval to false on an ordinary (non-grace) prompt reset. */
+test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const s = ledger.state("p1")
+  s.userWaiver = "USER WAIVER: proceed"
+  s.humanApproval = true
+  s.pendingOnceGrant = { plan: "req-42", landing: "req-9" }
+  ledger.resetState("p1")
+  const cur = ledger.state("p1")
+  assert.equal(cur.userWaiver, "", "userWaiver clears on reset")
+  assert.deepEqual(
+    cur.pendingOnceGrant,
+    { plan: "", landing: "" },
+    "pendingOnceGrant clears on reset",
+  )
+  assert.equal(cur.humanApproval, false, "humanApproval resets on prompt")
+})
+
+/** humanApproval is restart-sticky exactly like hasPlanVerdict: a
+ *  journal-restored flag survives the first post-restart (grace) prompt via
+ *  mergeAfterReplay, then clears on the next full reset. Waiver/once-grant
+ *  strings stay task-scoped and never carry through the merge. */
+test("grace prompt carries restored humanApproval forward then clears it", () => {
+  const metricsDir = tmpDir()
+  // A journaled plan APPROVE restores hasPlanVerdict + the one-prompt grace.
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE" })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  // Seed the journal-restored provenance value (chunk-3 owns the journaling
+  // source); mergeAfterReplay must carry it across the grace prompt.
+  const s = ledger.state("p1")
+  assert.equal(s.hasPlanVerdict, true, "replay restored hasPlanVerdict")
+  s.humanApproval = true
+  s.userWaiver = "USER WAIVER: keep"
+  s.pendingOnceGrant = { plan: "req-keep", landing: "" }
+  // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward,
+  // never wipes it; the task-scoped once-grants drop as usual.
+  ledger.resetState("p1")
+  const afterGrace = ledger.state("p1")
+  assert.equal(afterGrace.hasPlanVerdict, true, "hasPlanVerdict carried by grace")
+  assert.equal(afterGrace.humanApproval, true, "humanApproval carried by grace")
+  assert.equal(afterGrace.userWaiver, "", "userWaiver never carried through merge")
+  assert.deepEqual(
+    afterGrace.pendingOnceGrant,
+    { plan: "", landing: "" },
+    "pendingOnceGrant never carried through merge",
+  )
+  // Second prompt: a full reset clears everything.
+  ledger.resetState("p1")
+  const afterReset = ledger.state("p1")
+  assert.equal(afterReset.hasPlanVerdict, false, "hasPlanVerdict cleared on full reset")
+  assert.equal(afterReset.humanApproval, false, "humanApproval cleared on full reset")
 })
 
 /** An invalid `gateMarker` config falls back to the canonical regex and journals
@@ -1444,20 +1701,23 @@ test("trace lines carry a trailing ` | <sessionID>` when wired to a session", as
     input: { agent: "test-runner" },
     result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
   })
-  // waiver: a USER WAIVER prompt on a reviewer dispatch fires the gate waiver
-  // trace (guardReviewerDispatch handles the waiver before plan approval).
+  // waiver: a prompt-channel USER WAIVER fires the gate waiver trace
+  // (guardReviewerDispatch handles the waiver before plan approval).
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: the user shipped it" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "reviewer", prompt: "USER WAIVER: the user shipped it" },
+    input: { agent: "reviewer", prompt: "review it" },
   })
-  // plan-waiver: the same marker on an executor dispatch fires the
-  // plan-approval waiver trace (enforcePlanApproval). The chunk-3 ref lets
-  // it clear the decomposition gate so the waiver trace is the only outcome.
+  // plan-waiver: the same marker in the user prompt fires the plan-approval
+  // waiver trace (enforcePlanApproval). The executor prompt also cites AC-1 so
+  // the decomposition gate stays a no-op and the plan-waiver trace is the only
+  // executor outcome.
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: please proceed" })
   await callTool(h, "execute.before", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "executor", prompt: "USER WAIVER: please proceed, chunk-3" },
+    input: { agent: "executor", prompt: "do the work AC-1" },
   })
   const lines = traceText(metricsDir).trim().split("\n").filter(Boolean)
   const carriesTail = (needle: string): boolean =>

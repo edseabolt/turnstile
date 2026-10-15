@@ -1,1 +1,4 @@
 node_modules/
+
+# Local working artifacts: session plans, spike notes, tool output.
+.opencode/

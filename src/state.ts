@@ -17,10 +17,19 @@ export function newState(): GateState {
     hasGatePass: false,
     unverifiedPass: "",
     hasPlanVerdict: false,
+    hasReviewApprove: false,
+    userWaiver: "",
+    humanApproval: false,
+    // Per-reason single-dispatch grants (plan / landing): fresh "" on every
+    // task reset, task-scoped, never carried through mergeAfterReplay.
+    pendingOnceGrant: { plan: "", landing: "" },
     policyInjected: false,
     seenFrom: new Map(),
     suppressedPending: 0,
     reviewRounds: 0,
+    // Task-scoped landing-gate block counter: fresh 0 on every prompt reset.
+    // Restored by journal replay across a restart (chunk-7).
+    landingBlocks: 0,
     reads: 0,
     seen: new Set(),
     plansSignature: "",
@@ -44,6 +53,15 @@ function mergeAfterReplay(prior: GateState): GateState {
   const s = newState()
   s.hasGatePass = prior.hasGatePass
   s.hasPlanVerdict = prior.hasPlanVerdict
+  // Restart-sticky like hasPlanVerdict: a restored human approval survives the
+  // first post-restart prompt (restart-sticky provenance, never task-scoped).
+  // userWaiver/pendingOnceGrant stay fresh here: they are task-scoped and never
+  // carried through the replay-merge path.
+  s.humanApproval = prior.humanApproval
+  // hasReviewApprove is the landing gate's release signal, restart-sticky like
+  // hasPlanVerdict: a reviewer APPROVE restored by replay survives the first
+  // post-restart prompt (and the reset below clears it on the next prompt).
+  s.hasReviewApprove = prior.hasReviewApprove
   s.plansSignature = prior.hasPlanVerdict ? prior.plansSignature : ""
   return s
 }
@@ -191,12 +209,15 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
       )
       const lastGateResult = new Map<string, string>()
       const lastPlanResult = new Map<string, string>()
+      const lastReviewVerdict = new Map<string, string>()
       for (const line of lines.slice(-2000)) {
         try {
           const e = JSON.parse(line) as {
             type?: unknown
             sessionID?: unknown
             result?: unknown
+            marker?: unknown
+            source?: unknown
             verified?: unknown
             mode?: unknown
           }
@@ -216,6 +237,27 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
           ) {
             lastPlanResult.set(e.sessionID as string, e.result)
           }
+          // Reviewer-APPROVE restore (landing gate, chunk-7): a `VERDICT:
+          // APPROVE` verdict delivered on a task-result restores
+          // hasReviewApprove with the same latest-flipping rule hasPlanVerdict
+          // uses. Only `source:"task-result"` verdicts are credited — the
+          // landing gate releases only on a delivery-attributed reviewer
+          // verdict, so a verdict streamed in child text (`source:"child-*"`)
+          // never restores the flag (this is how AC-12 holds across a restart
+          // too). A trailing `VERDICT: BLOCK` leaves the flag off (the recency
+          // boundary is the last verdict, not task reset — a GATE: FAIL never
+          // clears it).
+          if (
+            e.type === "verdict" &&
+            e.sessionID &&
+            typeof e.marker === "string" &&
+            e.source === "task-result"
+          ) {
+            lastReviewVerdict.set(
+              e.sessionID as string,
+              e.marker.includes("APPROVE") ? "APPROVE" : "BLOCK",
+            )
+          }
         } catch {
           // skip malformed lines
         }
@@ -231,6 +273,13 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         if (result !== "APPROVE") continue
         const s = states.get(sessionID) ?? newState()
         s.hasPlanVerdict = true
+        s.replayGrace = true
+        states.set(sessionID, s)
+      }
+      for (const [sessionID, result] of lastReviewVerdict) {
+        if (result !== "APPROVE") continue
+        const s = states.get(sessionID) ?? newState()
+        s.hasReviewApprove = true
         s.replayGrace = true
         states.set(sessionID, s)
       }

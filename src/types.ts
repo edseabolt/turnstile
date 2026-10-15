@@ -53,6 +53,15 @@ export interface ToolHookEvent {
 /** Payload of the `session.prompt` hook. */
 export interface PromptHookProperties {
   sessionID?: unknown
+  /**
+   * Candidate key for the raw user prompt text on v2.0.27. The host does not
+   * type this field, hence `unknown`; `src/setup.ts` reads it (against the
+   * candidate `text ?? prompt`) to capture user-authored waiver/approval markers
+   * at prompt admission. Fails open when absent.
+   */
+  text?: unknown
+  /** Alternate candidate key for the raw user prompt text. */
+  prompt?: unknown
 }
 
 /** Generation draft passed to the `session.generate` hook. */
@@ -83,6 +92,23 @@ export interface EventProperties {
   text?: unknown
   delta?: unknown
   error?: unknown
+  /**
+   * Host request id on `permission.asked`; the matched id on `permission.replied`.
+   * Present only on the permission stream events (opencode v2.0.27+).
+   */
+  id?: unknown
+  requestID?: unknown
+  /**
+   * A human reply to a permission ask: `"once"`, `"always"`, or `"reject"`.
+   * Present only on `permission.replied`.
+   */
+  reply?: unknown
+  /**
+   * The ask message echoed by the host on `permission.asked`. Read to
+   * recognize plan-gate asks (the evaluate handler stamps a known prefix);
+   * unknown-typed, hence `unknown`.
+   */
+  message?: unknown
 }
 
 /** A single host stream event delivered by `event.subscribe`. */
@@ -128,6 +154,31 @@ export interface TurnstileToolPolicy {
   observeSessionMove: boolean
 }
 
+/**
+ * Git-and-commit gate configuration backing the mechanical gates in
+ * `src/tool-policy.ts` (chunk-7/8). The default `mode` is `"shadow"`: the
+ * gates are active but non-blocking (audit-only) until a user flips a key to
+ * `"enforce"`, mirroring the tool-policy "adopt shadow first" adoption path.
+ *
+ * `commitFormat` is a conventional-commits regex SOURCE string (no leading
+ * `^`/trailing `$`): callers compile it with `new RegExp("^" + source + "$",
+ * "s")`. It accepts one of the default types `{feat,fix,docs,style,refactor,
+ * perf,test,build,ci,chore,revert}`, an optional `(scope)`, a required `!` or
+ * `:` separator (only one is needed — no `BREAKING CHANGE` trailer), a subject
+ * of up to 72 characters on the first line, and one optional following body
+ * line.
+ */
+export interface TurnstileGitGates {
+  /** Enforcement mode: `enforce` (blocks), `shadow` (audit-only, default), or `off` (silent no-op). */
+  mode: ToolPolicyMode
+  /** Whether `git commit` messages are linted as conventional commits. */
+  commitMessages: boolean
+  /** Conventional-commit regex SOURCE string (compiled by callers with `"^…$"` + `"s"`). */
+  commitFormat: string
+  /** Whether pushing/PR-landing is gated on a reviewer `VERDICT: APPROVE`. */
+  landingGate: boolean
+}
+
 /** Gate state for one parent session. */
 export interface GateState {
   hasGatePass: boolean
@@ -140,6 +191,47 @@ export interface GateState {
   unverifiedPass: string
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
+  /**
+   * True once this task's reviewer `execute.after` delivery has carried a
+   * `VERDICT: APPROVE` for the parent — the landing gate's release signal.
+   * Restart-sticky like `hasPlanVerdict`: restored by journal replay across a
+   * restart (chunk-7) and carried one prompt via `mergeAfterReplay`; fresh
+   * `false` on an ordinary prompt reset.
+   */
+  hasReviewApprove: boolean
+  /**
+   * Latest user-authored prompt text containing the waiver marker; "" when
+   * none. Non-empty ⇒ the current task's reviewer/dispatch gates are waived.
+   * Task-scoped: cleared on every prompt reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  userWaiver: string
+  /**
+   * Provenance flag: true once a human (prompt marker or permission reply)
+   * rather than the plan-reviewer subagent released the plan gate. Provenance
+   * only — `execute.before` never consults it; it is read by the status CLI and
+   * trace lines. Fresh `false` on each prompt reset, but restart-restored values
+   * survive the first post-restart prompt via `mergeAfterReplay`, exactly like
+   * `hasPlanVerdict`.
+   */
+  humanApproval: boolean
+  /**
+   * A single-dispatch grant — the matched host `requestID` for a once-granted
+   * human approval, keyed per ask-reason so a plan-gate `once` grant (releasing
+   * exactly one executor dispatch) can never be consumed by a landing-gate
+   * `once` grant (releasing exactly one push) and vice versa: `{ plan }` for the
+   * plan gate (consumed by the executor dispatch short-circuit), `{ landing }`
+   * for the landing gate (consumed by the bash short-circuit). "" per reason
+   * when none. Task-scoped: cleared immediately after the single dispatch
+   * consumes it (a stale grant cannot outlive one dispatch) and never carried
+   * through `mergeAfterReplay`.
+   */
+  pendingOnceGrant: {
+    /** Plan-gate once grant: the matched requestID, or "" when none. */
+    plan: string
+    /** Landing-gate once grant: the matched requestID, or "" when none. */
+    landing: string
+  }
   /**
    * True once this task's first parent task/subagent result delivery has
    * carried the injected orchestrator policy forward into model context.
@@ -167,6 +259,13 @@ export interface GateState {
    */
   suppressedPending: number
   reviewRounds: number
+  /**
+   * Count of `git push`/PR-landing blocks this task under the landing gate —
+   * telemetry that arms the permission-ask escalation on a repeat attempt
+   * (chunk-8). Task-scoped: fresh `0` on each prompt reset and never carried
+   * through `mergeAfterReplay`.
+   */
+  landingBlocks: number
   reads: number
   seen: Set<string>
   /**
@@ -269,6 +368,13 @@ export interface TurnstileConfig {
   readBlock: number
   /** Literal marker that waives the reviewer gate when in the prompt. */
   waiverMarker: string
+  /**
+   * Literal marker that releases the plan gate via an explicit human
+   * approval (chunk-3). Present at config resolution so the key is valid and
+   * the digest is stable; not yet consumed by the chunk-2 prompt-channel
+   * waiver. Defaults to `PLAN APPROVED:`.
+   */
+  approvalMarker: string
   /** Project-relative directory scanned for `## Decomposition` plans. */
   plansDir: string
   /** Whether the human-readable trace file is written (JSONL journal always). */
@@ -301,6 +407,14 @@ export interface TurnstileConfig {
    * See `src/tool-policy.ts`.
    */
   toolPolicy: TurnstileToolPolicy
+  /**
+   * Git-and-commit gate configuration. Default `mode` is `shadow` (audit-only
+   * until a user opts into `enforce`), `commitMessages` lints `git commit`
+   * messages against the conventional-commits `commitFormat`, and `landingGate`
+   * gates push/PR-landing on a reviewer `VERDICT: APPROVE`. See
+   * `src/tool-policy.ts`.
+   */
+  gitGates: TurnstileGitGates
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */
@@ -329,4 +443,33 @@ export type Host = {
   event?: {
     subscribe?: (options?: { signal?: AbortSignal }) => AsyncIterable<StreamEvent>
   }
+  permission?: {
+    hook?: (
+      name: string,
+      callback: (event: unknown) => unknown | Promise<unknown>,
+    ) => Promise<unknown>
+  }
+}
+
+/**
+ * Properties carried by a host `permission.evaluate` request at the wire
+ * boundary. Every field is optional and typed `unknown`: the host does not
+ * expose a stable shape for this payload, so a reshaped or partial payload
+ * fails open rather than failing hard. The plugin matches on `action` (the
+ * host's task/subagent dispatch name) and `source` rather than the tool input
+ * (which this payload does not carry), so escalation surfaces the same decision
+ * to a human without leaking the dispatch target to the subagent.
+ */
+export interface PermissionEvaluateEvent {
+  sessionID?: unknown
+  action?: unknown
+  resources?: unknown
+  metadata?: unknown
+  source?: {
+    type?: unknown
+    messageID?: unknown
+    id?: unknown
+  }
+  effect?: unknown
+  message?: unknown
 }

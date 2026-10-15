@@ -16,17 +16,35 @@
  *
  * Enforced mechanically:
  * - Plan-approval gate: `task` dispatches to `executor` require a current
- *   plan-reviewer `VERDICT: APPROVE` for the task whenever a plan file
- *   exists in `.opencode/plans/`, or an explicit user waiver (`USER
- *   WAIVER:` literal in the prompt). Plan-content changes invalidate approvals
- *   issued against the previous plans-dir signature (replayed approvals are
- *   accepted once, then stamped). A journal-replayed approval survives the
- *   first prompt after a restart (the resume prompt) and then every later
- *   prompt starts a clean cycle.
+ *   plan approval whenever a plan file exists in `.opencode/plans/`: a
+ *   plan-reviewer `VERDICT: APPROVE`, a prompt-channel human approval, or a
+ *   permission-prompt human approval. A prompt-channel approval is a
+ *   user-authored prompt (a `PLAN APPROVED:` literal in the user's prompt sets
+ *   the plan verdict and records human provenance) and replays identically to
+ *   a plan-reviewer verdict. When none holds, the first executor dispatch
+ *   escalates to the human through the host permission surface:
+ *   `permission.evaluate` forced `ask` with the plan file + head; a reply
+ *   `always` sets the verdict, `once` grants exactly one executor dispatch
+ *   (any other agent's dispatch leaves the grant pending and still runs its
+ *   own guards), and `reject` keeps the gate red (that single reply is
+ *   consumed). Replies match only asks escalated as plan-gate asks (recorded
+ *   per request id, bounded, per session) — a reply to an unrelated permission
+ *   ask can never release the gate: an ask is recorded only when its message
+ *   carries the plan-ask prefix, or when the parent's escalation latch is
+ *   still live (it expires after a few seconds and is cleared by a prompt
+ *   reset) and the ask carries no message of its own. The explicit
+ *   user waiver is prompt-channel too (see the hard-gate bullet): a
+ *   `USER WAIVER:` literal in the user's prompt waives the gate; a
+ *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert —
+ *   issue #34's injection hole, now closed. Plan-content changes invalidate
+ *   approvals issued against the previous plans-dir signature (replayed
+ *   approvals are accepted once, then stamped). A journal-replayed approval
+ *   survives the first prompt after a restart (the resume prompt) and then
+ *   every later prompt starts a clean cycle.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
- *   it), or an explicit user waiver (the dispatch prompt must contain the
- *   literal marker `USER WAIVER:`). Under the default `gateEvidence:enforce`
+ *   it), or an explicit user waiver (`USER WAIVER:` literal in the user's
+ *   prompt). Under the default `gateEvidence:enforce`
  *   mode a `GATE: PASS` satisfies the gate only when the current task's
  *   bash/shell executions include a matching exit-0 test command (plausibility
  *   via `evidencePattern`); an unverified PASS is journaled `verified:false`
@@ -36,8 +54,9 @@
  *   journal-replayed `GATE: PASS` survives the first prompt after a restart
  *   (the resume prompt) and then every later prompt starts a clean cycle.
  * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
- *   state; a dispatch with the `USER WAIVER:` marker bypasses the cap without
- *   counting toward it; a new user prompt resets it.
+ *   state; a prompt-channel user waiver bypasses the cap without counting
+ *   toward it (a dispatch prompt with the `USER WAIVER:` marker is inert); a
+ *   new user prompt resets it.
  * - Parent-bucket eviction: live-parent gate buckets (hasGatePass,
  *   hasPlanVerdict, read counter, policyInjected) are registered per
  *   prompt/dispatch/delivery/edge via `markParent`, and the `states` LRU never
@@ -50,6 +69,11 @@
  *   still-unresolved child self-keys and journals a bounded signal.
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.
+ * - Status: `turnstile status` (the `opencode-turnstile status` CLI) reads
+ *   the journal read-only — it never writes — and reports gate + plan state
+ *   per parent session: gate flags restored like replay, prompt-channel plan
+ *   approvals and waiver events (with channel), last markers, and
+ *   dispatch/block/permission counts (a human table or `--json`).
  * - Tool-call policy: `bash`/`shell` commands and `write`/`edit`
  *   target paths are matched in `execute.before` against a configurable
  *   denylist (`src/tool-policy.ts`). Under `toolPolicy.mode: enforce` a match
@@ -59,6 +83,36 @@
  *   `gh pr create|merge`); `pathDeny` defaults empty. `session_move` is journaled
  *   as telemetry only, never blocked. A misconfigured/absent host payload fails
  *   open with a journal entry rather than blocking.
+ * - Commit-lint: `bash`/`shell` `git commit -m '<subject>'` messages are
+ *   validated as conventional commits when `gitGates.commitMessages` is on
+ *   (default) — a `type(scope)!: subject` shape (`type` ∈
+ *   `{feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert}`, `!`
+ *   optional, subject ≤ 72 chars). A non-conventional message is
+ *   `BLOCKED by turnstile: commit message '<subject>' is not a conventional
+ *   commit — expected type(scope)!: subject` under `gitGates.mode: enforce`
+ *   (journaled `reason:"invalid-commit-message"`); `shadow` journals only,
+ *   `off` is a no-op. An uninspectable form (`-F`/`-t`/`--edit`/interactive;
+ *   `--amend -m` is inspectable) is treated as non-conventional and blocked
+ *   under `enforce` (`reason:"commit-message-uninspectable"`): pass the subject
+ *   with `git commit -m <subject>`, not an editor or file.
+ * - Landing gate: `git push` with no delivery-attributed reviewer
+ *   `VERDICT: APPROVE` for the current task is `BLOCKED by turnstile:
+ *   push/PR requires a reviewer VERDICT: APPROVE before landing — wait for the
+ *   reviewer or escalate to the user` under `gitGates.mode: enforce` (journaled
+ *   `reason:"no-landing-approval"`); `shadow` journals only, `off` is a no-op.
+ *   Approval is set only when the reviewer's task-result delivery carries
+ *   `VERDICT: APPROVE` (a streamed-only verdict in child text does not
+ *   satisfy the gate); `gh pr create|merge` stays denied by the default
+ *   `bashDeny` list (disjointly journaled), and every `git push` is journaled
+ *   as landing telemetry in every mode.
+ * - Landing escalation: on a repeat `git push` with no approval and
+ *   `gitGates.mode: enforce`, turnstile journals a permission ask
+ *   (`reason:"landing"`) and lets `execute.before` pass so the
+ *   `permission.evaluate` handler forces a human ask
+ *   (`turnstile: push/PR requires a reviewer VERDICT: APPROVE before
+ *   landing`). The reply `always` stands a reviewer approval for the task,
+ *   `once` grants exactly one push (consumed by the next push), and `reject`
+ *   re-blocks and re-arms — the repeat push is the human decision point.
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
  *   assistant text, deduped per task (streaming re-delivery is ignored);
  *   marker-less outputs from marker-contracted agents (test-runner/reviewer/

@@ -13,7 +13,7 @@ import { BlockError } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createToolPolicy, type ToolPolicy } from "../src/tool-policy.ts"
 import type { Journaler } from "../src/journal.ts"
-import type { TurnstileConfig, TurnstileToolPolicy } from "../src/types.ts"
+import type { TurnstileConfig, TurnstileGitGates, TurnstileToolPolicy } from "../src/types.ts"
 import {
   callTool,
   isolatedEnv,
@@ -45,19 +45,26 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
 }
 
 /**
- * Builds a policy over the full default config with an optional `toolPolicy`
- * (or top-level config) override, with a capturing journaler.
- * @param overrides Config overrides; `toolPolicy` is merged one level deep.
+ * Builds a policy over the full default config with optional `toolPolicy` /
+ * `gitGates` (each merged one level deep, mirroring `mergeConfig`) or
+ * top-level overrides, with a capturing journaler.
+ * @param overrides Config overrides; `toolPolicy` and `gitGates` are merged one
+ *     level deep.
  * @returns The policy, its journaled entries, and its trace lines.
  */
 function makePolicy(
-  overrides: { toolPolicy?: Partial<TurnstileToolPolicy>; trace?: boolean } = {},
+  overrides: {
+    toolPolicy?: Partial<TurnstileToolPolicy>
+    gitGates?: Partial<TurnstileGitGates>
+    trace?: boolean
+  } = {},
 ): { policy: ToolPolicy; entries: any[]; traces: string[] } {
   const { journaler, entries, traces } = captureJournaler()
   const cfg: TurnstileConfig = {
     ...defaultConfig({}),
     ...overrides,
     toolPolicy: { ...defaultConfig({}).toolPolicy, ...(overrides.toolPolicy ?? {}) },
+    gitGates: { ...defaultConfig({}).gitGates, ...(overrides.gitGates ?? {}) },
   }
   return { policy: createToolPolicy(cfg, journaler), entries, traces }
 }
@@ -330,6 +337,7 @@ test("guards never throw on nullish command/path values", () => {
 /** Boots the plugin over a temp metrics dir, optionally overriding config. */
 type BootConfig = {
   toolPolicy?: Partial<TurnstileToolPolicy>
+  gitGates?: Partial<TurnstileGitGates>
   trace?: boolean
 }
 async function boot(
@@ -415,7 +423,10 @@ test("integration: execute.before blocks a denied write path", async () => {
   }
 })
 
-/** A null input object fails open: no throw, misconfiguration journaled (AC-3). */
+/** A null input object fails open: no throw, misconfiguration journaled (AC-3).
+ *  The three bash-side guards (guardBash, guardCommitMessage, guardLanding) each
+ *  independently detect the missing command, so each journals its own
+ *  misconfiguration error — three, one per guard — rather than a single one. */
 test("integration: a nullish command fails open with a journaled error (AC-3)", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
@@ -424,7 +435,7 @@ test("integration: a nullish command fails open with a journaled error (AC-3)", 
     const errs = journalEntries(metricsDir).filter(
       (e) => e.type === "error" && String(e.error).includes("command"),
     )
-    assert.equal(errs.length, 1)
+    assert.equal(errs.length, 3)
   } finally {
     dispose()
   }
@@ -537,9 +548,53 @@ test("integration: the historical block messages are unchanged (AC-4)", async ()
         "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
           "Run the test-runner subagent first; dispatch reviewer only after its first line is " +
           "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-          "(the dispatch prompt must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+          "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words).",
     )
     assert.ok(journalEntries(metricsDir).some((e) => e.type === "dispatch"))
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * The bash-side guard chain runs end-to-end through `execute.before`: a `git
+ * push` passes `guardBash`/`guardCommitMessage`/`observeLanding` and is gated by
+ * `guardLanding`. First block under `enforce` throws and records a landing
+ * block (exercising the capability's `recordBlock`); the repeat attempt journals
+ * a landing permission ask and escalates (the capability's `escalate`, a
+ * documented no-op on the real capability), so `execute.before` allows through.
+ */
+test("integration: execute.before gates a git push through the landing guard", async () => {
+  const { h, metricsDir, dispose } = await boot({ gitGates: { mode: "enforce" } })
+  try {
+    // First block: no reviewer approval, enforce → throws and records a block.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Repeat attempt: enforce arms the human ask (permission + escalate) and
+    // allows `execute.before` to pass so the evaluate handler can force it.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    const perm = journalEntries(metricsDir).find(
+      (e) => e.type === "permission" && e.reason === "landing",
+    )
+    assert.ok(perm, "a landing permission ask is journaled on the repeat attempt")
+    assert.equal(perm.action, "ask")
+    assert.equal(perm.mode, "enforce")
+    // The landing deny stays disjoint from bashDeny: no tool-policy block.
+    assert.deepEqual(
+      journalEntries(metricsDir).filter((e) => e.reason === "tool-policy"),
+      [],
+    )
   } finally {
     dispose()
   }
