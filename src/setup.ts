@@ -588,8 +588,11 @@ export function createTurnstile(
    *   attributable children from registered edges AND from unresolved children
    *   whose streamed verdict plausibly belongs to this parent, and
    *   attributes through the unique unanimous pool (`raw = first edge child,
-   *   else most-recently-recorded unresolved child`). The registered-edge scan is round-scoped to the parent's most-recent plan-reviewer dispatch,
-   *   (exactly as the unresolved scan is): an earlier-round BLOCK stored on an edge child left behind by a prior review round is superseded by this round's verdict, so a re-issued APPROVE is credited. Zero candidates, or
+   *   else most-recently-recorded unresolved child). The registered-edge scan
+   *   is round-scoped to the parent's most-recent plan-reviewer dispatch
+   *   (exactly as the unresolved scan is): an earlier-round BLOCK stored on an
+   *   edge child left behind by a prior review round is superseded by this
+   *   round's verdict, so a re-issued APPROVE is credited. Zero candidates, or
    *   more than one (a contradiction within this same round), journals the existing `type:"error"` and mutates nothing: a marker-less, unattributable
    *   parent-keyed delivery can never clobber a live approval with a BLOCK, and any plausible streamed APPROVE makes a self-keyed BLOCK unreachable
    *   (structural fail-open).
