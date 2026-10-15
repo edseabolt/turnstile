@@ -90,38 +90,59 @@ export function makeFakeHost(opts?: {
    * degraded host without the permission surface.
    */
   permission?: boolean
+  /**
+   * Whether the fake host exposes the `session` surface (default true). Set
+   * false to model a host without session hooks (the `g_session` degradation
+   * path in `setup.ts`).
+   */
+  session?: boolean
+  /**
+   * Whether the fake host exposes the `tool` surface (default true). Set false
+   * to model a host without tool hooks (the `g_tool` degradation path).
+   */
+  tool?: boolean
 }): FakeHost {
   const withPermission = opts?.permission ?? true
+  const withSession = opts?.session ?? true
+  const withTool = opts?.tool ?? true
   const toolHooks: Record<string, (event: any) => Promise<void> | void> = {}
   const sessionHooks: Record<string, (input: any) => Promise<void> | void> = {}
-  const permissionHooks: Record<string, (event: any) => unknown | Promise<unknown>> = {}
+  const permissionHooks: Record<string, (event: any) => Promise<void> | void> = {}
   const sessionRecords = opts?.sessionRecords
   const { push, subscribe } = makeEventBus()
   const host: Host = {
-    tool: {
-      hook: async (name: string, cb: any): Promise<unknown> => {
-        toolHooks[name] = cb
-        return { dispose: (): void => {} }
-      },
-    },
-    session: {
-      hook: async (name: string, cb: any): Promise<unknown> => {
-        sessionHooks[name] = cb
-        return { dispose: (): void => {} }
-      },
-      ...(opts?.throwingGet
-        ? {
-            get: async (): Promise<any> => {
-              throw new Error("not visible")
+    ...(withTool
+      ? {
+          tool: {
+            hook: async (name: string, cb: any): Promise<unknown> => {
+              toolHooks[name] = cb
+              return { dispose: (): void => {} }
             },
-          }
-        : sessionRecords
-          ? {
-              get: async ({ sessionID }: { sessionID: string }): Promise<any> =>
-                sessionRecords.get(sessionID),
-            }
-          : {}),
-    },
+          },
+        }
+      : {}),
+    ...(withSession
+      ? {
+          session: {
+            hook: async (name: string, cb: any): Promise<unknown> => {
+              sessionHooks[name] = cb
+              return { dispose: (): void => {} }
+            },
+            ...(opts?.throwingGet
+              ? {
+                  get: async (): Promise<any> => {
+                    throw new Error("not visible")
+                  },
+                }
+              : sessionRecords
+                ? {
+                    get: async ({ sessionID }: { sessionID: string }): Promise<any> =>
+                      sessionRecords.get(sessionID),
+                  }
+                : {}),
+          },
+        }
+      : {}),
     event: { subscribe },
     ...(withPermission
       ? {

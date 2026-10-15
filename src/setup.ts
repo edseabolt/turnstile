@@ -26,7 +26,7 @@ import {
 } from "./markers.ts"
 import { BlockError, createGates, type Gates } from "./gates.ts"
 import { createEvidenceTracker } from "./evidence.ts"
-import { createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
+import { LANDING_REQUIREMENT, createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
 import { createLedger, type GateLedger } from "./state.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
@@ -50,6 +50,7 @@ import type {
  * @param value Raw value from a host payload.
  * @returns The string form, or an empty string for nullish values.
  */
+
 function asSessionID(value: unknown): string {
   return String(value ?? "")
 }
@@ -109,6 +110,13 @@ export function readPluginVersion(pkgPath?: string): string | null {
  * session id on the `permission.asked` event.
  */
 const PLAN_ASK_MESSAGE_PREFIX = "turnstile: plan approval required"
+
+/**
+ * Message prefix the evaluate handler stamps on every landing-gate ask, so the
+ * stream consumer can recognize a landing ask (even when the host omits the
+ * session id) and route its reply to the landing gate.
+ */
+const LANDING_ASK_MESSAGE_PREFIX = "turnstile: push/PR requires a reviewer"
 
 /**
  * Builds the turnstile plugin for a host: resolves the layered config,
@@ -220,6 +228,25 @@ export function createTurnstile(
   // gate). Fail-toward-strict: expired = not recorded = reply inert = the
   // gate re-asks on the next dispatch.
   const awaitingPlanAskTtlMs = 5_000
+  // Parents whose evaluate handler has been armed to force a landing ask (the
+  // guard sets this under `gitGates.mode: enforce` on a repeat `git push`
+  // attempt: no reviewer approval AND >= 1 prior landing block). Parent → arm
+  // time. The landing arm consults it (not the command, whose wire shape in the
+  // permission event is unverified — the guard is the single source of truth
+  // for landing-candidate detection via isPushLanding). Bounded by
+  // boundLandingAsks; expires like awaitingPlanAsk so a lost stream event
+  // cannot latch a parent indefinitely.
+  const pendingLandingAsk = new Map<string, number>()
+  const maxTrackedLandingAsks = 50
+  const pendingLandingAskTtlMs = 5_000
+  // Landing-gate permission asks, keyed by host request id → the parent session
+  // the ask was raised for + when it was recorded. Only asks by the evaluate
+  // handler's landing arm (message prefixed `turnstile: push/PR …`) are
+  // recorded, so a reply to an unrelated permission ask can never match or
+  // release the landing gate; per-reason keying keeps a landing `once` grant
+  // from ever being consumed by a plan-gate (task) dispatch and vice versa.
+  // Bounded: evict oldest past the cap.
+  const landingGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -286,6 +313,36 @@ export function createTurnstile(
     if (at === undefined) return false
     if (Date.now() - at > awaitingPlanAskTtlMs) {
       awaitingPlanAsk.delete(sid)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Bounds the pending-landing-ask map (parent → arm time), evicting its oldest
+   * entries. Mirrors boundAwaitingAsks; see pendingLandingAsk.
+   */
+  function boundLandingAsks(): void {
+    while (pendingLandingAsk.size > maxTrackedLandingAsks) {
+      const oldest = pendingLandingAsk.keys().next().value as string
+      pendingLandingAsk.delete(oldest)
+    }
+  }
+
+  /**
+   * Reads (and expires) the pending-landing-ask latch for a session: an arm
+   * older than the TTL is dropped and reported as absent. Fail-toward-strict:
+   * an expired latch arms nothing, so a later ask is inert and the landing gate
+   * re-blocks. Only armed under `gitGates.mode: enforce` on a repeat attempt, so
+   * shadow/off never ask.
+   * @param sid The parent session whose latch is consulted.
+   * @returns Whether a live (unexpired) latch exists for the session.
+   */
+  function hasLiveLandingAsk(sid: string): boolean {
+    const at = pendingLandingAsk.get(sid)
+    if (at === undefined) return false
+    if (Date.now() - at > pendingLandingAskTtlMs) {
+      pendingLandingAsk.delete(sid)
       return false
     }
     return true
@@ -764,6 +821,10 @@ export function createTurnstile(
             // a new prompt must not let a later unrelated ask be recorded as
             // the plan ask.
             awaitingPlanAsk.delete(sessionID)
+            // A landing-ask arm (an enforce repeat-attempt escalation) belongs
+            // to the previous task scope too: a new prompt drops it, so the new
+            // task starts from a pure first block again.
+            pendingLandingAsk.delete(sessionID)
             // Waiver capture (prompt channel): the user's text following the
             // waiver marker waives both gates for the whole task. Read + capture
             // in one guarded block; a coercion that throws (a malformed prompt
@@ -905,42 +966,66 @@ export function createTurnstile(
           try {
             const pe = event as PermissionEvaluateEvent
             const sessionID = asSessionID(pe?.sessionID)
-            // Only the task/subagent dispatch exposes `action === "task"`; the
-            // payload carries no tool input, so this cannot read the target and
+            // Plan-approval arm: the task/subagent dispatch exposes
+            // `action === "task"`; the payload carries no tool input, so
             // escalation is driven purely by the parent's plan-gate state.
-            if (pe?.action !== "task") return
-            const parent = ledger.parentOf(sessionID)
-            const status = gates.planGateStatus(projectDir, ledger, parent)
-            if (!status.red) return
-            // Red ⇒ summary is present by construction (planGateStatus builds
-            // it from a scan whose names[0] was already read). Escalate: force
-            // the host to ask the human, naming the plan file + head. Journal
-            // the ask so a reply can be matched (the requestID rides the
-            // permission.asked stream event).
-            const file = status.summary!.file
-            // The plan body is prompt context; journal/quote it only when the
-            // trace is enabled (SECURITY.md redaction contract), mirroring how
-            // the waiver quote is trace-gated at capture. Without it the ask
-            // still names the plan file.
-            const head = config.trace ? status.summary!.head : ""
-            pe.effect = "ask"
-            pe.message = head
-              ? `${PLAN_ASK_MESSAGE_PREFIX} — ${file}: ${head}`
-              : `${PLAN_ASK_MESSAGE_PREFIX} — ${file}`
-            // Mark this parent as awaiting its plan ask: the NEXT
-            // permission.asked stream event for this session is recorded as the
-            // plan-gate ask, so only escalated asks can ever match a reply.
-            awaitingPlanAsk.set(parent, Date.now())
-            boundAwaitingAsks()
-            journaler.journal({
-              type: "permission",
-              sessionID: parent,
-              action: "ask",
-              // Phase 1 has only the plan reason; the requestID is attached to
-              // the subsequent permission.asked stream event (item 9).
-              reason: "plan-gate",
-              plan: file,
-            })
+            if (pe?.action === "task") {
+              const parent = ledger.parentOf(sessionID)
+              const status = gates.planGateStatus(projectDir, ledger, parent)
+              if (!status.red) return
+              // Red ⇒ summary is present by construction (planGateStatus builds
+              // it from a scan whose names[0] was already read). Escalate:
+              // force the host to ask the human, naming the plan file + head.
+              // Journal the ask so a reply can be matched (the requestID rides
+              // the permission.asked stream event).
+              const file = status.summary!.file
+              // The plan body is prompt context; journal/quote it only when the
+              // trace is enabled (SECURITY.md redaction contract), mirroring how
+              // the waiver quote is trace-gated at capture. Without it the ask
+              // still names the plan file.
+              const head = config.trace ? status.summary!.head : ""
+              pe.effect = "ask"
+              pe.message = head
+                ? `${PLAN_ASK_MESSAGE_PREFIX} — ${file}: ${head}`
+                : `${PLAN_ASK_MESSAGE_PREFIX} — ${file}`
+              // Mark this parent as awaiting its plan ask: the NEXT
+              // permission.asked stream event for this session is recorded as
+              // the plan-gate ask, so only escalated asks can ever match.
+              awaitingPlanAsk.set(parent, Date.now())
+              boundAwaitingAsks()
+              journaler.journal({
+                type: "permission",
+                sessionID: parent,
+                action: "ask",
+                // The requestID is attached to the subsequent permission.asked
+                // stream event (matched below by message prefix / latch).
+                reason: "plan-gate",
+                plan: file,
+              })
+              return
+            }
+            // Landing arm: a bash/shell permission.evaluate whose landing ask
+            // is armed (the guard set the pending-landing-ask latch under
+            // enforce on a repeat attempt). Candidate detection lives in
+            // `isPushLanding` (used by the guard); the evaluate handler
+            // consults the arm rather than re-reading the command from the
+            // (host-shape-uncertain) permission event — the guard is the single
+            // source of truth for landing-candidate detection. Approval
+            // releases the gate; a live latch means the human must decide this
+            // landing (the first block already threw, and shadow never arms).
+            if (pe?.action === "bash" || pe?.action === "shell") {
+              const parent = ledger.parentOf(sessionID)
+              const st = ledger.state(parent)
+              if (st.hasReviewApprove) return
+              if (!hasLiveLandingAsk(parent)) return
+              pe.effect = "ask"
+              pe.message = `turnstile: ${LANDING_REQUIREMENT}`
+              // No journal of the ask here: guardLanding already journaled
+              // `{type:"permission", action:"ask", reason:"landing"}` when it
+              // armed the latch, so there is a single landing-ask entry.
+              return
+            }
+            return
           } catch (e) {
             // Fail-open: the evaluate handler NEVER blocks the host.
             journaler.journal({ type: "error", error: `permission evaluate: ${e}` })
@@ -1013,9 +1098,12 @@ export function createTurnstile(
               // humanApproval, which is provenance only.
               if (
                 agent === config.agents.executor &&
-                ledger.state(sessionID).pendingOnceGrant !== ""
+                ledger.state(sessionID).pendingOnceGrant.plan !== ""
               ) {
-                ledger.state(sessionID).pendingOnceGrant = ""
+                // Consume the plan-gate once grant (a `permission.replied`
+                // `once`): clears just `.plan` so a landing `.landing` grant,
+                // if any, survives for the push it was given for.
+                ledger.state(sessionID).pendingOnceGrant.plan = ""
                 return
               }
 
@@ -1059,10 +1147,21 @@ export function createTurnstile(
               const text = String(command ?? "")
               toolPolicy.observeLanding(sid, text)
               // The stateful ledger stays out of tool-policy: only a shaped
-              // capability is handed over. `st` is the parent session (a
-              // subagent's bash draws on the parent's task scope), so a
-              // still-unattributed child self-keys its own fresh state.
-              const st = ledger.state(ledger.parentOf(sid))
+              // capability is handed over. `parent` is the parent session (a
+              // subagent's bash draws on the parent's task scope) and `st` is
+              // its bucket, so a still-unattributed child self-keys its own
+              // fresh state.
+              const parent = ledger.parentOf(sid)
+              const st = ledger.state(parent)
+              // Landing once-grant (from a `permission.replied` `once` for a
+              // landing ask) releases exactly ONE push, consumed here, before
+              // the gate decides, so a stale grant cannot outlive that single
+              // dispatch. Keyed per-reason (`.landing`), so it can never be
+              // consumed by a plan-gate (task) dispatch or vice versa.
+              if (st.pendingOnceGrant.landing !== "") {
+                st.pendingOnceGrant.landing = ""
+                return
+              }
               toolPolicy.guardLanding(event.tool, text, sid, {
                 hasApproval: () => st.hasReviewApprove,
                 priorBlocks: () => st.landingBlocks,
@@ -1070,10 +1169,13 @@ export function createTurnstile(
                   st.landingBlocks += 1
                 },
                 escalate: () => {
-                  // No-op for the real capability in chunk-8: escalating the
-                  // human ask (the evaluate handler arm) is chunk-9. The pure
-                  // guard signals intent via the journal entry above and this
-                  // call; the landing tests spy on a mock's escalate().
+                  // Arm the pending-landing-ask latch: the evaluate handler
+                  // forces the human ask off this latch. Called by guardLanding
+                  // only under `enforce` on a repeat attempt (no approval,
+                  // >= 1 prior block); fail-toward-strict — a host reject leaves
+                  // approval absent, so the next attempt re-blocks and re-arms.
+                  pendingLandingAsk.set(parent, Date.now())
+                  boundLandingAsks()
                 },
               })
               return
@@ -1386,53 +1488,72 @@ export function createTurnstile(
                 break
               }
               case "permission.asked": {
-                // Record ONLY plan-gate asks: an ask counts when its session
-                // has a pending evaluate escalation (awaitingPlanAsk) or its
-                // message carries the plan-ask prefix. Any other ask (bash,
-                // write, …) is inert — its id is never recorded, so its reply
-                // can never match or release the plan gate. The value carries
-                // the ask's parent session so replies apply per-session and
-                // concurrent sessions cannot cross-apply. Fail-open — the
-                // outer loop journals any throw — and a missing/non-string id
-                // is inert (nothing is recorded).
+                // Record plan-gate AND landing-gate asks (disjoint by message
+                // prefix). The value carries the ask's parent session so
+                // replies apply per-session and concurrent sessions cannot
+                // cross-apply. Fail-open — the outer loop journals any throw —
+                // and a missing/non-string id is inert (nothing is recorded).
                 const id = properties.id ?? properties.requestID
                 if (typeof id === "string" && id !== "") {
                   const sid = asSessionID(properties.sessionID)
                   const message = typeof properties.message === "string" ? properties.message : ""
-                  // Record when the message carries the plan-ask prefix (the
-                  // evaluate echo) or when the session is live-latched and the
-                  // ask carries no message of its own (the escalated echo).
-                  // A non-empty message WITHOUT the prefix is an unrelated ask
-                  // (bash, write, …) even under a latched escalation — the
-                  // evaluate handler always composes the prefix into its
-                  // message, so a prefixed-or-empty message is the expected
-                  // echo and anything else must never be recorded (a human's
-                  // approval of an unrelated ask cannot release the plan gate).
-                  const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
-                  if (prefixed || (message === "" && hasLiveAwaitingAsk(sid))) {
-                    awaitingPlanAsk.delete(sid)
-                    planGateAsks.set(id, {
+                  // Landing-gate ask: message carries the landing-ask prefix
+                  // (the evaluate handler's echo). A landing ask is disjoint from
+                  // a plan ask (different prefix), so an approval of one never
+                  // releases the other.
+                  if (message.startsWith(LANDING_ASK_MESSAGE_PREFIX)) {
+                    landingGateAsks.set(id, {
                       sessionID: ledger.parentOf(sid),
                       recordedAt: Date.now(),
                     })
-                    boundPlanAsks()
+                    boundLandingAsks()
+                  } else {
+                    // Plan-gate ask: record when the message carries the
+                    // plan-ask prefix (the evaluate echo) or when the session
+                    // is live-latched and the ask carries no message of its own
+                    // (the escalated echo). A non-empty message WITHOUT either
+                    // prefix is an unrelated ask (bash, write, …) even under a
+                    // latched escalation — the evaluate handler always composes
+                    // a prefix into its message, so a prefixed-or-empty message
+                    // is the expected echo and anything else must never be
+                    // recorded (a human's approval of an unrelated ask cannot
+                    // release the plan or landing gate).
+                    const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
+                    if (prefixed || (message === "" && hasLiveAwaitingAsk(sid))) {
+                      awaitingPlanAsk.delete(sid)
+                      planGateAsks.set(id, {
+                        sessionID: ledger.parentOf(sid),
+                        recordedAt: Date.now(),
+                      })
+                      boundPlanAsks()
+                    } else if (message === "" && hasLiveLandingAsk(sid)) {
+                      // Empty-message landing escalate echo: record for the
+                      // landing gate only (the plan latch is not live here).
+                      landingGateAsks.set(id, {
+                        sessionID: ledger.parentOf(sid),
+                        recordedAt: Date.now(),
+                      })
+                      boundLandingAsks()
+                    }
                   }
                 }
                 break
               }
               case "permission.replied": {
                 // Match the reply against RECORDED plan-gate asks only: a
-                // requestID absent from the map was never a plan-gate ask, so
-                // the reply is inert (no state change) — an approval of an
-                // unrelated permission ask cannot release the plan gate. A
-                // match is consumed (once) and applied to the mapped parent
-                // session. Fail-open: the outer loop journals any throw.
+                // Match the reply against RECORDED asks: plan-gate ask (keyed
+                // by requestID, consumed once, releases/holds the plan gate)
+                // OR landing-gate ask (consumed once, grants/holds a push). A
+                // requestID absent from both maps was never an ask we raised, so
+                // the reply is inert — an approval of an unrelated permission
+                // ask cannot release either gate. Fail-open: the outer loop
+                // journals any throw.
                 const rid = String(properties.requestID ?? "")
                 const reply = properties.reply
-                const record = planGateAsks.get(rid)
-                if (record) {
+                const planRecord = planGateAsks.get(rid)
+                if (planRecord) {
                   planGateAsks.delete(rid)
-                  const parent = record.sessionID
+                  const parent = planRecord.sessionID
                   const s = ledger.state(parent)
                   if (reply === "always") {
                     // A standing human approval releases the plan gate for the
@@ -1441,14 +1562,38 @@ export function createTurnstile(
                     s.hasPlanVerdict = true
                     journaler.journal({ type: "permission", sessionID: parent, decision: "always" })
                   } else if (reply === "once") {
-                    // A single-dispatch grant: consumed by exactly one executor
-                    // dispatch in execute.before (cleared there), so a stale
-                    // grant cannot outlive that single dispatch.
-                    s.pendingOnceGrant = rid
+                    // A plan-gate single-dispatch grant: consumed by exactly one
+                    // executor dispatch in execute.before (the .plan
+                    // short-circuit), so a stale grant cannot outlive that
+                    // single dispatch.
+                    s.pendingOnceGrant.plan = rid
                     journaler.journal({ type: "permission", sessionID: parent, decision: "once" })
                   } else {
                     // reject (or any non-allow reply) leaves the gate red: the
                     // next execute.before dispatch re-blocks.
+                    journaler.journal({ type: "permission", sessionID: parent, decision: "reject" })
+                  }
+                } else if (landingGateAsks.get(rid)) {
+                  const landingRecord = landingGateAsks.get(rid)
+                  landingGateAsks.delete(rid)
+                  const parent = landingRecord!.sessionID
+                  const s = ledger.state(parent)
+                  if (reply === "always") {
+                    // A standing human approval releases the landing gate for
+                    // the rest of the task (the bash guard sees hasReviewApprove
+                    // and allows every push).
+                    s.hasReviewApprove = true
+                    journaler.journal({ type: "permission", sessionID: parent, decision: "always" })
+                  } else if (reply === "once") {
+                    // A landing-gate single-dispatch push grant: consumed by
+                    // exactly one bash dispatch in execute.before (the
+                    // .landing short-circuit), so a stale grant cannot outlive
+                    // that single push.
+                    s.pendingOnceGrant.landing = rid
+                    journaler.journal({ type: "permission", sessionID: parent, decision: "once" })
+                  } else {
+                    // reject (or any non-allow reply) leaves the gate red: the
+                    // next execute.before push re-blocks and re-arms the ask.
                     journaler.journal({ type: "permission", sessionID: parent, decision: "reject" })
                   }
                 }

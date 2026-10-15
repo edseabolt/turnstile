@@ -28,28 +28,140 @@ interface CompiledRule {
   source: string
 }
 
-// Matches a `git push` invocation (with optional global options) — the landing
-// gate's enforcement target. Exported so `setup.ts` can arm the evaluate-handler
-// ask against the exact same candidate set the guard enforces (single source of
-// truth; no duplicate-regex drift).
-const pushRe = new RegExp("\\bgit\\b[^;&|]*?\\bpush\\b")
+// Splits a command into simple commands on top-level shell separators
+// (`;` `|` `&` `\r` `\n`), quote- and backslash-aware: a backslash escapes the
+// next character (`\;` inside quotes is not a separator, `\"` does not close a
+// quote early), so a quoted `echo "git commit"` stays on one side of a
+// separator (never parsed as an invocation). Shared with the commit-lint guard
+// below so landing detection and commit linting parse the same shape.
+export function splitCommands(command: string): string[] {
+  const out: string[] = []
+  let cur = ""
+  let quote = ""
+  let escaped = false
+  for (const ch of command) {
+    if (escaped) {
+      // The previous backslash consumed this character: append it verbatim.
+      cur += ch
+      escaped = false
+      continue
+    }
+    if (quote) {
+      if (ch === "\\") {
+        escaped = true
+        cur += ch
+        continue
+      }
+      if (ch === quote) quote = ""
+      cur += ch
+      continue
+    }
+    if (ch === "\\") {
+      escaped = true
+      cur += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      cur += ch
+      continue
+    }
+    if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
+      out.push(cur)
+      cur = ""
+      continue
+    }
+    cur += ch
+  }
+  out.push(cur)
+  return out
+}
+
+// Tokenizes one simple command into quoted-aware words, stripping the quotes so
+// a `-m "feat: x"` word yields the bare message `feat: x`. Honors the same
+// backslash escape so a `\"` inside a double-quoted word is a literal quote,
+// not a word break.
+export function tokenizeWords(input: string): string[] {
+  const words: string[] = []
+  let cur = ""
+  let quote = ""
+  let escaped = false
+  for (const ch of input) {
+    if (escaped) {
+      cur += ch
+      escaped = false
+      continue
+    }
+    if (quote) {
+      if (ch === "\\") {
+        escaped = true
+        cur += ch
+        continue
+      }
+      if (ch === quote) quote = ""
+      else cur += ch
+      continue
+    }
+    if (ch === "\\") {
+      escaped = true
+      cur += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (cur) words.push(cur)
+      cur = ""
+      continue
+    }
+    cur += ch
+  }
+  if (cur) words.push(cur)
+  return words
+}
+
+// Returns the git subcommand of one simple command's words (skipping leading
+// git global options such as `-C dir` / `--git-dir=dir`, each of which may take
+// a value in the following token), or null when `words` is not a `git`
+// invocation. A landing candidate is `git` followed by the `push` subcommand.
+function gitVerb(words: string[]): string | null {
+  if (words.length === 0 || words[0] !== "git") return null
+  let i = 1
+  while (i < words.length && words[i]!.startsWith("-")) {
+    i++ // skip the option token itself
+    // A value held in the following token (e.g. `-C dir`) is a global option
+    // value and is skipped; an inline value (`--opt=val`) has none.
+    if (i < words.length && !words[i]!.startsWith("-")) i++
+  }
+  return i < words.length ? words[i]! : null
+}
 
 /**
  * True when `command` invokes a `git push` — the landing gate's enforcement
- * target, tolerating global options such as `-C dir` between `git` and `push`.
+ * target. Detection routes through the shell-aware tokenizer above (shared with
+ * commit linting) so the candidate set has no false positives: `git push`
+ * matches (tolerating global options like `-C dir` before the subcommand), but
+ * `echo remember to git push`, `git commit -m "docs: git push"`, and
+ * `git log --grep push` do not (their subcommand is `echo`/`commit`/`log`).
+ * Exported so `setup.ts` arms the evaluate-handler ask against this exact
+ * candidate set (single source of truth; no duplicate-regex drift).
  * @param command The raw bash/shell command string.
  * @returns True for a `git push` candidate.
  */
 export function isPushLanding(command: string): boolean {
-  return pushRe.test(command)
+  if (typeof command !== "string" || command.trim() === "") return false
+  return splitCommands(command).some((simple) => gitVerb(tokenizeWords(simple)) === "push")
 }
 
 /**
  * Core landing-gate text shared by the enforce-path throw and the human ask
- * message, so the two never drift. Stamped after `BLOCKED by turnstile:` (or
- * as the bare ask body by the evaluate handler).
+ * message, so the two never drift. Stamped after `BLOCKED by turnstile:` (the
+ * ask message is `turnstile: ${LANDING_REQUIREMENT}`, prefixed so the stream
+ * consumer can recognize a landing ask by its `turnstile: push/PR …` prefix).
  */
-const LANDING_REQUIREMENT =
+export const LANDING_REQUIREMENT =
   "push/PR requires a reviewer VERDICT: APPROVE before landing — wait for the reviewer or escalate to the user"
 
 /**
@@ -149,15 +261,20 @@ export interface ToolPolicy {
   observeLanding(sessionID: string, command: unknown): void
   /**
    * Gates a `git push` on a reviewer `VERDICT: APPROVE` under `gitGates.landingGate`.
-   * `gate` is the stateful capability from `setup.ts`. With approval: allow,
-   * no journal noise. Without approval, first block this task: journal
+   * Candidate detection is {@link isPushLanding} (the single source of truth
+   * also used by `setup.ts` to arm the evaluate-handler ask). `gate` is the
+   * stateful capability from `setup.ts`. With approval: allow, no journal noise.
+   * Without approval, first block this task: journal
    * `{type:"blocked", reason:"no-landing-approval"}`, call `gate.recordBlock()`,
    * and throw (`BlockError`) under `enforce`, journal-only under `shadow`,
    * no-op under `off`. A repeat attempt (`priorBlocks() >= 1`) without approval
    * under `enforce` journals `{type:"permission", action:"ask", reason:"landing"}`
-   * and calls `gate.escalate()` (allowing `execute.before` to pass so the
-   * setup-side evaluate handler forces the human ask); `shadow` journals only,
-   * `off` is a no-op. Fail-open on an internal error.
+   * and calls `gate.escalate()` (arming the pending-landing-ask latch);
+   * `execute.before` then passes so the setup-side evaluate handler forces the
+   * human ask naming the missing reviewer verdict. `shadow` journals only; `off`
+   * is a no-op. Fail-toward-strict: a host `reject` leaves approval absent, so
+   * the next attempt re-blocks and re-arms the ask. Fail-open on an internal
+   * error.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
@@ -257,67 +374,6 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     })
     journaler.traceEvent("tool-policy", "blocked", `${tool} rule ${rule.index}`, sessionID)
     return mode === "enforce"
-  }
-
-  // --- Commit-lint analysis (pure) ------------------------------------------
-  // Split a command into simple commands on top-level shell separators
-  // (`;` `|` `&` `\r` `\n`), quote- and backslash-aware, so `git commit` inside
-  // `&&`/`||`/`;` spans is parsed in isolation and a quoted `echo "git commit"`
-  // stays on one side of a separator (never parsed as a commit invocation).
-  // Quotes are preserved on both sides here so each emitted simple command is
-  // balanced; `tokenizeWords` strips them and relies on that balance to keep a
-  // quoted space together (`-m "feat: ok"` must not split into `feat:` / `ok`).
-  function splitCommands(command: string): string[] {
-    const out: string[] = []
-    let cur = ""
-    let quote = ""
-    for (const ch of command) {
-      if (quote) {
-        if (ch === quote) quote = ""
-        cur += ch
-        continue
-      }
-      if (ch === '"' || ch === "'") {
-        quote = ch
-        cur += ch
-        continue
-      }
-      if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
-        out.push(cur)
-        cur = ""
-        continue
-      }
-      cur += ch
-    }
-    out.push(cur)
-    return out
-  }
-
-  // Tokenize one simple command into quoted-aware words, stripping the quotes
-  // so a `-m "feat: x"` word yields the bare message `feat: x`.
-  function tokenizeWords(input: string): string[] {
-    const words: string[] = []
-    let cur = ""
-    let quote = ""
-    for (const ch of input) {
-      if (quote) {
-        if (ch === quote) quote = ""
-        else cur += ch
-        continue
-      }
-      if (ch === '"' || ch === "'") {
-        quote = ch
-        continue
-      }
-      if (/\s/.test(ch)) {
-        if (cur) words.push(cur)
-        cur = ""
-        continue
-      }
-      cur += ch
-    }
-    if (cur) words.push(cur)
-    return words
   }
 
   // Given one simple command's words, return its `git commit` analysis: the
@@ -499,10 +555,12 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         if (analysis.uninspectable || analysis.messages.length === 0) {
           if (journalCommitBlock(tool, sessionID, "commit-message-uninspectable")) {
             throw new BlockError(
-              `BLOCKED by turnstile: commit message could not be inspected — pass it with 'git commit -m <subject>' (—F/-t/--edit/-e are not inspectable)`,
+              `BLOCKED by turnstile: commit message could not be inspected — pass it with 'git commit -m <subject>' (-F/-t/--edit/-e are not inspectable)`,
             )
           }
-          return
+          // Shadow (audit) path: a `continue` keeps linting the later simple
+          // commands in this string; enforce still threw on the first above.
+          continue
         }
         for (const message of analysis.messages) {
           if (!commitFormat.test(message)) {
@@ -534,7 +592,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     try {
       const text = typeof command === "string" ? command : ""
       if (text.length === 0) return
-      if (pushRe.test(text) || ghPrRe.test(text)) {
+      if (isPushLanding(text) || ghPrRe.test(text)) {
         journaler.journal({ type: "tool", sessionID, tool: "bash", landing: true })
       }
     } catch (e) {
@@ -574,16 +632,18 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         })
         return
       }
-      if (!pushRe.test(text)) return
+      if (!isPushLanding(text)) return
       // Approval releases the gate: allow, no journal noise beyond telemetry.
       if (gate.hasApproval()) return
       const prior = gate.priorBlocks()
       if (prior >= 1) {
-        // Repeat attempt without approval. Under enforce, arm the human ask (the
-        // evaluate handler forces it off the same ledger state); allow
-        // execute.before to pass so the permission surface fires. Fail-toward-
-        // strict: a host reject leaves approval absent, so the next attempt
-        // re-blocks. Under shadow, journal-only like the first block.
+        // Repeat attempt without approval. Under enforce, arm the human ask:
+        // journal the landing ask and call gate.escalate() to set the
+        // pending-landing-ask latch, then allow execute.before to pass so the
+        // setup-side evaluate handler (which forces the ask off that latch,
+        // naming the missing reviewer verdict) fires it. Fail-toward-strict: a
+        // host reject leaves approval absent, so the next attempt re-blocks and
+        // re-arms. Under shadow, journal-only like the first block (never arms).
         if (gateMode === "enforce") {
           journaler.journal({
             type: "permission",

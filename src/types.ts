@@ -217,11 +217,21 @@ export interface GateState {
   humanApproval: boolean
   /**
    * A single-dispatch grant — the matched host `requestID` for a once-granted
-   * human approval; "" when none. Task-scoped: cleared immediately after the
-   * single dispatch consumes it (a stale grant cannot outlive one dispatch) and
-   * never carried through `mergeAfterReplay`.
+   * human approval, keyed per ask-reason so a plan-gate `once` grant (releasing
+   * exactly one executor dispatch) can never be consumed by a landing-gate
+   * `once` grant (releasing exactly one push) and vice versa: `{ plan }` for the
+   * plan gate (consumed by the executor dispatch short-circuit), `{ landing }`
+   * for the landing gate (consumed by the bash short-circuit). "" per reason
+   * when none. Task-scoped: cleared immediately after the single dispatch
+   * consumes it (a stale grant cannot outlive one dispatch) and never carried
+   * through `mergeAfterReplay`.
    */
-  pendingOnceGrant: string
+  pendingOnceGrant: {
+    /** Plan-gate once grant: the matched requestID, or "" when none. */
+    plan: string
+    /** Landing-gate once grant: the matched requestID, or "" when none. */
+    landing: string
+  }
   /**
    * True once this task's first parent task/subagent result delivery has
    * carried the injected orchestrator policy forward into model context.

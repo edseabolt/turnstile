@@ -83,6 +83,36 @@
  *   `gh pr create|merge`); `pathDeny` defaults empty. `session_move` is journaled
  *   as telemetry only, never blocked. A misconfigured/absent host payload fails
  *   open with a journal entry rather than blocking.
+ * - Commit-lint: `bash`/`shell` `git commit -m '<subject>'` messages are
+ *   validated as conventional commits when `gitGates.commitMessages` is on
+ *   (default) — a `type(scope)!: subject` shape (`type` ∈
+ *   `{feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert}`, `!`
+ *   optional, subject ≤ 72 chars). A non-conventional message is
+ *   `BLOCKED by turnstile: commit message '<subject>' is not a conventional
+ *   commit — expected type(scope)!: subject` under `gitGates.mode: enforce`
+ *   (journaled `reason:"invalid-commit-message"`); `shadow` journals only,
+ *   `off` is a no-op. An uninspectable form (`-F`/`-t`/`--edit`/interactive;
+ *   `--amend -m` is inspectable) is treated as non-conventional and blocked
+ *   under `enforce` (`reason:"commit-message-uninspectable"`): pass the subject
+ *   with `git commit -m <subject>`, not an editor or file.
+ * - Landing gate: `git push` with no delivery-attributed reviewer
+ *   `VERDICT: APPROVE` for the current task is `BLOCKED by turnstile:
+ *   push/PR requires a reviewer VERDICT: APPROVE before landing — wait for the
+ *   reviewer or escalate to the user` under `gitGates.mode: enforce` (journaled
+ *   `reason:"no-landing-approval"`); `shadow` journals only, `off` is a no-op.
+ *   Approval is set only when the reviewer's task-result delivery carries
+ *   `VERDICT: APPROVE` (a streamed-only verdict in child text does not
+ *   satisfy the gate); `gh pr create|merge` stays denied by the default
+ *   `bashDeny` list (disjointly journaled), and every `git push` is journaled
+ *   as landing telemetry in every mode.
+ * - Landing escalation: on a repeat `git push` with no approval and
+ *   `gitGates.mode: enforce`, turnstile journals a permission ask
+ *   (`reason:"landing"`) and lets `execute.before` pass so the
+ *   `permission.evaluate` handler forces a human ask
+ *   (`turnstile: push/PR requires a reviewer VERDICT: APPROVE before
+ *   landing`). The reply `always` stands a reviewer approval for the task,
+ *   `once` grants exactly one push (consumed by the next push), and `reject`
+ *   re-blocks and re-arms — the repeat push is the human decision point.
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
  *   assistant text, deduped per task (streaming re-delivery is ignored);
  *   marker-less outputs from marker-contracted agents (test-runner/reviewer/

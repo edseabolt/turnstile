@@ -263,6 +263,49 @@ test("isPushLanding: matches git push, rejects non-landing forms", () => {
 })
 
 /**
+ * The tokenizer's backslash-escape path is exercised through `isPushLanding`: a
+ * bare backslash (outside quotes) must neither split the string nor
+ * mis-detect the verb — the `echo a\b` element yields `null` while the trailing
+ * `git push` is still detected, routing `\` through the escape branches of both
+ * `splitCommands` and `tokenizeWords`. The documented negatives hold so the
+ * candidate set stays false-positive-free.
+ */
+test("isPushLanding: a bare backslash tokenizes without splitting, negatives hold", () => {
+  // `\` outside quotes routes the escape branches; `git push` still detected.
+  assert.ok(isPushLanding("echo a\\b; git push"))
+  // A globally-optioned push after the escaped element still detects.
+  assert.ok(isPushLanding("echo a\\b; git -C ./repo push"))
+  // A backslash INSIDE quotes (the `\"` escape path) also routes the escape
+  // branches without splitting or mis-detecting the trailing git push.
+  assert.ok(isPushLanding('echo "a\\"b"; git push'))
+  // Documented negatives: each subcommand is echo/commit/log, never push.
+  assert.ok(!isPushLanding("echo remember to git push"))
+  assert.ok(!isPushLanding('git commit -m "docs: git push"'))
+  assert.ok(!isPushLanding("git log --grep push"))
+})
+
+/**
+ * The fail-open guard: a command with no content (empty or whitespace-only) is
+ * never a landing candidate, so `isPushLanding` short-circuits before the
+ * tokenizer and returns false.
+ */
+test("isPushLanding: empty or whitespace-only commands are not pushes", () => {
+  assert.ok(!isPushLanding(""))
+  assert.ok(!isPushLanding("   \t\n"))
+})
+
+/**
+ * A bare `git` with no subcommand (the tokenizer yields no matching verb) and a
+ * separator-only command (every segment tokenizes to no words) are not pushes:
+ * the `gitVerb` fallback returns null on both, so the `.some(...)` scan is false.
+ */
+test("isPushLanding: a bare git verb and separator-only input are not pushes", () => {
+  assert.ok(!isPushLanding("git"))
+  assert.ok(!isPushLanding(";;;"))
+  assert.ok(!isPushLanding("   ;;;   "))
+})
+
+/**
  * `observeLanding` journals `{type:"tool", tool:"bash", landing:true}` for a
  * `git push` and a `gh pr` candidate in every mode (telemetry is
  * mode-independent and non-blocking); an empty or non-landing command journals

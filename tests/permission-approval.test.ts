@@ -15,10 +15,11 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { createGates } from "../src/gates.ts"
+import { BlockError, createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
 import { createLedger } from "../src/state.ts"
+import { LANDING_REQUIREMENT } from "../src/tool-policy.ts"
 import {
   callPermission,
   callSession,
@@ -70,6 +71,26 @@ async function bootWithPlan(
 }
 
 /**
+ * Boots the plugin over a fake host with a temp metrics dir and the given
+ * config overrides. The landing gate never scans a plan, so no project dir is
+ * required (unlike {@link bootWithPlan}).
+ * @param config Injected turnstile config overrides.
+ * @returns The host, metrics dir, and a restoring disposer.
+ */
+async function bootLanding(
+  config: Record<string, any> = {},
+): Promise<{ h: FakeHost; metricsDir: string; restore: () => void }> {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, ...config },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  return { h, metricsDir, restore: (): void => dispose() }
+}
+
+/**
  * Builds a real gate set + ledger sharing one metrics dir, for exercising the
  * extracted `planSummary` / `planGateStatus` predicates directly.
  * @param metricsDir The shared metrics directory.
@@ -107,6 +128,31 @@ function writeEmptyPlansDir(project: string): void {
   // Remove any existing plan files so the dir holds no plans.
   for (const entry of fs.readdirSync(plansDir)) fs.rmSync(path.join(plansDir, entry))
 }
+
+/**
+ * The evaluate handler is fail-open against a nullish event payload: a null or
+ * undefined `event` short-circuits the `pe?.action` optional chains and returns
+ * before mutating gate state or throwing. Placed first so it is unaffected by
+ * any cwd/telemetry state later tests establish — it only needs a booted plugin.
+ */
+test("evaluate: a nullish event payload escalates nothing and never throws", async () => {
+  const fs = await import("node:fs")
+  const path = await import("node:path")
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# Plan\n\nbody\n")
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  await turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })(h.host)
+  for (const bad of [null, undefined] as const) {
+    await callPermission(h, "evaluate", bad)
+  }
+  // Nothing was journaled: no ask, and the fail-open catch was not triggered.
+  assert.ok(
+    !journalEntries(metricsDir).some((l) => l.type === "permission" || l.type === "error"),
+    "a nullish event records no ask and no error",
+  )
+})
 
 /**
  * The extracted plan-approval predicates must agree with the enforcing
@@ -248,6 +294,12 @@ test("evaluate: an internal throw fails open and never blocks the host", async (
   }
 })
 
+/**
+ * The evaluate handler is fail-open against a nullish event payload: a null or
+ * undefined `event` short-circuits the `pe?.action` optional chains and returns
+ * before mutating gate state or throwing. The red plan gate is left untouched —
+ * a real task dispatch still escalates afterward.
+ */
 /** A `permission.evaluate` hook that throws at registration is journaled. */
 test("setup: a throwing permission.hook journals the failure (fail-open)", async () => {
   const metricsDir = tmpDir()
@@ -880,5 +932,386 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
     dispose()
   } finally {
     process.chdir(prev)
+  }
+})
+
+/**
+ * A repeat `git push` under `enforce` arms the pending-landing-ask latch via the
+ * capability's `escalate`; the next `permission.evaluate` for that bash/shell
+ * action forces a landing ask off that live latch (chunk-9), naming the reviewer
+ * requirement. The ask is journaled exactly once (by guardLanding's escalate
+ * path — the evaluate handler echoes it without a second entry). Covers both
+ * `action === "bash"` and `action === "shell"` of the landing arm.
+ */
+test("evaluate: a live pending-landing-ask arm forces the landing ask", async () => {
+  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    // First push: no approval, first block under enforce → throws, records a block.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Repeat push: enforce arms the pending-landing-ask latch (escalate).
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // Both the bash and shell evaluate arms force the ask off the live latch.
+    for (const action of ["bash", "shell"] as const) {
+      const event: Record<string, any> = { sessionID: "p1", action }
+      await callPermission(h, "evaluate", event)
+      assert.equal(event.effect, "ask")
+      assert.equal(event.message, `turnstile: ${LANDING_REQUIREMENT}`)
+    }
+    const asks = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "landing",
+    )
+    assert.equal(asks.length, 1, "the landing ask is journaled exactly once")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A reviewer `VERDICT: APPROVE` delivery sets hasReviewApprove, so the landing
+ * arm releases early: a bash evaluate returns without forcing an ask, even
+ * though no pending-landing-ask latch is live (AC-11's release condition).
+ */
+test("evaluate: an approved landing gate releases without forcing the ask", async () => {
+  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    // A reviewer task-result delivery marks the parent approved. Parent-keyed
+    // delivery (sessionID === parent) needs no async edge registration — the
+    // session.created push is consumed asynchronously and would race this
+    // synchronous delivery.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Latch expiry: a pending-landing-ask arm older than the TTL is dropped, so a
+ * late `permission.evaluate` does not force the ask (fail-toward-strict: the
+ * gate re-blocks). Mirrors the awaiting-plan-ask expiry test, using a frozen
+ * clock aged past the TTL.
+ */
+test("evaluate: an expired pending-landing-ask arm does not force the ask", async () => {
+  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const realNow = Date.now
+  let now = realNow()
+  ;(Date as unknown as { now: () => number }).now = () => now
+  try {
+    // First push: block (frozen time used for its journal ts).
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    // Repeat push: escalate arms the latch at frozen time `now`.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // Age the latch past the pending-landing-ask TTL.
+    now += 6001
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "an expired arm arms nothing")
+  } finally {
+    ;(Date as unknown as { now: () => number }).now = realNow
+    restore()
+  }
+})
+
+/**
+ * A bash evaluate with NO landing latch at all (never armed) falls through the
+ * landing arm untouched: `hasReviewApprove` false, `hasLiveLandingAsk` false
+ * on the never-latched direction (`at === undefined`). No effect is forced.
+ */
+test("evaluate: a bash action with no landing latch is left untouched", async () => {
+  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "no latch means no ask")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The evaluate handler falls through to a no-op for an action neither `task`
+ * (plan gate) nor `bash`/`shell` (landing gate): the landing arm never drives
+ * it, so the event is left untouched and the fall-through return is reached.
+ */
+test("evaluate: an unrelated action is left untouched", async () => {
+  const { h, restore } = await bootLanding()
+  try {
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The pending-landing-ask map is bounded: past 50 armed parents the oldest arms
+ * are evicted by `boundLandingAsks`, and the 51st arm still records (a recent
+ * escalation stays live). Each armed parent is a repeat `git push` under
+ * enforce — its first push records a block so the second escalates. The most
+ * recent arm (p051) is still live and forces the ask.
+ */
+test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async () => {
+  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    for (let i = 1; i <= 51; i++) {
+      const parent = `p${String(i).padStart(3, "0")}`
+      // First push: first block → records a landing block (landingBlocks = 1).
+      await assert.rejects(() =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: parent,
+          input: { command: "git push origin main" },
+        }),
+      )
+      // Second push: repeat → arms the pending-landing-ask latch.
+      await callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: parent,
+        input: { command: "git push origin main" },
+      })
+    }
+    // The most recent arm (p051) survived eviction and forces the ask.
+    const event: Record<string, any> = { sessionID: "p051", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The landing escalation echo with an empty message (the evaluate handler's
+ * escalate, whose ask rides the pending-landing-ask latch) is recorded for the
+ * landing gate: its `once` reply grants exactly one push, and the next `git
+ * push` is released by the `.landing` once-grant short-circuit before the gate
+ * decides. The landing-ask recording is the empty-message sibling of the
+ * plan-gate escalate echo (different prefix, disjoint map).
+ */
+test("asked: an empty-message landing escalate echo grants one push via the .landing short-circuit", async () => {
+  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    // First push: first block under enforce throws, records one landing block.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Repeat push: enforce arms the pending-landing-ask latch (escalate).
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // An empty-message permission.asked (the escalate echo) with the latch live
+    // is recorded for the landing gate; its once reply grants one push.
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-1" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // The next push releases via the consumed .landing once-grant short-circuit:
+    // no second block — a recording failure would re-block under enforce.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "no-landing-approval",
+    )
+    assert.equal(
+      blocked.length,
+      1,
+      "the first push is the only landing block; the once grant released the next push",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A landing ask echoed with the evaluate handler's landing-ask prefix is
+ * recorded for the landing gate (the disjoint-from-plan prefix branch), so its
+ * `once` reply grants exactly one push via the `.landing` short-circuit. This
+ * is the primary (message-bearing) landing-ask recording path, paired with the
+ * empty-message escalate echo tested above.
+ */
+test("asked: a landing-prefix ask echo records the ask and its once reply grants one push", async () => {
+  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    // First push: block. Repeat push: arm the pending-landing-ask latch.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // The evaluate handler forces the ask with the landing-ask prefix; the host
+    // echoes it back with that prefix, so the ask is recorded for the landing gate.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "land-pfx", message: `turnstile: ${LANDING_REQUIREMENT}` },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-pfx", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * An `always` landing reply stands a human approval: it sets reviewer approval,
+ * so the landing gate releases and every subsequent push is allowed (the bash
+ * guard sees the approval). Contrasts with the `once` and `reject` replies.
+ */
+test("reply: a landing always-grant stands a reviewer approval and releases the gate", async () => {
+  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-a" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-a", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+    )
+    // The standing approval releases the landing gate: every push is allowed.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "no-landing-approval",
+    )
+    assert.equal(
+      blocked.length,
+      1,
+      "the always-grant released the landing gate after the first block",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A `reject` landing reply leaves the gate red (no standing approval): the next
+ * attempt re-arms the landing ask instead of being allowed. Contrasts with the
+ * `always` reply and confirms a reject never releases the landing gate.
+ */
+test("reply: a landing reject leaves the gate red and re-arms the ask", async () => {
+  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-r" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-r", reply: "reject" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "reject"),
+    )
+    // The gate is still red: a repeat attempt escalates (no throw on execute),
+    // and the evaluate handler then forces the landing ask again.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask", "a reject keeps the landing gate red and re-forces the ask")
+  } finally {
+    restore()
   }
 })

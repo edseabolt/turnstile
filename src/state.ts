@@ -20,7 +20,9 @@ export function newState(): GateState {
     hasReviewApprove: false,
     userWaiver: "",
     humanApproval: false,
-    pendingOnceGrant: "",
+    // Per-reason single-dispatch grants (plan / landing): fresh "" on every
+    // task reset, task-scoped, never carried through mergeAfterReplay.
+    pendingOnceGrant: { plan: "", landing: "" },
     policyInjected: false,
     seenFrom: new Map(),
     suppressedPending: 0,

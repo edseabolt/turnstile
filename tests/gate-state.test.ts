@@ -1246,6 +1246,29 @@ test("setup journals hooks === 6 when the permission surface is absent", async (
   dispose()
 })
 
+/**
+ * A host without the `session` and `tool` surfaces degrades cleanly: setup
+ * registers only the hooks that exist (heartbeat journals the reduced count),
+ * skips the session/tool hook wiring entirely, and never throws. This pins
+ * the `g_session`/`g_tool` degradation guards in `setup.ts` — a host shape
+ * missing those surfaces is observable via the heartbeat, not silent.
+ */
+test("setup degrades cleanly when the session and tool surfaces are absent", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({ session: false, tool: false })
+  assert.equal(h.host.session, undefined)
+  assert.equal(h.host.tool, undefined)
+  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  // Registration must not throw despite the missing surfaces.
+  const dispose = (await setup(h.host)) as () => void
+  const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
+  assert.equal(setups.length, 1)
+  // Only the permission-evaluate hook and the event-stream subscription
+  // register on this host shape (no session hooks, no tool hooks).
+  assert.equal(setups[0]?.hooks, 2)
+  dispose()
+})
+
 /** A stream that completes without abort is journaled as a stream-ended error. */
 test("consume journals a stream-ended error when the stream completes without abort", async () => {
   const metricsDir = tmpDir()
@@ -1426,12 +1449,13 @@ test("newState initializes seenFrom and suppressedPending and omits verdicts", (
 })
 
 /** A fresh bucket initializes the three new primitives to their defaults:
- *  empty waiver and once-grant strings and a false human-provenance flag. */
+ *  empty waiver, empty per-reason once-grants ({ plan, landing }), and a false
+ *  human-provenance flag. */
 test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defaults", () => {
   const s = newState()
   assert.equal(s.userWaiver, "")
   assert.equal(s.humanApproval, false)
-  assert.equal(s.pendingOnceGrant, "")
+  assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "" })
 })
 
 /** The landing-gate primitives start at their task-scoped defaults: no
@@ -1562,18 +1586,22 @@ test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
   assert.equal(ledger.state("p1").hasReviewApprove, true, "GATE: FAIL never clears the approval")
 })
 
-/** resetState drops the task-scoped waiver and once-grant strings and resets
- *  humanApproval to false on an ordinary (non-grace) prompt reset. */
+/** resetState drops the task-scoped waiver and per-reason once-grants and
+ *  resets humanApproval to false on an ordinary (non-grace) prompt reset. */
 test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {
   const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
   const s = ledger.state("p1")
   s.userWaiver = "USER WAIVER: proceed"
   s.humanApproval = true
-  s.pendingOnceGrant = "req-42"
+  s.pendingOnceGrant = { plan: "req-42", landing: "req-9" }
   ledger.resetState("p1")
   const cur = ledger.state("p1")
   assert.equal(cur.userWaiver, "", "userWaiver clears on reset")
-  assert.equal(cur.pendingOnceGrant, "", "pendingOnceGrant clears on reset")
+  assert.deepEqual(
+    cur.pendingOnceGrant,
+    { plan: "", landing: "" },
+    "pendingOnceGrant clears on reset",
+  )
   assert.equal(cur.humanApproval, false, "humanApproval resets on prompt")
 })
 
@@ -1595,15 +1623,19 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
   assert.equal(s.hasPlanVerdict, true, "replay restored hasPlanVerdict")
   s.humanApproval = true
   s.userWaiver = "USER WAIVER: keep"
-  s.pendingOnceGrant = "req-keep"
+  s.pendingOnceGrant = { plan: "req-keep", landing: "" }
   // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward,
-  // never wipes it; the task-scoped strings drop as usual.
+  // never wipes it; the task-scoped once-grants drop as usual.
   ledger.resetState("p1")
   const afterGrace = ledger.state("p1")
   assert.equal(afterGrace.hasPlanVerdict, true, "hasPlanVerdict carried by grace")
   assert.equal(afterGrace.humanApproval, true, "humanApproval carried by grace")
   assert.equal(afterGrace.userWaiver, "", "userWaiver never carried through merge")
-  assert.equal(afterGrace.pendingOnceGrant, "", "pendingOnceGrant never carried through merge")
+  assert.deepEqual(
+    afterGrace.pendingOnceGrant,
+    { plan: "", landing: "" },
+    "pendingOnceGrant never carried through merge",
+  )
   // Second prompt: a full reset clears everything.
   ledger.resetState("p1")
   const afterReset = ledger.state("p1")
