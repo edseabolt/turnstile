@@ -64,12 +64,18 @@ function asSessionID(value: unknown): string {
  * candidate that is a NON-EMPTY string wins. An empty `text` no longer
  * shadows a marker-bearing `prompt` (and vice versa); when neither key holds a
  * non-empty string the prompt text is unresolvable and "" is returned (the
- * keyless-misconfiguration telemetry keys off exactly this).
+ * keyless-misconfiguration telemetry keys off exactly this). The THIRD candidate,
+ * `prompt.text`, reads the object's text only when `prompt` is a non-null object
+ * (a hostile getter on it throws and keeps the capture journal keys).
  * @param properties The `session.prompt` hook payload.
  * @returns The resolved prompt text, or "" when unresolvable.
  */
 function promptTextOf(properties: PromptHookProperties | undefined): string {
-  for (const candidate of [properties?.text, properties?.prompt]) {
+  for (const candidate of [
+    properties?.text,
+    properties?.prompt,
+    (properties?.prompt as { text?: unknown } | null)?.text,
+  ]) {
     if (typeof candidate === "string" && candidate !== "") return candidate
   }
   return ""
@@ -814,102 +820,186 @@ export function createTurnstile(
     // already fire post-setup).
     hostSession = h.session
 
+    // Prompt-channel admission bookkeeping (per-plugin-load closure state):
+    // `promptHookFires` counts prompt-hook dispatches (the hook increments it
+    // before it admits); a zero count when the inbox stream admits means this
+    // surface does not dispatch the prompt hook, so admission is served by the
+    // inbox stream — surfaced once as a one-time telemetry error.
+    let promptHookFires = 0
+    // One-time flag backing the dead-channel surfacing below.
+    let deadChannelSurfaced = false
+    // Dedupe keys `${sessionID}:${admissionID}` for every prompt admitted, so
+    // the hook path and the inbox stream each admit one prompt exactly once
+    // (the normal host sequence is hook-then-inbox on the shared message id).
+    const admittedIds = new Set<string>()
+    // Cap on tracked dedupe keys (LRU; evict oldest past the cap) — bounded
+    // memory per plugin instance.
+    const maxTrackedAdmittedIds = 64
+    /**
+     * Bounds the admitted-id dedupe set by evicting its oldest keys.
+     * Mirrors boundLookups; see admittedIds.
+     */
+    function boundAdmittedIds(): void {
+      while (admittedIds.size > maxTrackedAdmittedIds) {
+        // The loop condition guarantees a first entry exists.
+        const oldest = admittedIds.keys().next().value as string
+        admittedIds.delete(oldest)
+      }
+    }
+
+    /**
+     * Admits one user-authored prompt: resets prior task scope, then captures a
+     * waiver and/or approval marker and emits the unresolvable-text telemetry.
+     * This is the single admission body, reached either through the session
+     * prompt hook or the correlated inbox stream; the caller dedupes by the
+     * shared host message id so one prompt is admitted exactly once regardless
+     * of which signal arrives first. Reads only — a transform hook mutates the
+     * host event in place host-side, so turnstile must not mutate it.
+     *
+     * Fail-open: every read is guarded; a coercion that throws is journaled and
+     * swallowed, never thrown at the host.
+     * @param sessionID The (string) session the prompt is admitted for.
+     * @param properties The prompt payload (hook shape or an inbox-derived
+     *     `{ sessionID, text }`).
+     * @param admissionID The shared host message id (`messageID`/`inboxID`), or
+     *     "" to skip dedupe.
+     */
+    function admitPrompt(
+      sessionID: string,
+      properties: PromptHookProperties,
+      admissionID: string,
+    ): void {
+      // Dedupe: the normal host sequence is hook-then-inbox on the same id, so
+      // the other transport already admitted this prompt. An empty id has no
+      // shared correlation key, so it never dedupes (documented double-arrival
+      // edge, idempotent — any APPROVE replay restores the gate).
+      if (admissionID !== "") {
+        const dedupeKey = `${sessionID}:${admissionID}`
+        if (admittedIds.has(dedupeKey)) return
+        admittedIds.add(dedupeKey)
+        boundAdmittedIds()
+      }
+      // Dead-channel surfacing: reaching here while the hook never fired means
+      // the surface does not dispatch the prompt hook — capture is served by the
+      // inbox stream. One-time, per plugin load.
+      if (promptHookFires === 0 && !deadChannelSurfaced) {
+        deadChannelSurfaced = true
+        journaler.journal({
+          type: "error",
+          sessionID,
+          error:
+            "prompt channel: the session prompt hook never fired on this surface; prompt admission is served by the inbox event stream",
+        })
+      }
+      // Mark the session a live parent before the reset: resetState
+      // re-caps `states`, and a registered parent is never evicted,
+      // so the rebuilt MRU slot stays pinned.
+      ledger.markParent(sessionID)
+      ledger.resetState(sessionID)
+      // A prompt reset invalidates all prior dispatch-scoped
+      // evidence for this parent, so an unresolved-child verdict is only
+      // plausible within the parent's current task scope.
+      planReviewerDispatch.delete(sessionID)
+      // Evidence is task-scoped, exactly like gate state: a new user
+      // prompt drops the in-memory correlation.
+      evidence.clear(sessionID)
+      // A prompt reset also drops any pending plan-ask latch: the
+      // escalation's stream event belongs to the previous task scope, so
+      // a new prompt must not let a later unrelated ask be recorded as
+      // the plan ask.
+      awaitingPlanAsk.delete(sessionID)
+      // A landing-ask arm (an enforce repeat-attempt escalation) belongs
+      // to the previous task scope too: a new prompt drops it, so the new
+      // task starts from a pure first block again.
+      pendingLandingAsk.delete(sessionID)
+      // Waiver capture (prompt channel): the user's text following the
+      // waiver marker waives both gates for the whole task. Read + capture
+      // in one guarded block; a coercion that throws (a malformed prompt
+      // value) is journaled under the historical "waiver capture" key and
+      // swallowed — fail-open.
+      try {
+        const waiverText = promptTextOf(properties)
+        const at = waiverText.indexOf(config.waiverMarker)
+        if (at !== -1) {
+          ledger.state(sessionID).userWaiver = config.trace
+            ? waiverText.slice(at, at + 200)
+            : "<present>"
+        }
+      } catch (e) {
+        // Fail-open: capture never blocks a prompt.
+        journaler.journal({ type: "error", error: `waiver capture: ${e}` })
+      }
+      // Human approval (item 7): a `PLAN APPROVED:` marker in the user
+      // prompt releases the plan gate — the same release signal the
+      // plan-reviewer verdict sets. Read + capture in one guarded block:
+      // set hasPlanVerdict (execute.before reads it) and humanApproval
+      // (provenance), and journal an APPROVE entry that replays identically
+      // to a verdict (replayGatePasses accepts any type:"plan" APPROVE;
+      // mergeAfterReplay carries it). A coercion that throws is journaled
+      // and swallowed — fail-open.
+      try {
+        const approvalText = promptTextOf(properties)
+        const atPlan = approvalText.indexOf(config.approvalMarker)
+        if (atPlan !== -1) {
+          const s = ledger.state(sessionID)
+          s.hasPlanVerdict = true
+          s.humanApproval = true
+          journaler.journal({
+            type: "plan",
+            sessionID,
+            result: "APPROVE",
+            // Provenance only: replay reads only type+result, so this
+            // restores exactly like a VERDICT: APPROVE verdict.
+            source: "session-prompt",
+            marker: config.approvalMarker,
+          })
+        }
+      } catch (e) {
+        // Fail-open: approval capture never blocks a prompt.
+        journaler.journal({ type: "error", error: `approval capture: ${e}` })
+      }
+      // Misconfiguration telemetry: if none of the three candidate text keys
+      // (`text` / `prompt` / `prompt.text`) holds a non-empty string, the prompt
+      // text is unresolvable (an empty `text` does not count — it cannot carry a
+      // marker). Report the first such prompt once (keylessPrompts hits 1 exactly
+      // once) so a host-shape change stays observable without journaling on every
+      // prompt. An unreadable payload (a hostile getter) counts as unresolvable
+      // and is swallowed — fail-open.
+      let unresolvable: boolean
+      try {
+        unresolvable = promptTextOf(properties) === ""
+      } catch {
+        unresolvable = true
+      }
+      if (unresolvable) {
+        keylessPrompts++
+        if (keylessPrompts === 1)
+          journaler.journal({
+            type: "error",
+            sessionID,
+            error:
+              "waiver capture: neither prompt text key (text|prompt|prompt.text) is a string; does the host send the user prompt elsewhere?",
+          })
+      }
+    }
+
     // Task-state reset: a new user prompt starts a new task.
     if (typeof h.session?.hook === "function") {
       try {
         const reg = await h.session.hook("prompt", (properties: PromptHookProperties) => {
+          // Count dispatches even when the session id is unusable; a zero
+          // count when the inbox stream admits marks this surface as hook-less
+          // (the dead-channel telemetry key).
+          promptHookFires++
           const sessionID = properties?.sessionID
           if (typeof sessionID === "string") {
-            // Mark the session a live parent before the reset: resetState
-            // re-caps `states`, and a registered parent is never evicted,
-            // so the rebuilt MRU slot stays pinned.
-            ledger.markParent(sessionID)
-            ledger.resetState(sessionID)
-            // A prompt reset invalidates all prior dispatch-scoped
-            // evidence for this parent, so an unresolved-child verdict is only
-            // plausible within the parent's current task scope.
-            planReviewerDispatch.delete(sessionID)
-            // Evidence is task-scoped, exactly like gate state: a new user
-            // prompt drops the in-memory correlation.
-            evidence.clear(sessionID)
-            // A prompt reset also drops any pending plan-ask latch: the
-            // escalation's stream event belongs to the previous task scope, so
-            // a new prompt must not let a later unrelated ask be recorded as
-            // the plan ask.
-            awaitingPlanAsk.delete(sessionID)
-            // A landing-ask arm (an enforce repeat-attempt escalation) belongs
-            // to the previous task scope too: a new prompt drops it, so the new
-            // task starts from a pure first block again.
-            pendingLandingAsk.delete(sessionID)
-            // Waiver capture (prompt channel): the user's text following the
-            // waiver marker waives both gates for the whole task. Read + capture
-            // in one guarded block; a coercion that throws (a malformed prompt
-            // value) is journaled under the historical "waiver capture" key and
-            // swallowed — fail-open.
-            try {
-              const waiverText = promptTextOf(properties)
-              const at = waiverText.indexOf(config.waiverMarker)
-              if (at !== -1) {
-                ledger.state(sessionID).userWaiver = config.trace
-                  ? waiverText.slice(at, at + 200)
-                  : "<present>"
-              }
-            } catch (e) {
-              // Fail-open: capture never blocks a prompt.
-              journaler.journal({ type: "error", error: `waiver capture: ${e}` })
-            }
-            // Human approval (item 7): a `PLAN APPROVED:` marker in the user
-            // prompt releases the plan gate — the same release signal the
-            // plan-reviewer verdict sets. Read + capture in one guarded block:
-            // set hasPlanVerdict (execute.before reads it) and humanApproval
-            // (provenance), and journal an APPROVE entry that replays identically
-            // to a verdict (replayGatePasses accepts any type:"plan" APPROVE;
-            // mergeAfterReplay carries it). A coercion that throws is journaled
-            // and swallowed — fail-open.
-            try {
-              const approvalText = promptTextOf(properties)
-              const atPlan = approvalText.indexOf(config.approvalMarker)
-              if (atPlan !== -1) {
-                const s = ledger.state(sessionID)
-                s.hasPlanVerdict = true
-                s.humanApproval = true
-                journaler.journal({
-                  type: "plan",
-                  sessionID,
-                  result: "APPROVE",
-                  // Provenance only: replay reads only type+result, so this
-                  // restores exactly like a VERDICT: APPROVE verdict.
-                  source: "session-prompt",
-                  marker: config.approvalMarker,
-                })
-              }
-            } catch (e) {
-              // Fail-open: approval capture never blocks a prompt.
-              journaler.journal({ type: "error", error: `approval capture: ${e}` })
-            }
-            // Misconfiguration telemetry: if neither candidate text key holds a
-            // non-empty string, the prompt text is unresolvable (an empty
-            // `text` does not count — it cannot carry a marker). Report the
-            // first such prompt once (keylessPrompts hits 1 exactly once) so a
-            // host-shape change stays observable without journaling on every
-            // prompt. An unreadable payload (a hostile getter) counts as
-            // unresolvable and is swallowed — fail-open.
-            let unresolvable: boolean
-            try {
-              unresolvable = promptTextOf(properties) === ""
-            } catch {
-              unresolvable = true
-            }
-            if (unresolvable) {
-              keylessPrompts++
-              if (keylessPrompts === 1)
-                journaler.journal({
-                  type: "error",
-                  sessionID,
-                  error:
-                    "waiver capture: neither prompt text key (text|prompt) is a string; does the host send the user prompt elsewhere?",
-                })
-            }
+            // One prompt is admitted once across both transport paths, deduped
+            // by the shared host message id ("" when the host sent none).
+            admitPrompt(
+              sessionID,
+              properties,
+              typeof properties.messageID === "string" ? properties.messageID : "",
+            )
           }
         })
         track(reg, cleanups)
