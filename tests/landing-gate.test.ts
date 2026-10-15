@@ -4,8 +4,8 @@
  * repeat-attempt escalation, approval release, `landingGate:false` no-op,
  * empty-command misconfiguration telemetry, `gh pr` (not this guard's target —
  * that is `observeLanding`/`guardBash` territory), the fail-open internal-error
- * path, the landing block entry stamping `gitGates.mode` (the chunk-8 mode-
- * stamping fix), plus `isPushLanding` and `observeLanding` telemetry coverage.
+ * path, the landing block entry stamping `gitGates.mode`, plus `isPushLanding`
+ * and `observeLanding` telemetry coverage.
  */
 
 import { test } from "node:test"
@@ -140,7 +140,7 @@ test("guardLanding: first-block x off/shadow/enforce decision matrix", () => {
     else allows(invoke)
     const blocked = landingBlocks(entries)
     assert.equal(blocked.length, 1, `one block under ${mode}`)
-    // The block stamps gitGates.mode (chunk-8 mode-stamping fix): toolPolicy
+    // The block stamps gitGates.mode: toolPolicy
     // mode still defaults to "enforce" while gitGates.mode is "shadow" here.
     assert.equal(blocked[0].mode, mode)
     assert.equal(log.recordBlock, 1, "recordBlock called once on the first block")
@@ -251,7 +251,7 @@ test("guardLanding: the enforce error names the landing requirement", () => {
 })
 
 /** `isPushLanding` matches a `git push` (with global options) and rejects the
- * non-landing forms, so the evaluate-handler arm (chunk-9) can share the exact
+ * non-landing forms, so the evaluate-handler arm can share the exact
  * candidate set this guard enforces. */
 test("isPushLanding: matches git push, rejects non-landing forms", () => {
   assert.ok(isPushLanding("git push origin main"))

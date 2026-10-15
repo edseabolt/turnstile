@@ -67,11 +67,11 @@ const planEntries = (metricsDir: string): Array<Record<string, any>> =>
   journalEntries(metricsDir).filter((l) => l.type === "plan")
 
 /**
- * AC-1 (no-clobber, live repro): a marker-less delivery on the child approves
+ * a marker-less delivery on the child approves
  * through c1, and a later marker-less re-fire reporting the parent's own
  * session id cannot clobber that verification with a `{raw: p1}` phantom.
  */
-test("AC-1: marker-less parent re-fire cannot clobber a live child-text approval", async () => {
+test("marker-less parent re-fire cannot clobber a live child-text approval", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // child → parent edge; the child streams APPROVE on its own text.
@@ -127,11 +127,11 @@ test("AC-1: marker-less parent re-fire cannot clobber a live child-text approval
 })
 
 /**
- * AC-1b (mirror bug): a stale parent-store APPROVE can never approve the gate
+ * a stale parent-store APPROVE can never approve the gate
  * on a marker-less parent-keyed re-fire when no child is attributable — the
  * shape that today silently approves. Zero plan entries, one error journaled.
  */
-test("AC-1b: stale parent-store approval is not re-approved on a marker-less parent re-fire", async () => {
+test("stale parent-store approval is not re-approved on a marker-less parent re-fire", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // Seed the PARENT's own store; no child is registered as anyone's child.
@@ -166,10 +166,10 @@ test("AC-1b: stale parent-store approval is not re-approved on a marker-less par
 })
 
 /**
- * AC-2 (raw=child): every journaled plan entry is keyed raw = an actual child
+ * every journaled plan entry is keyed raw = an actual child
  * session id across both edge routes, and no entry is keyed by session id.
  */
-test("AC-2: every plan entry is keyed raw = a child id across both edge routes", async () => {
+test("every plan entry is keyed raw = a child id across both edge routes", async () => {
   // Route 1: session.created child→parent edge.
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
@@ -242,12 +242,13 @@ test("AC-2: every plan entry is keyed raw = a child id across both edge routes",
 })
 
 /**
- * AC-3 (dedup): identical streamed verdicts dedup, a marker flip replays, an
+ * identical streamed verdicts dedup, a marker flip replays, an
  * identical re-delivery is silent, and a sibling shares the child-text verdict
  * bucket (its journal entry is suppressed while its store still records it,
  * matching tests/plan-gate.test.ts:527).
  *
- * NOTE (deviation from the plan's AC-3 wording): the plan expected a cross
+ * NOTE (deliberate deviation from the original spec wording): the spec
+ * expected a cross
  * sibling and a cross-source delta→ended replay to journal separately per
  * `(child, marker, source)`. The implemented bucket dedup keys on
  * `(scope, marker)` — no child or source component — so identical markers
@@ -256,7 +257,7 @@ test("AC-2: every plan entry is keyed raw = a child id across both edge routes",
  * implemented semantics. The core contract — identical re-delivery journals
  * nothing, a marker flip journals — holds.
  */
-test("AC-3: streamed verdicts dedup on identical re-delivery and flip", async () => {
+test("streamed verdicts dedup on identical re-delivery and flip", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
@@ -297,11 +298,11 @@ test("AC-3: streamed verdicts dedup on identical re-delivery and flip", async ()
 })
 
 /**
- * AC-4 (continued subagent session): the only edge route is the host session
+ * the only edge route is the host session
  * record; a continued marker-less delivery on the child attributes c1, and a
  * continued delivery carrying a marker journals its verdict observation.
  */
-test("AC-4: continued subagent session attributes through session records, emits verdict", async () => {
+test("continued subagent session attributes through session records, emits verdict", async () => {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
@@ -359,11 +360,11 @@ test("AC-4: continued subagent session attributes through session records, emits
 })
 
 /**
- * AC-5 (fail open): an unresolved edge with a host that cannot resolve the
+ * an unresolved edge with a host that cannot resolve the
  * parent journals exactly one unattributable error, throws no rejection, and
  * leaves the gate untouched.
  */
-test("AC-5: unattributable parent-keyed delivery fails open to a journaled error", async () => {
+test("unattributable parent-keyed delivery fails open to a journaled error", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // No session.created: the child is never registered; the host has no
@@ -421,7 +422,7 @@ const deliver = (h: FakeHost, sessionID: string, output = "Task finished."): Pro
 const attribution = (metricsDir: string): Array<Record<string, any>> =>
   journalEntries(metricsDir).filter((l) => l.type === "attribution")
 
-/** The /unattributable/ errors, per the AC-1b/AC-5 single-error count. */
+/** The /unattributable/ errors, per the single-error-per-re-fire count. */
 const errorE = (metricsDir: string): Array<Record<string, any>> =>
   journalEntries(metricsDir).filter((l) => l.type === "error" && /unattributable/.test(l.error))
 
@@ -436,7 +437,7 @@ const violationE = (metricsDir: string): Array<Record<string, any>> =>
  * join claims it via the streaming store. Zero plan entries + executor blocked
  * before the fix; green after.
  */
-test("#54: unresolved edge + streamed APPROVE is attributed through the streaming store", async () => {
+test("unresolved edge + streamed APPROVE is attributed through the streaming store", async () => {
   const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
   try {
     // Prompt reset drops p1's task scope; the child is never registered (throwingGet).
@@ -505,7 +506,7 @@ test("#54: unresolved edge + streamed APPROVE is attributed through the streamin
  * fail-open entry. The violation entry documents the current-code shape (keyed
  * by the delivery session, p1).
  */
-test("#54: unresolved edge without a recorded dispatch fails open", async () => {
+test("unresolved edge without a recorded dispatch fails open", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // Child streams APPROVE (unresolved); no dispatch is recorded.
@@ -543,7 +544,7 @@ test("#54: unresolved edge without a recorded dispatch fails open", async () => 
  * cannot attribute (gate state is parent-keyed by design). Self-keyed
  * fail-open with the full lookup diagnostic; executor still blocked.
  */
-test("#54: a child-keyed unresolved delivery cannot attribute (parent-keyed gate by design)", async () => {
+test("a child-keyed unresolved delivery cannot attribute (parent-keyed gate by design)", async () => {
   const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
   try {
     // Saturate c1's failed lookup and record its APPROVE.
@@ -590,7 +591,7 @@ test("#54: a child-keyed unresolved delivery cannot attribute (parent-keyed gate
  * open (dispatch gone); half 2 re-arms the join via a fresh dispatch + re-stream
  * and attributes. Proves last-wins + reset-clearing.
  */
-test("#54: a reset clears dispatch scope so a prior task's streamed verdict cannot approve the next", async () => {
+test("a reset clears dispatch scope so a prior task's streamed verdict cannot approve the next", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // Task 1: dispatch, then stream the child's APPROVE (unresolved child).
@@ -641,7 +642,7 @@ test("#54: a reset clears dispatch scope so a prior task's streamed verdict cann
  * one parent, one APPROVE and one BLOCK, ⇒ contradictory pool ⇒ fail-open, gate
  * untouched, exactly one /unattributable/ error.
  */
-test("#54: contradictory plausible verdicts fail open", async () => {
+test("contradictory plausible verdicts fail open", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
@@ -680,7 +681,7 @@ test("#54: contradictory plausible verdicts fail open", async () => {
  * (both dispatched before the stream) is ambiguous for each ⇒ excluded ⇒
  * fail-open.
  */
-test("#54: a verdict with two candidate parents is excluded from each", async () => {
+test("a verdict with two candidate parents is excluded from each", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
@@ -720,7 +721,7 @@ test("#54: a verdict with two candidate parents is excluded from each", async ()
  * second agreeing APPROVE (unresolved) child still attributes (edge-first raw),
  * never regressing today's lone-edge-candidate attribution into a fail-open.
  */
-test("#54: an agreeing unresolved child never regresses attribution into fail-open", async () => {
+test("an agreeing unresolved child never regresses attribution into fail-open", async () => {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
@@ -769,7 +770,7 @@ test("#54: an agreeing unresolved child never regresses attribution into fail-op
  * Fail-open, not fail-green: an unresolved child streaming BLOCK
  * still attributes honestly as BLOCK and blocks the executor.
  */
-test("#54: an unresolved BLOCK stream attributes as BLOCK", async () => {
+test("an unresolved BLOCK stream attributes as BLOCK", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
@@ -808,7 +809,7 @@ test("#54: an unresolved BLOCK stream attributes as BLOCK", async () => {
  * with no candidates still fails open (the delivery's own APPROVE is dropped —
  * fail-safe), never a phantom plan entry. Zero plan entries, one error.
  */
-test("#54: a marker-carrying self-keyed delivery with no candidates still fails open", async () => {
+test("a marker-carrying self-keyed delivery with no candidates still fails open", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await deliver(h, "p1", `\nreviewed\n\n${APPROVE}\n`)
@@ -832,7 +833,7 @@ test("#54: a marker-carrying self-keyed delivery with no candidates still fails 
  * (grace) while a fresh parent attributed via the self-keyed fix goes green
  * independently. Executor allowed for both — separate buckets.
  */
-test("#54: a replayed approval stays independent from a self-keyed fix for a new parent", async () => {
+test("a replayed approval stays independent from a self-keyed fix for a new parent", async () => {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
@@ -899,7 +900,7 @@ test("#54: a replayed approval stays independent from a self-keyed fix for a new
  * lookup{session:{attempts,reason}} }). Two self-keyed deliveries ⇒ two
  * attribution entries (counted 2), proving one-per-delivery.
  */
-test("#54: each self-keyed delivery journals exactly one attribution entry", async () => {
+test("each self-keyed delivery journals exactly one attribution entry", async () => {
   const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
   try {
     // Two self-keyed deliveries (no registered child, no evidence).
@@ -931,7 +932,7 @@ test("#54: each self-keyed delivery journals exactly one attribution entry", asy
  * plus the H2 hypothesis — a record present but parent-less — is diagnosable as
  * `"no-parent-id"` in the lookup, yet still attributes from the streaming store.
  */
-test("#54: an attributed self-keyed delivery never clobbers and H2 resolves as no-parent-id", async () => {
+test("an attributed self-keyed delivery never clobbers and H2 resolves as no-parent-id", async () => {
   // Part A: T1 repro; assert journal-wide invariants.
   const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
   try {

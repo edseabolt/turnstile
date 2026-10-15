@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Read-only report of turnstile gate/plan state over the JSONL journal.
 //
-// This is the `turnstile status` surface (issue #34): it reports, per parent
+// This is the `turnstile status` surface: it reports, per parent
 // session, what the journal says a task currently is WITHOUT touching the host
 // or writing anything. It is deliberately a plain ESM script outside the 100%
 // coverage gate (bin/ and scripts/ never are), and it is exercised by

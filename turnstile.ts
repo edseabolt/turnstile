@@ -35,8 +35,8 @@
  *   reset) and the ask carries no message of its own. The explicit
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
  *   `USER WAIVER:` literal in the user's prompt waives the gate; a
- *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert —
- *   issue #34's injection hole, now closed. Plan-content changes invalidate
+ *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert,
+ *   closing the injection hole. Plan-content changes invalidate
  *   approvals issued against the previous plans-dir signature (replayed
  *   approvals are accepted once, then stamped). A journal-replayed approval
  *   survives the first prompt after a restart (the resume prompt) and then
@@ -64,6 +64,23 @@
  *   the dispatcher to stop re-dispatching and escalate to the user (so a
  *   subagent stuck at its own cap is not dead-ended by a "wait for a new prompt"
  *   hint).
+ * - Reviewer ensemble: every unwaived `task -> reviewer` dispatch is counted
+ *   per task and journaled as `{type:"ensemble", sessionID, agent, count}`;
+ *   under `reviewEnsemble: enforce` (default) a reviewer `VERDICT: APPROVE`
+ *   credits the task (`hasReviewApprove`, the landing gate's release signal)
+ *   only when at least two dispatches were journaled for the task. Fewer
+ *   leaves the gate red: the incomplete ensemble journals
+ *   `blocked/ensemble-incomplete` and trails a `refusedApprove:true` stamp on
+ *   the last `ensemble` entry, so replay never re-credits the refused APPROVE
+ *   across a restart and the existing permission-ask ladder decides the
+ *   outcome. `advise` tracks and journals the count but credits unconditionally
+ *   (no gate). A human `always` grant is never gated and journals a
+ *   `refusedApprove:false` clearing entry so the human release survives restart;
+ *   the count survives a restart via journal replay and one grace prompt.
+ *   When the landing gate is already released (`hasReviewApprove` true), a
+ *   later reviewer APPROVE delivery is credited without journaling, so a human
+ *   grant or mechanical release is never re-stamped as a refusal.
+ *   Merging findings stays orchestrator work.
  * - Parent-bucket eviction: live-parent gate buckets (hasGatePass,
  *   hasPlanVerdict, read counter, policyInjected) are registered per
  *   prompt/dispatch/delivery/edge via `markParent`, and the `states` LRU never

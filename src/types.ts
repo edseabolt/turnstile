@@ -127,6 +127,16 @@ export interface StreamEvent {
 export type GateEvidenceMode = "enforce" | "flag" | "off"
 
 /**
+ * Enforcement mode for the reviewer ensemble. `enforce` (default): a reviewer
+ * `VERDICT: APPROVE` credits the task (`hasReviewApprove`) only when at least
+ * two unwaived reviewer dispatches were counted this task; `advise`: the count
+ * is tracked and journaled but the credit is unconditional (today's
+ * advisory-prose behavior). Mirrors `GateEvidenceMode` (both default to
+ * `enforce`) and, like it, is a resolved literal validated at merge time.
+ */
+export type ReviewEnsembleMode = "enforce" | "advise"
+
+/**
  * Enforcement mode for the tool-call denylist policy in `src/tool-policy.ts`.
  * `enforce` (default) blocks matching bash/shell commands and write/edit paths;
  * `shadow` journals the would-block without throwing (adoption path); `off` is
@@ -156,7 +166,7 @@ export interface TurnstileToolPolicy {
 
 /**
  * Git-and-commit gate configuration backing the mechanical gates in
- * `src/tool-policy.ts` (chunk-7/8). The default `mode` is `"shadow"`: the
+ * `src/tool-policy.ts`. The default `mode` is `"shadow"`: the
  * gates are active but non-blocking (audit-only) until a user flips a key to
  * `"enforce"`, mirroring the tool-policy "adopt shadow first" adoption path.
  *
@@ -195,7 +205,7 @@ export interface GateState {
    * True once this task's reviewer `execute.after` delivery has carried a
    * `VERDICT: APPROVE` for the parent — the landing gate's release signal.
    * Restart-sticky like `hasPlanVerdict`: restored by journal replay across a
-   * restart (chunk-7) and carried one prompt via `mergeAfterReplay`; fresh
+   * restart and carried one prompt via `mergeAfterReplay`; fresh
    * `false` on an ordinary prompt reset.
    */
   hasReviewApprove: boolean
@@ -260,6 +270,15 @@ export interface GateState {
   suppressedPending: number
   reviewRounds: number
   /**
+   * Task-scoped ensemble count of *unwaived* `task -> reviewer` dispatches.
+   * The landing credit (`hasReviewApprove`) requires `>= 2`. Unlike
+   * `reviewRounds` it is restart-sticky: restored by journal replay across a
+   * restart and carried one prompt via `mergeAfterReplay`; fresh `0` on an
+   * ordinary prompt reset. Waived dispatches never advance it (the waiver
+   * short-circuits before counting, mirroring `reviewRounds`).
+   */
+  reviewerDispatches: number
+  /**
    * Task-scoped planner dispatch count. Exceeded ⇒ the planner leg is spinning;
    * see `maxPlannerRounds`. Waived dispatches are exempt (the waiver
    * short-circuits before counting, mirroring the reviewer-cap precedent).
@@ -292,9 +311,9 @@ export interface GateState {
   totalDispatches: number
   /**
    * Count of `git push`/PR-landing blocks this task under the landing gate —
-   * telemetry that arms the permission-ask escalation on a repeat attempt
-   * (chunk-8). Task-scoped: fresh `0` on each prompt reset and never carried
-   * through `mergeAfterReplay`.
+   * telemetry that arms the permission-ask escalation on a repeat attempt.
+   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * `mergeAfterReplay`.
    */
   landingBlocks: number
   reads: number
@@ -421,9 +440,9 @@ export interface TurnstileConfig {
   waiverMarker: string
   /**
    * Literal marker that releases the plan gate via an explicit human
-   * approval (chunk-3). Present at config resolution so the key is valid and
-   * the digest is stable; not yet consumed by the chunk-2 prompt-channel
-   * waiver. Defaults to `PLAN APPROVED:`.
+   * approval. Present at config resolution so the key is valid and the digest
+   * is stable; not yet consumed by the prompt-channel waiver. Defaults to
+   * `PLAN APPROVED:`.
    */
   approvalMarker: string
   /** Project-relative directory scanned for `## Decomposition` plans. */
@@ -443,6 +462,16 @@ export interface TurnstileConfig {
    * keeps the pre-evidence behavior. See `src/evidence.ts`.
    */
   gateEvidence: GateEvidenceMode
+  /**
+   * Enforcement mode for the reviewer ensemble. `enforce` (default) credits a
+   * reviewer `VERDICT: APPROVE` (`hasReviewApprove`) only when at
+   * least two unwaived reviewer dispatches were counted this task
+   * (`reviewerDispatches >= 2`); `advise` tracks and journals the count but
+   * credits unconditionally (today's advisory-prose behavior). The
+   * `maxReviewerRounds < 2` interaction is validated at resolve time
+   * (`config.validateResolved`).
+   */
+  reviewEnsemble: ReviewEnsembleMode
   /**
    * Case-insensitive regex source a successful (exit-0) bash/shell command
    * must match to count as test execution. Overridable for non-JS/other

@@ -1474,20 +1474,44 @@ test("newState initializes the loop-cap counters", () => {
   assert.equal(s.planReviewerRounds, 0)
   assert.equal(s.testRunnerRounds, 0)
   assert.equal(s.totalDispatches, 0)
+  assert.equal(s.reviewerDispatches, 0)
 })
 
 /**
- * Landing-gate flag lifecycle (chunk-7): only a delivery-attributed reviewer
- * `VERDICT: APPROVE` sets/`hasReviewApprove` (task-result), streaming child
- * text does not (AC-12), a `GATE: FAIL` never clears it, and replay restores
- * it across a restart with the same one-prompt grace as a plan verdict.
+ * Landing-gate flag lifecycle: only a delivery-attributed reviewer
+ * `VERDICT: APPROVE` (task-result) sets `hasReviewApprove`; a streamed verdict
+ * in child text does not; a `GATE: FAIL` never clears it; and replay restores
+ * it across a restart with the same one-prompt grace as a plan verdict. Under
+ * `reviewEnsemble: enforce` the review is credited only once two unwaived
+ * reviewer dispatches were counted this task.
  */
 
-/** A reviewer task-result delivery carries a `VERDICT: APPROVE` that becomes
- *  `hasReviewApprove` — task-result capture round-trips through the journal
- *  into the next boot's replay. */
+/** A compliant reviewer task-result delivery credits the task: after a green
+ *  gate and two unwaived reviewer dispatches, the verdict becomes
+ *  `hasReviewApprove`, and the task-result capture round-trips through the
+ *  journal into the next boot's replay. */
 test("a reviewer task-result verdict restores hasReviewApprove across a restart", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  // flag flips the gate on a plain PASS (the flip switch is orthogonal to the
+  // ensemble count, which still needs two reviewer dispatches to credit).
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=3 passed=3 failed=0\nrest" },
+  })
+  // Two unwaived reviewer dispatches count the ensemble up to two, which is
+  // what enforce requires before the verdict is credited.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it again" },
+  })
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
@@ -1521,11 +1545,11 @@ test("a reviewer task-result verdict BLOCK does not restore hasReviewApprove", a
   dispose()
 })
 
-/** (AC-12) A `VERDICT: APPROVE` seen only in streamed child text never restores
+/** A `VERDICT: APPROVE` seen only in streamed child text never restores
  *  hasReviewApprove: landing release requires a delivery-attributed reviewer
  *  verdict, and the streamed verdict is journaled with a non-task-result
  *  source that replay never credits. */
-test("a streamed verdict does not restore hasReviewApprove (AC-12)", async () => {
+test("a streamed verdict does not restore hasReviewApprove", async () => {
   const { h, dispose, metricsDir } = await boot()
   h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
   h.pushEvent({
@@ -1627,8 +1651,8 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
     `${JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE" })}\n`,
   )
   const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
-  // Seed the journal-restored provenance value (chunk-3 owns the journaling
-  // source); mergeAfterReplay must carry it across the grace prompt.
+  // Seed the journal-restored provenance value: the journal owns the
+  // source; mergeAfterReplay must carry it across the grace prompt.
   const s = ledger.state("p1")
   assert.equal(s.hasPlanVerdict, true, "replay restored hasPlanVerdict")
   s.humanApproval = true
@@ -1720,9 +1744,9 @@ test("trace lines carry a trailing ` | <sessionID>` when wired to a session", as
     input: { agent: "reviewer", prompt: "review it" },
   })
   // plan-waiver: the same marker in the user prompt fires the plan-approval
-  // waiver trace (enforcePlanApproval). The executor prompt also cites AC-1 so
-  // the decomposition gate stays a no-op and the plan-waiver trace is the only
-  // executor outcome.
+  // waiver trace (enforcePlanApproval). The executor prompt also carries a
+  // decomposition citation so the decomposition gate stays a no-op and the
+  // plan-waiver trace is the only executor outcome.
   await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: please proceed" })
   await callTool(h, "execute.before", {
     tool: "task",
@@ -1960,7 +1984,7 @@ test("journal replay tail is bounded at 2000 lines across both generations", asy
 // Evidence correlation (verified verdicts, gate-unverified gating)
 // ---------------------------------------------------------------------------
 
-/** (AC-1) enforce mode: an unverified PASS (no correlating evidence) does not
+/** enforce mode: an unverified PASS (no correlating evidence) does not
  *  green the gate; the gate entry is journaled verified:false and reviewer
  *  dispatch is blocked with the gate-unverified message (reason gate-unverified). */
 test("enforce mode: an unverified PASS blocks reviewer dispatch with reason gate-unverified", async () => {
@@ -1991,7 +2015,7 @@ test("enforce mode: an unverified PASS blocks reviewer dispatch with reason gate
   dispose()
 })
 
-/** (AC-2) enforce mode: a PASS observed while a matching exit-0 bash test
+/** enforce mode: a PASS observed while a matching exit-0 bash test
  *  execution is journaled verifies green (verified:true) and unlocks the reviewer. */
 test("enforce mode: a PASS with correlating bash evidence verifies and unlocks", async () => {
   const { h, dispose, metricsDir } = await boot()
@@ -2019,11 +2043,11 @@ test("enforce mode: a PASS with correlating bash evidence verifies and unlocks",
   dispose()
 })
 
-/** (AC-3) a PASS rejected for lack of evidence is promoted to green the moment
+/** a PASS rejected for lack of evidence is promoted to green the moment
  *  matching exit-0 evidence arrives: a `promoted` gate entry (verified:true,
  *  no marker field) plus a `type:"evidence"` observation with no command text;
  *  the reviewer unlocks and a re-delivered deduped PASS emits no new promotion. */
-test("enforce mode: promotes an earlier unverified PASS on arriving evidence (AC-3)", async () => {
+test("enforce mode: promotes an earlier unverified PASS on arriving evidence", async () => {
   const { h, dispose, metricsDir } = await boot()
   // PASS lands unverified first (no evidence yet).
   await callTool(h, "execute.after", {
@@ -2076,11 +2100,11 @@ test("enforce mode: promotes an earlier unverified PASS on arriving evidence (AC
   dispose()
 })
 
-/** (AC-7) a GATE: FAIL after an unverified PASS clears the pending unverified
+/** a GATE: FAIL after an unverified PASS clears the pending unverified
  *  claim: reviewer dispatch is blocked with the legacy NO_GATE_MESSAGE (reason
  *  no-gate-pass), not gate-unverified — proving the FAIL branch cleared
  *  `state.unverifiedPass`. */
-test("enforce mode: a GATE: FAIL after an unverified PASS clears the unverified claim (AC-7)", async () => {
+test("enforce mode: a GATE: FAIL after an unverified PASS clears the unverified claim", async () => {
   const { h, dispose, metricsDir } = await boot()
   await callTool(h, "execute.after", {
     tool: "task",
@@ -2110,11 +2134,11 @@ test("enforce mode: a GATE: FAIL after an unverified PASS clears the unverified 
   dispose()
 })
 
-/** (AC-6) replay: a FAIL entry followed by an enforce-mode unverified PASS
+/** replay: a FAIL entry followed by an enforce-mode unverified PASS
  *  entry leaves the gate red after restart — the unverified PASS is skipped by
  *  the flipping-entry filter, so FAIL is the last deciding result and the
  *  (never-restored) unverified claim is absent → legacy no-gate-pass block. */
-test("replay: FAIL wins over a later unverified enforce PASS (AC-6)", async () => {
+test("replay: FAIL wins over a later unverified enforce PASS", async () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl"),
@@ -2143,11 +2167,11 @@ test("replay: FAIL wins over a later unverified enforce PASS (AC-6)", async () =
   dispose()
 })
 
-/** (AC-6, runtime mirror) a FAIL followed by a fresh unverified enforce PASS at
+/** a FAIL followed by a fresh unverified enforce PASS at
  *  runtime leaves the gate red (FAIL un-greened it and an unverified PASS never
  *  flips); the new pending unverified claim is recorded, so the block names the
  *  evidence contract. */
-test("runtime: FAIL then a later unverified enforce PASS keeps the gate red (AC-6)", async () => {
+test("runtime: FAIL then a later unverified enforce PASS keeps the gate red", async () => {
   const { h, dispose } = await boot()
   await callTool(h, "execute.after", {
     tool: "task",
@@ -2173,9 +2197,9 @@ test("runtime: FAIL then a later unverified enforce PASS keeps the gate red (AC-
   dispose()
 })
 
-/** (AC-4) exit-code 1 and pattern-mismatching commands never count as
+/** exit-code 1 and pattern-mismatching commands never count as
  *  evidence: both leave the enforce gate red. */
-test("enforce mode: non-zero exit and non-matching command are not evidence (AC-4)", async () => {
+test("enforce mode: non-zero exit and non-matching command are not evidence", async () => {
   const cases: Array<[string, string, number]> = [
     ["exit-1", "npm test", 1],
     ["pattern-mismatch", "ls -la", 0],
@@ -2213,10 +2237,10 @@ test("enforce mode: non-zero exit and non-matching command are not evidence (AC-
   }
 })
 
-/** (AC-4) evidence is attributed to the parent via a lazy re-key once a child's
+/** evidence is attributed to the parent via a lazy re-key once a child's
  *  session.created edge resolves: a child's exit-0 `npm test` verifies the
  *  parent's PASS. */
-test("enforce mode: attributes a child's bash evidence to the parent via lazy re-key (AC-4)", async () => {
+test("enforce mode: attributes a child's bash evidence to the parent via lazy re-key", async () => {
   const { h, dispose, metricsDir } = await boot()
   h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
   // Warmup signal confirms the created event was processed (edge set).
@@ -2247,9 +2271,9 @@ test("enforce mode: attributes a child's bash evidence to the parent via lazy re
   dispose()
 })
 
-/** (AC-4) a new user prompt clears the in-memory evidence correlation, so a
+/** a new user prompt clears the in-memory evidence correlation, so a
  *  later PASS is again unverified. */
-test("enforce mode: a new prompt clears evidence so a later PASS is unverified (AC-4)", async () => {
+test("enforce mode: a new prompt clears evidence so a later PASS is unverified", async () => {
   const { h, dispose, metricsDir } = await boot()
   await callTool(h, "execute.after", {
     tool: "bash",
@@ -2270,9 +2294,9 @@ test("enforce mode: a new prompt clears evidence so a later PASS is unverified (
   dispose()
 })
 
-/** (AC-5) flag mode keeps today's flip-on-PASS semantics and stamps verified:false
+/** flag mode keeps today's flip-on-PASS semantics and stamps verified:false
  *  + mode:"flag" on an unverified PASS; the reviewer is still allowed. */
-test("flag mode: an unverified PASS flips green and stamps verified:false/mode flag (AC-5)", async () => {
+test("flag mode: an unverified PASS flips green and stamps verified:false/mode flag", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
   await callTool(h, "execute.after", {
     tool: "task",
@@ -2293,9 +2317,9 @@ test("flag mode: an unverified PASS flips green and stamps verified:false/mode f
   dispose()
 })
 
-/** (AC-5) off mode: gate events are byte-identical to legacy (no verified/mode
+/** off mode: gate events are byte-identical to legacy (no verified/mode
  *  fields) and no type:"evidence" entries are ever journaled. */
-test("off mode: gate entries carry no verified/mode and no evidence entries are journaled (AC-5)", async () => {
+test("off mode: gate entries carry no verified/mode and no evidence entries are journaled", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "off" })
   await callTool(h, "execute.after", {
     tool: "bash",
@@ -2338,8 +2362,8 @@ function writeJournal(metricsDir: string, entries: Record<string, unknown>[]): v
   )
 }
 
-/** (AC-6) replaying an enforce-mode verified:true PASS restores the gate green. */
-test("replay restores a verified:true PASS (AC-6)", async () => {
+/** replaying an enforce-mode verified:true PASS restores the gate green. */
+test("replay restores a verified:true PASS", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [
     { type: "gate", sessionID: "p1", raw: "c1", result: "PASS", verified: true, mode: "enforce" },
@@ -2357,9 +2381,9 @@ test("replay restores a verified:true PASS (AC-6)", async () => {
   dispose()
 })
 
-/** (AC-6) replaying an enforce-mode verified:false PASS (mode stated) does NOT
+/** replaying an enforce-mode verified:false PASS (mode stated) does NOT
  *  restore the gate. */
-test("replay skips an enforce-mode verified:false PASS (AC-6)", async () => {
+test("replay skips an enforce-mode verified:false PASS", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [
     { type: "gate", sessionID: "p1", raw: "c1", result: "PASS", verified: false, mode: "enforce" },
@@ -2381,9 +2405,9 @@ test("replay skips an enforce-mode verified:false PASS (AC-6)", async () => {
   dispose()
 })
 
-/** (AC-6) a verified:false PASS with no mode field is still skipped (enforce
+/** a verified:false PASS with no mode field is still skipped (enforce
  *  non-flipping semantics even when the mode field is absent). */
-test("replay skips a verified:false PASS with no mode field (AC-6)", async () => {
+test("replay skips a verified:false PASS with no mode field", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [
     { type: "gate", sessionID: "p1", raw: "c1", result: "PASS", verified: false },
@@ -2405,9 +2429,9 @@ test("replay skips a verified:false PASS with no mode field (AC-6)", async () =>
   dispose()
 })
 
-/** (AC-6) replaying a flag-mode verified:false PASS restores the gate green,
+/** replaying a flag-mode verified:false PASS restores the gate green,
  *  matching its runtime flip. */
-test("replay restores a flag-mode verified:false PASS green (AC-6)", async () => {
+test("replay restores a flag-mode verified:false PASS green", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [
     { type: "gate", sessionID: "p1", raw: "c1", result: "PASS", verified: false, mode: "flag" },
@@ -2425,8 +2449,8 @@ test("replay restores a flag-mode verified:false PASS green (AC-6)", async () =>
   dispose()
 })
 
-/** (AC-6) a field-less legacy PASS restores (fail-open). */
-test("replay restores a field-less legacy PASS (fail-open, AC-6)", async () => {
+/** a field-less legacy PASS restores (fail-open). */
+test("replay restores a field-less legacy PASS (fail-open)", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [{ type: "gate", sessionID: "p1", raw: "c1", result: "PASS" }])
   const h = makeFakeHost()
@@ -2442,9 +2466,9 @@ test("replay restores a field-less legacy PASS (fail-open, AC-6)", async () => {
   dispose()
 })
 
-/** (AC-6) trailing flipping-entry rule: a verified:false enforce PASS after a
+/** trailing flipping-entry rule: a verified:false enforce PASS after a
  *  verified:true one keeps the gate green (skipped at lastGateResult.set). */
-test("replay keeps the gate green when a verified:true PASS trails past an unverified enforce PASS (AC-6)", async () => {
+test("replay keeps the gate green when a verified:true PASS trails past an unverified enforce PASS", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [
     { type: "gate", sessionID: "p1", raw: "c1", result: "PASS", verified: true, mode: "enforce" },
@@ -2463,9 +2487,9 @@ test("replay keeps the gate green when a verified:true PASS trails past an unver
   dispose()
 })
 
-/** (AC-6) replay never restores unverifiedPass: a skipped enforce verified:false
+/** replay never restores unverifiedPass: a skipped enforce verified:false
  *  entry leaves the legacy no-gate-pass message (not the gate-unverified one). */
-test("replay does not restore unverifiedPass (AC-6)", async () => {
+test("replay does not restore unverifiedPass", async () => {
   const metricsDir = tmpDir()
   writeJournal(metricsDir, [
     { type: "gate", sessionID: "p1", raw: "c1", result: "PASS", verified: false, mode: "enforce" },

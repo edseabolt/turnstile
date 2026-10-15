@@ -802,7 +802,7 @@ export function createTurnstile(
     // Count of successfully registered hooks (3 session + 2 tool + 1 event
     // subscriber = 6 on a full host); feeds the load heartbeat below.
     let hooks = 0
-    // Prompt-channel waiver capture (issue #34, AC-1): the waiver must
+    // Prompt-channel waiver capture: the waiver must
     // provenance from the user's prompt, never the dispatch prompt. A counter
     // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
     // non-empty string, so an unresolvable source is reported once (keylessPrompts hits
@@ -1108,7 +1108,7 @@ export function createTurnstile(
                     "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
                 })
 
-              // Per-leg loop caps + total-dispatch budget (issue #36): every
+              // Per-leg loop caps + total-dispatch budget: every
               // task/subagent dispatch — executor, planner, plan-reviewer,
               // test-runner, reviewer, debugger, unknown — draws down the
               // budget here, so the global backstop holds even against
@@ -1268,19 +1268,27 @@ export function createTurnstile(
                 "task-result",
                 `task-result\u0000${++taskDeliverySeq}`,
               )
-              // Reviewer-APPROVE capture (landing gate, chunk-7): a reviewer
+              // Reviewer-APPROVE capture (landing gate): a reviewer
               // task-result delivery whose first-sight verdict is APPROVE sets
               // hasReviewApprove — the landing gate's release signal. Mirrors
               // the plan-reviewer verdict lifecycle but for the landing gate.
               // Streaming child text does NOT set it: this branch runs only on
               // task-result delivery, keeping the stream attribution-neutral
-              // (AC-12 — a streamed verdict in child text can't release the
-              // landing gate).
+              // (a streamed verdict in child text can't release the landing
+              // gate).
               if (agent === config.agents.reviewer) {
                 const approved = markerEvents.some(
                   (e) => e.kind === "verdict" && e.marker.includes("APPROVE"),
                 )
-                if (approved) ledger.state(ledger.parentOf(child)).hasReviewApprove = true
+                if (approved) {
+                  // Under reviewEnsemble:enforce the review is credited only
+                  // once two unwaived reviewer dispatches were counted this
+                  // task; an incomplete ensemble journals the refusal (and a
+                  // suppressed-credit stamp) and leaves the landing gate red.
+                  const parent = ledger.parentOf(child)
+                  if (gates.reviewEnsembleComplete(parent, ledger))
+                    ledger.state(parent).hasReviewApprove = true
+                }
               }
               // Plan-approval attribution: only a plan-reviewer result moves
               // the plan gate. See attributePlanVerdict — `raw` is always an
@@ -1620,8 +1628,18 @@ export function createTurnstile(
                   if (reply === "always") {
                     // A standing human approval releases the landing gate for
                     // the rest of the task (the bash guard sees hasReviewApprove
-                    // and allows every push).
+                    // and allows every push). A human release outranks the
+                    // ensemble, so clear any refusal stamp on the last ensemble
+                    // entry: replay restores the human release (refusedApprove
+                    // absent/false) rather than an earlier refused APPROVE.
                     s.hasReviewApprove = true
+                    journaler.journal({
+                      type: "ensemble",
+                      sessionID: parent,
+                      agent: config.agents.reviewer,
+                      count: s.reviewerDispatches,
+                      refusedApprove: false,
+                    })
                     journaler.journal({ type: "permission", sessionID: parent, decision: "always" })
                   } else if (reply === "once") {
                     // A landing-gate single-dispatch push grant: consumed by

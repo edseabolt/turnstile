@@ -27,7 +27,11 @@ export function newState(): GateState {
     seenFrom: new Map(),
     suppressedPending: 0,
     reviewRounds: 0,
-    // Per-leg loop caps (issue #36): fresh 0 on every prompt reset, task-scoped,
+    // Task-scoped ensemble count of unwaived reviewer dispatches; restart-sticky
+    // (restored by journal replay, carried one prompt via mergeAfterReplay),
+    // fresh 0 on an ordinary prompt reset.
+    reviewerDispatches: 0,
+    // Per-leg loop caps: fresh 0 on every prompt reset, task-scoped,
     // never carried through mergeAfterReplay. A dispatcher that exhausts its leg
     // cap is reported as looping; totalDispatches is the global backstop.
     plannerRounds: 0,
@@ -35,7 +39,7 @@ export function newState(): GateState {
     testRunnerRounds: 0,
     totalDispatches: 0,
     // Task-scoped landing-gate block counter: fresh 0 on every prompt reset.
-    // Restored by journal replay across a restart (chunk-7).
+    // Restored by journal replay across a restart.
     landingBlocks: 0,
     reads: 0,
     seen: new Set(),
@@ -50,9 +54,9 @@ export function newState(): GateState {
  * Builds the gate state for the first post-restart prompt (the grace prompt):
  * carries the replayed bucket's current flag _values_ forward — not provenance
  * — so a live `GATE: FAIL` after replay is never resurrected. All other fields
- * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reads`, `seen`, the empty
- * `plansSignature` stamp) come fresh; the returned bucket's `replayGrace` is
- * consumed (false).
+ * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reviewerDispatches`,
+ * `reads`, `seen`, the empty `plansSignature` stamp) come fresh; the returned
+ * bucket's `replayGrace` is consumed (false).
  * @param prior The replayed bucket being reset.
  * @returns A reset bucket with the prior flags; grace consumed.
  */
@@ -69,6 +73,10 @@ function mergeAfterReplay(prior: GateState): GateState {
   // hasPlanVerdict: a reviewer APPROVE restored by replay survives the first
   // post-restart prompt (and the reset below clears it on the next prompt).
   s.hasReviewApprove = prior.hasReviewApprove
+  // The ensemble count is restart-sticky *paired with* hasReviewApprove: journaled
+  // dispatches and the credited review must agree across a restart, so the grace
+  // prompt carries the carried-together count too.
+  s.reviewerDispatches = prior.reviewerDispatches
   s.plansSignature = prior.hasPlanVerdict ? prior.plansSignature : ""
   return s
 }
@@ -96,10 +104,12 @@ export interface GateLedger {
    * Resets a session's gate state for a new user prompt (a new prompt starts a
    * new task). The first prompt after a restart carries the journal-replayed
    * flags forward with a single-prompt grace (values, not provenance — a live
-   * GATE: FAIL after replay is carried as false); every later prompt fully
-   * resets (fresh flags; `reviewRounds`/`plannerRounds`/`planReviewerRounds`/
-   * `testRunnerRounds`/`totalDispatches`/`reads`/`seen`/`seenFrom`/
-   * `suppressedPending` are always fresh). Fail-open: pure object map
+   * GATE: FAIL after replay is carried as false): `hasGatePass`,
+   * `hasPlanVerdict`, `hasReviewApprove`, and its paired ensemble count
+   * `reviewerDispatches`. Every later
+   * prompt fully resets (fresh flags; `reviewRounds`/`plannerRounds`/
+   * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/
+   * `seenFrom`/`suppressedPending` are always fresh). Fail-open: pure object map
    * operations.
    * @param sessionID The parent session ID to reset.
    */
@@ -198,6 +208,18 @@ export interface GateLedger {
  * (no signature is journaled, so it stamps an empty ""), which the grace
  * prompt's executor dispatch accepts once and re-stamps via reconcilePlanStamp
  * — edits _after_ restart still invalidate the restored approval.
+ *
+ * The reviewer-approval restore is refusal-suppressed: when the last counted
+ * reviewer-ensemble entry for a session stamped `refusedApprove:true` (the
+ * runtime refused to credit that APPROVE because fewer than two dispatches
+ * were counted), replay does not restore `hasReviewApprove` — a refused credit
+ * must not re-credit itself across a restart. An explicit clear on that last
+ * entry (`refusedApprove:false`, a human grant) instead restores the flag so a
+ * human release survives restart; an absent field lets a verdict through. The
+ * ensemble count itself is always restored last-wins per session; a session
+ * that also had a gate/plan verdict (or a clearing) restored keeps its
+ * `replayGrace`, while an ensemble-only count line restores the bare count with
+ * no grace and no one-prompt carry.
  * @param states The session→state map to populate.
  * @param journalPath Absolute path of the JSONL journal to replay; the prior
  *     generation (`${journalPath}.1`) is read first so the 2000-line tail
@@ -218,6 +240,18 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
       const lastGateResult = new Map<string, string>()
       const lastPlanResult = new Map<string, string>()
       const lastReviewVerdict = new Map<string, string>()
+      // The last ensemble entry per session. lastEnsemble is the restored
+      // count; lastRefusedApprove records that entry's refusal state, which the
+      // verdict loop consults to skip a refused APPROVE's restore and the
+      // clearing loop consults to restore a human grant. All three maps are
+      // last-wins over valid entries only.
+      const lastEnsemble = new Map<string, number>()
+      // Last explicit refusal state of the final ensemble entry for a session:
+      // true (stamped refusedApprove:true), false (cleared by a human grant),
+      // or absent from the map (no explicit stamp recorded, or the last valid
+      // entry had no field — an ordinary dispatch). Absent entries delete so a
+      // later dispatch un-stamps a prior refusal, matching the runtime rule.
+      const lastRefusedApprove = new Map<string, boolean>()
       for (const line of lines.slice(-2000)) {
         try {
           const e = JSON.parse(line) as {
@@ -228,6 +262,8 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
             source?: unknown
             verified?: unknown
             mode?: unknown
+            count?: unknown
+            refusedApprove?: unknown
           }
           if (e.type === "gate" && e.sessionID && (e.result === "PASS" || e.result === "FAIL")) {
             // Flipping-entry rule (map-fill, not the restore loop): an
@@ -245,14 +281,14 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
           ) {
             lastPlanResult.set(e.sessionID as string, e.result)
           }
-          // Reviewer-APPROVE restore (landing gate, chunk-7): a `VERDICT:
+          // Reviewer-APPROVE restore (landing gate): a `VERDICT:
           // APPROVE` verdict delivered on a task-result restores
           // hasReviewApprove with the same latest-flipping rule hasPlanVerdict
           // uses. Only `source:"task-result"` verdicts are credited — the
           // landing gate releases only on a delivery-attributed reviewer
           // verdict, so a verdict streamed in child text (`source:"child-*"`)
-          // never restores the flag (this is how AC-12 holds across a restart
-          // too). A trailing `VERDICT: BLOCK` leaves the flag off (the recency
+          // never restores the flag (this is how the invariant holds across a
+          // restart too). A trailing `VERDICT: BLOCK` leaves the flag off (the recency
           // boundary is the last verdict, not task reset — a GATE: FAIL never
           // clears it).
           if (
@@ -265,6 +301,24 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
               e.sessionID as string,
               e.marker.includes("APPROVE") ? "APPROVE" : "BLOCK",
             )
+          }
+          // The last counted ensemble entry per session: a non-negative integer
+          // count on a known session, last-wins like the other three maps. The
+          // same entry stamps lastRefusedApprove: an explicit refusal stamp, an
+          // explicit human-grant clear, or (absent) a last-wins un-stamp, so the
+          // verdict loop can skip a refused APPROVE's restore and the clearing
+          // loop can restore a human grant.
+          if (
+            e.type === "ensemble" &&
+            e.sessionID &&
+            Number.isInteger(e.count) &&
+            (e.count as number) >= 0
+          ) {
+            lastEnsemble.set(e.sessionID as string, e.count as number)
+            if (e.refusedApprove === true) lastRefusedApprove.set(e.sessionID as string, true)
+            else if (e.refusedApprove === false)
+              lastRefusedApprove.set(e.sessionID as string, false)
+            else lastRefusedApprove.delete(e.sessionID as string)
           }
         } catch {
           // skip malformed lines
@@ -286,9 +340,35 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
       }
       for (const [sessionID, result] of lastReviewVerdict) {
         if (result !== "APPROVE") continue
+        // A refused credit is stamped on the last ensemble entry for the
+        // session; do not let replay re-credit that APPROVE on restart. An
+        // explicit clear (refusedApprove:false) or an absent field both let the
+        // verdict through — only an explicit refusal suppresses it.
+        if (lastRefusedApprove.get(sessionID) === true) continue
         const s = states.get(sessionID) ?? newState()
         s.hasReviewApprove = true
         s.replayGrace = true
+        states.set(sessionID, s)
+      }
+      // A human always-grant releases the landing gate by stamping the last
+      // ensemble entry refusedApprove:false (a clear). Restore the flag so the
+      // human release survives restart — independent of any verdict, since a
+      // human release outranks the mechanical ensemble. A still-refused session
+      // (last entry refusedApprove:true) falls through and is not re-credited.
+      for (const [sessionID, refused] of lastRefusedApprove) {
+        if (refused !== false) continue
+        const s = states.get(sessionID) ?? newState()
+        s.hasReviewApprove = true
+        s.replayGrace = true
+        states.set(sessionID, s)
+      }
+      // Restore the ensemble count. A session that also had a flag restored
+      // already carries replayGrace from the loops above, so it survives the
+      // grace prompt together with its count; an ensemble-only line restores
+      // the bare count with no grace and no grace carry.
+      for (const [sessionID, count] of lastEnsemble) {
+        const s = states.get(sessionID) ?? newState()
+        s.reviewerDispatches = count
         states.set(sessionID, s)
       }
     }

@@ -17,6 +17,7 @@ import { appendLine, defaultMetricsDir } from "./journal.ts"
 import { GATE_RE, VERDICT_RE } from "./markers.ts"
 import type {
   GateEvidenceMode,
+  ReviewEnsembleMode,
   TurnstileAgents,
   TurnstileConfig,
   TurnstileGitGates,
@@ -68,7 +69,7 @@ export function defaultConfig(
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
     maxReviewerRounds: 2,
-    // Per-leg loop caps (issue #36): a healthy task is ≤1 planner + ≤3
+    // Per-leg loop caps: a healthy task is ≤1 planner + ≤3
     // plan-reviewer + N executor chunks + ≤4 test-runner + ≤2 reviewer; 16
     // total leaves chunk headroom while staying an order of magnitude below an
     // unbounded loop. Waived dispatches are exempt.
@@ -95,6 +96,7 @@ export function defaultConfig(
     gateMarker: GATE_RE.source,
     verdictMarker: VERDICT_RE.source,
     gateEvidence: "enforce",
+    reviewEnsemble: "enforce",
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
     toolPolicy: {
       mode: "enforce",
@@ -154,6 +156,7 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "gateMarker" || key === "verdictMarker") return typeof value === "string"
   if (key === "gateEvidence" && (value === "enforce" || value === "flag" || value === "off"))
     return true
+  if (key === "reviewEnsemble" && (value === "enforce" || value === "advise")) return true
   if (key === "evidencePattern" && typeof value === "string") {
     // A non-compiling pattern is rejected so `new RegExp` never throws later.
     try {
@@ -197,6 +200,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "gateMarker") config.gateMarker = value as string
   else if (key === "verdictMarker") config.verdictMarker = value as string
   else if (key === "gateEvidence") config.gateEvidence = value as GateEvidenceMode
+  else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
   else config[key as NumericConfigKey] = value as number
 }
@@ -388,6 +392,16 @@ export function mergeConfig(
       }
       continue
     }
+    if (key === "reviewEnsemble") {
+      // Mirrors the gateEvidence special case: shared validate/assign helpers,
+      // only the warning wording is special-cased to name the two literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push(`config: reviewEnsemble must be "enforce" or "advise"; keeping default`)
+      }
+      continue
+    }
     if (isValidScalar(key as keyof TurnstileConfig, value)) {
       assignScalar(config, key as keyof TurnstileConfig, value)
     } else {
@@ -496,6 +510,15 @@ export function validateResolved(config: TurnstileConfig): string[] {
   if (!path.isAbsolute(config.metricsDir)) {
     warnings.push(
       `config: metricsDir "${config.metricsDir}" is relative; journaling resolves against the process cwd`,
+    )
+  }
+  // The `enforce` ensemble needs a satisfiable count: with maxReviewerRounds <
+  // 2 the second required reviewer dispatch is capped away, so the ensemble is
+  // mechanically unsatisfiable. Warn (do not clamp — clamping upward would
+  // violate the user's cap intent); the human escalation path is the escape.
+  if (config.reviewEnsemble === "enforce" && config.maxReviewerRounds < 2) {
+    warnings.push(
+      `config: reviewEnsemble enforce needs maxReviewerRounds >= 2 (got ${config.maxReviewerRounds}); a second reviewer dispatch will be capped, escalate to the user`,
     )
   }
   return warnings

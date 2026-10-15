@@ -2,8 +2,8 @@
 description: Investigates failures, identifies root causes, implements targeted fixes, and verifies the result.
 mode: subagent
 # Runaway-loop backstop for the Horizon rule below: near the cap OpenCode
-# drops tools and asks for a summary. Tuned 2026-10-14: 150 capped once on the
-# #34/#35 fix rounds; 200 fits a diagnose-fix-verify loop with full CI.
+# drops tools and asks for a summary. Tuned 2026-10-14: 150 capped once on a
+# multi-round fix effort; 200 fits a diagnose-fix-verify loop with full CI.
 steps: 200
 ---
 

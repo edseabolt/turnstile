@@ -44,6 +44,7 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.journalMaxBytes, 5 * 1024 * 1024)
   assert.equal(cfg.journalMaxGenerations, 5)
   assert.equal(cfg.gateEvidence, "enforce")
+  assert.equal(cfg.reviewEnsemble, "enforce")
   assert.equal(cfg.evidencePattern, DEFAULT_EVIDENCE_PATTERN)
   assert.deepEqual(cfg.agents, {
     planner: "planner",
@@ -335,7 +336,7 @@ test("loadConfig re-derives when an explicit bareOutput equals the default liter
   assert.deepEqual(config.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
 })
 
-/** (AC-8) an invalid gateEvidence value keeps the default, names the key, and warns once. */
+/** an invalid gateEvidence value keeps the default, names the key, and warns once. */
 test("mergeConfig rejects an invalid gateEvidence and keeps the enforce default", () => {
   const base = defaultConfig({})
   assert.equal(base.gateEvidence, "enforce")
@@ -346,7 +347,7 @@ test("mergeConfig rejects an invalid gateEvidence and keeps the enforce default"
   ])
 })
 
-/** (AC-8) every valid gateEvidence literal is accepted verbatim. */
+/** every valid gateEvidence literal is accepted verbatim. */
 test("mergeConfig accepts each valid gateEvidence literal", () => {
   for (const mode of ["enforce", "flag", "off"] as const) {
     const { config, warnings } = mergeConfig(defaultConfig({}), { gateEvidence: mode })
@@ -355,7 +356,7 @@ test("mergeConfig accepts each valid gateEvidence literal", () => {
   }
 })
 
-/** (AC-8) a non-compiling evidencePattern keeps the default and warns naming the key. */
+/** a non-compiling evidencePattern keeps the default and warns naming the key. */
 test("mergeConfig rejects a non-compiling evidencePattern and keeps the default", () => {
   const base = defaultConfig({})
   const { config, warnings } = mergeConfig(base, { evidencePattern: "(" })
@@ -365,7 +366,7 @@ test("mergeConfig rejects a non-compiling evidencePattern and keeps the default"
   )
 })
 
-/** (AC-8) a compiling evidencePattern is accepted, even one overriding the default toolchain. */
+/** a compiling evidencePattern is accepted, even one overriding the default toolchain. */
 test("mergeConfig accepts a compiling custom evidencePattern", () => {
   const base = defaultConfig({})
   const { config, warnings } = mergeConfig(base, { evidencePattern: "\\brspec\\b" })
@@ -373,14 +374,14 @@ test("mergeConfig accepts a compiling custom evidencePattern", () => {
   assert.equal(warnings.length, 0)
 })
 
-/** (AC-8) the digest flips when gateEvidence or evidencePattern override defaults. */
+/** the digest flips when gateEvidence or evidencePattern override defaults. */
 test("configDigest flips on evidence-key overrides", () => {
   const base = defaultConfig({})
   assert.notEqual(configDigest(base), configDigest({ ...base, gateEvidence: "flag" }))
   assert.notEqual(configDigest(base), configDigest({ ...base, evidencePattern: "\\brspec\\b" }))
 })
 
-/** (AC-2) default config ships the git-protective toolPolicy denylist. */
+/** default config ships the git-protective toolPolicy denylist. */
 test("defaultConfig ships the toolPolicy denylist defaults", () => {
   const cfg = defaultConfig({})
   assert.equal(cfg.toolPolicy.mode, "enforce")
@@ -481,7 +482,7 @@ test("mergeConfig ignores unknown gitGates sub-keys", () => {
   assert.deepEqual(warnings, ['config: unknown gitGates key "bogus" ignored'])
 })
 
-/** (AC-15) flipping a gitGates value flips the config digest. */
+/** flipping a gitGates value flips the config digest. */
 test("configDigest flips when a gitGates value changes", () => {
   const base = defaultConfig({})
   const before = configDigest(base)
@@ -622,4 +623,76 @@ test("configDigest flips when toolPolicy.mode changes", () => {
     configDigest(base),
     configDigest({ ...base, toolPolicy: { ...base.toolPolicy, mode: "shadow" } }),
   )
+})
+
+/** An invalid reviewEnsemble value keeps the enforce default, names the key,
+ *  and warns once (mirrors the gateEvidence rejection). */
+test("mergeConfig rejects an invalid reviewEnsemble and keeps the enforce default", () => {
+  const base = defaultConfig({})
+  assert.equal(base.reviewEnsemble, "enforce")
+  const { config, warnings } = mergeConfig(base, { reviewEnsemble: "strict" })
+  assert.equal(config.reviewEnsemble, "enforce")
+  assert.deepEqual(warnings, [
+    'config: reviewEnsemble must be "enforce" or "advise"; keeping default',
+  ])
+})
+
+/** Each valid reviewEnsemble literal merges verbatim with no warning. */
+test("mergeConfig accepts each valid reviewEnsemble literal", () => {
+  for (const mode of ["enforce", "advise"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { reviewEnsemble: mode })
+    assert.equal(config.reviewEnsemble, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** The digest flips when reviewEnsemble overrides the enforce default. */
+test("configDigest flips on reviewEnsemble overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, reviewEnsemble: "advise" }))
+})
+
+/** Enforce mode plus maxReviewerRounds: 1 warns that a second reviewer
+ *  dispatch will be capped; the resolved count is left as configured. */
+test("loadConfig warns when enforce reviewEnsemble needs maxReviewerRounds >= 2", () => {
+  const file = path.join(xdgTmp, "rev-ensemble.json")
+  fs.writeFileSync(file, "{}")
+  const { config, warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { reviewEnsemble: "enforce", maxReviewerRounds: 1 },
+  )
+  assert.equal(config.reviewEnsemble, "enforce")
+  assert.equal(config.maxReviewerRounds, 1)
+  assert.equal(
+    warnings.some(
+      (w) =>
+        w ===
+        "config: reviewEnsemble enforce needs maxReviewerRounds >= 2 (got 1); a second reviewer dispatch will be capped, escalate to the user",
+    ),
+    true,
+  )
+})
+
+/** Enforce mode plus maxReviewerRounds: 2 is satisfiable and stays silent on
+ *  the ensemble invariant. */
+test("loadConfig stays silent on the ensemble invariant at maxReviewerRounds 2", () => {
+  const file = path.join(xdgTmp, "rev-ensemble-ok.json")
+  fs.writeFileSync(file, "{}")
+  const { warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { reviewEnsemble: "enforce", maxReviewerRounds: 2 },
+  )
+  assert.ok(!warnings.some((w) => w.includes("reviewEnsemble enforce needs")))
+})
+
+/** Advise mode never trips the maxReviewerRounds invariant, even below 2,
+ *  since advise does not gate on the count. */
+test("loadConfig never warns the ensemble invariant in advise mode", () => {
+  const file = path.join(xdgTmp, "rev-ensemble-advise.json")
+  fs.writeFileSync(file, "{}")
+  const { warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { reviewEnsemble: "advise", maxReviewerRounds: 1 },
+  )
+  assert.ok(!warnings.some((w) => w.includes("reviewEnsemble enforce needs")))
 })

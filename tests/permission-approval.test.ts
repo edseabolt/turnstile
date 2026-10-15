@@ -1,5 +1,5 @@
 /**
- * @fileoverview Permission-approval tests (Phase 1, issues #34/#35): the
+ * @fileoverview Permission-approval tests (Phase 1): the
  * `permission.evaluate` escalation handler (red plan gate only, action
  * matching, plan file + head message, trace redaction, fail-open), the
  * prompt-channel `PLAN APPROVED:` marker wiring, the `permission.asked`/
@@ -979,7 +979,7 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
 /**
  * A repeat `git push` under `enforce` arms the pending-landing-ask latch via the
  * capability's `escalate`; the next `permission.evaluate` for that bash action
- * forces a landing ask off that live latch (chunk-9), naming the reviewer
+ * forces a landing ask off that live latch, naming the reviewer
  * requirement. The ask is journaled exactly once (by guardLanding's escalate
  * path — the evaluate handler echoes it without a second entry). The arm is
  * ONE-SHOT: the first evaluate consumes it, so a second bash evaluate in the
@@ -1030,13 +1030,37 @@ test("evaluate: a live pending-landing-ask arm forces the landing ask", async ()
 })
 
 /**
- * A reviewer `VERDICT: APPROVE` delivery sets hasReviewApprove, so the landing
- * arm releases early: a bash evaluate returns without forcing an ask, even
- * though no pending-landing-ask latch is live (AC-11's release condition).
+ * A compliant reviewer delivery (a green gate and two unwaived reviewer
+ * dispatches) credits the task with a `VERDICT: APPROVE`, so the landing arm
+ * releases early: a bash evaluate returns without forcing an ask, even though
+ * no pending-landing-ask latch is live.
  */
 test("evaluate: an approved landing gate releases without forcing the ask", async () => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  // flag flips the gate on a plain PASS; the task still needs two reviewer
+  // dispatches before the verdict is credited.
+  const { h, restore } = await bootLanding({
+    gitGates: { mode: "enforce" },
+    gateEvidence: "flag",
+  })
   try {
+    // Flip the gate green so the reviewer dispatches are counted.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: PASS tests=3 passed=3 failed=0\nrest" },
+    })
+    // Two unwaived reviewer dispatches count the ensemble to two.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it again" },
+    })
     // A reviewer task-result delivery marks the parent approved. Parent-keyed
     // delivery (sessionID === parent) needs no async edge registration — the
     // session.created push is consumed asynchronously and would race this
