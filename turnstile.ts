@@ -19,9 +19,15 @@
  *   plan approval whenever a plan file exists in `.opencode/plans/`: a
  *   plan-reviewer `VERDICT: APPROVE`, a prompt-channel human approval, or a
  *   permission-prompt human approval. A prompt-channel approval is a
- *   user-authored prompt (a `PLAN APPROVED:` literal in the user's prompt sets
- *   the plan verdict and records human provenance) and replays identically to
- *   a plan-reviewer verdict. When none holds, the first executor dispatch
+ *   user-authored prompt captured at prompt admission through whichever host
+ *   channel carries it — the `session` prompt hook, or the correlated
+ *   `session.inbox.enqueued` admission carrying the same host message id where
+ *   the surface does not dispatch the hook. Both speak an identical marker,
+ *   provenance rule, and journal shape, and one prompt is admitted exactly
+ *   once across both (deduped on the shared id); a surface delivering the
+ *   inbox stream but never the hook journals a one-time error capturing that.
+ *   The approval replays identically to a plan-reviewer verdict. When none
+ *   holds, the first executor dispatch
  *   escalates to the human through the host permission surface:
  *   `permission.evaluate` forced `ask` with the plan file + head; a reply
  *   `always` sets the verdict, `once` grants exactly one executor dispatch
@@ -43,8 +49,10 @@
  *   every later prompt starts a clean cycle.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
- *   it), or an explicit user waiver (`USER WAIVER:` literal in the user's
- *   prompt). Under the default `gateEvidence:enforce`
+ *   it), or an explicit user waiver captured at prompt admission — a
+ *   `USER WAIVER:` literal in the user's prompt through the `session` prompt
+ *   hook or the correlated `session.inbox.enqueued` stream carrying the same
+ *   host message id. Under the default `gateEvidence:enforce`
  *   mode a `GATE: PASS` satisfies the gate only when the current task's
  *   bash/shell executions include a matching exit-0 test command (plausibility
  *   via `evidencePattern`); an unverified PASS is journaled `verified:false`

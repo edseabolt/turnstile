@@ -524,6 +524,14 @@ prompt — the plugin observes it at prompt admission, never from an agent's
 dispatch prompt. The provenance rule is the point: a marker inside an
 agent-composed prompt must never unlock a gate.
 
+- **How the plugin sees your prompt.** Capture happens at prompt admission, on
+  whichever host channel carries it — the `session` prompt hook, or the
+  correlated `session.inbox.enqueued` admission carrying the same host message
+  id (a surface uses the stream when it does not dispatch the hook). Both
+  channels speak an identical marker, the same user-only provenance rule, and
+  the same journal shapes, so a `USER WAIVER:` / `PLAN APPROVED:` captured either
+  way behaves identically; a prompt delivered on neither channel is journaled as
+  one distinguishing error rather than failing silently.
 - **Prompt-channel waiver.** Put the literal marker `USER WAIVER:` in the text
   of your prompt to waive the plan gate and the reviewer gate for the task.
   The waiver is provenance-checked: it must come from the user prompt, and a

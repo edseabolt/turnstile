@@ -60,8 +60,21 @@ export interface PromptHookProperties {
    * at prompt admission. Fails open when absent.
    */
   text?: unknown
-  /** Alternate candidate key for the raw user prompt text. */
+  /**
+   * Alternate candidate key for the raw user prompt text. On opencode ≥ 2.0.29
+   * the host may instead send its mutable prompt input object
+   * (`{text, files, agents, skills}`) here; `src/setup.ts` reads the object's
+   * `text` field as a THIRD candidate (via a guarded cast), so a user
+   * waiver/approval marker in `prompt.text` is captured too. Fails open when
+   * absent.
+   */
   prompt?: unknown
+  /**
+   * Host message id on the session prompt hook payload (opencode ≥ 2.0.29).
+   * This is the same id the inbox stream delivers as `inboxID`, so a prompt
+   * admitted via both transports dedupes on `${sessionID}:${messageID}`.
+   */
+  messageID?: unknown
 }
 
 /** Generation draft passed to the `session.generate` hook. */
@@ -109,6 +122,22 @@ export interface EventProperties {
    * unknown-typed, hence `unknown`.
    */
   message?: unknown
+  /**
+   * Host inbox request id on admission stream events (`session.inbox.enqueued`,
+   * opencode ≥ 2.0.29). This is the same id the session prompt hook delivers as
+   * `messageID`, so a prompt admitted via the inbox stream dedupes against the
+   * hook path on `${sessionID}:${inboxID}`. Present only on inbox events.
+   */
+  inboxID?: unknown
+  /**
+   * Admission provenance for a host inbox stream event (`session.inbox.enqueued`,
+   * opencode ≥ 2.0.29). `type:"user"` admits user-authored text whose
+   * `payload.text` carries the user's words; `"synthetic"` / `"compaction"` /
+   * `"move"` are agent/composition arrivals that never carry a user prompt and
+   * are never admitted. `payload.text` is the user prompt text when `type` is
+   * `"user"`.
+   */
+  item?: { type?: unknown; payload?: { text?: unknown } }
 }
 
 /** A single host stream event delivered by `event.subscribe`. */
