@@ -3,11 +3,11 @@ description: Implements an approved plan, validates changes, and fixes test fail
 mode: subagent
 # Runaway-loop backstop for the Horizon rule below: near the cap OpenCode
 # drops tools and asks for a summary. Tuned 2026-10-12: 50 repeatedly cut off
-# executor-sized chunks mid-implementation (issue #51 needed 3 continuations);
-# 150 keeps the backstop while fitting a real chunk (tests + docs + CI + commit).
-# Tuned 2026-10-14: 150 still capped mid-chunk three times on the #34/#35 work
-# (coverage hunts + full CI loops are the cost driver); 200 fits a chunk
-# including one coverage-debug iteration.
+# executor-sized chunks mid-implementation (a multi-continuation fix once
+# needed 3 continuations); 150 keeps the backstop while fitting a real chunk
+# (tests + docs + CI + commit). Tuned 2026-10-14: 150 still capped mid-chunk
+# three times on a coverage-heavy change (coverage hunts + full CI loops are
+# the cost driver); 200 fits a chunk including one coverage-debug iteration.
 steps: 200
 ---
 

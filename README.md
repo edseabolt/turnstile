@@ -521,7 +521,7 @@ PLAN APPROVED: <the user's words>
 
 Turnstile reads a waiver or a human plan approval only from the user's OWN
 prompt — the plugin observes it at prompt admission, never from an agent's
-dispatch prompt. This is the core of issue #34: a marker inside an
+dispatch prompt. The provenance rule is the point: a marker inside an
 agent-composed prompt must never unlock a gate.
 
 - **Prompt-channel waiver.** Put the literal marker `USER WAIVER:` in the text
