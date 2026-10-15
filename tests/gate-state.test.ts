@@ -1474,20 +1474,44 @@ test("newState initializes the loop-cap counters", () => {
   assert.equal(s.planReviewerRounds, 0)
   assert.equal(s.testRunnerRounds, 0)
   assert.equal(s.totalDispatches, 0)
+  assert.equal(s.reviewerDispatches, 0)
 })
 
 /**
- * Landing-gate flag lifecycle (chunk-7): only a delivery-attributed reviewer
- * `VERDICT: APPROVE` sets/`hasReviewApprove` (task-result), streaming child
- * text does not (AC-12), a `GATE: FAIL` never clears it, and replay restores
- * it across a restart with the same one-prompt grace as a plan verdict.
+ * Landing-gate flag lifecycle: only a delivery-attributed reviewer
+ * `VERDICT: APPROVE` (task-result) sets `hasReviewApprove`; a streamed verdict
+ * in child text does not; a `GATE: FAIL` never clears it; and replay restores
+ * it across a restart with the same one-prompt grace as a plan verdict. Under
+ * `reviewEnsemble: enforce` the review is credited only once two unwaived
+ * reviewer dispatches were counted this task.
  */
 
-/** A reviewer task-result delivery carries a `VERDICT: APPROVE` that becomes
- *  `hasReviewApprove` — task-result capture round-trips through the journal
- *  into the next boot's replay. */
+/** A compliant reviewer task-result delivery credits the task: after a green
+ *  gate and two unwaived reviewer dispatches, the verdict becomes
+ *  `hasReviewApprove`, and the task-result capture round-trips through the
+ *  journal into the next boot's replay. */
 test("a reviewer task-result verdict restores hasReviewApprove across a restart", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  // flag flips the gate on a plain PASS (the flip switch is orthogonal to the
+  // ensemble count, which still needs two reviewer dispatches to credit).
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=3 passed=3 failed=0\nrest" },
+  })
+  // Two unwaived reviewer dispatches count the ensemble up to two, which is
+  // what enforce requires before the verdict is credited.
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it again" },
+  })
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
@@ -1627,8 +1651,8 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
     `${JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE" })}\n`,
   )
   const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
-  // Seed the journal-restored provenance value (chunk-3 owns the journaling
-  // source); mergeAfterReplay must carry it across the grace prompt.
+  // Seed the journal-restored provenance value: the journal owns the
+  // source; mergeAfterReplay must carry it across the grace prompt.
   const s = ledger.state("p1")
   assert.equal(s.hasPlanVerdict, true, "replay restored hasPlanVerdict")
   s.humanApproval = true

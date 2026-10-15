@@ -100,6 +100,12 @@ clear naming and structure. Comments should explain "why" not "what".
 returns; the doc comment atop `turnstile.ts` documents contracts, not
 implementation.)
 
+Comments and docstrings must be self-contained: a reader without the plan,
+the issue, or this session's context must still understand them. Never
+reference chunks, acceptance criteria, plan files, or issue numbers in
+source comments, docstrings, or test titles — those citations belong in the
+plan file and the commit message, not the code.
+
 ### Naming conventions
 
 Use descriptive, self-documenting names for variables, functions, and

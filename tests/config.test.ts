@@ -44,6 +44,7 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.journalMaxBytes, 5 * 1024 * 1024)
   assert.equal(cfg.journalMaxGenerations, 5)
   assert.equal(cfg.gateEvidence, "enforce")
+  assert.equal(cfg.reviewEnsemble, "enforce")
   assert.equal(cfg.evidencePattern, DEFAULT_EVIDENCE_PATTERN)
   assert.deepEqual(cfg.agents, {
     planner: "planner",
@@ -622,4 +623,76 @@ test("configDigest flips when toolPolicy.mode changes", () => {
     configDigest(base),
     configDigest({ ...base, toolPolicy: { ...base.toolPolicy, mode: "shadow" } }),
   )
+})
+
+/** An invalid reviewEnsemble value keeps the enforce default, names the key,
+ *  and warns once (mirrors the gateEvidence rejection). */
+test("mergeConfig rejects an invalid reviewEnsemble and keeps the enforce default", () => {
+  const base = defaultConfig({})
+  assert.equal(base.reviewEnsemble, "enforce")
+  const { config, warnings } = mergeConfig(base, { reviewEnsemble: "strict" })
+  assert.equal(config.reviewEnsemble, "enforce")
+  assert.deepEqual(warnings, [
+    'config: reviewEnsemble must be "enforce" or "advise"; keeping default',
+  ])
+})
+
+/** Each valid reviewEnsemble literal merges verbatim with no warning. */
+test("mergeConfig accepts each valid reviewEnsemble literal", () => {
+  for (const mode of ["enforce", "advise"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { reviewEnsemble: mode })
+    assert.equal(config.reviewEnsemble, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** The digest flips when reviewEnsemble overrides the enforce default. */
+test("configDigest flips on reviewEnsemble overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, reviewEnsemble: "advise" }))
+})
+
+/** Enforce mode plus maxReviewerRounds: 1 warns that a second reviewer
+ *  dispatch will be capped; the resolved count is left as configured. */
+test("loadConfig warns when enforce reviewEnsemble needs maxReviewerRounds >= 2", () => {
+  const file = path.join(xdgTmp, "rev-ensemble.json")
+  fs.writeFileSync(file, "{}")
+  const { config, warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { reviewEnsemble: "enforce", maxReviewerRounds: 1 },
+  )
+  assert.equal(config.reviewEnsemble, "enforce")
+  assert.equal(config.maxReviewerRounds, 1)
+  assert.equal(
+    warnings.some(
+      (w) =>
+        w ===
+        "config: reviewEnsemble enforce needs maxReviewerRounds >= 2 (got 1); a second reviewer dispatch will be capped, escalate to the user",
+    ),
+    true,
+  )
+})
+
+/** Enforce mode plus maxReviewerRounds: 2 is satisfiable and stays silent on
+ *  the ensemble invariant. */
+test("loadConfig stays silent on the ensemble invariant at maxReviewerRounds 2", () => {
+  const file = path.join(xdgTmp, "rev-ensemble-ok.json")
+  fs.writeFileSync(file, "{}")
+  const { warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { reviewEnsemble: "enforce", maxReviewerRounds: 2 },
+  )
+  assert.ok(!warnings.some((w) => w.includes("reviewEnsemble enforce needs")))
+})
+
+/** Advise mode never trips the maxReviewerRounds invariant, even below 2,
+ *  since advise does not gate on the count. */
+test("loadConfig never warns the ensemble invariant in advise mode", () => {
+  const file = path.join(xdgTmp, "rev-ensemble-advise.json")
+  fs.writeFileSync(file, "{}")
+  const { warnings } = loadConfig(
+    { [ENV_KEYS.config]: file },
+    { reviewEnsemble: "advise", maxReviewerRounds: 1 },
+  )
+  assert.ok(!warnings.some((w) => w.includes("reviewEnsemble enforce needs")))
 })

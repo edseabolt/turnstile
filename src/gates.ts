@@ -45,6 +45,22 @@ export interface Gates {
    */
   guardReviewerDispatch(sessionID: string, ledger: GateLedger): void
   /**
+   * Decides whether the landing gate may credit a reviewer `VERDICT: APPROVE`
+   * for a task. Under `reviewEnsemble: enforce` the task needs at least two
+   * unwaived reviewer dispatches counted this task (`reviewerDispatches >= 2`);
+   * `advise` credits unconditionally. With too few dispatches under `enforce`
+   * it journals a `blocked` (`reason:"ensemble-incomplete"`, carrying `count`
+   * and `need`), a `refusedApprove`-stamped `ensemble` entry (so replay cannot
+   * re-credit the refused APPROVE across a restart), and a diagnostic trace,
+   * then returns false. It never throws: enforcement is "do not credit the
+   * review", and the existing landing-gate escalation ladder decides.
+   * @param sessionID The parent session ID whose ensemble is being checked.
+   * @param ledger The gate ledger to read the ensemble count from.
+   * @returns True when the APPROVE may be credited; false when the ensemble is
+   *     incomplete under `enforce`.
+   */
+  reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
+  /**
    * Enforces the per-leg loop caps and the per-task total-dispatch budget for
    * a pending `task` dispatch of any leg (planner, plan-reviewer, test-runner,
    * executor, debugger, reviewer, unknown): the dispatcher's leg cap
@@ -255,8 +271,65 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     // loop only. The waiver is consumed by the dispatch that unlocks it (per
     // the historical quote-consumption semantics), so a stale task waiver
     // cannot grant a later reviewer dispatch.
-    if (!waived) s.reviewRounds++
-    else s.userWaiver = ""
+    if (!waived) {
+      s.reviewRounds++
+      // Count this unwaived reviewer dispatch toward the landing gate's
+      // ensemble; journaled so the count is restart-sticky.
+      s.reviewerDispatches++
+      journaler.journal({
+        type: "ensemble",
+        sessionID,
+        agent: config.agents.reviewer,
+        count: s.reviewerDispatches,
+      })
+    } else s.userWaiver = ""
+  }
+
+  /**
+   * Decides whether the landing gate may credit a reviewer `VERDICT: APPROVE`
+   * for a task. Under `reviewEnsemble: enforce` the task needs at least two
+   * unwaived reviewer dispatches counted this task (`reviewerDispatches >= 2`);
+   * `advise` credits unconditionally. With too few dispatches under `enforce`
+   * it journals a `blocked` (`reason:"ensemble-incomplete"`, carrying `count`
+   * and `need`), a `refusedApprove`-stamped `ensemble` entry (so replay cannot
+   * re-credit the refused APPROVE across a restart), and a diagnostic trace,
+   * then returns false. It never throws: enforcement is "do not credit the
+   * review", and the existing landing-gate escalation ladder decides.
+   * @param sessionID The parent session ID whose ensemble is being checked.
+   * @param ledger The gate ledger to read the ensemble count from.
+   * @returns True when the APPROVE may be credited; false when the ensemble is
+   *     incomplete under `enforce`.
+   */
+  function reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean {
+    const s = ledger.state(sessionID)
+    if (config.reviewEnsemble === "advise" || s.reviewerDispatches >= 2) return true
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent: config.agents.reviewer,
+      reason: "ensemble-incomplete",
+      count: s.reviewerDispatches,
+      need: 2,
+    })
+    // Stamp the refusal on the last ensemble entry for the session: replay
+    // skips restoring hasReviewApprove when that entry carries
+    // refusedApprove:true, so a refused APPROVE cannot re-credit itself on a
+    // later boot. A later count-2 dispatch (or a human grant) writes a
+    // clearing refusedApprove:false entry that wins last-wins.
+    journaler.journal({
+      type: "ensemble",
+      sessionID,
+      agent: config.agents.reviewer,
+      count: s.reviewerDispatches,
+      refusedApprove: true,
+    })
+    journaler.traceEvent(
+      config.agents.reviewer,
+      "ensemble",
+      "1 of 2 dispatches; not credited",
+      sessionID,
+    )
+    return false
   }
 
   /**
@@ -694,6 +767,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
 
   return {
     guardReviewerDispatch,
+    reviewEnsembleComplete,
     guardDispatchBudget,
     guardReadLimit,
     enforceDecomposition,
