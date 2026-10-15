@@ -47,6 +47,9 @@ export function newState(): GateState {
     // A freshly-built bucket has no outstanding replay grace; only a journal
     // replay (createLedger) grants it, and only for one prompt.
     replayGrace: false,
+    // No task stamped yet on a fresh bucket; prompt admission stamps the
+    // worktree/branch identity this carry predicate keys off.
+    taskFingerprint: "",
   }
 }
 
@@ -111,6 +114,16 @@ export interface GateLedger {
    * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/
    * `seenFrom`/`suppressedPending` are always fresh). Fail-open: pure object map
    * operations.
+   *
+   * With continuation carry enabled, a continuation prompt (the same
+   * worktree/branch — `taskFingerprint` unchanged) re-arms `replayGrace` on
+   * the reset so the restart-sticky flags carry forward too: values, not
+   * provenance, the same single-prompt grace the restart-resume path grants.
+   * The carry is GATE-SCOPED — only an earned `hasGatePass` (paired with
+   * `reviewerDispatches`) survives, so a continuation before any `GATE: PASS`
+   * starts a clean cycle. `taskFingerprint` is stamped by setup after the
+   * reset, so a fresh bucket starts empty and the next carry predicate keys
+   * off the just-stamped identity.
    * @param sessionID The parent session ID to reset.
    */
   resetState(sessionID: string): void

@@ -84,6 +84,10 @@ export function defaultConfig(
     approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
     trace: true,
+    // Continuation carry is opt-in (default-off): a bare prompt reset wipes the
+    // gate cycle unless enabled, so a new task on the same branch is never
+    // silently carried forward as a continuation.
+    continuationCarry: false,
     agents: {
       planner: "planner",
       reviewer: "reviewer",
@@ -141,7 +145,7 @@ export function defaultConfig(
  * @returns true when the value has the right type for the key.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (key === "trace") return typeof value === "boolean"
+  if (key === "trace" || key === "continuationCarry") return typeof value === "boolean"
   if (
     key === "metricsDir" ||
     key === "waiverMarker" ||
@@ -202,6 +206,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "gateEvidence") config.gateEvidence = value as GateEvidenceMode
   else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
+  else if (key === "continuationCarry") config.continuationCarry = value as boolean
   else config[key as NumericConfigKey] = value as number
 }
 

@@ -33,6 +33,7 @@ import {
   type ToolPolicy,
 } from "./tool-policy.ts"
 import { createLedger, type GateLedger } from "./state.ts"
+import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
   CompactionDraft,
@@ -912,7 +913,25 @@ export function createTurnstile(
       // re-caps `states`, and a registered parent is never evicted,
       // so the rebuilt MRU slot stays pinned.
       ledger.markParent(sessionID)
-      ledger.resetState(sessionID)
+      // Continuation carry (opt-in): arm the same one-prompt replay grace the
+      // journal uses so `resetState` carries the restart-sticky flags when this
+      // prompt re-admits the SAME worktree/branch the task was earned in. The
+      // git probe is total (never throws), so this stays throw-free. The
+      // carry decision is captured BEFORE mutating, not re-derived after.
+      if (config.continuationCarry) {
+        const prior = ledger.peek(sessionID)
+        const fingerprint = worktreeFingerprint(projectDir)
+        const carry = shouldCarryGate(prior, fingerprint, true)
+        // shouldCarryGate guarantees carry ⇒ prior is defined, so the
+        // non-null assertion cannot fire; keep the predicate's contract
+        // intact if it ever changes.
+        if (carry) prior!.replayGrace = true
+        ledger.resetState(sessionID)
+        ledger.state(sessionID).taskFingerprint = fingerprint
+        if (carry) journaler.journal({ type: "continuation", sessionID })
+      } else {
+        ledger.resetState(sessionID)
+      }
       // A prompt reset invalidates all prior dispatch-scoped
       // evidence for this parent, so an unresolved-child verdict is only
       // plausible within the parent's current task scope.

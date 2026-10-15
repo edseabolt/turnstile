@@ -61,6 +61,14 @@
  *   journals without the field — both documented in the README. A
  *   journal-replayed `GATE: PASS` survives the first prompt after a restart
  *   (the resume prompt) and then every later prompt starts a clean cycle.
+ *   When `continuationCarry` is on (default off), a prompt re-admitted in an
+ *   unchanged worktree/branch carries that restart-sticky bundle across the
+ *   reset via the same one-prompt replay grace the resume uses; the fingerprint
+ *   (git worktree/branch, else the project directory) is the only
+ *   continuation-vs-new-task signal, so a new task on the same branch carries
+ *   too — that is the reason it is opt-in. The carry is gate-scoped: it needs a
+ *   prior `GATE: PASS` (a continuation before one still resets fully), and it
+ *   carries flags only, never the cleared evidence/dispatch-scope maps.
  * - Loop caps: max 2 `reviewer` / 3 `planner` / 3 `plan-reviewer` / 4
  *   `test-runner` dispatches per task plus a 16-dispatch total budget,
  *   regardless of gate state. Each dispatch leg (planner, plan-reviewer,
@@ -211,6 +219,8 @@
  * - `src/types.ts`: host wire shapes and gate-state structures.
  * - `src/journal.ts`: telemetry persistence (JSONL journal + trace).
  * - `src/state.ts`: per-session gate state, session mapping, journal replay.
+ * - `src/fingerprint.ts`: worktree/branch identity and the GATE-SCOPED carry
+ *   predicate.
  * - `src/markers.ts`: GATE/VERDICT parsing and dedup.
  * - `src/gates.ts`: enforcement decisions (plan-approval gate, reviewer
  *   gate, read horizon, decomposition).

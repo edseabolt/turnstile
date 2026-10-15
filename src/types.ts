@@ -360,6 +360,21 @@ export interface GateState {
    * journal replay at ledger creation (process restart or plugin reload).
    */
   replayGrace: boolean
+  /**
+   * Worktree/branch identity the current task was admitted against; "" until
+   * the first enabled prompt stamps it (see src/fingerprint.ts). When the
+   * carry is on, a prompt re-admitted in the same worktree/branch re-arms
+   * replayGrace to carry the restart-sticky gate flags across the reset
+   * instead of wiping them — but only if a gate flag was actually earned
+   * (`hasGatePass`), so a continuation arriving before any GATE: PASS still
+   * resets fully. A pure replay-resume bucket arrives with replayGrace
+   * pre-armed and taskFingerprint still "" (it is never carried through
+   * mergeAfterReplay): it carries via replayGrace rather than the carry
+   * machinery, journals no continuation entry, and stamps this fingerprint
+   * for subsequent prompts. "" is the pre-stamp "not-yet-a-task" state; a
+   * fingerprint mismatch signals a reset.
+   */
+  taskFingerprint: string
 }
 
 /** One first-sight marker observation returned by the marker parser. */
@@ -478,6 +493,16 @@ export interface TurnstileConfig {
   plansDir: string
   /** Whether the human-readable trace file is written (JSONL journal always). */
   trace: boolean
+  /**
+   * When true, a prompt admitted in an unchanged worktree/branch carries the
+   * current task's restart-sticky gate flags across the prompt reset instead
+   * of wiping them (a continuation, not a new task). The carry is GATE-SCOPED:
+   * only an earned gate flag (`hasGatePass`) is carried, so a continuation
+   * arriving before any GATE: PASS still starts a clean cycle. Default false:
+   * every prompt starts a clean gate cycle. Opt-in because a genuinely new
+   * task on the same branch is indistinguishable from a continuation.
+   */
+  continuationCarry: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */
