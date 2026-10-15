@@ -851,6 +851,47 @@ test("reply: a message-prefixed plan ask is recorded and the map stays bounded",
   }
 })
 
+/**
+ * The landing-gate ask map is bounded symmetrically with the plan-gate map:
+ * past 50 recorded landing asks the oldest are evicted, and a recent one still
+ * matches its reply. Mirrors the plan-ask bounded test for the
+ * `landingGateAsks` bounder (the reviewer's unbounded-growth finding).
+ */
+test("reply: landing-gate asks stay bounded and a recent ask still matches", async () => {
+  const { h, restore, metricsDir } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    // 51 landing-prefix asks (the evaluate echo message shape), no latch needed.
+    for (let i = 1; i <= 51; i++) {
+      h.pushEvent({
+        type: "permission.asked",
+        properties: {
+          id: `land-old-${i}`,
+          message: "turnstile: push/PR requires a reviewer — landing",
+        },
+      })
+    }
+    // The most recent ask (land-old-51) is live: its once reply still matches.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-old-51", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // A stale evicted id is inert.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-old-1", reply: "always" },
+    })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+    )
+  } finally {
+    restore()
+  }
+})
+
 /** The awaiting-ask map is bounded: past 50 escalated parents the oldest
  * escalation markers are evicted, and a recent escalation still records. */
 test("evaluate: the awaiting-ask map stays bounded across 51 escalations", async () => {
@@ -937,11 +978,12 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
 
 /**
  * A repeat `git push` under `enforce` arms the pending-landing-ask latch via the
- * capability's `escalate`; the next `permission.evaluate` for that bash/shell
- * action forces a landing ask off that live latch (chunk-9), naming the reviewer
+ * capability's `escalate`; the next `permission.evaluate` for that bash action
+ * forces a landing ask off that live latch (chunk-9), naming the reviewer
  * requirement. The ask is journaled exactly once (by guardLanding's escalate
- * path — the evaluate handler echoes it without a second entry). Covers both
- * `action === "bash"` and `action === "shell"` of the landing arm.
+ * path — the evaluate handler echoes it without a second entry). The arm is
+ * ONE-SHOT: the first evaluate consumes it, so a second bash evaluate in the
+ * TTL window is untouched (the next push re-blocks and re-arms).
  */
 test("evaluate: a live pending-landing-ask arm forces the landing ask", async () => {
   const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
@@ -962,13 +1004,22 @@ test("evaluate: a live pending-landing-ask arm forces the landing ask", async ()
       sessionID: "p1",
       input: { command: "git push origin main" },
     })
-    // Both the bash and shell evaluate arms force the ask off the live latch.
-    for (const action of ["bash", "shell"] as const) {
+    // The bash evaluate arm forces the ask off the live latch — and consumes
+    // it (one-shot: the ask attaches to the repeat push the guard allowed
+    // through for escalation, so a later unrelated command cannot be
+    // mislabeled inside the TTL window).
+    for (const action of ["bash"] as const) {
       const event: Record<string, any> = { sessionID: "p1", action }
       await callPermission(h, "evaluate", event)
       assert.equal(event.effect, "ask")
       assert.equal(event.message, `turnstile: ${LANDING_REQUIREMENT}`)
     }
+    // The arm is one-shot: a second bash evaluate inside the TTL window is
+    // untouched (no latch), fail-toward-strict — the next push re-blocks and
+    // re-arms.
+    const second: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", second)
+    assert.equal(second.effect, undefined)
     const asks = journalEntries(metricsDir).filter(
       (l) => l.type === "permission" && l.reason === "landing",
     )
@@ -1148,6 +1199,44 @@ test("asked: an empty-message landing escalate echo grants one push via the .lan
     )
     // The next push releases via the consumed .landing once-grant short-circuit:
     // no second block — a recording failure would re-block under enforce.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    // The grant is scoped to landing candidates: a NON-push bash command does
+    // not consume it. Re-arm (the repeat push after the granted one journals
+    // the ask and allows — the escalation UX), re-grant, run a non-push
+    // command first (does not burn the grant), then the push (released by the
+    // still-pending grant — a grant burned on `git status` would make this
+    // push re-block).
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-2" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-2", reply: "once" },
+    })
+    await waitUntil(
+      () =>
+        journalEntries(metricsDir).some(
+          (l) => l.type === "permission" && l.decision === "once" && l.sessionID === "p1",
+        ) &&
+        journalEntries(metricsDir).filter((l) => l.type === "permission" && l.decision === "once")
+          .length >= 2,
+    )
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git status --porcelain" },
+      }),
+    )
     assert.doesNotThrow(() =>
       callTool(h, "execute.before", {
         tool: "bash",

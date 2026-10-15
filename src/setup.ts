@@ -26,7 +26,12 @@ import {
 } from "./markers.ts"
 import { BlockError, createGates, type Gates } from "./gates.ts"
 import { createEvidenceTracker } from "./evidence.ts"
-import { LANDING_REQUIREMENT, createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
+import {
+  LANDING_REQUIREMENT,
+  createToolPolicy,
+  isPushLanding,
+  type ToolPolicy,
+} from "./tool-policy.ts"
 import { createLedger, type GateLedger } from "./state.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
@@ -50,7 +55,6 @@ import type {
  * @param value Raw value from a host payload.
  * @returns The string form, or an empty string for nullish values.
  */
-
 function asSessionID(value: unknown): string {
   return String(value ?? "")
 }
@@ -247,6 +251,7 @@ export function createTurnstile(
   // from ever being consumed by a plan-gate (task) dispatch and vice versa.
   // Bounded: evict oldest past the cap.
   const landingGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+  const maxTrackedLandingGateAsks = 50
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -326,6 +331,17 @@ export function createTurnstile(
     while (pendingLandingAsk.size > maxTrackedLandingAsks) {
       const oldest = pendingLandingAsk.keys().next().value as string
       pendingLandingAsk.delete(oldest)
+    }
+  }
+
+  /**
+   * Bounds the landing-gate ask map (requestID → parent + record time),
+   * evicting its oldest entries. Mirrors boundPlanAsks; see landingGateAsks.
+   */
+  function boundLandingGateAsks(): void {
+    while (landingGateAsks.size > maxTrackedLandingGateAsks) {
+      const oldest = landingGateAsks.keys().next().value as string
+      landingGateAsks.delete(oldest)
     }
   }
 
@@ -1013,11 +1029,17 @@ export function createTurnstile(
             // source of truth for landing-candidate detection. Approval
             // releases the gate; a live latch means the human must decide this
             // landing (the first block already threw, and shadow never arms).
+            // The arm is ONE-SHOT: it is consumed by the first evaluate it
+            // forces. The permission request the arm is meant to attach to is
+            // the very next one (the repeat push the guard just allowed through
+            // for escalation), so a one-shot latch cannot mislabel a later
+            // unrelated command with the push/PR ask inside the TTL window.
             if (pe?.action === "bash" || pe?.action === "shell") {
               const parent = ledger.parentOf(sessionID)
               const st = ledger.state(parent)
               if (st.hasReviewApprove) return
               if (!hasLiveLandingAsk(parent)) return
+              pendingLandingAsk.delete(parent)
               pe.effect = "ask"
               pe.message = `turnstile: ${LANDING_REQUIREMENT}`
               // No journal of the ask here: guardLanding already journaled
@@ -1156,9 +1178,12 @@ export function createTurnstile(
               // Landing once-grant (from a `permission.replied` `once` for a
               // landing ask) releases exactly ONE push, consumed here, before
               // the gate decides, so a stale grant cannot outlive that single
-              // dispatch. Keyed per-reason (`.landing`), so it can never be
-              // consumed by a plan-gate (task) dispatch or vice versa.
-              if (st.pendingOnceGrant.landing !== "") {
+              // dispatch. Scoped to landing candidates: a non-push bash command
+              // leaves the grant pending (burning it on `git status` would
+              // defeat the "single push" contract). Keyed per-reason
+              // (`.landing`), so it can never be consumed by a plan-gate (task)
+              // dispatch or vice versa.
+              if (st.pendingOnceGrant.landing !== "" && isPushLanding(text)) {
                 st.pendingOnceGrant.landing = ""
                 return
               }
@@ -1506,7 +1531,7 @@ export function createTurnstile(
                       sessionID: ledger.parentOf(sid),
                       recordedAt: Date.now(),
                     })
-                    boundLandingAsks()
+                    boundLandingGateAsks()
                   } else {
                     // Plan-gate ask: record when the message carries the
                     // plan-ask prefix (the evaluate echo) or when the session
@@ -1528,12 +1553,17 @@ export function createTurnstile(
                       boundPlanAsks()
                     } else if (message === "" && hasLiveLandingAsk(sid)) {
                       // Empty-message landing escalate echo: record for the
-                      // landing gate only (the plan latch is not live here).
+                      // landing gate only. Reached only when the plan latch is
+                      // NOT live — a coincident double-escalation (both latches
+                      // live, one empty-message echo) resolves to the plan gate
+                      // by branch order, a documented edge: the human still
+                      // sees one ask, and the other latch survives for its own
+                      // prefixed echo.
                       landingGateAsks.set(id, {
                         sessionID: ledger.parentOf(sid),
                         recordedAt: Date.now(),
                       })
-                      boundLandingAsks()
+                      boundLandingGateAsks()
                     }
                   }
                 }
