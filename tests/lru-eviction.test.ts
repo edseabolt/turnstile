@@ -18,6 +18,7 @@ import * as path from "node:path"
 import { createLedger } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
 import {
+  callSession,
   callTool,
   isolatedEnv,
   journalEntries,
@@ -233,5 +234,46 @@ test("T3: a registered parents plan approval survives >64 noisy children and pro
     )
   } finally {
     restore()
+  }
+})
+
+/**
+ * A bounded admitted-id dedupe registry: past 64 distinct hook admits the
+ * oldest dedupe key is evicted, so re-admitting that id captures again while
+ * fresh admits still capture — the set stays bounded at the cap (bounded-memory
+ * invariant) rather than growing with every prompt.
+ */
+test("admitted-id registry is bounded: the oldest dedupe key evicts past 64", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  try {
+    // 65 distinct admits (distinct shared message ids) each capture once.
+    for (let i = 0; i < 65; i++) {
+      await callSession(h, "prompt", {
+        sessionID: "p1",
+        messageID: `msg_${i}`,
+        text: "PLAN APPROVED: go",
+      })
+    }
+    let approves = journalEntries(metricsDir).filter(
+      (l) => l.type === "plan" && l.result === "APPROVE",
+    ).length
+    assert.equal(approves, 65, "65 distinct admits each capture once")
+    // The oldest key (msg_0) was evicted past the cap: re-admitting it captures
+    // again — a collision-free admission still admits.
+    await callSession(h, "prompt", {
+      sessionID: "p1",
+      messageID: "msg_0",
+      text: "PLAN APPROVED: go",
+    })
+    approves = journalEntries(metricsDir).filter(
+      (l) => l.type === "plan" && l.result === "APPROVE",
+    ).length
+    assert.equal(
+      approves,
+      66,
+      "the evicted oldest key re-captures; the registry stays bounded at the cap",
+    )
+  } finally {
+    dispose()
   }
 })

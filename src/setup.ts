@@ -1746,6 +1746,34 @@ export function createTurnstile(
                 }
                 break
               }
+              case "session.inbox.enqueued": {
+                // Prompt admission via the inbox stream — the transport adopted
+                // because its publication is exact host-admission parity: the
+                // host publishes it inside its own admit region, immediately after
+                // the prompt hook fires. A user-authored prompt (type "user")
+                // carrying non-empty text is admitted; agent/composition arrivals
+                // (synthetic / compaction / move) never carry a user prompt, so
+                // they stay inert (provenance invariant). The inbox id dedupes
+                // against the hook path on the shared host message id. Fail-open:
+                // the outer loop journals any throw. `delivered`/`cancelled` are
+                // intentionally unhandled — the captured admission point is the
+                // host's own publish, and a later drain or cancel cannot
+                // retroactively un-admit it.
+                const sid = properties.sessionID
+                const inboxID = properties.inboxID
+                const item = properties.item
+                const text = item?.payload?.text
+                if (
+                  typeof sid === "string" &&
+                  typeof inboxID === "string" &&
+                  item?.type === "user" &&
+                  typeof text === "string" &&
+                  text !== ""
+                ) {
+                  admitPrompt(sid, { sessionID: sid, text }, inboxID)
+                }
+                break
+              }
               default:
                 break
             }
