@@ -405,7 +405,7 @@ test("round cap with default 2: third reviewer dispatch blocked at the limit", a
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached. Escalate the open findings to the user, or start a new task (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
   )
   dispose()
 })
@@ -488,7 +488,7 @@ test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is b
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached. Escalate the open findings to the user, or start a new task (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
   )
   dispose()
 })
@@ -1464,6 +1464,16 @@ test("newState initializes hasReviewApprove and landingBlocks defaults", () => {
   const s = newState()
   assert.equal(s.hasReviewApprove, false)
   assert.equal(s.landingBlocks, 0)
+})
+
+/** The dispatch loop caps start fresh: every per-leg round counter and the
+ *  total-dispatch counter begin at 0 so a fresh task counts from zero. */
+test("newState initializes the loop-cap counters", () => {
+  const s = newState()
+  assert.equal(s.plannerRounds, 0)
+  assert.equal(s.planReviewerRounds, 0)
+  assert.equal(s.testRunnerRounds, 0)
+  assert.equal(s.totalDispatches, 0)
 })
 
 /**

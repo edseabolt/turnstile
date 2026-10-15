@@ -1108,6 +1108,15 @@ export function createTurnstile(
                     "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
                 })
 
+              // Per-leg loop caps + total-dispatch budget (issue #36): every
+              // task/subagent dispatch — executor, planner, plan-reviewer,
+              // test-runner, reviewer, debugger, unknown — draws down the
+              // budget here, so the global backstop holds even against
+              // grant-released dispatches (grants release *authorization*, not
+              // *budget*). Before the once-grant short-circuit: a blocked
+              // dispatch must not consume the grant.
+              gates.guardDispatchBudget(sessionID, ledger, agent)
+
               // Once-granted human approval (from a `permission.replied` reply)
               // grants exactly ONE EXECUTOR dispatch past the plan gate and is
               // cleared immediately, so a stale grant cannot outlive the single

@@ -68,6 +68,14 @@ export function defaultConfig(
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
     maxReviewerRounds: 2,
+    // Per-leg loop caps (issue #36): a healthy task is ≤1 planner + ≤3
+    // plan-reviewer + N executor chunks + ≤4 test-runner + ≤2 reviewer; 16
+    // total leaves chunk headroom while staying an order of magnitude below an
+    // unbounded loop. Waived dispatches are exempt.
+    maxPlannerRounds: 3,
+    maxPlanReviewerRounds: 3,
+    maxTestRunnerRounds: 4,
+    maxTotalDispatches: 16,
     maxSessions: 64,
     readWarn: 8,
     readBlock: 15,
@@ -164,6 +172,10 @@ type NumericConfigKey = Extract<
   | "journalMaxBytes"
   | "journalMaxGenerations"
   | "maxReviewerRounds"
+  | "maxPlannerRounds"
+  | "maxPlanReviewerRounds"
+  | "maxTestRunnerRounds"
+  | "maxTotalDispatches"
   | "maxSessions"
   | "readWarn"
   | "readBlock"

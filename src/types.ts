@@ -260,6 +260,37 @@ export interface GateState {
   suppressedPending: number
   reviewRounds: number
   /**
+   * Task-scoped planner dispatch count. Exceeded ⇒ the planner leg is spinning;
+   * see `maxPlannerRounds`. Waived dispatches are exempt (the waiver
+   * short-circuits before counting, mirroring the reviewer-cap precedent).
+   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  plannerRounds: number
+  /**
+   * Task-scoped plan-reviewer dispatch count. Exceeded ⇒ the plan is going in
+   * circles; see `maxPlanReviewerRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  planReviewerRounds: number
+  /**
+   * Task-scoped test-runner dispatch count. Exceeded ⇒ the test loop is
+   * spinning; see `maxTestRunnerRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  testRunnerRounds: number
+  /**
+   * Every task/subagent dispatch this task across all legs (planner,
+   * plan-reviewer, executor, test-runner, reviewer, debugger, unknown),
+   * capped by `maxTotalDispatches` as the global loop backstop. Waived
+   * dispatches are exempt (the waiver short-circuits before counting).
+   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  totalDispatches: number
+  /**
    * Count of `git push`/PR-landing blocks this task under the landing gate —
    * telemetry that arms the permission-ask escalation on a repeat attempt
    * (chunk-8). Task-scoped: fresh `0` on each prompt reset and never carried
@@ -360,6 +391,26 @@ export interface TurnstileConfig {
    * regardless of gate state, and is bypassed by an explicit waiver.
    */
   maxReviewerRounds: number
+  /**
+   * Max planner dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxPlannerRounds: number
+  /**
+   * Max plan-reviewer dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxPlanReviewerRounds: number
+  /**
+   * Max test-runner dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxTestRunnerRounds: number
+  /**
+   * Total task/subagent dispatches per task across all legs, the global loop
+   * backstop; the cap counts dispatches and is bypassed by an explicit waiver.
+   */
+  maxTotalDispatches: number
   /** Cap on tracked sessions (LRU); oldest state evicted beyond this. */
   maxSessions: number
   /** Whole-file read count at which the horizon warning is injected. */

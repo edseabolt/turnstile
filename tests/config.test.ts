@@ -31,6 +31,10 @@ const { GATE_RE } = await import("../src/markers.ts")
 test("defaultConfig reproduces the historical constants", () => {
   const cfg = defaultConfig({ XDG_DATA_HOME: undefined })
   assert.equal(cfg.maxReviewerRounds, 2)
+  assert.equal(cfg.maxPlannerRounds, 3)
+  assert.equal(cfg.maxPlanReviewerRounds, 3)
+  assert.equal(cfg.maxTestRunnerRounds, 4)
+  assert.equal(cfg.maxTotalDispatches, 16)
   assert.equal(cfg.readWarn, 8)
   assert.equal(cfg.readBlock, 15)
   assert.equal(cfg.maxSessions, 64)
@@ -86,6 +90,33 @@ test("mergeConfig ignores unknown keys and invalid values with warnings", () => 
   assert.equal(config.readWarn, 8)
   assert.equal(config.trace, true)
   assert.equal(warnings.length, 4)
+})
+
+/** The loop-cap keys are finite-positive numeric keys like maxReviewerRounds:
+ *  a 0 / non-number value is rejected with one warning each and keeps the
+ *  default; a valid override round-trips. */
+test("mergeConfig validates the loop-cap numeric keys", () => {
+  const base = defaultConfig({})
+  const bad = mergeConfig(base, {
+    maxPlannerRounds: 0,
+    maxPlanReviewerRounds: "x",
+    maxTestRunnerRounds: -3,
+    maxTotalDispatches: 0,
+  })
+  assert.equal(bad.config.maxPlannerRounds, 3)
+  assert.equal(bad.config.maxPlanReviewerRounds, 3)
+  assert.equal(bad.config.maxTestRunnerRounds, 4)
+  assert.equal(bad.config.maxTotalDispatches, 16)
+  assert.equal(bad.warnings.length, 4)
+  const ok = mergeConfig(base, {
+    maxPlannerRounds: 7,
+    maxTestRunnerRounds: 9,
+    maxTotalDispatches: 40,
+  })
+  assert.equal(ok.config.maxPlannerRounds, 7)
+  assert.equal(ok.config.maxTestRunnerRounds, 9)
+  assert.equal(ok.config.maxTotalDispatches, 40)
+  assert.equal(ok.warnings.length, 0)
 })
 
 /** approvalMarker is a valid string key: a non-empty string merges, an

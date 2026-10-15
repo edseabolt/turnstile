@@ -239,7 +239,7 @@ test("golden: trace line format", async () => {
  * Golden: the three user-facing BLOCKED messages (no gate pass, round
  * limit, read horizon) must remain byte-identical to the historical text.
  */
-test("golden: the three block messages are byte-identical", async () => {
+test("golden: the block messages are byte-identical", async () => {
   const { h, dispose } = await bootDefault()
   await assert.rejects(
     () =>
@@ -287,7 +287,7 @@ test("golden: the three block messages are byte-identical", async () => {
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached. Escalate the open findings to the user, or start a new task (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
   )
   for (let i = 0; i < 15; i++) {
     await callTool(h, "execute.after", { tool: "read", sessionID: "p2", result: { output: "x" } })

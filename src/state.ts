@@ -27,6 +27,13 @@ export function newState(): GateState {
     seenFrom: new Map(),
     suppressedPending: 0,
     reviewRounds: 0,
+    // Per-leg loop caps (issue #36): fresh 0 on every prompt reset, task-scoped,
+    // never carried through mergeAfterReplay. A dispatcher that exhausts its leg
+    // cap is reported as looping; totalDispatches is the global backstop.
+    plannerRounds: 0,
+    planReviewerRounds: 0,
+    testRunnerRounds: 0,
+    totalDispatches: 0,
     // Task-scoped landing-gate block counter: fresh 0 on every prompt reset.
     // Restored by journal replay across a restart (chunk-7).
     landingBlocks: 0,
@@ -90,7 +97,8 @@ export interface GateLedger {
    * new task). The first prompt after a restart carries the journal-replayed
    * flags forward with a single-prompt grace (values, not provenance — a live
    * GATE: FAIL after replay is carried as false); every later prompt fully
-   * resets (fresh flags; `reviewRounds`/`reads`/`seen`/`seenFrom`/
+   * resets (fresh flags; `reviewRounds`/`plannerRounds`/`planReviewerRounds`/
+   * `testRunnerRounds`/`totalDispatches`/`reads`/`seen`/`seenFrom`/
    * `suppressedPending` are always fresh). Fail-open: pure object map
    * operations.
    * @param sessionID The parent session ID to reset.
