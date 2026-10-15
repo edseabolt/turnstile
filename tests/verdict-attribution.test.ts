@@ -1001,3 +1001,153 @@ test("an attributed self-keyed delivery never clobbers and H2 resolves as no-par
     process.chdir(prev)
   }
 })
+
+/**
+ * a superseded prior-round BLOCK never contradicts a later APPROVE: a
+ * registered edge child whose verdict was recorded before this round's
+ * dispatch is round-scoped out of the edge scan, so the round's unique
+ * APPROVE (from an unrelated child) attributes and opens the gate.
+ */
+test("a superseded prior-round BLOCK never contradicts this round's approval", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    // Round 1: register c1 -> p1, then stream a BLOCK on c1 under round 1's
+    // dispatch, so it becomes the stale edge child.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    // Round 2: re-dispatch, then stream an APPROVE on an unrelated child c2,
+    // both after the round-2 dispatch.
+    await dispatch(h, "p1")
+    await settle()
+    streamApprove(h, "c2")
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c2"),
+    )
+    await settle()
+    // Marker-less self-keyed delivery on the parent: c1's stale BLOCK is
+    // round-scoped out, so c2's APPROVE attributes.
+    await deliver(h, "p1")
+
+    const plans = planEntries(metricsDir)
+    const latest = plans[plans.length - 1]
+    assert.ok(latest)
+    assert.equal(latest.sessionID, "p1")
+    assert.equal(latest.raw, "c2")
+    assert.equal(latest.result, "APPROVE")
+    assert.equal(latest.source, "child-text")
+    // No contradiction error; the round's unanimous APPROVE attributed.
+    assert.equal(errorE(metricsDir).length, 0)
+    const ats = attribution(metricsDir)
+    assert.ok(ats.some((a) => a.decision === "attributed"))
+    // Executor allowed: the gate opened on the round's APPROVE.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * over-attribution guard: a prior-round edge child left behind with no
+ * current-round evidence fails open — no plan entry, exactly one
+ * unattributable error, the round-scoped edge candidate count is zero, and the
+ * executor stays blocked.
+ */
+test("a prior-round edge child with no current verdict still fails open", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    // Round 1: register c1 -> p1 and stream a BLOCK on it under round 1's
+    // dispatch, making it the stale edge child.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    // Round 2: re-dispatch with no current-round evidence at all.
+    await dispatch(h, "p1")
+    await settle()
+    // Marker-less self-keyed delivery: the stale edge child is round-scoped
+    // out, so nothing attributes.
+    await deliver(h, "p1")
+
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.decision, "fail-open")
+    assert.equal(ats[0]!.candidates.edge, 0)
+    assert.equal(ats[0]!.candidates.plausible, 0)
+    // Executor blocked: no over-attribution.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * same-round contradiction still fails open: a registered edge child and a
+ * plausible stream child both record after the same dispatch, so the
+ * round-scoped edge scan keeps the edge child and the pool stays contradictory
+ * (BLOCK + APPROVE) => fail-open with the round-scoped edge count journaled.
+ */
+test("a same-round edge BLOCK still contradicts a plausible APPROVE", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    await callSession(h, "prompt", { sessionID: "p1" })
+    await settle()
+    await dispatch(h, "p1")
+    await settle()
+    // Both verdicts record after the single dispatch => both are this round's
+    // (fresh), so the edge filter keeps the registered edge child.
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
+    streamApprove(h, "c2")
+    await waitUntil(
+      () => journalEntries(metricsDir).filter((e) => e.type === "verdict").length >= 2,
+    )
+    await settle()
+    await deliver(h, "p1")
+
+    assert.equal(planEntries(metricsDir).length, 0)
+    assert.equal(errorE(metricsDir).length, 1)
+    const ats = attribution(metricsDir)
+    assert.equal(ats.length, 1)
+    assert.equal(ats[0]!.decision, "fail-open")
+    assert.deepEqual(ats[0]!.candidates, { edge: 1, unresolved: 2, plausible: 2 })
+    // Executor blocked: the contradiction stays unresolved within the round.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})

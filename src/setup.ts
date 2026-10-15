@@ -588,11 +588,11 @@ export function createTurnstile(
    *   attributable children from registered edges AND from unresolved children
    *   whose streamed verdict plausibly belongs to this parent, and
    *   attributes through the unique unanimous pool (`raw = first edge child,
-   *   else most-recently-recorded unresolved child`). Zero candidates, or more
-   *   than one (contradictory), journals the existing `type:"error"` and
-   *   mutates nothing: a marker-less, unattributable parent-keyed delivery can
-   *   never clobber a live approval with a BLOCK, and any plausible streamed
-   *   APPROVE makes a self-keyed BLOCK unreachable (structural fail-open).
+   *   else most-recently-recorded unresolved child`). The registered-edge scan is round-scoped to the parent's most-recent plan-reviewer dispatch,
+   *   (exactly as the unresolved scan is): an earlier-round BLOCK stored on an edge child left behind by a prior review round is superseded by this round's verdict, so a re-issued APPROVE is credited. Zero candidates, or
+   *   more than one (a contradiction within this same round), journals the existing `type:"error"` and mutates nothing: a marker-less, unattributable
+   *   parent-keyed delivery can never clobber a live approval with a BLOCK, and any plausible streamed APPROVE makes a self-keyed BLOCK unreachable
+   *   (structural fail-open).
    *
    * Never throws (fail-open).
    * @param child The raw child session ID, for the `plan` entry's `raw` field.
@@ -625,7 +625,19 @@ export function createTurnstile(
     const { edge, unresolved } = discoverCandidates(sid)
     const unresolvedIDs = unresolved.map(({ child: cid }) => cid)
     const plausible = plausibleUnresolved(sid, unresolved)
-    const edgeCandidates = edge
+    // A self-keyed re-delivery for a re-reviewed plan can arrive while a
+    // superseded earlier-round BLOCK child is still registered as this
+    // parent's edge child. Round-scope the edge scan exactly as
+    // plausibleUnresolved round-scopes the unresolved scan: keep only edge
+    // children whose stored verdict was recorded at-or-after the parent's
+    // most-recent plan-reviewer dispatch, so last round's BLOCK cannot
+    // contradict this round's evidence. When no dispatch is recorded the scan
+    // stays structural (a lone edge child still attributes, unchanged).
+    const dispatchTs = planReviewerDispatch.get(sid)
+    const edgeCandidates =
+      dispatchTs === undefined
+        ? edge
+        : edge.filter((c) => ledger.childVerdict(c).recordedAt >= dispatchTs)
     const pool = [...edgeCandidates, ...plausible]
     const verdictOf = (c: string): "APPROVE" | "BLOCK" =>
       ledger.childVerdict(c).marker.includes("APPROVE") ? "APPROVE" : "BLOCK"

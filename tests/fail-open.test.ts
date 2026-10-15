@@ -798,19 +798,19 @@ test("a contradictory self-keyed pool reports plural candidates", async () => {
   const h = makeFakeHost()
   const { dispose, metricsDir } = await boot(h.host)
   try {
-    // c1 (edge-resolved) holds a BLOCK; c2 (unresolved) streams APPROVE after
-    // the dispatch: both are plausible, the pool contradicts, and the
-    // delivery fails open naming more than one evidenced candidate.
-    h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
-    h.pushEvent({
-      type: "session.text.delta",
-      properties: { sessionID: "c1", delta: "review\nVERDICT: BLOCK crit=1 high=0 med=0 low=0" },
-    })
-    await settle()
+    // c1 and c2 are unresolved children that both stream after the single
+    // dispatch with opposite verdicts: both belong to the current round, so
+    // both stay plausible, the pool contradicts, and the delivery fails open
+    // naming more than one evidenced candidate.
     await callTool(h, "execute.before", {
       tool: "task",
       sessionID: "p1",
       input: { agent: "plan-reviewer", prompt: "review" },
+    })
+    await settle()
+    h.pushEvent({
+      type: "session.text.delta",
+      properties: { sessionID: "c1", delta: "review\nVERDICT: BLOCK crit=1 high=0 med=0 low=0" },
     })
     h.pushEvent({
       type: "session.text.delta",
