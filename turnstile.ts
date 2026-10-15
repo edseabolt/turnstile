@@ -53,10 +53,17 @@
  *   journals without the field — both documented in the README. A
  *   journal-replayed `GATE: PASS` survives the first prompt after a restart
  *   (the resume prompt) and then every later prompt starts a clean cycle.
- * - Round cap: max 2 `task -> reviewer` dispatches per task, regardless of gate
- *   state; a prompt-channel user waiver bypasses the cap without counting
- *   toward it (a dispatch prompt with the `USER WAIVER:` marker is inert); a
- *   new user prompt resets it.
+ * - Loop caps: max 2 `reviewer` / 3 `planner` / 3 `plan-reviewer` / 4
+ *   `test-runner` dispatches per task plus a 16-dispatch total budget,
+ *   regardless of gate state. Each dispatch leg (planner, plan-reviewer,
+ *   test-runner, and the total across all legs) is a mechanical loop backstop;
+ *   a prompt-channel user waiver bypasses everything without counting toward
+ *   it (a dispatch prompt with the `USER WAIVER:` marker is inert); a new user
+ *   prompt resets the counters. Every cap exhaustion journals a `type:"escalation"`
+ *   entry and throws a STOP-and-escalate `BLOCKED by turnstile:` error telling
+ *   the dispatcher to stop re-dispatching and escalate to the user (so a
+ *   subagent stuck at its own cap is not dead-ended by a "wait for a new prompt"
+ *   hint).
  * - Parent-bucket eviction: live-parent gate buckets (hasGatePass,
  *   hasPlanVerdict, read counter, policyInjected) are registered per
  *   prompt/dispatch/delivery/edge via `markParent`, and the `states` LRU never

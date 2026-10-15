@@ -45,6 +45,28 @@ export interface Gates {
    */
   guardReviewerDispatch(sessionID: string, ledger: GateLedger): void
   /**
+   * Enforces the per-leg loop caps and the per-task total-dispatch budget for
+   * a pending `task` dispatch of any leg (planner, plan-reviewer, test-runner,
+   * executor, debugger, reviewer, unknown): the dispatcher's leg cap
+   * (`maxPlannerRounds` / `maxPlanReviewerRounds` / `maxTestRunnerRounds`) and
+   * the global budget (`maxTotalDispatches`) are mechanical loop backstops,
+   * analogous to `reviewRounds`. A waiver exempts the whole task (both the leg
+   * caps and the budget) without counting — the user authorized the loop. When
+   * a leg cap is exceeded the block names the leg, journals a
+   * `{type:"escalation"}` entry, and tells the dispatcher to STOP and escalate;
+   * when the budget is exceeded it refuses every further dispatch. Either way
+   * the dispatcher is looping, so the message is STOP-and-escalate from any
+   * session. Increments the dispatched leg's counter and `totalDispatches`
+   * (single-count point: the reviewer's budget consumption lives here —
+   * `guardReviewerDispatch` only advances its own `reviewRounds`).
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param agent The dispatched agent name (resolved by the setup hook).
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
+   *     must not proceed.
+   */
+  guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
+  /**
    * Enforces the whole-file read horizon for a session.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read state from.
@@ -126,7 +148,7 @@ export interface Gates {
  * Binds enforcement functions to a resolved config and journaler.
  * @param config The resolved plugin configuration.
  * @param journaler The telemetry writer for gate and blocked entries.
- * @returns The three enforcement functions.
+ * @returns The four enforcement functions plus the plan-scan helpers.
  */
 export function createGates(config: TurnstileConfig, journaler: Journaler): Gates {
   /**
@@ -171,8 +193,26 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         agent: config.agents.reviewer,
         reason: "round-limit",
       })
+      // Visible escalation (issue #36): exhausting the round cap means the
+      // reviewer is re-dispatched in a loop — journal an `escalation` entry and
+      // stop+escalate (a subagent never receives a fresh user prompt to reset
+      // the cap, so "wait for a new prompt" would dead-end).
+      journaler.journal({
+        type: "escalation",
+        sessionID,
+        agent: config.agents.reviewer,
+        reason: "round-limit",
+        count: s.reviewRounds,
+        cap: config.maxReviewerRounds,
+      })
+      journaler.traceEvent(
+        config.agents.reviewer,
+        "round-limit",
+        "cap exhausted; escalate",
+        sessionID,
+      )
       throw new BlockError(
-        `BLOCKED by turnstile: reviewer round limit (${config.maxReviewerRounds}) reached. Escalate the open findings to the user, or start a new task (a new user prompt resets the cap).`,
+        `BLOCKED by turnstile: reviewer round limit (${config.maxReviewerRounds}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).`,
       )
     }
     if (!s.hasGatePass && !waived) {
@@ -217,6 +257,130 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     // cannot grant a later reviewer dispatch.
     if (!waived) s.reviewRounds++
     else s.userWaiver = ""
+  }
+
+  /**
+   * Resolves the dispatch leg for an agent, or null when the agent is not one
+   * of the three capped legs (planner, plan-reviewer, test-runner) — executor,
+   * debugger, reviewer, and unknown names all resolve to null and only draw
+   * down the total budget. First match wins on agent-name collisions (a
+   * pathological config; documented, not defended).
+   * @param agent The dispatched agent name.
+   * @returns The matching leg, or null.
+   */
+  function resolveDispatchLeg(agent: string): {
+    label: "planner" | "planReviewer" | "testRunner"
+    countKey: "plannerRounds" | "planReviewerRounds" | "testRunnerRounds"
+    capKey: "maxPlannerRounds" | "maxPlanReviewerRounds" | "maxTestRunnerRounds"
+    cap: number
+  } | null {
+    if (agent === config.agents.planner)
+      return {
+        label: "planner",
+        countKey: "plannerRounds",
+        capKey: "maxPlannerRounds",
+        cap: config.maxPlannerRounds,
+      }
+    if (agent === config.agents.planReviewer)
+      return {
+        label: "planReviewer",
+        countKey: "planReviewerRounds",
+        capKey: "maxPlanReviewerRounds",
+        cap: config.maxPlanReviewerRounds,
+      }
+    if (agent === config.agents.testRunner)
+      return {
+        label: "testRunner",
+        countKey: "testRunnerRounds",
+        capKey: "maxTestRunnerRounds",
+        cap: config.maxTestRunnerRounds,
+      }
+    return null
+  }
+
+  /**
+   * Enforces the per-leg loop caps and the per-task total-dispatch budget.
+   * Waiver exempts the whole task (both the leg caps and the budget) without
+   * counting. A leg cap exhausted throws a loop-cap block naming the leg; the
+   * total budget exhausted throws a dispatch-budget block. Either way the
+   * dispatcher is looping, so both journal an `escalation` entry and throw a
+   * STOP-and-escalate `BlockError`. Increments the dispatched leg's counter and
+   * `totalDispatches`; the reviewer has no leg and is counted toward the budget
+   * solely here (single-count point — never in guardReviewerDispatch).
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param agent The dispatched agent name (resolved by the setup hook).
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
+   *     must not proceed.
+   */
+  function guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void {
+    const s = ledger.state(sessionID)
+    // Waiver exempts the whole task (leg caps AND the total budget) without
+    // counting: a loop the user explicitly waived is bounded by the user, not
+    // the plugin (mirrors the plan-gate task-wide exemption).
+    if (s.userWaiver !== "") return
+
+    const leg = resolveDispatchLeg(agent)
+    // Per-leg loop cap: the dispatching leg has hit its cap — the leg is
+    // re-dispatching in a loop.
+    if (leg && s[leg.countKey] >= config[leg.capKey]) {
+      const count = s[leg.countKey]
+      journaler.journal({
+        type: "blocked",
+        sessionID,
+        agent,
+        reason: "loop-cap",
+        leg: leg.label,
+        count,
+        cap: leg.cap,
+      })
+      journaler.journal({
+        type: "escalation",
+        sessionID,
+        agent,
+        reason: "loop-cap",
+        count,
+        cap: leg.cap,
+      })
+      journaler.traceEvent(agent, "loop-cap", "cap exhausted; escalate", sessionID)
+      throw new BlockError(
+        `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
+      )
+    }
+    // Global backstop: the task has dispatched more than maxTotalDispatches
+    // subagents across all legs — something is stuck. Before the increment
+    // below. Leg agents block on their leg cap first, so this reason wins
+    // only when the leg cap is not also exhausted (e.g. the reviewer has no
+    // leg, so when its round cap and the budget are both exhausted the
+    // budget reason wins).
+    if (s.totalDispatches >= config.maxTotalDispatches) {
+      const count = s.totalDispatches
+      journaler.journal({
+        type: "blocked",
+        sessionID,
+        agent,
+        reason: "dispatch-budget",
+        count,
+        cap: config.maxTotalDispatches,
+      })
+      journaler.journal({
+        type: "escalation",
+        sessionID,
+        agent,
+        reason: "dispatch-budget",
+        count,
+        cap: config.maxTotalDispatches,
+      })
+      journaler.traceEvent(agent, "dispatch-budget", "budget exhausted; escalate", sessionID)
+      throw new BlockError(
+        `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).`,
+      )
+    }
+    // Check-then-increment: the leg counter then the total budget advance. The
+    // reviewer has no leg and is counted toward totalDispatches solely here —
+    // guardReviewerDispatch never advances totalDispatches (single-count point).
+    if (leg) s[leg.countKey]++
+    s.totalDispatches++
   }
 
   /**
@@ -530,6 +694,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
 
   return {
     guardReviewerDispatch,
+    guardDispatchBudget,
     guardReadLimit,
     enforceDecomposition,
     enforcePlanApproval,
