@@ -34,6 +34,11 @@ Your primary responsibility is determining whether an implementation actually wo
   gates; if the configured command itself is broken, that is a FAIL with
   the failure quoted, not a reason to run a looser variant.
 - Investigate failures rather than ignoring them.
+- On a coverage-threshold failure, run `node scripts/branch-coverage.mjs`
+  with no arguments (full test file set — a per-file run misses blocks
+  covered by other files and reports them as uncovered) to identify the
+  never-executed blocks (branch/arc level) behind the uncovered lines
+  before fixing assertions. Diagnostic only — `npm test` remains the gate.
 - Keep fixes narrowly scoped.
 - Fixes are limited to test code and the test environment (flaky setup,
   outdated assertions, missing deps). The in-scope set is: test files,
