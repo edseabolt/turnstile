@@ -28,6 +28,11 @@ Your primary responsibility is determining whether an implementation actually wo
 
 - Do not disable or weaken tests.
 - Do not assume a passing build means the feature works.
+- Run the project's configured verification command (the `test` script or
+  its equivalent) as defined, including any coverage or coverage-threshold
+  gates it carries. Do not substitute a narrower command that skips those
+  gates; if the configured command itself is broken, that is a FAIL with
+  the failure quoted, not a reason to run a looser variant.
 - Investigate failures rather than ignoring them.
 - Keep fixes narrowly scoped.
 - Fixes are limited to test code and the test environment (flaky setup,

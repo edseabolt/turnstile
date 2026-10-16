@@ -1,12 +1,12 @@
 # turnstile
 
-![turnstile — the enforced pipeline: planner → plan-reviewer → executor → test-runner → reviewer, with gates blocking every dispatch](docs/images/hero.svg)
-
 [![ci](https://github.com/edseabolt/turnstile/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/edseabolt/turnstile/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/opencode-turnstile)](https://www.npmjs.com/package/opencode-turnstile)
 [![coverage](https://img.shields.io/badge/coverage-100%25%20lines%20%C2%B7%20branches%20%C2%B7%20funcs-brightgreen)](package.json)
 [![deps](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/npm/l/opencode-turnstile)](LICENSE)
+
+![turnstile — the enforced pipeline: planner → plan-reviewer → executor → test-runner → reviewer, with gates blocking every dispatch](docs/images/hero.svg)
 
 An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
 agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
@@ -17,6 +17,33 @@ task-dispatch hooks, outside the model loop.
 
 The entry point is `turnstile.ts`; behavior lives in focused modules under
 `src/` (one boundary per file). Zero runtime dependencies, fails open.
+
+## Why turnstile — what OpenCode doesn't already do
+
+OpenCode v2 gives you a strong native surface: subagents, per-tool
+permissions, prompt instructions. Turnstile exists for the three things that
+surface structurally cannot express:
+
+1. **Stateful, task-scoped gates.** Permission rules are stateless
+   per-tool-call decisions. No config can say "the executor is blocked until
+   _this task's_ plan is approved" or "the reviewer dispatches at most twice
+   _per task_." Turnstile keeps a gate state machine keyed off parent
+   sessions, reset per prompt, decided in dispatch hooks.
+2. **Evidence correlation.** A claimed `GATE: PASS` only flips a gate when a
+   real exit-0 test execution exists in the task's tool history. Without
+   that, a review gate is the model grading its own homework — a marker is
+   plain text anyone can print.
+3. **A decision journal.** Every gate transition, block, waiver, and
+   dispatch is appended to a replayable JSONL journal, readable with
+   `opencode-turnstile status` and restored across restarts. Host logs are
+   diagnostics; this is an audit record of what was claimed and blocked.
+
+The honest scope: turnstile is cooperative enforcement, not a security
+boundary — it fails open and can be unloaded. Prompt discipline in
+AGENTS.md gets you the _steering_ half of a pipeline; turnstile is the
+_mechanical_ half — the part that still holds when the model doesn't.
+Limits: [architecture §10](docs/architecture.md#10-security-posture-and-limits);
+the full positioning: [architecture §11](docs/architecture.md#11-positioning-how-turnstile-fits-the-ecosystem).
 
 For how the plugin works inside — module map, hook surface, gate state
 machine, journal/replay, diagrams — see
@@ -36,6 +63,13 @@ loads. Prefer not to install the agent definitions? Add the plugin alone:
 // ~/.config/opencode/opencode.json
 { "plugins": ["opencode-turnstile"] }
 ```
+
+Note: the plugin alone enforces the gates (recognition is by dispatch
+_name_, not by installed files), but the orchestrated
+planner → plan-reviewer → executor → test-runner → reviewer pipeline needs
+the agent definitions to dispatch against — run `init` to get them, or
+bring your own agents (see
+[Customizing the pipeline agents](#customizing-the-pipeline-agents)).
 
 What you'll see after restart:
 
