@@ -235,10 +235,12 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   both rename the shared file. Disk usage stays bounded at `(N + 1) ×
 maxBytes`, plus at most `rotateEveryEntries × ~2 KB` of overshoot between
   the size check and the rename; a contended lock or any rotation error is
-  swallowed (fail-open). A residual bounded race remains: a writer that opens
-  the path across the rename may land an entry in a `.1` generation replay
-  never reads, but the window is small and clock-free. Rotates at 5 MB,
-  5 generations.
+  swallowed (fail-open); a leftover `<file>.lock` from a crash between create
+  and remove is skipped, so that file stops rotating until the directory is
+  removed while journaling keeps appending. A residual bounded race remains:
+  a writer that opens the path across the rename may land an entry in a `.1`
+  generation replay never reads, but the window is small and clock-free.
+  Rotates at 5 MB, 5 generations.
 - **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
 
 On restart, `replayGatePasses` (`src/state.ts`) reads the last 2000 lines of

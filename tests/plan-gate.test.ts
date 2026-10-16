@@ -291,9 +291,10 @@ test("plan gate: no plans dir or empty dir leaves executor free", async () => {
 })
 
 /** An absolute plansDir is honored (not silently dropped): a decomposed plan in
- *  that directory still blocks an executor that cites no chunk. The S12
- *  regression: path.join(projectDir, "/abs") nested it under project, the dir was
- *  absent, and the gate returned early — silently free. */
+ *  that directory still blocks an executor that cites no chunk. An absolute
+ *  path must be applied as-is rather than joined under projectDir (which nested
+ *  it under project, left the dir absent, and made the gate return early —
+ *  silently free). */
 test("plan gate: an absolute plansDir blocks the executor decomposition check", () => {
   const absPlans = path.join(tmpDir(), "abs-plans")
   fs.mkdirSync(absPlans, { recursive: true })

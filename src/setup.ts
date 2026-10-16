@@ -1398,11 +1398,12 @@ export function createTurnstile(
 
               // Guards-then-journal: the dispatch entry is recorded at guard
               // exit, so an allowed dispatch stays byte-identical while a
-              // blocked attempt carries `blocked:true` (audit distinguishes a
+              // deliberate block carries `blocked:true` (audit distinguishes a
               // dispatched entry from a blocked-and-attempted one). The once-grant
-              // consume is an allowed dispatch. The guards throw only BlockError,
-              // so the catch records the attempt as blocked and re-throws it for
-              // the outer catch to turn into the deliberate BLOCKED error.
+              // consume is an allowed dispatch. Only a BlockError — the guard's
+              // deliberate refusal — is stamped blocked and re-thrown for the
+              // outer catch to turn into the BLOCKED error; any other throw is an
+              // internal error that propagates un-stamped to the fail-open handler.
               try {
                 // Per-leg loop caps + total-dispatch budget: every
                 // task/subagent dispatch — executor, planner, plan-reviewer,
@@ -1446,7 +1447,11 @@ export function createTurnstile(
                 }
                 recordDispatch(sessionID, agent, description, false)
               } catch (e) {
-                recordDispatch(sessionID, agent, description, true)
+                // Only a deliberate BlockError is a real block; a non-BlockError
+                // is an internal error that propagates un-stamped to the
+                // fail-open outer handler (which journals it), so the dispatch
+                // entry is never mislabeled as blocked.
+                if (e instanceof BlockError) recordDispatch(sessionID, agent, description, true)
                 throw e
               }
             }

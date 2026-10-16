@@ -288,7 +288,7 @@ test("validateResolved clamps readWarn and warns on a relative metricsDir", () =
 })
 
 /** validateResolved warns when plansDir is absolute: the value is still honored
- *  (the S12 fix resolves it as-is rather than silently dropping it). */
+ *  (resolved as-is rather than silently dropping it). */
 test("validateResolved warns on an absolute plansDir", () => {
   const config = defaultConfig()
   config.plansDir = "/fixed/plans"
@@ -348,6 +348,43 @@ test("execute.before journals an internal error and proceeds", async () => {
     await callTool(h, "execute.before", { tool: "task", sessionID: "p1", input })
     const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
     assert.ok(errors.some((e) => String(e.error).includes("tool.execute.before")))
+  } finally {
+    dispose()
+  }
+})
+
+/** A non-BlockError escaping the guard sequence must not be stamped
+ *  blocked:true: only a deliberate BlockError marks the dispatch as blocked,
+ *  so a hostile session record that throws a plain error during executor
+ *  project-dir resolution propagates that error (journaled by the fail-open
+ *  handler) without a blocked dispatch entry. */
+test("execute.before a non-BlockError guard failure is not stamped blocked:true", async () => {
+  const hostile = {} as Record<string, unknown>
+  Object.defineProperty(hostile, "directory", {
+    get() {
+      throw new Error("hostile record")
+    },
+  })
+  const h = makeFakeHost({ sessionRecords: new Map([["p1", hostile]]) })
+  const { dispose, metricsDir } = await boot(h.host)
+  try {
+    // The executor guard sequence awaits resolveProjectDir, whose hostile
+    // record throws a plain (non-BlockError) during directory extraction.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor" },
+    })
+    const entries = journalEntries(metricsDir)
+    const dispatched = entries.filter((l) => l.type === "dispatch")
+    // The guard threw a non-BlockError before the journal-on-exit stamp, so no
+    // dispatch entry exists at all — in particular none stamped blocked:true,
+    // which only a deliberate BlockError produces — and the fail-open handler
+    // journals the internal error under its own key.
+    assert.equal(dispatched.length, 0)
+    assert.ok(
+      entries.some((e) => e.type === "error" && String(e.error).includes("tool.execute.before")),
+    )
   } finally {
     dispose()
   }

@@ -558,7 +558,9 @@ Environment variables (override the file):
 - Journals live outside the repo in `~/.local/share/opencode/metrics/`:
   - `turnstile.jsonl`: full JSONL trace; hot path is append-only and
     rotates once per 512 writes under a lock-guarded rename, keeps 5
-    generations
+    generations; a lock left behind by a crash between create and remove of
+    `<file>.lock` is skipped (that file stops rotating) until the directory
+    is removed, and journaling keeps appending through it
   - `gate-events.jsonl`: human-readable
     `YYYY-MM-DD HH:MM | agent | event | detail` lines, with an optional
     trailing ` | <sessionID>` segment when the trace line is wired to a

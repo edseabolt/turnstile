@@ -1346,7 +1346,7 @@ test("setup degrades cleanly when the session and tool surfaces are absent", asy
 /**
  * A GATE: PASS marker split across two session.text.delta chunks is reassembled
  * by the per-session sliding window, so the flip is still observed exactly once
- * (a fragment-only parse would lose it, the delta-chunking defect).
+ * (a fragment-only parse would lose it, since the split marker never completes).
  */
 test("a GATE: PASS split across two session.text.delta chunks still flips the gate once", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
@@ -1510,7 +1510,8 @@ test("a malformed session.text.delta (non-string sid or delta) is inert", async 
 /**
  * A dead (finite) event stream is not a silent death: the consumer
  * re-subscribes within the restart budget, and a marker pushed after the death
- * is ingested on the live re-subscription (the event-consumer death defect).
+ * is ingested on the live re-subscription (a dead stream would otherwise stop
+ * marker ingestion forever).
  */
 test("a dead event stream resumes ingestion on re-subscribe within the restart budget", async () => {
   const metricsDir = tmpDir()

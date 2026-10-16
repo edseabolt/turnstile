@@ -779,8 +779,9 @@ test("mergeConfig copies a relative plansDir value through assignScalar", () => 
 })
 
 /** An absolute plansDir value passes scalar validation and lands in the merged
- *  config through assignScalar: the S12 warning is journaled at load, not dropped
- *  at merge, so the merge layer itself never rejects an absolute path. */
+ *  config through assignScalar: the absolute-path warning is journaled at load,
+ *  not dropped at merge, so the merge layer itself never rejects an absolute
+ *  path. */
 test("mergeConfig copies an absolute plansDir value through assignScalar", () => {
   const base = defaultConfig({})
   const { config } = mergeConfig(base, { plansDir: "/fixed/plans" })

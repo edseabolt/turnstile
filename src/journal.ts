@@ -33,14 +33,17 @@ export const DEFAULT_METRICS_DIR: string = defaultMetricsDir()
 /** Default JSONL journal path inside {@link DEFAULT_METRICS_DIR}. */
 export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turnstile.jsonl")
 
-/** Rotation bound (S8 race fix): the append hot path never stats or renames
- * the file — `journal()` only appends and advances a per-file counter. The
- * rotate-then-rename sequence runs once per `rotateEveryEntries` appends
- * (default 512) and only under a created `<file>.lock` directory (an atomic
- * mutex: `mkdir` fails with EEXIST while another session holds it), so two
- * concurrent sessions never both rename the shared file. Disk usage stays
+/** Rotation bound (rotation-race fix): the append hot path never stats or
+ * renames the file — `journal()` only appends and advances a per-file
+ * counter. The rotate-then-rename sequence runs once per `rotateEveryEntries`
+ * appends (default 512) and only under a created `<file>.lock` directory (an
+ * atomic mutex: `mkdir` fails with EEXIST while another session holds it), so
+ * two concurrent sessions never both rename the shared file. Disk usage stays
  * bounded at (N + 1) × maxBytes plus at most `rotateEveryEntries × ~2 KB` of
- * overshoot between the size check and the rename. */
+ * overshoot between the size check and the rename. A crashed process between
+ * the create and the remove of `<file>.lock` leaves a stale lock, so that
+ * file's rotation is skipped until the directory is removed, and the append
+ * hot path keeps journaling through it. */
 
 /**
  * Returns the current time as an ISO-8601 timestamp.
