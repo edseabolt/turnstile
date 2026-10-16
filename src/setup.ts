@@ -371,6 +371,32 @@ export function createTurnstile(
   }
 
   /**
+   * Per-session sliding window of streamed child text: a host may split one
+   * marker across `session.text.delta` chunks, and a fragment-only parse silently
+   * loses the gate flip. Each delta re-parses the window's tail; markers.ts dedup
+   * suppresses every re-fire, so only a newly completed marker is first-sighted.
+   * Bounded by boundDeltaWindows; cleared on the next task dispatch (see
+   * execute.before age-out) so stale fragments of a prior task do not leak.
+   */
+  const deltaWindows = new Map<string, string>()
+  // Comfortably longer than any complete marker; the tail keeps a window whose
+  // head was evicted so a marker split across many small deltas still completes.
+  const maxDeltaWindowChars = 512
+  const maxTrackedDeltaWindows = 50
+
+  /**
+   * Bounds the delta-window map by evicting its oldest entries.
+   * Mirrors boundSessionDirs; see deltaWindows.
+   */
+  function boundDeltaWindows(): void {
+    while (deltaWindows.size > maxTrackedDeltaWindows) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = deltaWindows.keys().next().value as string
+      deltaWindows.delete(oldest)
+    }
+  }
+
+  /**
    * Bounds the dispatch-timestamp map by evicting its oldest entries.
    * Mirrors boundLookups; see planReviewerDispatch.
    */
@@ -1336,6 +1362,11 @@ export function createTurnstile(
               // definition: mark before the guards so their
               // state() inserts land pinned against LRU eviction.
               ledger.markParent(sessionID)
+              // Age out streamed delta windows: the next dispatch is the task
+              // boundary, so stale fragments of the previous task's child text
+              // must not leak into the new scope (mirrors the prompt-reset
+              // pattern of evidence.clear).
+              deltaWindows.clear()
               const prompt = String(event.input?.prompt ?? "")
               // Prompt descriptions can carry sensitive context; record them
               // only when the trace is enabled (redacted elsewhere — here it is
@@ -1749,7 +1780,8 @@ export function createTurnstile(
       /**
        * Consumes the host event stream until aborted, dispatching each
        * event type to its handler. Per-event failures are journaled, never
-       * fatal to the stream.
+       * fatal to the stream. Fragmented `session.text.delta` markers are
+       * recovered by the per-session sliding window (see the delta case).
        */
       const consume = async (): Promise<void> => {
         for await (const event of subscribe({ signal: controller.signal })) {
@@ -1804,8 +1836,15 @@ export function createTurnstile(
                 const sid = properties.sessionID
                 const delta = properties.delta
                 if (typeof sid === "string" && typeof delta === "string") {
+                  // Reassemble a possibly-split marker: fold this delta into the
+                  // session's sliding window (tail-bounded) and re-parse it. The
+                  // shared-empty dedup scope suppresses every re-fire, so only a
+                  // newly completed marker across chunks is first-sighted.
+                  const window = ((deltaWindows.get(sid) ?? "") + delta).slice(-maxDeltaWindowChars)
+                  deltaWindows.set(sid, window)
+                  boundDeltaWindows()
                   await resolveParent(sid)
-                  parseMarkers(delta, sid, "child-text-delta")
+                  parseMarkers(window, sid, "child-text-delta")
                 }
                 break
               }
@@ -1984,10 +2023,37 @@ export function createTurnstile(
         if (!controller.signal.aborted)
           journaler.journal({ type: "error", error: "event stream ended" })
       }
-      const consuming = consume().catch((e: unknown) => {
-        if (!controller.signal.aborted)
-          journaler.journal({ type: "error", error: `event subscription: ${e}` })
-      })
+      /**
+       * Bounds consume() re-subscriptions on any non-abort exit so a broken
+       * event stream disables (rather than silently exits) marker ingestion
+       * after a small cumulative budget. A thrown subscription journals one
+       * `event subscription:` entry per death; after the budget is spent the
+       * terminal disablement journals and the loop stops re-subscribing (no
+       * more session.text.* ingestion). A throw while aborted (dispose) stays
+       * silent, matching the pre-existing .catch semantics.
+       */
+      const maxStreamRestarts = 5
+      let streamRestarts = 0
+      const supervise = async (): Promise<void> => {
+        for (;;) {
+          try {
+            await consume()
+          } catch (e) {
+            if (!controller.signal.aborted)
+              journaler.journal({ type: "error", error: `event subscription: ${e}` })
+          }
+          if (controller.signal.aborted) return
+          streamRestarts++
+          if (streamRestarts <= maxStreamRestarts) continue
+          journaler.journal({
+            type: "error",
+            error:
+              "event stream restart budget exhausted; session.text.* marker ingestion is disabled",
+          })
+          return
+        }
+      }
+      const consuming = supervise()
       cleanups.push(() => {
         controller.abort()
         void consuming

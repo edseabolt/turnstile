@@ -1341,6 +1341,223 @@ test("setup degrades cleanly when the session and tool surfaces are absent", asy
   dispose()
 })
 
+// ---- Streamed child text: delta chunk reassembly and the restart budget ----
+
+/**
+ * A GATE: PASS marker split across two session.text.delta chunks is reassembled
+ * by the per-session sliding window, so the flip is still observed exactly once
+ * (a fragment-only parse would lose it, the delta-chunking defect).
+ */
+test("a GATE: PASS split across two session.text.delta chunks still flips the gate once", async () => {
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  // First chunk carries only the marker head — an incomplete parse, no first-sight.
+  h.pushEvent({
+    type: "session.text.delta",
+    data: { sessionID: "c1", delta: "GATE: PASS tests=1 passed=1 fail" },
+  })
+  // Second chunk completes the marker when folded into the window.
+  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: "ed=1" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0]?.marker, "GATE: PASS tests=1 passed=1 failed=1")
+  dispose()
+})
+
+/**
+ * Re-folding the same window with trailing deltas must not re-fire a marker
+ * that a prior delta already first-sighted: the shared-empty dedup scope
+ * suppresses every re-fire, so only a newly completed marker is first-sighted.
+ */
+test("re-folding a delta window with a complete marker never re-fires it", async () => {
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  // First chunk completes and first-sights the marker.
+  h.pushEvent({
+    type: "session.text.delta",
+    data: { sessionID: "c1", delta: "GATE: PASS tests=1 passed=1 failed=1\r\n" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  // Subsequent deltas fold into the same window; dedup keeps it to one entry.
+  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: " extra output" } })
+  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: " and more" } })
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+  assert.equal(gates.length, 1)
+  dispose()
+})
+
+/**
+ * The next task dispatch clears the delta window (the next dispatch is the task
+ * boundary, so stale fragments of the previous task must not leak into the new
+ * scope), so a marker split across deltas around a dispatch is never completed.
+ */
+test("a task dispatch clears the delta window so a stale split marker does not complete", async () => {
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  // First chunk: a verdict (so its processing is observable via waitUntil) plus
+  // the incomplete head of a GATE: PASS marker. waitUntil(verdict) pins that
+  // delta1's window was fully set before the dispatch runs.
+  h.pushEvent({
+    type: "session.text.delta",
+    data: {
+      sessionID: "c1",
+      delta: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\nGATE: PASS tests=1 passed=1 fail",
+    },
+  })
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+  // The dispatch is the task boundary; it clears the window before the guards
+  // run (the block is expected), so the clear still takes effect.
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "run the build" },
+      }),
+    (e: Error) => e instanceof BlockError,
+  )
+  // Completing chunk arrives after the window was cleared: never reassembled.
+  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: "ed=1" } })
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+  assert.equal(gates.length, 0)
+  dispose()
+})
+
+/**
+ * Delta windows are bounded (50 sessions): once more than 50 hold a window, the
+ * oldest is evicted. The evicted session's partial marker can then never be
+ * reassembled, while a non-evicted marker still completes — proving the bound,
+ * not a parsing gap, drops the split.
+ */
+test("delta windows are bounded past 50 sessions, evicting the oldest", async () => {
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  // c1's split marker head, held only in c1's window (evicted below).
+  h.pushEvent({
+    type: "session.text.delta",
+    data: { sessionID: "c1", delta: "GATE: PASS tests=100 passed=100 fail" },
+  })
+  // A full marker in a second session is the control (still completes).
+  h.pushEvent({
+    type: "session.text.delta",
+    data: { sessionID: "c2", delta: "GATE: PASS tests=200 passed=200 failed=200" },
+  })
+  // 50 more sessions push windows; the map grows past 50 and evicts c1.
+  for (let i = 3; i <= 52; i++) {
+    h.pushEvent({ type: "session.text.delta", data: { sessionID: `c${i}`, delta: "filler" } })
+  }
+  // Complete c1's marker head: c1's window was evicted, so folding the tail
+  // never reassembles the GATE marker.
+  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: "ed=100" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some(
+      (l) => l.type === "gate" && l.result === "PASS" && String(l.marker).includes("tests=200"),
+    ),
+  )
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+  // Control: a full marker in a retained window still flips.
+  assert.ok(gates.some((l) => String(l.marker).includes("tests=200")))
+  // The evicted oldest window never reassembles its split marker.
+  assert.ok(!gates.some((l) => String(l.marker).includes("tests=100")))
+  dispose()
+})
+
+/**
+ * A session.text.delta with a non-string sessionID or delta is inert: the
+ * window update and the parse are skipped entirely (both guard operands fail),
+ * so no marker is journaled and the loop stays alive.
+ */
+test("a malformed session.text.delta (non-string sid or delta) is inert", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  // Non-string sessionID: the guard's first operand short-circuits.
+  h.pushEvent({
+    type: "session.text.delta",
+    data: { sessionID: 42, delta: "GATE: PASS tests=1 passed=1 failed=1" },
+  })
+  // Non-string delta: the guard's second operand fails.
+  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: 99 } })
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate")
+  const verdicts = journalEntries(metricsDir).filter((l) => l.type === "verdict")
+  assert.equal(gates.length, 0)
+  assert.equal(verdicts.length, 0)
+  dispose()
+})
+
+/**
+ * A dead (finite) event stream is not a silent death: the consumer
+ * re-subscribes within the restart budget, and a marker pushed after the death
+ * is ingested on the live re-subscription (the event-consumer death defect).
+ */
+test("a dead event stream resumes ingestion on re-subscribe within the restart budget", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const realSubscribe = (h.host as { event: { subscribe: any } }).event.subscribe
+  let subscribeCalls = 0
+  ;(h.host as { event?: unknown }).event = {
+    subscribe: (options?: { signal?: AbortSignal }) => {
+      subscribeCalls++
+      // The first subscription is a dead stream: it completes without events.
+      if (subscribeCalls === 1) {
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<any> {
+            return {
+              next: async (): Promise<IteratorResult<any>> => ({ done: true, value: undefined }),
+            }
+          },
+        }
+      }
+      // Every re-subscription is the live bus (delivers pushed events).
+      return realSubscribe(options)
+    },
+  }
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, gateEvidence: "flag" },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  // The first (dead) consume has finished and the supervisor re-subscribed.
+  await waitUntil(() => subscribeCalls >= 2)
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: "c1", text: "GATE: PASS tests=1 passed=1 failed=1" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+  assert.equal(gates.length, 1)
+  dispose()
+})
+
 /** A stream that completes without abort is journaled as a stream-ended error. */
 test("consume journals a stream-ended error when the stream completes without abort", async () => {
   const metricsDir = tmpDir()

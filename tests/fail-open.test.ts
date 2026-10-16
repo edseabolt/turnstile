@@ -422,8 +422,14 @@ test("compaction hook journals an internal error from a hostile draft", async ()
   }
 })
 
-/** A subscribe() that throws journals the subscription error. */
-test("event subscription failure journals and does not crash setup", async () => {
+/**
+ * A subscribe() that always throws journals one death per attempt — the initial
+ * call plus maxStreamRestarts restarts (six) — then the terminal "ingestion
+ * disabled" entry once the restart budget is spent: every death and the
+ * disablement are journaled, so a dead stream is never a silent exit. Setup
+ * stays alive (fail-open).
+ */
+test("event subscription failure journals each death then disables after the budget", async () => {
   const h = makeFakeHost()
   const throwingHost: Host = {
     ...h.host,
@@ -437,7 +443,57 @@ test("event subscription failure journals and does not crash setup", async () =>
   await settle()
   dispose()
   const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
-  assert.ok(errors.some((e) => String(e.error).includes("event subscription")))
+  const subs = errors.filter((e) => String(e.error).includes("event subscription"))
+  assert.equal(
+    subs.length,
+    6,
+    "one death per attempt: the initial subscribe plus maxStreamRestarts restarts",
+  )
+  assert.ok(
+    errors.some((e) =>
+      String(e.error).includes(
+        "event stream restart budget exhausted; session.text.* marker ingestion is disabled",
+      ),
+    ),
+  )
+})
+
+/**
+ * A subscription that surfaces dispose as a throw is silent: the abort (from
+ * the disposer) makes both the per-death journal and the terminal disablement
+ * journal nothing — a detached stream is not a death, matching the pre-existing
+ * abort-silent semantics.
+ */
+test("a subscribe that throws after dispose stays silent", async () => {
+  const h = makeFakeHost()
+  const host: Host = {
+    ...h.host,
+    event: {
+      subscribe: (options?: { signal?: AbortSignal }): AsyncIterable<any> => {
+        const signal = options?.signal
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<any> {
+            return {
+              next: async (): Promise<IteratorResult<any>> => {
+                // Hang until dispose aborts; a host that turns the abort into a
+                // throw must be treated as a silent detach, never a death.
+                if (signal?.aborted) throw new Error("aborted boom")
+                await new Promise<void>(() => {})
+                return { done: true, value: undefined }
+              },
+            }
+          },
+        }
+      },
+    },
+  }
+  const { dispose, metricsDir } = await boot(host)
+  await settle()
+  dispose()
+  await settle()
+  const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
+  assert.ok(!errors.some((e) => String(e.error).includes("event subscription")))
+  assert.ok(!errors.some((e) => String(e.error).includes("restart budget exhausted")))
 })
 
 /** Registration failures journal and leave the plugin functional. */
