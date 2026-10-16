@@ -45,6 +45,16 @@ _mechanical_ half — the part that still holds when the model doesn't.
 Limits: [architecture §10](docs/architecture.md#10-security-posture-and-limits);
 the full positioning: [architecture §11](docs/architecture.md#11-positioning-how-turnstile-fits-the-ecosystem).
 
+Turnstile is built with turnstile: most of this plugin's own development runs
+through the pipeline it enforces, gates and journal on, so the enforcement
+doubles as a field test. In the first week of that (Oct 8–15, 2026), the
+journal records ~350 pipeline dispatches and ~390 blocked calls on this repo.
+Most of those blocks are the read-horizon cap doing its unglamorous job; about
+65 caught real pipeline violations: executor dispatches without an approved
+plan, unverified `GATE: PASS` claims, invalid commit subjects, and unapproved
+pushes that never landed. Don't take this paragraph at face value: run
+`npx opencode-turnstile status` and read the journal yourself.
+
 For how the plugin works inside — module map, hook surface, gate state
 machine, journal/replay, diagrams — see
 [`docs/architecture.md`](docs/architecture.md).
@@ -124,7 +134,7 @@ hatch. Full detail — guards, state fields, escape ladders, diagrams — lives 
 | Read horizon           | Warns at 8 whole-file `read` calls per session, blocks at 15 (prefer grep/glob).                                                                                                                                                                                     |
 | Tool-call policy       | `bash`/`shell` commands and `write`/`edit` paths are matched against a denylist (default `enforce`); default denylist is git-protective (worktree, branch switch/checkout, merge, `gh pr`).                                                                          |
 | Commit-lint            | `git commit -m` subjects must be conventional commits when `gitGates.commitMessages` is on (default); uninspectable forms (`-F`, `-t`, `--edit`) are blocked under `gitGates.mode:enforce`.                                                                          |
-| Landing gate           | `git push` without reviewer `VERDICT: APPROVE` is blocked under `gitGates.mode:enforce` (default `shadow`); a repeat push escalates to a human ask — the repeat push is the decision point.                                                                          |
+| Landing gate           | `git push` without reviewer `VERDICT: APPROVE` is blocked under `gitGates.mode:enforce` (default `shadow`); a repeat push escalates to a human ask.                                                                                                                  |
 | Marker parsing         | `GATE:` / `VERDICT:` markers parsed from task results and child text, deduped per task; marker-less outputs from marker-contracted agents are journaled.                                                                                                             |
 | Trace & telemetry      | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, errors; `setup` heartbeat, stream-death errors.                                                                                                                                              |
 | Decoding clamps        | reviewer/plan-reviewer temperature = 0; executor/test-runner/debugger ≤ 0.2.                                                                                                                                                                                         |
@@ -142,8 +152,8 @@ already-earned `GATE: PASS` first), never an unearned approval.
 
 Turnstile reads a waiver or a human plan approval only from the user's OWN
 prompt — the plugin observes it at prompt admission, never from an agent's
-dispatch prompt. The provenance rule is the point: a marker inside an
-agent-composed prompt must never unlock a gate.
+dispatch prompt. A marker inside an agent-composed prompt must never unlock
+a gate, so the channel is checked, not the text.
 
 - **Prompt-channel waiver.** Put the literal marker `USER WAIVER:` in the text
   of your prompt to waive the plan gate and the reviewer gate for the task.

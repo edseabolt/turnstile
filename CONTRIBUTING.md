@@ -78,3 +78,13 @@ trace format, and the exact block messages.
 
 Conventional messages (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`).
 Keep each commit green under `npm run ci`.
+
+## Dogfooding
+
+Turnstile is developed with turnstile: feature work on this repo is expected
+to run through the plugin's own pipeline (planner → plan-reviewer → executor
+→ test-runner → reviewer) with the gates and journal on, and to land via the
+same evidence rules it enforces on users. Hand-edits are fine for docs,
+formatting, and trivial fixes; if a change skips the pipeline, say so in the
+commit body. See the "Turnstile is built with turnstile" paragraph in the
+README for what the journal shows about this in practice.
