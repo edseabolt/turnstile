@@ -23,7 +23,7 @@ flow: {
   hooks -> journal: "parseMarkers — verdict store update"
 
   orch -> hooks: "dispatch plan-reviewer"
-  hooks -> journal: "planReviewerDispatch stamped (round-scoping)"
+  hooks -> hooks: "planReviewerDispatch map updated\n(in-memory, round-scoped attribution)"
   agents -> hooks: "VERDICT: APPROVE crit=…"
   hooks -> journal: "plan entry — plansSignature stamped on APPROVE"
 
