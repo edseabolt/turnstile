@@ -517,6 +517,11 @@ export function validateResolved(config: TurnstileConfig): string[] {
       `config: metricsDir "${config.metricsDir}" is relative; journaling resolves against the process cwd`,
     )
   }
+  if (path.isAbsolute(config.plansDir)) {
+    warnings.push(
+      `config: plansDir "${config.plansDir}" is absolute; enforced as-is (the project directory is ignored)`,
+    )
+  }
   // The `enforce` ensemble needs a satisfiable count: with maxReviewerRounds <
   // 2 the second required reviewer dispatch is capped away, so the ensemble is
   // mechanically unsatisfiable. Warn (do not clamp — clamping upward would

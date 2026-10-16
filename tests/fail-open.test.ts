@@ -287,6 +287,15 @@ test("validateResolved clamps readWarn and warns on a relative metricsDir", () =
   assert.ok(warnings.some((w) => w.includes("relative")))
 })
 
+/** validateResolved warns when plansDir is absolute: the value is still honored
+ *  (the S12 fix resolves it as-is rather than silently dropping it). */
+test("validateResolved warns on an absolute plansDir", () => {
+  const config = defaultConfig()
+  config.plansDir = "/fixed/plans"
+  const warnings = validateResolved(config)
+  assert.ok(warnings.some((w) => w.includes("plansDir") && w.includes("absolute")))
+})
+
 /** readPluginVersion returns null when package.json is unreadable. */
 test("readPluginVersion returns null when package.json cannot be read", () => {
   // A directory path makes readFileSync fail with EISDIR, the same catch a

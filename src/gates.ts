@@ -594,6 +594,18 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
+   * Single source for the plans-dir location: a relative value (the default)
+   * joins the per-dispatch project dir; an absolute value is honored as-is
+   * (validateResolved journaled a warning at load). Kept in one closure so the
+   * plan-gate consumers never recompute the path.
+   */
+  function resolvePlansDir(projectDir: string): string {
+    return path.isAbsolute(config.plansDir)
+      ? config.plansDir
+      : path.join(projectDir, config.plansDir)
+  }
+
+  /**
    * Reconciles a session's approval with the current scan: a non-empty stamp
    * that differs from `scan.key` means the plan was re-planned since approval,
    * so the verdict is stale and re-review is required; a green pass re-stamps
@@ -660,7 +672,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * @returns `{ file, head }` for the first sorted plan, or undefined.
    */
   function planSummary(projectDir: string): { file: string; head: string } | undefined {
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return undefined
       const scan = scanPlans(plansDir)
@@ -693,7 +705,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   ): { red: boolean; summary?: { file: string; head: string } } {
     const s = ledger.state(sessionID)
     if (s.userWaiver !== "") return { red: false }
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return { red: false }
       const scan = scanPlans(plansDir)
@@ -725,7 +737,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    */
   function enforceDecomposition(sessionID: string, prompt: string, projectDir: string): void {
     if (/\b(?:chunk-\d+|AC-\d+)\b/.test(prompt)) return
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return
       const scan = scanPlans(plansDir)
@@ -757,7 +769,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * @returns The plans-dir content signature, or null when absent/unreadable.
    */
   function plansSignature(projectDir: string): string | null {
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     if (!fs.existsSync(plansDir)) return null
     try {
       return scanPlans(plansDir).key

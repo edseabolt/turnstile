@@ -778,6 +778,15 @@ test("mergeConfig copies a relative plansDir value through assignScalar", () => 
   assert.equal(config.plansDir, "docs/plans")
 })
 
+/** An absolute plansDir value passes scalar validation and lands in the merged
+ *  config through assignScalar: the S12 warning is journaled at load, not dropped
+ *  at merge, so the merge layer itself never rejects an absolute path. */
+test("mergeConfig copies an absolute plansDir value through assignScalar", () => {
+  const base = defaultConfig({})
+  const { config } = mergeConfig(base, { plansDir: "/fixed/plans" })
+  assert.equal(config.plansDir, "/fixed/plans")
+})
+
 /** A config path that does not exist (ENOENT) adds no warning and the
  *  defaults are kept intact. */
 test("loadConfig ignores an absent config file silently", () => {
