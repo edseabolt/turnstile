@@ -1609,13 +1609,17 @@ export function createTurnstile(
             }
             if (event?.tool === "read") {
               // Same parent keying as the guard: count and budget stay in
-              // step regardless of which session ID the host reports. This
-              // stays synchronous on purpose — the before-hook already awaited
-              // resolveParent(sid) for this same sessionID, so the edge is
-              // cached by the time it fires.
+              // step regardless of which session ID the host reports. The
+              // increment happens atomically in the before-hook (guardReadLimit);
+              // this after-hook journals the running count and corrects it down
+              // when the read did not produce a string output (a non-string
+              // result never consumed budget).
               const sessionID = ledger.parentOf(asSessionID(event?.sessionID))
               const s = ledger.state(sessionID)
-              s.reads++
+              // The before-hook already incremented; a read that did not produce
+              // a string output never consumed budget — correct the charge down
+              // (floor 0).
+              if (typeof event.result?.output !== "string" && s.reads > 0) s.reads--
               journaler.journal({ type: "tool", sessionID, tool: "read", reads: s.reads })
               if (
                 s.reads === config.readWarn &&

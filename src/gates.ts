@@ -87,9 +87,13 @@ export interface Gates {
    */
   guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
   /**
-   * Enforces the whole-file read horizon for a session.
+   * Enforces the whole-file read horizon for a session with an atomic
+   * check-then-increment: the read is allowed when the count is below
+   * `readBlock`, and the count is then advanced in the same synchronous step,
+   * so exactly `readBlock` whole-file reads succeed and concurrent interleaved
+   * hooks cannot both pass at count-1.
    * @param sessionID The parent session ID.
-   * @param ledger The gate ledger to read state from.
+   * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix once the read
    *     count has reached the configured block threshold.
    */
@@ -474,19 +478,28 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Enforces the whole-file read horizon for a session.
+   * Enforces the whole-file read horizon for a session with an atomic
+   * check-then-increment, exactly like the reviewer cap: the read is allowed
+   * when the count is below `readBlock`, then the count is advanced in the same
+   * synchronous step (the awaited edge-resolution above already completed, so
+   * there is no await between check and increment). This closes the TOCTOU
+   * window between the before/after hooks.
    * @param sessionID The parent session ID.
-   * @param ledger The gate ledger to read state from.
+   * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix once the read
    *     count has reached the configured block threshold.
    */
   function guardReadLimit(sessionID: string, ledger: GateLedger): void {
-    if (ledger.state(sessionID).reads >= config.readBlock) {
+    const s = ledger.state(sessionID)
+    if (s.reads >= config.readBlock) {
       journaler.journal({ type: "blocked", sessionID, tool: "read", reason: "read-limit" })
       throw new BlockError(
         `BLOCKED by turnstile: ${config.readBlock} whole-file reads this session. Switch to grep/glob for targeted retrieval, or report being stuck and escalate to the user.`,
       )
     }
+    // Check-then-increment: the Nth read succeeds and the (N+1)th blocks, so
+    // exactly `readBlock` whole-file reads succeed per task.
+    s.reads++
   }
 
   /**

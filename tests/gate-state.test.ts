@@ -557,15 +557,24 @@ test("legacy raw-keyed replay entries do not gate the parent session", async () 
   dispose()
 })
 
-/** Read counter: one warning at readWarn, a hard block at readBlock. */
+/** Read counter: one warning at readWarn, a hard block at readBlock. The
+ *  increment happens in the before-hook, so each read is a before/after pair;
+ *  the warn fires on the readWarn-th pair and the readBlock-th before-read
+ *  blocks. */
 test("read horizon: warns at readWarn, blocks at readBlock", async () => {
   const { h, dispose } = await boot({ readWarn: 2, readBlock: 3 })
+  const r1 = { output: "one" }
   const r2 = { output: "two" }
   const r3 = { output: "three" }
-  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: { output: "one" } })
+  // Before-hook increments; after-hook journals the running count and warns.
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r1 })
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
   await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r2 })
   assert.match(String(r2.output), /^\[turnstile\] Warning: 2 whole-file reads/)
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
   await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r3 })
+  // The next before-read is the readBlock-th: the atomic increment reached it.
   await assert.rejects(
     () => callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
     (e: Error) =>
@@ -586,14 +595,18 @@ test("read horizon: an unresolved child's first read keys the parent's budget", 
     config: { readWarn: 2, readBlock: 3, metricsDir },
   })
   const dispose = (await setup(h.host)) as () => void
-  // Three self-keyed reads on the parent p1 drain its budget to the block.
+  // Three before/after read pairs on the parent p1 (self-keyed, no edge yet)
+  // drain its budget to the block; the before-hook increments, keyed off p1.
   for (let i = 0; i < 3; i++) {
+    await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
     await callTool(h, "execute.after", {
       tool: "read",
       sessionID: "p1",
       result: { output: `body ${i}` },
     })
   }
+  // The first before-read on the (still unresolved) child resolves the edge,
+  // keys p1's budget, and blocks — the exact message as the parent drain.
   await assert.rejects(
     () => callTool(h, "execute.before", { tool: "read", sessionID: "c1" }),
     (e: Error) =>
@@ -647,6 +660,57 @@ test("read horizon: a parent-less root read self-keys without journaling", async
     (l) => l.type === "error" && /read budget keyed by session/.test(l.error),
   )
   assert.equal(signals.length, 0)
+  dispose()
+})
+
+/** The read horizon increments atomically in the before-hook: `readBlock`
+ *  before-reads succeed and the next one blocks, proving the check-then-increment
+ *  cannot let reads queued at count-1 all pass (the old two-hook split could). */
+test("read horizon: readBlock before-reads then block, atomically", async () => {
+  const { h, dispose } = await boot({ readBlock: 3 })
+  // Three before-reads at count 0/1/2 concurrently: the synchronous
+  // check-then-increment lets only them through; a later one blocks.
+  await Promise.all([
+    callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+    callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+    callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+  ])
+  await assert.rejects(
+    () => callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+    (e: Error) =>
+      e.message ===
+      "BLOCKED by turnstile: 3 whole-file reads this session. Switch to grep/glob for targeted retrieval, or report being stuck and escalate to the user.",
+  )
+  dispose()
+})
+
+/** A read whose after-result is not a string never consumed budget, so the
+ *  after-hook corrects the charge down (floor 0): a subsequent before-read is
+ *  not hostage to the failed read, and the corrected count is journaled. */
+test("read horizon: a failed read corrects the budget charge down", async () => {
+  const { h, dispose, metricsDir } = await boot({ readBlock: 3 })
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  // A non-string after-result never consumed budget — the charge corrects down.
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: {} })
+  const reads = journalEntries(metricsDir).filter((l) => l.type === "tool" && l.tool === "read")
+  assert.equal(reads.length, 1)
+  assert.equal(reads[0]!.reads, 0)
+  // The freed budget lets a genuine read proceed before reaching the block.
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: { output: "x" } })
+  const after = journalEntries(metricsDir).filter((l) => l.type === "tool" && l.tool === "read")
+  assert.equal(after[after.length - 1]!.reads, 1)
+  dispose()
+})
+
+/** An after-read with no matching before-read and a non-string result must not
+ *  push the count below zero: the floor guard keeps reads at 0. */
+test("read horizon: an after-hook read without a before-hook never goes negative", async () => {
+  const { h, dispose, metricsDir } = await boot({ readBlock: 1 })
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: {} })
+  const reads = journalEntries(metricsDir).filter((l) => l.type === "tool" && l.tool === "read")
+  assert.equal(reads.length, 1)
+  assert.equal(reads[0]!.reads, 0)
   dispose()
 })
 
@@ -992,14 +1056,17 @@ test("event loop: read horizon counts child reads against the parent session", a
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
   )
-  // Child-session reads draw down the parent's budget.
+  // Child-session reads draw down the parent's budget. The increment happens in
+  // the before-hook, keyed off the parent, so each read is a before/after pair.
   for (let i = 0; i < 3; i++) {
+    await callTool(h, "execute.before", { tool: "read", sessionID: "c1" })
     await callTool(h, "execute.after", {
       tool: "read",
       sessionID: "c1",
       result: { output: `body ${i}` },
     })
   }
+  // The before-hook increments the parent's budget to the block.
   await assert.rejects(
     () => callTool(h, "execute.before", { tool: "read", sessionID: "c1" }),
     (e: Error) =>
@@ -1160,13 +1227,18 @@ test("event loop: thrown parent lookups retry and resolve once the record appear
   dispose()
 })
 
-/** The trace file rotates with the same bytes/generations bounds as the journal. */
+/** The trace file rotates on a tick with the same bytes/generations bound as
+ *  the journal: rotation runs once per rotateEveryEntries (default 512) writes
+ *  under the lock, so feeding more than a tick's worth of trace lines produces
+ *  a rotated generation under the configured generation bound. */
 test("trace file rotates with the same bound as the journal", async () => {
   const { h, dispose, metricsDir } = await boot({
     journalMaxBytes: 200,
     journalMaxGenerations: 2,
   })
-  for (let i = 0; i < 10; i++) {
+  // Trace writes are rotation-ticked (once per rotateEveryEntries), so a tick's
+  // worth of dispatches is needed to observe the byte-bound rotation.
+  for (let i = 0; i < 600; i++) {
     await callTool(h, "execute.before", {
       tool: "task",
       sessionID: "p1",
