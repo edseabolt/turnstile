@@ -161,7 +161,7 @@ for (const [url, fns] of scripts) {
   for (const [key, { spans }] of fns) {
     const spanList = [...spans.values()]
     const root = spanList.find(
-      (s) => s.startOffset === Math.min(spanList.map((v) => v.startOffset)),
+      (s) => s.startOffset === Math.min(...spanList.map((v) => v.startOffset)),
     )
     if (!root || root.count === 0) continue // whole function never ran in any record
     for (const span of spanList) {
