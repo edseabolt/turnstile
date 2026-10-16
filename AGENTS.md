@@ -36,8 +36,10 @@ Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift). `npm test` enforces 100% line, branch, and function coverage over
 `src/` + `turnstile.ts` via node:test's built-in V8 coverage thresholds
-(100 for lines, branches, and functions) — no coverage extension needed; the
-installer scripts (`bin/`, `scripts/`) are outside the gate:
+(100 for lines, branches, and functions) with `--experimental-test-isolation=none` — fully
+deterministic on a green suite: a red branch report is a real
+never-executed decision, never a merge artifact — the installer scripts
+(`bin/`, `scripts/`) are outside the gate:
 
 ```
 npm run ci           # ci:host (lint -> format:check -> typecheck -> check:markers -> test) — host chain only
@@ -106,10 +108,13 @@ Write tests for critical paths and complex logic. Aim for high test coverage
 on business logic. Use descriptive test names that explain the expected
 behavior. All tests should have docstrings too. (The gate state machine in `src/state.ts` and `src/markers.ts` is
 the critical path; the harness is `node:test` with
-`--experimental-strip-types`, wired into `npm run ci`. Coverage is enforced
-at 100% lines, branches, and functions over `src/` + `turnstile.ts` by the
-same command — a coverage extension is not needed, the Node test runner's
-built-in thresholds gate it. `bin/` and `scripts/` sit outside the gate.)
+`--experimental-strip-types --experimental-test-isolation=none`, wired into `npm run ci`.
+Coverage is enforced at 100% lines, branches, and functions over `src/` +
+`turnstile.ts` by the same command — a coverage extension is not needed, the
+Node test runner's built-in thresholds gate it, and with `--experimental-test-isolation=none`
+a green suite is deterministic: a red branch report is a real
+never-executed decision, never a merge artifact. `bin/` and `scripts/` sit
+outside the gate.)
 
 ### Error handling
 
@@ -206,6 +211,11 @@ stated feature; devDependencies are tooling only.)
   dependencies, architecture-docs sync). When a rule here changes, update
   CONTRIBUTING.md in the same change set; if a rule lives only here, leave
   CONTRIBUTING.md pointing at this file rather than duplicating it.
+- `npm test` is the sole coverage authority. `scripts/branch-coverage.mjs` is
+  diagnostic-only — it localizes what `npm test` already flagged (file:line +
+  snippet); never loop on its output, never treat its findings as a work
+  queue. `test:stable`-style retry aliases are forbidden by design: the gate is
+  deterministic, so a red run is a real gap.
 
 ## Architecture docs (keep in sync when code changes)
 

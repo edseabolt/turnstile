@@ -545,6 +545,49 @@ test("asked: a non-string and an empty request id are not recorded", async () =>
 })
 
 /**
+ * A `permission.asked` with no `id` falls back to its `requestID`, so the ask
+ * is recorded (via the latched-ask echo path) and an `always` reply for that
+ * requestID releases the plan gate — proving the fallback branch records asks.
+ */
+test("asked: a missing id falls back to requestID and the ask registers", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", requestID: "rid-1" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "rid-1", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/** A `permission.replied` with no `requestID` resolves to an empty rid that
+ *  matches neither map, so nothing is consumed, journaled, or released. */
+test("replied: a requestID-less reply touches neither map", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "permission.replied", properties: { sessionID: "p1" } })
+    await settle()
+    // No decision journal entry and the plan gate is still red.
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "permission"))
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
  * HIGH-1 scoping: a once-grant releases ONLY the executor dispatch class. A
  * reviewer dispatch with a pending grant still runs guardReviewerDispatch
  * (blocked on the red reviewer gate), and the grant survives to be consumed by

@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 /**
- * @fileoverview Branch-level coverage reporter for the turnstile test suite.
+ * @fileoverview Branch-level coverage diagnostic for the turnstile test suite.
+ *
+ * The gated suite (`npm test`) is the coverage authority: node:test's built-in
+ * V8 thresholds enforce 100% line/branch/function over `src/` +
+ * `turnstile.ts`. This script exists only mid-edit, to localize a gap that
+ * `npm test` has already flagged, in `file:line:col` plus a snippet form. A
+ * zero span is a *candidate* gap — a real never-taken decision arm or a V8
+ * reporting artifact — so findings are never treated as a work queue (see the
+ * note printed when any survive).
  *
  * Node's built-in coverage report prints percentages and uncovered *lines*
  * only; the raw V8 JSON (via `NODE_V8_COVERAGE`) carries per-function *block*
@@ -8,26 +16,24 @@
  * coverage.py-style arc diagnosis, derived from V8 block data.
  *
  * Usage: `node scripts/branch-coverage.mjs [test-file ...]`
- * Runs each test file in its own child process (the same per-file isolation
- * `node --test` uses) with `NODE_V8_COVERAGE` pointed at a shared temp dir,
- * merges the V8 JSON across children, and prints every never-executed block
- * inside a function that DID run, as `file:line:col-line` plus a snippet.
- * Exit 0 always — this is a diagnostic, not a gate.
+ * Runs one process over all test files — the same
+ * `node --test --experimental-strip-types --experimental-test-isolation=none` the gate uses
+ * — with `NODE_V8_COVERAGE` pointed at a temp dir, then prints every
+ * never-executed block inside a function that DID run, as
+ * `file:line:col-line` plus a snippet. Exit 0 always.
  *
- * Merge semantics (the non-obvious part — learned the hard way):
- * - A function instance is identified by `(functionName, root range)`; the
- *   same closure re-recorded in several children merges into one entry.
- * - V8 may record DIFFERENT block granularity for the same function across
- *   children (optimization feedback differs per run), so ranges merge by
- *   exact `(startOffset, endOffset)` span with max count. Never spread a
- *   coarse count across a finer record's blocks: a parent range's count is
- *   the *function/block entry* count, not evidence that nested blocks ran.
- * - A merged zero block is only reported when no child has a POSITIVE range
- *   contained within it (code inside it demonstrably ran somewhere). Coarse
- *   zero spans that contain proven-covered sub-blocks are pruned — they are
- *   lumping artifacts, not branch evidence. This fails toward less noise.
- * - Functions whose root never ran in any child are skipped (they show as
- *   uncovered lines in the standard report anyway).
+ * Merge semantics (the non-obvious part):
+ * - A function instance is identified by `(functionName, root range)`; records
+ *   for the same closure merge into one entry.
+ * - V8 may record different block granularity for the same function across
+ *   records (optimization feedback differs per run), so ranges merge by exact
+ *   `(startOffset, endOffset)` span with max count. Never spread a coarse count
+ *   across a finer record's blocks: a parent range's count is the
+ *   *function/block entry* count, not evidence that nested blocks ran.
+ * - A merged zero block is reported as a candidate gap whenever the whole
+ *   function ran at least once (its root range has a positive count); a
+ *   function whose root never ran is skipped (it shows as an uncovered line in
+ *   the standard report anyway).
  */
 
 import { spawnSync } from "node:child_process"
@@ -81,26 +87,19 @@ const files = testFiles.length
       .map((f) => `tests/${f}`)
 const covDir = mkdtempSync(join(tmpdir(), "branch-cov-"))
 
-// One child per test file — exactly how `node --test` runs them — so module
-// state isolation matches the real suite and the union over children is the
-// same union the standard report computes. All children share one
-// NODE_V8_COVERAGE dir; records are merged below.
-let failures = 0
-for (const file of files) {
-  const result = spawnSync(
-    process.execPath,
-    ["--test", "--experimental-strip-types", "--experimental-test-coverage", file],
-    {
-      env: { ...process.env, NODE_V8_COVERAGE: covDir },
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8",
-    },
-  )
-  if (result.status !== 0) {
-    failures++
-    console.error(`${file}: child exited ${result.status}`)
-  }
-}
+// One process, exactly like `npm test` under `--experimental-test-isolation=none`, so the
+// V8 block data matches the gate's own accounting and the per-child fabricated
+// zeros the old per-file spawn produced are gone by construction.
+const result = spawnSync(
+  process.execPath,
+  ["--test", "--experimental-strip-types", "--experimental-test-isolation=none", ...files],
+  {
+    env: { ...process.env, NODE_V8_COVERAGE: covDir },
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  },
+)
+const failures = result.status === 0 ? 0 : 1
 
 const records = readdirSync(covDir).map((f) => JSON.parse(readFileSync(join(covDir, f), "utf8")))
 rmSync(covDir, { recursive: true, force: true })
@@ -109,12 +108,12 @@ rmSync(covDir, { recursive: true, force: true })
 const toFile = (url) => url.replace(/^file:\/\//, "")
 
 /**
- * Merges one child's ranges into the accumulated span→maxCount map by exact
- * span. Identical spans across children take the max count (a block executed
- * in any child is covered); spans unique to one child are that child's own
- * block structure and are kept for the containment pruning pass.
+ * Merges one record's ranges into the accumulated span→maxCount map by exact
+ * span. Identical spans across records take the max count (a block executed in
+ * any record is covered); spans unique to one record are that record's own
+ * block structure and are kept.
  * @param acc The accumulated `Map<"start:end", { startOffset, endOffset, count }>` for a function.
- * @param incoming One child's range list for that function.
+ * @param incoming One record's range list for that function.
  */
 function mergeRanges(acc, incoming) {
   for (const r of incoming) {
@@ -141,18 +140,12 @@ for (const record of records) {
       const prior = script.get(key)
       if (!prior) {
         const spans = new Map()
-        const positives = []
         for (const r of fn.ranges) {
-          const k = `${r.startOffset}:${r.endOffset}`
-          spans.set(k, { ...r })
-          if (r.count > 0 && r !== fn.ranges[0]) positives.push({ ...r })
+          spans.set(`${r.startOffset}:${r.endOffset}`, { ...r })
         }
-        script.set(key, { spans, positives })
+        script.set(key, { spans })
       } else {
         mergeRanges(prior.spans, fn.ranges)
-        for (const r of fn.ranges) {
-          if (r.count > 0 && r !== fn.ranges[0]) prior.positives.push({ ...r })
-        }
       }
     }
   }
@@ -165,22 +158,16 @@ for (const [url, fns] of scripts) {
   if (!/\/src\//.test(file) && !file.endsWith("turnstile.ts")) continue
   const source = sources[file]
   if (!source) continue
-  for (const [key, { spans, positives }] of fns) {
-    const root = [...spans.values()].find(
-      (s) => s.startOffset === Math.min(...[...spans.values()].map((v) => v.startOffset)),
+  for (const [key, { spans }] of fns) {
+    const spanList = [...spans.values()]
+    const root = spanList.find(
+      (s) => s.startOffset === Math.min(...spanList.map((v) => v.startOffset)),
     )
-    if (!root || root.count === 0) continue // whole function never ran in any child
-    for (const span of spans.values()) {
+    if (!root || root.count === 0) continue // whole function never ran in any record
+    for (const span of spanList) {
       if (span.count !== 0) continue
-      // Prune lumping artifacts: a zero span that CONTAINS a proven-covered
-      // sub-range from another child is not branch evidence.
-      const containedPositive = positives.some(
-        (p) =>
-          p.startOffset >= span.startOffset &&
-          p.endOffset <= span.endOffset &&
-          !(p.startOffset === span.startOffset && p.endOffset === span.endOffset),
-      )
-      if (containedPositive) continue
+      // Candidate gap only: a zero span inside a function that DID run. It may be
+      // a real never-taken arm or a V8 artifact — `npm test` is the authority.
       const start = toPos(source, span.startOffset)
       const endLine = toLine(source, span.endOffset)
       const snippet = source.text.slice(span.startOffset, span.startOffset + 80).split("\n")[0]
@@ -203,4 +190,5 @@ if (findings.length === 0) {
       `  ${f.file.replace(/^.*turnstile\//, "")}:${f.start}-${f.endLine}  [${f.key}]  ${f.snippet}`,
     )
   }
+  console.log("note: npm test is the gate; these are candidates to investigate, not work items.")
 }
