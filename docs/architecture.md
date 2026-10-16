@@ -399,6 +399,35 @@ enforcement model without the implementation, and stays
 OpenCode-native: zero dependencies, TypeScript, loaded from your own
 checkout.
 
+The baseline question is what OpenCode v2 already provides natively:
+subagents, per-tool permission rules, and prompt instructions. Those
+cover the steering half of a pipeline. The mechanical half rests on
+three capabilities the native surface structurally cannot express, and
+each maps to a turnstile mechanism:
+
+- **Stateful, task-scoped gates.** Permission rules are stateless
+  per-tool-call decisions; they cannot condition a dispatch on prior
+  task state. Turnstile's `GateState` buckets (`src/state.ts`), keyed
+  per parent session and reset per prompt, make "executor blocked until
+  this task's plan is approved" and per-leg round caps expressible —
+  and decidable in `tool.hook("execute.before")`, outside the model
+  loop.
+- **Evidence correlation.** No host feature verifies a model's claim
+  against actual tool history. `src/evidence.ts` correlates a
+  `GATE: PASS` marker with a recorded exit-0 test execution matching
+  `evidencePattern` before the reviewer gate flips; a bare marker stays
+  `unverifiedPass` and never greens the gate under
+  `gateEvidence:"enforce"`.
+- **A decision journal.** OpenCode logs are diagnostics, not a
+  structured decision record. `src/journal.ts` appends every gate
+  transition, block, waiver, and dispatch to a replayable JSONL trail
+  (`replayGatePasses`, `src/state.ts`), which is what makes gates
+  reviewable after the fact and stateful across restarts.
+
+The README's "Why turnstile" section states the same three properties in
+one screen for arriving readers; this section is where a developer can
+see the mechanisms behind them.
+
 Most other agent-structure projects on OpenCode are orchestration
 suites: an orchestrator plans work, dispatches specialists, and
 reconciles results. Some add pipeline discipline on top, but the

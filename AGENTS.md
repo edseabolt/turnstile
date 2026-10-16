@@ -46,21 +46,47 @@ npm run ci:installed # install:check — install-drift, run after npm run init
 
 ## Coding practices
 
-### Functional design
+These rules are enforced on every change, not aspirational. A review that
+spots a violation rejects the change or refactors it in the same change set —
+"cleanup later" is not an option.
 
-Functions should be small, focused, and easy to understand. Avoid complex
-logic in single functions. If a function exceeds 20 lines, consider breaking
-it down. (In this repo, behavior already splits one concern per file under
-`src/`; keep new logic in the boundary that owns it, not in `turnstile.ts`,
-which stays a thin entry point.)
+### Functional design (function size cap)
 
-### Architectural alignment
+Functions should be small, focused, and easy to understand. Hard guideline:
+**a function is at most 20–30 lines** (clean-code best practice; the tighter
+20 is the target, 30 is the ceiling before a refactor is mandatory). If a
+function exceeds it, break it down by the concerns inside it — extraction is
+not optional past the ceiling. A function that needs a comment to explain its
+structure is already too big. (In this repo, behavior already splits one
+concern per file under `src/`; keep new logic in the boundary that owns it,
+not in `turnstile.ts`, which stays a thin entry point.)
+
+### DRY (don't repeat yourself)
+
+No duplicated logic. The same decision, rule, constant, or transformation
+lives in exactly one place; a second occurrence of non-trivial logic is a
+defect, not a shortcut. Concretely in this repo:
+
+- A value already derived in one boundary is passed in, not recomputed in
+  another (e.g. a computed path or count is threaded as a parameter, not
+  rebuilt at each call site).
+- Marker syntax, config defaults, and policy text each have one canonical
+  source (`src/markers.ts`, `src/config.ts`, `src/policy.ts`); anything that
+  needs them imports or is checked against the source by
+  `scripts/check-markers.mjs` — never copy them by hand.
+- When a repeated block appears a third time, extract it in the same change
+  set that added it. A comment like "keep these in sync" marks a DRY
+  violation to fix, not a convention to follow.
+
+### Architectural alignment (SOLID)
 
 Follow SOLID principles. Each module or component should have a single,
 well-defined responsibility. Avoid tight coupling between modules. (The
 `src/` boundaries are the architecture: `gates.ts` decides, `markers.ts`
 parses, `state.ts` remembers, `journal.ts` persists, `setup.ts` wires.
-Dependencies flow one way; no cycles.)
+Dependencies flow one way; no cycles. New behavior extends existing
+boundaries through their exported interfaces — a boundary is never reached
+into or bypassed to avoid touching its API.)
 
 ### Security
 
