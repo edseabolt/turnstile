@@ -1,5 +1,9 @@
 direction: right
 
+# Module map: curated view — key boundaries plus the setup wiring spine.
+# Not every import edge is drawn (e.g. type-only imports are shown,
+# some cross-boundary imports are omitted).
+
 host: "OpenCode host\n(v2 promise-plugin API)" {
   session-hook: "session.hook\nprompt · generate · compaction"
   tool-hook: "tool.hook\nexecute.before · execute.after"
@@ -46,11 +50,9 @@ core.setup -> core.evidence
 core.setup -> core.fingerprint
 core.setup -> core.journal
 core.setup -> core.policy
-core.state -> core.journal: "replay"
+core.state -> core.journal: "replay (fs)"
 core.journal -> persist.jsonl
 core.journal -> persist.trace
 core.gates -> core.types
 core.toolpolicy -> core.types
 core.config -> core.types
-core.state -> core.markers
-core.evidence -> core.state

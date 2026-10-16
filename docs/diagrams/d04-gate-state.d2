@@ -9,6 +9,9 @@ planning: "Planning" {
 planok: "Plan approved" {
   shape: oval
 }
+executor: "Executor done\n(cites chunk-N / AC-n)" {
+  shape: oval
+}
 green: "Tests green" {
   shape: oval
 }
@@ -29,7 +32,8 @@ planning -> planok: "plan-reviewer APPROVE | PLAN APPROVED: | permission 'always
 planning -> planning: "BLOCK → revise → re-review\n(round-scoped attribution)" {
   style.stroke-dash: 4
 }
-planok -> green: "test-runner GATE: PASS\n(verified by exit-0 evidence when gateEvidence=enforce)"
+planok -> executor: "executor dispatch\n(## Decomposition in plans dir,\nonce-shot 'once' grant releases one)"
+executor -> green: "test-runner GATE: PASS\n(verified by exit-0 evidence when gateEvidence=enforce)"
 green -> planok: "GATE: FAIL (latest-wins)" {
   style.stroke-dash: 4
 }
@@ -37,7 +41,7 @@ green -> reviewed: "reviewer APPROVE ×2 (reviewEnsemble=enforce) | permission l
 reviewed -> reviewed: "git push allowed"
 green -> end
 
-planok-note: "plansSignature stamped at approval;\nplans-dir edit ⇒ signature mismatch ⇒ verdict stale ⇒ re-review.\npendingOnceGrant.plan releases exactly one executor dispatch." {
+planok-note: "plansSignature stamped at approval;\nplans-dir edit ⇒ signature mismatch ⇒ verdict stale ⇒ re-review." {
   style.stroke-dash: 4
   shape: parallelogram
 }

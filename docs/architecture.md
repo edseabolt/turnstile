@@ -16,9 +16,6 @@ This document is written for two audiences at once:
   source. All claims carry function/hook names; `docs/diagrams/*.d2` are the
   editable sources for the SVGs in `docs/images/` (re-render with D2).
 
-The diagrams reflect behavior introduced through PR #69 (continuation-carry,
-`src/fingerprint.ts`).
-
 ---
 
 ## Contents
@@ -216,10 +213,10 @@ continuing prompt has an unchanged worktree fingerprint.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (17 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (16 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `continuation`,
-  `evidence`, `violation`, `tool`, `error`…). Rotates at 5 MB, 5 generations.
+  `evidence`, `violation`, `tool`, `error`). Rotates at 5 MB, 5 generations.
 - **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
 
 On restart, `replayGatePasses` (`src/state.ts`) reads the last 2000 lines of
