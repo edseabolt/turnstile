@@ -17,7 +17,7 @@
  *
  * Usage: `node scripts/branch-coverage.mjs [test-file ...]`
  * Runs one process over all test files — the same
- * `node --test --experimental-strip-types --test-isolation=none` the gate uses
+ * `node --test --experimental-strip-types --experimental-test-isolation=none` the gate uses
  * — with `NODE_V8_COVERAGE` pointed at a temp dir, then prints every
  * never-executed block inside a function that DID run, as
  * `file:line:col-line` plus a snippet. Exit 0 always.
@@ -87,12 +87,12 @@ const files = testFiles.length
       .map((f) => `tests/${f}`)
 const covDir = mkdtempSync(join(tmpdir(), "branch-cov-"))
 
-// One process, exactly like `npm test` under `--test-isolation=none`, so the
+// One process, exactly like `npm test` under `--experimental-test-isolation=none`, so the
 // V8 block data matches the gate's own accounting and the per-child fabricated
 // zeros the old per-file spawn produced are gone by construction.
 const result = spawnSync(
   process.execPath,
-  ["--test", "--experimental-strip-types", "--test-isolation=none", ...files],
+  ["--test", "--experimental-strip-types", "--experimental-test-isolation=none", ...files],
   {
     env: { ...process.env, NODE_V8_COVERAGE: covDir },
     stdio: ["ignore", "pipe", "pipe"],

@@ -36,7 +36,7 @@ Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift). `npm test` enforces 100% line, branch, and function coverage over
 `src/` + `turnstile.ts` via node:test's built-in V8 coverage thresholds
-(100 for lines, branches, and functions) with `--test-isolation=none` — fully
+(100 for lines, branches, and functions) with `--experimental-test-isolation=none` — fully
 deterministic on a green suite: a red branch report is a real
 never-executed decision, never a merge artifact — the installer scripts
 (`bin/`, `scripts/`) are outside the gate:
@@ -108,10 +108,10 @@ Write tests for critical paths and complex logic. Aim for high test coverage
 on business logic. Use descriptive test names that explain the expected
 behavior. All tests should have docstrings too. (The gate state machine in `src/state.ts` and `src/markers.ts` is
 the critical path; the harness is `node:test` with
-`--experimental-strip-types --test-isolation=none`, wired into `npm run ci`.
+`--experimental-strip-types --experimental-test-isolation=none`, wired into `npm run ci`.
 Coverage is enforced at 100% lines, branches, and functions over `src/` +
 `turnstile.ts` by the same command — a coverage extension is not needed, the
-Node test runner's built-in thresholds gate it, and with `--test-isolation=none`
+Node test runner's built-in thresholds gate it, and with `--experimental-test-isolation=none`
 a green suite is deterministic: a red branch report is a real
 never-executed decision, never a merge artifact. `bin/` and `scripts/` sit
 outside the gate.)

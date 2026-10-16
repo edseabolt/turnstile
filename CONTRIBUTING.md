@@ -12,15 +12,15 @@ npm run ci:installed # install:check — only after `npm run init` on a machine 
 - `npm run format` / `format:check`: Prettier (`.prettierrc.json`)
 - `npm run typecheck`: `tsc --noEmit`, strict
 - `npm run check:markers`: marker-drift guard (see below)
-- `npm test`: `node --test --experimental-strip-types --test-isolation=none
+- `npm test`: `node --test --experimental-strip-types --experimental-test-isolation=none
 tests/*.test.ts`, with 100% line/branch/function coverage enforced over
   `src/` + `turnstile.ts` via node:test's built-in thresholds — no coverage
-  extension. `--test-isolation=none` makes a green suite deterministic, so a
+  extension. `--experimental-test-isolation=none` makes a green suite deterministic, so a
   red branch report is a real never-executed decision, never a merge artifact.
   `npm test` is the sole coverage authority — `scripts/branch-coverage.mjs` is
   a diagnostic, never a work queue. `bin/` and `scripts/` sit outside the gate.
 
-The test suite requires Node ≥ 22.8 (`--test-isolation` shipped in v22.8.0;
+The test suite requires Node ≥ 22.8 (`--experimental-test-isolation` shipped in v22.8.0;
 `--experimental-strip-types` predates it); the plugin runtime itself is Node
 ≥ 18.
 
