@@ -20,8 +20,8 @@ determined or hostile agent:
 - `scripts/check-markers.mjs` guards against accidental drift, not forgery.
 
 Against hostile agents, use OpenCode's permission and sandboxing
-mechanisms. Turnstile's value is the journal: a verifiable record of what
-was claimed, blocked, and waived.
+mechanisms. Turnstile's value is the journal: it records what was claimed,
+blocked, and waived.
 
 ## Attack surface: the journal
 
