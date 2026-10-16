@@ -117,7 +117,57 @@ test("traceEvent without a session ID omits the trailing segment", () => {
   assert.equal(line.split("|").length, 4)
 })
 
-/** plansSignature fails open (null) when the plans dir is unreadable. */
+/** The journal appends without renaming below the rotate tick: the rotation
+ *  runs only on the entry-count tick, and `rotateIfLarge` is a no-op while the
+ *  file stays under maxBytes — no generation appears and no `.lock` dir is
+ *  left behind. On a later tick the over-maxBytes file is renamed to `.1`. */
+test("journal appends without renaming below the rotate tick", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 100,
+    maxGenerations: 1,
+    rotateEveryEntries: 2,
+  })
+  // Writes 1 and 2: the write-2 tick fires, but the file is under maxBytes, so
+  // rotateIfLarge is a no-op — the counter advances and no generation appears.
+  j.journal({ t: 0 })
+  j.journal({ t: 0 })
+  assert.equal(fs.existsSync(`${journalPath}.1`), false)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), false)
+  // Writes 3 and 4: the write-4 tick fires with the file now over maxBytes, so
+  // the current file is renamed to `.1` and the lock is released again.
+  j.journal({ t: 0 })
+  j.journal({ t: 0 })
+  assert.equal(fs.existsSync(`${journalPath}.1`), true)
+  assert.match(fs.readFileSync(`${journalPath}.1`, "utf8"), /"t":0/)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), false)
+})
+
+/** A held `<file>.lock` directory makes the tick skip rotation without losing
+ *  an entry: the contended mkdir is swallowed by tickRotate's single outer
+ *  catch, so the entry still appends and the caller never sees the churn. */
+test("a held .lock directory skips the rotation tick and never loses an entry", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1_000_000,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  // Pre-create the lock so the first tick's mkdir fails (EEXIST); the swallow
+  // runs and the directory stays (no rmdir executed on the failed path).
+  fs.mkdirSync(`${journalPath}.lock`)
+  assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  assert.equal(journalEntries(metricsDir).length, 1)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), true)
+})
+
+/** pathsSignature fails open (null) when the plans dir is unreadable. */
 test("plansSignature fails open on an unreadable plans dir", () => {
   const project = tmpDir()
   const plans = path.join(project, ".opencode", "plans")
@@ -237,6 +287,15 @@ test("validateResolved clamps readWarn and warns on a relative metricsDir", () =
   assert.ok(warnings.some((w) => w.includes("relative")))
 })
 
+/** validateResolved warns when plansDir is absolute: the value is still honored
+ *  (resolved as-is rather than silently dropping it). */
+test("validateResolved warns on an absolute plansDir", () => {
+  const config = defaultConfig()
+  config.plansDir = "/fixed/plans"
+  const warnings = validateResolved(config)
+  assert.ok(warnings.some((w) => w.includes("plansDir") && w.includes("absolute")))
+})
+
 /** readPluginVersion returns null when package.json is unreadable. */
 test("readPluginVersion returns null when package.json cannot be read", () => {
   // A directory path makes readFileSync fail with EISDIR, the same catch a
@@ -289,6 +348,43 @@ test("execute.before journals an internal error and proceeds", async () => {
     await callTool(h, "execute.before", { tool: "task", sessionID: "p1", input })
     const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
     assert.ok(errors.some((e) => String(e.error).includes("tool.execute.before")))
+  } finally {
+    dispose()
+  }
+})
+
+/** A non-BlockError escaping the guard sequence must not be stamped
+ *  blocked:true: only a deliberate BlockError marks the dispatch as blocked,
+ *  so a hostile session record that throws a plain error during executor
+ *  project-dir resolution propagates that error (journaled by the fail-open
+ *  handler) without a blocked dispatch entry. */
+test("execute.before a non-BlockError guard failure is not stamped blocked:true", async () => {
+  const hostile = {} as Record<string, unknown>
+  Object.defineProperty(hostile, "directory", {
+    get() {
+      throw new Error("hostile record")
+    },
+  })
+  const h = makeFakeHost({ sessionRecords: new Map([["p1", hostile]]) })
+  const { dispose, metricsDir } = await boot(h.host)
+  try {
+    // The executor guard sequence awaits resolveProjectDir, whose hostile
+    // record throws a plain (non-BlockError) during directory extraction.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor" },
+    })
+    const entries = journalEntries(metricsDir)
+    const dispatched = entries.filter((l) => l.type === "dispatch")
+    // The guard threw a non-BlockError before the journal-on-exit stamp, so no
+    // dispatch entry exists at all — in particular none stamped blocked:true,
+    // which only a deliberate BlockError produces — and the fail-open handler
+    // journals the internal error under its own key.
+    assert.equal(dispatched.length, 0)
+    assert.ok(
+      entries.some((e) => e.type === "error" && String(e.error).includes("tool.execute.before")),
+    )
   } finally {
     dispose()
   }
@@ -372,8 +468,14 @@ test("compaction hook journals an internal error from a hostile draft", async ()
   }
 })
 
-/** A subscribe() that throws journals the subscription error. */
-test("event subscription failure journals and does not crash setup", async () => {
+/**
+ * A subscribe() that always throws journals one death per attempt — the initial
+ * call plus maxStreamRestarts restarts (six) — then the terminal "ingestion
+ * disabled" entry once the restart budget is spent: every death and the
+ * disablement are journaled, so a dead stream is never a silent exit. Setup
+ * stays alive (fail-open).
+ */
+test("event subscription failure journals each death then disables after the budget", async () => {
   const h = makeFakeHost()
   const throwingHost: Host = {
     ...h.host,
@@ -387,7 +489,57 @@ test("event subscription failure journals and does not crash setup", async () =>
   await settle()
   dispose()
   const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
-  assert.ok(errors.some((e) => String(e.error).includes("event subscription")))
+  const subs = errors.filter((e) => String(e.error).includes("event subscription"))
+  assert.equal(
+    subs.length,
+    6,
+    "one death per attempt: the initial subscribe plus maxStreamRestarts restarts",
+  )
+  assert.ok(
+    errors.some((e) =>
+      String(e.error).includes(
+        "event stream restart budget exhausted; session.text.* marker ingestion is disabled",
+      ),
+    ),
+  )
+})
+
+/**
+ * A subscription that surfaces dispose as a throw is silent: the abort (from
+ * the disposer) makes both the per-death journal and the terminal disablement
+ * journal nothing — a detached stream is not a death, matching the pre-existing
+ * abort-silent semantics.
+ */
+test("a subscribe that throws after dispose stays silent", async () => {
+  const h = makeFakeHost()
+  const host: Host = {
+    ...h.host,
+    event: {
+      subscribe: (options?: { signal?: AbortSignal }): AsyncIterable<any> => {
+        const signal = options?.signal
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<any> {
+            return {
+              next: async (): Promise<IteratorResult<any>> => {
+                // Hang until dispose aborts; a host that turns the abort into a
+                // throw must be treated as a silent detach, never a death.
+                if (signal?.aborted) throw new Error("aborted boom")
+                await new Promise<void>(() => {})
+                return { done: true, value: undefined }
+              },
+            }
+          },
+        }
+      },
+    },
+  }
+  const { dispose, metricsDir } = await boot(host)
+  await settle()
+  dispose()
+  await settle()
+  const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
+  assert.ok(!errors.some((e) => String(e.error).includes("event subscription")))
+  assert.ok(!errors.some((e) => String(e.error).includes("restart budget exhausted")))
 })
 
 /** Registration failures journal and leave the plugin functional. */

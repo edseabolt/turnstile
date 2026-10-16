@@ -81,7 +81,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/tool-policy.ts` | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                         |
 | `src/evidence.ts`    | Correlates `GATE: PASS` against recorded exit-0 test executions per parent                                                                          |
 | `src/fingerprint.ts` | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                         |
-| `src/journal.ts`     | Persistence: `turnstile.jsonl` audit trail + optional trace, size-based rotation, fail-open appends                                                 |
+| `src/journal.ts`     | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends            |
 | `src/policy.ts`      | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                  |
 | `src/types.ts`       | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                    |
 
@@ -121,8 +121,9 @@ counted into the load heartbeat (`type:"setup"`).
 **`tool.hook("execute.after")`** — observation only, never blocks: parses
 markers out of task deliveries, attributes plan verdicts, credits reviewer
 approval (ensemble-gated), prepends the orchestrator policy once per task,
-increments the read counter, and promotes an `unverifiedPass` when a correlated
-exit-0 test execution appears.
+corrects the read counter charge down when a read produced no string output
+(`execute.before` charged it on the guard), and promotes an `unverifiedPass`
+when a correlated exit-0 test execution appears.
 
 **`permission.hook("evaluate")`** — never blocks; when the plan gate is red on
 a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
@@ -134,8 +135,15 @@ a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
 parsing from streamed child text (`message.part.updated`,
 `session.text.ended`, `session.text.delta`), permission ask/reply bookkeeping,
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29, for hosts
-where the prompt hook does not fire), and error telemetry: a stream that ends
-without abort is journaled as an error.
+where the prompt hook does not fire), and error telemetry. Streamed child text
+is ingested through a per-session sliding window: a marker the host splits
+across `session.text.delta` chunks is reassembled and re-parsed so a completed
+marker is first-sighted once (dedup-suppressing the re-parse), then the window
+ages out on the next task dispatch. A subscription that throws or a stream that
+completes without abort is journaled and the consumer re-subscribes up to a
+cumulative budget of 5 restarts; the terminal disablement journals and
+`session.text.*` ingestion stops once the budget is spent (a throw while
+aborted stays silent).
 
 ---
 
@@ -201,7 +209,7 @@ continuing prompt has an unchanged worktree fingerprint.
 | `userWaiver`                                                                                 | `USER WAIVER:` in the user's prompt only                                                      | consumed by the dispatch it unlocks; prompt reset              | exempts reviewer gate, plan gate, loop caps     |
 | `pendingOnceGrant.plan/.landing`                                                             | permission reply `once`                                                                       | consumed by one executor dispatch / one push                   | per-reason keying prevents cross-consumption    |
 | `reviewRounds`, `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`, `totalDispatches` | dispatch guards                                                                               | prompt reset                                                   | round caps / budget                             |
-| `reads`                                                                                      | `execute.after` read increments                                                               | prompt reset                                                   | warn 8 / block 15                               |
+| `reads`                                                                                      | `execute.before` increments; `execute.after` corrects a failed read                           | prompt reset                                                   | warn 8 / block 15                               |
 | `replayGrace`                                                                                | journal replay; continuation-carry re-arm                                                     | consumed by first `resetState`                                 | one-prompt survival of restored flags           |
 | `taskFingerprint`                                                                            | stamped when `continuationCarry` on                                                           | new stamp                                                      | identity signal for carry                       |
 
@@ -216,7 +224,23 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 - **`turnstile.jsonl`** — the always-on audit trail (16 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `continuation`,
-  `evidence`, `violation`, `tool`, `error`). Rotates at 5 MB, 5 generations.
+  `evidence`, `violation`, `tool`, `error`). A `dispatch` entry is written at
+  guard exit and stamps `blocked:true` when a guard rejected the attempt (the
+  guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
+  excludes the stamp from its dispatches counter to avoid a double count).
+  Rotation: the append hot path never stats or renames — `journal()` only
+  appends and advances a per-file counter. The rotate-then-rename sequence
+  runs once per `rotateEveryEntries` appends (default 512), only under a
+  created `<file>.lock` atomic-mkdir mutex, so two concurrent sessions never
+  both rename the shared file. Disk usage stays bounded at `(N + 1) ×
+maxBytes`, plus at most `rotateEveryEntries × ~2 KB` of overshoot between
+  the size check and the rename; a contended lock or any rotation error is
+  swallowed (fail-open); a leftover `<file>.lock` from a crash between create
+  and remove is skipped, so that file stops rotating until the directory is
+  removed while journaling keeps appending. A residual bounded race remains:
+  a writer that opens the path across the rename may land an entry in a `.1`
+  generation replay never reads, but the window is small and clock-free.
+  Rotates at 5 MB, 5 generations.
 - **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
 
 On restart, `replayGatePasses` (`src/state.ts`) reads the last 2000 lines of

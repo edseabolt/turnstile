@@ -87,9 +87,13 @@ export interface Gates {
    */
   guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
   /**
-   * Enforces the whole-file read horizon for a session.
+   * Enforces the whole-file read horizon for a session with an atomic
+   * check-then-increment: the read is allowed when the count is below
+   * `readBlock`, and the count is then advanced in the same synchronous step,
+   * so exactly `readBlock` whole-file reads succeed and concurrent interleaved
+   * hooks cannot both pass at count-1.
    * @param sessionID The parent session ID.
-   * @param ledger The gate ledger to read state from.
+   * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix once the read
    *     count has reached the configured block threshold.
    */
@@ -474,19 +478,28 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Enforces the whole-file read horizon for a session.
+   * Enforces the whole-file read horizon for a session with an atomic
+   * check-then-increment, exactly like the reviewer cap: the read is allowed
+   * when the count is below `readBlock`, then the count is advanced in the same
+   * synchronous step (the awaited edge-resolution above already completed, so
+   * there is no await between check and increment). This closes the TOCTOU
+   * window between the before/after hooks.
    * @param sessionID The parent session ID.
-   * @param ledger The gate ledger to read state from.
+   * @param ledger The gate ledger to read and mutate state from.
    * @throws Error with a `BLOCKED by turnstile:` prefix once the read
    *     count has reached the configured block threshold.
    */
   function guardReadLimit(sessionID: string, ledger: GateLedger): void {
-    if (ledger.state(sessionID).reads >= config.readBlock) {
+    const s = ledger.state(sessionID)
+    if (s.reads >= config.readBlock) {
       journaler.journal({ type: "blocked", sessionID, tool: "read", reason: "read-limit" })
       throw new BlockError(
         `BLOCKED by turnstile: ${config.readBlock} whole-file reads this session. Switch to grep/glob for targeted retrieval, or report being stuck and escalate to the user.`,
       )
     }
+    // Check-then-increment: the Nth read succeeds and the (N+1)th blocks, so
+    // exactly `readBlock` whole-file reads succeed per task.
+    s.reads++
   }
 
   /**
@@ -581,6 +594,18 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
+   * Single source for the plans-dir location: a relative value (the default)
+   * joins the per-dispatch project dir; an absolute value is honored as-is
+   * (validateResolved journaled a warning at load). Kept in one closure so the
+   * plan-gate consumers never recompute the path.
+   */
+  function resolvePlansDir(projectDir: string): string {
+    return path.isAbsolute(config.plansDir)
+      ? config.plansDir
+      : path.join(projectDir, config.plansDir)
+  }
+
+  /**
    * Reconciles a session's approval with the current scan: a non-empty stamp
    * that differs from `scan.key` means the plan was re-planned since approval,
    * so the verdict is stale and re-review is required; a green pass re-stamps
@@ -647,7 +672,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * @returns `{ file, head }` for the first sorted plan, or undefined.
    */
   function planSummary(projectDir: string): { file: string; head: string } | undefined {
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return undefined
       const scan = scanPlans(plansDir)
@@ -680,7 +705,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   ): { red: boolean; summary?: { file: string; head: string } } {
     const s = ledger.state(sessionID)
     if (s.userWaiver !== "") return { red: false }
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return { red: false }
       const scan = scanPlans(plansDir)
@@ -712,7 +737,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    */
   function enforceDecomposition(sessionID: string, prompt: string, projectDir: string): void {
     if (/\b(?:chunk-\d+|AC-\d+)\b/.test(prompt)) return
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return
       const scan = scanPlans(plansDir)
@@ -744,7 +769,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * @returns The plans-dir content signature, or null when absent/unreadable.
    */
   function plansSignature(projectDir: string): string | null {
-    const plansDir = path.join(projectDir, config.plansDir)
+    const plansDir = resolvePlansDir(projectDir)
     if (!fs.existsSync(plansDir)) return null
     try {
       return scanPlans(plansDir).key

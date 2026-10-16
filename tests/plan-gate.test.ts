@@ -290,6 +290,26 @@ test("plan gate: no plans dir or empty dir leaves executor free", async () => {
   }
 })
 
+/** An absolute plansDir is honored (not silently dropped): a decomposed plan in
+ *  that directory still blocks an executor that cites no chunk. An absolute
+ *  path must be applied as-is rather than joined under projectDir (which nested
+ *  it under project, left the dir absent, and made the gate return early —
+ *  silently free). */
+test("plan gate: an absolute plansDir blocks the executor decomposition check", () => {
+  const absPlans = path.join(tmpDir(), "abs-plans")
+  fs.mkdirSync(absPlans, { recursive: true })
+  fs.writeFileSync(path.join(absPlans, "plan.md"), "# P\n## Decomposition\n- chunk-1\n")
+  const metricsDir = tmpDir()
+  const journaler = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const config = defaultConfig()
+  config.plansDir = absPlans
+  const gates = createGates(config, journaler)
+  assert.throws(
+    () => gates.enforceDecomposition("p1", "do the work", "/any/project"),
+    (e: Error) => String(e.message).includes("## Decomposition"),
+  )
+})
+
 /** A journaled plan approval replays after restart so executor stays free. */
 test("plan gate: journal replay restores plan approval", async () => {
   const project = tmpDir()

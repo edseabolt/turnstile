@@ -60,3 +60,15 @@ test("rotateIfLarge prunes the oldest generation beyond the cap", () => {
   assert.equal(fs.readFileSync(`${file}.1`, "utf8"), "current")
   assert.equal(fs.readFileSync(`${file}.2`, "utf8"), "gen1")
 })
+
+/**
+ * A missing journal file trips the outer catch: `statSync` throws and the
+ * rename sequence never runs, so rotateIfLarge is a no-op on any failure.
+ */
+test("rotateIfLarge no-ops when the file is missing", () => {
+  const dir = tmpDir()
+  const file = path.join(dir, "missing.jsonl")
+  rotateIfLarge(file, 1024, 5)
+  assert.equal(fs.existsSync(file), false)
+  assert.equal(fs.existsSync(`${file}.1`), false)
+})

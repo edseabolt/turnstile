@@ -22,18 +22,18 @@ tool: "tool.hook" {
   after: "execute.after\n(observation only, never blocks)"
 }
 
-before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸ once-grants"
-before-read: "read: parent-keyed read horizon (block 15)"
+before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸\none-grants ▸ dispatch journaled at guard exit"
+before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
 before-write: "write/edit: path denylist"
 
 after-task: "task delivery: parseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ policy prepend (once)"
-after-read: "read: increment parent's reads;\ninject warning at readWarn=8"
+after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
 after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
 
-eventloop: "event.subscribe stream loop" {
+eventloop: "event.subscribe stream loop (5 restarts)" {
   created: "session.created → child→parent edge;\nroot stamps projectDir"
-  text: "message.part.updated / session.text.ended / .delta\n→ parseMarkers"
+  text: "message.part.updated / .ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
   inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"
   errors: "session.error → telemetry"

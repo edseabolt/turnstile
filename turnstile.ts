@@ -87,6 +87,12 @@
  *   the dispatcher to stop re-dispatching and escalate to the user (so a
  *   subagent stuck at its own cap is not dead-ended by a "wait for a new prompt"
  *   hint).
+ * - Dispatch journaling: every `task`/`subagent` dispatch is journaled once at
+ *   guard exit, so an allowed dispatch stays byte-identical while a blocked
+ *   attempt stamps `blocked:true` (audit distinguishes dispatched from
+ *   blocked-and-attempted; `turnstile status` omits that stamp from its
+ *   dispatches counter, the block already being counted by the guard's
+ *   `blocked` entry).
  * - Reviewer ensemble: every unwaived `task -> reviewer` dispatch is counted
  *   per task and journaled as `{type:"ensemble", sessionID, agent, count}`;
  *   under `reviewEnsemble: enforce` (default) a reviewer `VERDICT: APPROVE`
@@ -110,10 +116,13 @@
  *   evicts a registered parent; unresolved child buckets remain evictable and
  *   can no longer push a live parent out past `maxSessions`.
  * - Horizon: read-counter backstop (warn @8, block @15 whole-file reads),
- *   keyed off the parent session: the child→parent edge is awaited
- *   (host `session.get` when `session.created` has not yet landed) before the
- *   guard fires, so an in-flight child draws down the parent's budget; a
- *   still-unresolved child self-keys and journals a bounded signal.
+ *   keyed off the parent session: the increment happens atomically in
+ *   `execute.before` (check-then-increment, so the horizon is charged even
+ *   for a read that later yields no output); `execute.after` corrects the
+ *   charge down when a read produced no string output. The child→parent edge
+ *   is awaited (host `session.get` when `session.created` has not yet landed)
+ *   before the guard fires, so an in-flight child draws down the parent's
+ *   budget; a still-unresolved child self-keys and journals a bounded signal.
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
  *   when a plan file with a `## Decomposition` block exists.
  * - Status: `turnstile status` (the `opencode-turnstile status` CLI) reads
@@ -161,8 +170,12 @@
  *   `once` grants exactly one push (consumed by the next push), and `reject`
  *   re-blocks and re-arms — the repeat push is the human decision point.
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
- *   assistant text, deduped per task (streaming re-delivery is ignored);
- *   marker-less outputs from marker-contracted agents (test-runner/reviewer/
+ *   assistant text, deduped per task (streaming re-delivery is ignored); a
+ *   marker the host streams across `session.text.delta` chunks is reassembled
+ *   in a per-session sliding window before parsing (its completion is
+ *   first-sighted once, dedup-suppressing the re-parse), so a split marker
+ *   still flips the gate; marker-less outputs from marker-contracted agents
+ *   (test-runner/reviewer/
  *   plan-reviewer) are journaled as violations; the summary/divergence
  *   suppression (a child's streamed verdict hiding a marker-less summarized
  *   delivery) is scoped to the plan-reviewer only — reviewer/test-runner
@@ -206,6 +219,12 @@
  *   edge-resolved branch and the never-BLOCK-on-zero-candidates guarantee are
  *   unchanged, so an unattributable parent-keyed delivery stays a single
  *   `/unattributable/` error on fail-open paths.
+ * - Event stream: `event.subscribe` feeds marker parsing from streamed child
+ *   text; a subscription that throws or a stream that completes without abort
+ *   is journaled and re-subscribed up to a cumulative budget of 5 restarts,
+ *   after which the terminal disablement journals and `session.text.*`
+ *   ingestion stops (a throw while aborted/disposed stays silent, matching
+ *   the pre-existing `.catch` semantics).
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors, and the load heartbeat
  *   (a "setup" entry: plugin version, config digest, hook count). Errors also

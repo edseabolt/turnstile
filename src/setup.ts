@@ -224,6 +224,32 @@ export function createTurnstile(
   function hasMarker(text: string): boolean {
     return (text.match(gateRe)?.length ?? 0) > 0 || (text.match(verdictRe)?.length ?? 0) > 0
   }
+
+  /**
+   * Records one `task`/`subagent` dispatch plus its trace line — the single
+   * canonical copy, called at guard exit so an allowed dispatch is
+   * byte-identical to before while a blocked attempt stamps `blocked:true`
+   * (audit distinguishes dispatched from blocked-and-attempted).
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param description The trace-gated dispatch description.
+   * @param blocked Whether a guard rejected the dispatch (stamps `blocked:true`).
+   */
+  function recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+  ): void {
+    journaler.journal({
+      type: "dispatch",
+      sessionID,
+      agent,
+      description,
+      ...(blocked ? { blocked: true } : {}),
+    })
+    journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+  }
   const ledger: GateLedger = createLedger(journaler.journalPath, config.maxSessions)
   const gates: Gates = createGates(config, journaler)
   // Stateless denylist for bash/shell and write/edit tools in execute.before
@@ -341,6 +367,32 @@ export function createTurnstile(
       // The loop condition guarantees a first entry exists.
       const oldest = sessionDirs.keys().next().value as string
       sessionDirs.delete(oldest)
+    }
+  }
+
+  /**
+   * Per-session sliding window of streamed child text: a host may split one
+   * marker across `session.text.delta` chunks, and a fragment-only parse silently
+   * loses the gate flip. Each delta re-parses the window's tail; markers.ts dedup
+   * suppresses every re-fire, so only a newly completed marker is first-sighted.
+   * Bounded by boundDeltaWindows; cleared on the next task dispatch (see
+   * execute.before age-out) so stale fragments of a prior task do not leak.
+   */
+  const deltaWindows = new Map<string, string>()
+  // Comfortably longer than any complete marker; the tail keeps a window whose
+  // head was evicted so a marker split across many small deltas still completes.
+  const maxDeltaWindowChars = 512
+  const maxTrackedDeltaWindows = 50
+
+  /**
+   * Bounds the delta-window map by evicting its oldest entries.
+   * Mirrors boundSessionDirs; see deltaWindows.
+   */
+  function boundDeltaWindows(): void {
+    while (deltaWindows.size > maxTrackedDeltaWindows) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = deltaWindows.keys().next().value as string
+      deltaWindows.delete(oldest)
     }
   }
 
@@ -1310,18 +1362,18 @@ export function createTurnstile(
               // definition: mark before the guards so their
               // state() inserts land pinned against LRU eviction.
               ledger.markParent(sessionID)
+              // Age out streamed delta windows: the next dispatch is the task
+              // boundary, so stale fragments of the previous task's child text
+              // must not leak into the new scope (mirrors the prompt-reset
+              // pattern of evidence.clear).
+              deltaWindows.clear()
               const prompt = String(event.input?.prompt ?? "")
-              journaler.journal({
-                type: "dispatch",
-                sessionID,
-                agent,
-                // Prompt descriptions can carry sensitive context; record
-                // them only when the trace is enabled.
-                description: config.trace
-                  ? String(event.input?.description ?? "").slice(0, 200)
-                  : "",
-              })
-              journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+              // Prompt descriptions can carry sensitive context; record them
+              // only when the trace is enabled (redacted elsewhere — here it is
+              // the single copy passed to the dispatch-recording helper).
+              const description = config.trace
+                ? String(event.input?.description ?? "").slice(0, 200)
+                : ""
 
               // Last-wins: record this parent's LATEST plan-reviewer
               // dispatch time for the plausibility join. A prompt reset clears it
@@ -1344,46 +1396,64 @@ export function createTurnstile(
                     "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
                 })
 
-              // Per-leg loop caps + total-dispatch budget: every
-              // task/subagent dispatch — executor, planner, plan-reviewer,
-              // test-runner, reviewer, debugger, unknown — draws down the
-              // budget here, so the global backstop holds even against
-              // grant-released dispatches (grants release *authorization*, not
-              // *budget*). Before the once-grant short-circuit: a blocked
-              // dispatch must not consume the grant.
-              gates.guardDispatchBudget(sessionID, ledger, agent)
+              // Guards-then-journal: the dispatch entry is recorded at guard
+              // exit, so an allowed dispatch stays byte-identical while a
+              // deliberate block carries `blocked:true` (audit distinguishes a
+              // dispatched entry from a blocked-and-attempted one). The once-grant
+              // consume is an allowed dispatch. Only a BlockError — the guard's
+              // deliberate refusal — is stamped blocked and re-thrown for the
+              // outer catch to turn into the BLOCKED error; any other throw is an
+              // internal error that propagates un-stamped to the fail-open handler.
+              try {
+                // Per-leg loop caps + total-dispatch budget: every
+                // task/subagent dispatch — executor, planner, plan-reviewer,
+                // test-runner, reviewer, debugger, unknown — draws down the
+                // budget here, so the global backstop holds even against
+                // grant-released dispatches (grants release *authorization*, not
+                // *budget*). Before the once-grant short-circuit: a blocked
+                // dispatch must not consume the grant.
+                gates.guardDispatchBudget(sessionID, ledger, agent)
 
-              // Once-granted human approval (from a `permission.replied` reply)
-              // grants exactly ONE EXECUTOR dispatch past the plan gate and is
-              // cleared immediately, so a stale grant cannot outlive the single
-              // dispatch it was given for, short-circuiting the plan-gate block
-              // below. Scoped to the executor dispatch class: the grant exists
-              // solely to release the plan-gate block, so any other agent
-              // (reviewer, plan-reviewer, …) leaves it pending and still runs
-              // its own guards (guardReviewerDispatch / …). execute.before
-              // consults only hasPlanVerdict / pendingOnceGrant — never
-              // humanApproval, which is provenance only.
-              if (
-                agent === config.agents.executor &&
-                ledger.state(sessionID).pendingOnceGrant.plan !== ""
-              ) {
-                // Consume the plan-gate once grant (a `permission.replied`
-                // `once`): clears just `.plan` so a landing `.landing` grant,
-                // if any, survives for the push it was given for.
-                ledger.state(sessionID).pendingOnceGrant.plan = ""
-                return
-              }
+                // Once-granted human approval (from a `permission.replied` reply)
+                // grants exactly ONE EXECUTOR dispatch past the plan gate and is
+                // cleared immediately, so a stale grant cannot outlive the single
+                // dispatch it was given for, short-circuiting the plan-gate block
+                // below. Scoped to the executor dispatch class: the grant exists
+                // solely to release the plan-gate block, so any other agent
+                // (reviewer, plan-reviewer, …) leaves it pending and still runs
+                // its own guards (guardReviewerDispatch / …). execute.before
+                // consults only hasPlanVerdict / pendingOnceGrant — never
+                // humanApproval, which is provenance only.
+                if (
+                  agent === config.agents.executor &&
+                  ledger.state(sessionID).pendingOnceGrant.plan !== ""
+                ) {
+                  // Consume the plan-gate once grant (a `permission.replied`
+                  // `once`): clears just `.plan` so a landing `.landing` grant,
+                  // if any, survives for the push it was given for.
+                  ledger.state(sessionID).pendingOnceGrant.plan = ""
+                  recordDispatch(sessionID, agent, description, false)
+                  return
+                }
 
-              if (agent === config.agents.reviewer) {
-                gates.guardReviewerDispatch(sessionID, ledger)
-              }
+                if (agent === config.agents.reviewer) {
+                  gates.guardReviewerDispatch(sessionID, ledger)
+                }
 
-              if (agent === config.agents.executor) {
-                const dir = await resolveProjectDir(sessionID)
-                gates.enforcePlanApproval(sessionID, dir, ledger)
-                gates.enforceDecomposition(sessionID, prompt, dir)
+                if (agent === config.agents.executor) {
+                  const dir = await resolveProjectDir(sessionID)
+                  gates.enforcePlanApproval(sessionID, dir, ledger)
+                  gates.enforceDecomposition(sessionID, prompt, dir)
+                }
+                recordDispatch(sessionID, agent, description, false)
+              } catch (e) {
+                // Only a deliberate BlockError is a real block; a non-BlockError
+                // is an internal error that propagates un-stamped to the
+                // fail-open outer handler (which journals it), so the dispatch
+                // entry is never mislabeled as blocked.
+                if (e instanceof BlockError) recordDispatch(sessionID, agent, description, true)
+                throw e
               }
-              return
             }
 
             if (event?.tool === "read") {
@@ -1609,13 +1679,17 @@ export function createTurnstile(
             }
             if (event?.tool === "read") {
               // Same parent keying as the guard: count and budget stay in
-              // step regardless of which session ID the host reports. This
-              // stays synchronous on purpose — the before-hook already awaited
-              // resolveParent(sid) for this same sessionID, so the edge is
-              // cached by the time it fires.
+              // step regardless of which session ID the host reports. The
+              // increment happens atomically in the before-hook (guardReadLimit);
+              // this after-hook journals the running count and corrects it down
+              // when the read did not produce a string output (a non-string
+              // result never consumed budget).
               const sessionID = ledger.parentOf(asSessionID(event?.sessionID))
               const s = ledger.state(sessionID)
-              s.reads++
+              // The before-hook already incremented; a read that did not produce
+              // a string output never consumed budget — correct the charge down
+              // (floor 0).
+              if (typeof event.result?.output !== "string" && s.reads > 0) s.reads--
               journaler.journal({ type: "tool", sessionID, tool: "read", reads: s.reads })
               if (
                 s.reads === config.readWarn &&
@@ -1711,7 +1785,8 @@ export function createTurnstile(
       /**
        * Consumes the host event stream until aborted, dispatching each
        * event type to its handler. Per-event failures are journaled, never
-       * fatal to the stream.
+       * fatal to the stream. Fragmented `session.text.delta` markers are
+       * recovered by the per-session sliding window (see the delta case).
        */
       const consume = async (): Promise<void> => {
         for await (const event of subscribe({ signal: controller.signal })) {
@@ -1766,8 +1841,20 @@ export function createTurnstile(
                 const sid = properties.sessionID
                 const delta = properties.delta
                 if (typeof sid === "string" && typeof delta === "string") {
+                  // Reassemble a possibly-split marker: fold this delta into the
+                  // session's sliding window (tail-bounded) and re-parse it. The
+                  // shared-empty dedup scope suppresses every re-fire, so only a
+                  // newly completed marker across chunks is first-sighted.
+                  const window = ((deltaWindows.get(sid) ?? "") + delta).slice(-maxDeltaWindowChars)
+                  deltaWindows.set(sid, window)
+                  boundDeltaWindows()
                   await resolveParent(sid)
-                  parseMarkers(delta, sid, "child-text-delta")
+                  // Parse from the map, not the local fold: a task dispatch that
+                  // interleaves during the await clears the window (the task
+                  // boundary), and a stale local string would complete a marker
+                  // that the clear was meant to drop.
+                  const pending = deltaWindows.get(sid)
+                  if (pending === window) parseMarkers(window, sid, "child-text-delta")
                 }
                 break
               }
@@ -1946,10 +2033,37 @@ export function createTurnstile(
         if (!controller.signal.aborted)
           journaler.journal({ type: "error", error: "event stream ended" })
       }
-      const consuming = consume().catch((e: unknown) => {
-        if (!controller.signal.aborted)
-          journaler.journal({ type: "error", error: `event subscription: ${e}` })
-      })
+      /**
+       * Bounds consume() re-subscriptions on any non-abort exit so a broken
+       * event stream disables (rather than silently exits) marker ingestion
+       * after a small cumulative budget. A thrown subscription journals one
+       * `event subscription:` entry per death; after the budget is spent the
+       * terminal disablement journals and the loop stops re-subscribing (no
+       * more session.text.* ingestion). A throw while aborted (dispose) stays
+       * silent, matching the pre-existing .catch semantics.
+       */
+      const maxStreamRestarts = 5
+      let streamRestarts = 0
+      const supervise = async (): Promise<void> => {
+        for (;;) {
+          try {
+            await consume()
+          } catch (e) {
+            if (!controller.signal.aborted)
+              journaler.journal({ type: "error", error: `event subscription: ${e}` })
+          }
+          if (controller.signal.aborted) return
+          streamRestarts++
+          if (streamRestarts <= maxStreamRestarts) continue
+          journaler.journal({
+            type: "error",
+            error:
+              "event stream restart budget exhausted; session.text.* marker ingestion is disabled",
+          })
+          return
+        }
+      }
+      const consuming = supervise()
       cleanups.push(() => {
         controller.abort()
         void consuming

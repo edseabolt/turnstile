@@ -15,7 +15,7 @@ flow: {
   user -> orch: "task request"
 
   orch -> hooks: "dispatch planner"
-  hooks -> journal: "dispatch journaled — budget + caps checked"
+  hooks -> journal: "dispatch journaled at guard exit; blocked:true when a guard rejects"
   hooks -> orch: "allowed (no gate for planner besides caps)" {
     style.stroke-dash: 4
   }

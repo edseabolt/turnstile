@@ -36,7 +36,8 @@ async function bootDefault(): Promise<{ h: FakeHost; dispose: () => void; metric
   return { h, dispose, metricsDir }
 }
 
-/** Golden: a blocked reviewer dispatch still journals the dispatch entry with its fields. */
+/** Golden: a blocked reviewer dispatch still journals the dispatch entry with
+ *  its fields, now stamped `blocked:true` so audit sees the attempt. */
 test("golden: dispatch entry shape", async () => {
   const { h, dispose, metricsDir } = await bootDefault()
   await callTool(h, "execute.before", {
@@ -182,8 +183,10 @@ test("golden: verdict entry shape with rounds", async () => {
 test("golden: read tool entry shape and warn prefix at 8 reads", async () => {
   const { h, dispose, metricsDir } = await bootDefault()
   let last: { output: string } = { output: "" }
+  // Before-hook increments; after-hook journals the running count and warns.
   for (let i = 0; i < 8; i++) {
     last = { output: `body ${i}` }
+    await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
     await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: last })
   }
   assert.match(
@@ -290,6 +293,7 @@ test("golden: the block messages are byte-identical", async () => {
       "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
   )
   for (let i = 0; i < 15; i++) {
+    await callTool(h, "execute.before", { tool: "read", sessionID: "p2" })
     await callTool(h, "execute.after", { tool: "read", sessionID: "p2", result: { output: "x" } })
   }
   await assert.rejects(
