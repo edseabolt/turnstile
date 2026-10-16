@@ -111,7 +111,11 @@ export interface Gates {
    * configured plans directory, executor dispatches require a current
    * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver).
    * Approval is invalidated when this session's approval was issued against
-   * a different plans-dir signature, forcing re-review after a re-plan.
+   * a different plans-dir signature, forcing re-review after a re-plan. The
+   * signature is path-free (directory-independent), so an approval survives a
+   * same-content move to another checkout; a genuine content change drops the
+   * verdict loudly, journaling a replay-inert `STALE` plan entry rather than a
+   * silent mismatch.
    * The waiver is the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt): non-empty
    * waives this gate for the whole task (not per dispatch).
@@ -504,10 +508,13 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   /** What one plans-dir scan establishes for both plan gates. */
   interface PlansScan {
     /**
-     * Content signature of the plans dir: `dir|name:sha256hex,…`. Two scans
+     * Content signature of the plans dir: `name:sha256hex,…`. Two scans
      * with different keys mean the plans dir _content_ changed (an add,
      * delete, rename, or same-size/content edit); a utimes-only or dir touch
-     * leaves it identical — dir mtime is deliberately not hashed.
+     * leaves it identical — dir mtime is deliberately not hashed. The key is
+     * path-free so an approval issued against one checkout survives a
+     * same-content move; the empty dir maps to the `"empty"` sentinel (never
+     * `""`, which would collide with the accept-once stamp).
      */
     key: string
     /** Sorted plan file names (empty when the dir holds no plans). */
@@ -531,18 +538,21 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Content signature: `dir|name:sha256hex,…`. Identical iff the plans dir's
+   * Content signature of the plans dir: `name:sha256hex,…`, path-free so a
+   * same-content move survives an approval. Identical iff the plans dir's
    * content is identical — an add, delete, rename, or same-size/content edit
-   * changes it; a utimes-only or dir touch does not.
-   * @param dir Absolute plans directory path.
+   * changes it; a utimes-only or dir touch does not. The empty dir emits the
+   * literal sentinel `"empty"` (never `""`, which collides with the accept-once
+   * stamp: an approval stamped on an empty dir must mismatch once a plan file
+   * appears, journaling STALE loudly rather than silently re-stamping green).
    * @param entries The plan entries from `readEntries`.
-   * @returns The content signature for `dir` and its entries.
+   * @returns The path-free content signature, or `"empty"` when there are none.
    */
-  function plansKey(dir: string, entries: Array<{ name: string; bytes: Buffer }>): string {
-    const files = entries
+  function plansKey(entries: Array<{ name: string; bytes: Buffer }>): string {
+    if (entries.length === 0) return "empty"
+    return entries
       .map((e) => `${e.name}:${createHash("sha256").update(e.bytes).digest("hex")}`)
       .join(",")
-    return `${dir}|${files}`
   }
 
   /**
@@ -550,13 +560,14 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * content signature. The cache skips a redundant rescan: a key hit returns
    * the cached scan, skipping the utf8 decode and `## Decomposition` search;
    * a key miss replaces it — either way the returned key reports the dir's
-   * current content.
+   * current content. The key is path-free, so the cached scan is
+   * directory-agnostic and a same-content move reuses it.
    * @param dir Absolute plans directory path.
-   * @returns The current scan; `scan.key` is the dir's content signature.
+   * @returns The current scan; `scan.key` is the dir's path-free content signature.
    */
   function scanPlans(dir: string): PlansScan {
     const entries = readEntries(dir)
-    const key = plansKey(dir, entries)
+    const key = plansKey(entries)
     const cached = plansCache
     if (cached !== null && cached.key === key) return cached.scan
     const scan: PlansScan = {
@@ -581,10 +592,14 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * dispatch stamps it.
    * @param s The session's gate state (mutated).
    * @param scan The current plans-dir scan.
+   * @param sessionID The session whose stale drop is journaled.
    */
-  function reconcilePlanStamp(s: GateState, scan: PlansScan): void {
-    if (s.hasPlanVerdict && s.plansSignature !== "" && s.plansSignature !== scan.key)
+  function reconcilePlanStamp(s: GateState, scan: PlansScan, sessionID: string): void {
+    if (s.hasPlanVerdict && s.plansSignature !== "" && s.plansSignature !== scan.key) {
       s.hasPlanVerdict = false
+      journaler.journal({ type: "plan", sessionID, result: "STALE", reason: "signature-mismatch" })
+      journaler.traceEvent("plan-gate", "stale", "signature-mismatch", sessionID)
+    }
     if (s.hasPlanVerdict) s.plansSignature = scan.key
   }
 
@@ -672,8 +687,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       if (scan.names.length === 0) return { red: false }
       // Reconcile this session's approval with the current scan: a stamp that
       // differs from the current key means re-plan → stale verdict. Same rule
-      // as enforcePlanApproval, so the handler and the dispatch agree.
-      reconcilePlanStamp(s, scan)
+      // as enforcePlanApproval, so the handler and the dispatch agree. A
+      // mismatched stamp is dropped loudly (STALE journaled) so the evaluate
+      // ask never re-grants a stale approval.
+      reconcilePlanStamp(s, scan, sessionID)
       if (s.hasPlanVerdict) return { red: false }
       return { red: true, summary: firstPlanSummary(scan, plansDir) }
     } catch (e) {

@@ -42,9 +42,16 @@
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
  *   `USER WAIVER:` literal in the user's prompt waives the gate; a
  *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert,
- *   closing the injection hole. Plan-content changes invalidate
- *   approvals issued against the previous plans-dir signature (replayed
- *   approvals are accepted once, then stamped). A journal-replayed approval
+ *   closing the injection hole. The enforcing dispatch resolves the
+ *   session's own directory via `session.get`, falling back to the cached
+ *   last-known directory, then the root `session.created` seed, then
+ *   `process.cwd()`. Approvals stamp a path-free plans-dir signature
+ *   (directory-independent): a same-content move to another checkout
+ *   survives, while a genuine content change drops the verdict loudly,
+ *   journaling a replay-inert `STALE` entry rather than a silent mismatch.
+ *   Plan-content changes invalidate approvals issued against the previous
+ *   signature, while a replayed approval is accepted once and re-stamped. A
+ *   journal-replayed approval
  *   survives the first prompt after a restart (the resume prompt) and then
  *   every later prompt starts a clean cycle.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
