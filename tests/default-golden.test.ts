@@ -36,7 +36,8 @@ async function bootDefault(): Promise<{ h: FakeHost; dispose: () => void; metric
   return { h, dispose, metricsDir }
 }
 
-/** Golden: a blocked reviewer dispatch still journals the dispatch entry with its fields. */
+/** Golden: a blocked reviewer dispatch still journals the dispatch entry with
+ *  its fields, now stamped `blocked:true` so audit sees the attempt. */
 test("golden: dispatch entry shape", async () => {
   const { h, dispose, metricsDir } = await bootDefault()
   await callTool(h, "execute.before", {

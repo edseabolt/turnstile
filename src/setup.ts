@@ -224,6 +224,32 @@ export function createTurnstile(
   function hasMarker(text: string): boolean {
     return (text.match(gateRe)?.length ?? 0) > 0 || (text.match(verdictRe)?.length ?? 0) > 0
   }
+
+  /**
+   * Records one `task`/`subagent` dispatch plus its trace line — the single
+   * canonical copy, called at guard exit so an allowed dispatch is
+   * byte-identical to before while a blocked attempt stamps `blocked:true`
+   * (audit distinguishes dispatched from blocked-and-attempted).
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param description The trace-gated dispatch description.
+   * @param blocked Whether a guard rejected the dispatch (stamps `blocked:true`).
+   */
+  function recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+  ): void {
+    journaler.journal({
+      type: "dispatch",
+      sessionID,
+      agent,
+      description,
+      ...(blocked ? { blocked: true } : {}),
+    })
+    journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+  }
   const ledger: GateLedger = createLedger(journaler.journalPath, config.maxSessions)
   const gates: Gates = createGates(config, journaler)
   // Stateless denylist for bash/shell and write/edit tools in execute.before
@@ -1311,17 +1337,12 @@ export function createTurnstile(
               // state() inserts land pinned against LRU eviction.
               ledger.markParent(sessionID)
               const prompt = String(event.input?.prompt ?? "")
-              journaler.journal({
-                type: "dispatch",
-                sessionID,
-                agent,
-                // Prompt descriptions can carry sensitive context; record
-                // them only when the trace is enabled.
-                description: config.trace
-                  ? String(event.input?.description ?? "").slice(0, 200)
-                  : "",
-              })
-              journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+              // Prompt descriptions can carry sensitive context; record them
+              // only when the trace is enabled (redacted elsewhere — here it is
+              // the single copy passed to the dispatch-recording helper).
+              const description = config.trace
+                ? String(event.input?.description ?? "").slice(0, 200)
+                : ""
 
               // Last-wins: record this parent's LATEST plan-reviewer
               // dispatch time for the plausibility join. A prompt reset clears it
@@ -1344,46 +1365,59 @@ export function createTurnstile(
                     "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
                 })
 
-              // Per-leg loop caps + total-dispatch budget: every
-              // task/subagent dispatch — executor, planner, plan-reviewer,
-              // test-runner, reviewer, debugger, unknown — draws down the
-              // budget here, so the global backstop holds even against
-              // grant-released dispatches (grants release *authorization*, not
-              // *budget*). Before the once-grant short-circuit: a blocked
-              // dispatch must not consume the grant.
-              gates.guardDispatchBudget(sessionID, ledger, agent)
+              // Guards-then-journal: the dispatch entry is recorded at guard
+              // exit, so an allowed dispatch stays byte-identical while a
+              // blocked attempt carries `blocked:true` (audit distinguishes a
+              // dispatched entry from a blocked-and-attempted one). The once-grant
+              // consume is an allowed dispatch. The guards throw only BlockError,
+              // so the catch records the attempt as blocked and re-throws it for
+              // the outer catch to turn into the deliberate BLOCKED error.
+              try {
+                // Per-leg loop caps + total-dispatch budget: every
+                // task/subagent dispatch — executor, planner, plan-reviewer,
+                // test-runner, reviewer, debugger, unknown — draws down the
+                // budget here, so the global backstop holds even against
+                // grant-released dispatches (grants release *authorization*, not
+                // *budget*). Before the once-grant short-circuit: a blocked
+                // dispatch must not consume the grant.
+                gates.guardDispatchBudget(sessionID, ledger, agent)
 
-              // Once-granted human approval (from a `permission.replied` reply)
-              // grants exactly ONE EXECUTOR dispatch past the plan gate and is
-              // cleared immediately, so a stale grant cannot outlive the single
-              // dispatch it was given for, short-circuiting the plan-gate block
-              // below. Scoped to the executor dispatch class: the grant exists
-              // solely to release the plan-gate block, so any other agent
-              // (reviewer, plan-reviewer, …) leaves it pending and still runs
-              // its own guards (guardReviewerDispatch / …). execute.before
-              // consults only hasPlanVerdict / pendingOnceGrant — never
-              // humanApproval, which is provenance only.
-              if (
-                agent === config.agents.executor &&
-                ledger.state(sessionID).pendingOnceGrant.plan !== ""
-              ) {
-                // Consume the plan-gate once grant (a `permission.replied`
-                // `once`): clears just `.plan` so a landing `.landing` grant,
-                // if any, survives for the push it was given for.
-                ledger.state(sessionID).pendingOnceGrant.plan = ""
-                return
-              }
+                // Once-granted human approval (from a `permission.replied` reply)
+                // grants exactly ONE EXECUTOR dispatch past the plan gate and is
+                // cleared immediately, so a stale grant cannot outlive the single
+                // dispatch it was given for, short-circuiting the plan-gate block
+                // below. Scoped to the executor dispatch class: the grant exists
+                // solely to release the plan-gate block, so any other agent
+                // (reviewer, plan-reviewer, …) leaves it pending and still runs
+                // its own guards (guardReviewerDispatch / …). execute.before
+                // consults only hasPlanVerdict / pendingOnceGrant — never
+                // humanApproval, which is provenance only.
+                if (
+                  agent === config.agents.executor &&
+                  ledger.state(sessionID).pendingOnceGrant.plan !== ""
+                ) {
+                  // Consume the plan-gate once grant (a `permission.replied`
+                  // `once`): clears just `.plan` so a landing `.landing` grant,
+                  // if any, survives for the push it was given for.
+                  ledger.state(sessionID).pendingOnceGrant.plan = ""
+                  recordDispatch(sessionID, agent, description, false)
+                  return
+                }
 
-              if (agent === config.agents.reviewer) {
-                gates.guardReviewerDispatch(sessionID, ledger)
-              }
+                if (agent === config.agents.reviewer) {
+                  gates.guardReviewerDispatch(sessionID, ledger)
+                }
 
-              if (agent === config.agents.executor) {
-                const dir = await resolveProjectDir(sessionID)
-                gates.enforcePlanApproval(sessionID, dir, ledger)
-                gates.enforceDecomposition(sessionID, prompt, dir)
+                if (agent === config.agents.executor) {
+                  const dir = await resolveProjectDir(sessionID)
+                  gates.enforcePlanApproval(sessionID, dir, ledger)
+                  gates.enforceDecomposition(sessionID, prompt, dir)
+                }
+                recordDispatch(sessionID, agent, description, false)
+              } catch (e) {
+                recordDispatch(sessionID, agent, description, true)
+                throw e
               }
-              return
             }
 
             if (event?.tool === "read") {

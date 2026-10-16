@@ -149,8 +149,12 @@ test("plan-reviewer leg cap: third dispatch is blocked, escalates, timestamp pre
   assert.ok(dispatchIdx !== -1, "dispatch entry recorded")
   assert.ok(blockedIdx !== -1, "loop-cap blocked entry recorded")
   assert.ok(escalationIdx !== -1, "loop-cap escalation entry recorded")
-  // Ordering preserved: dispatch -> (plan-reviewer dispatch timestamp) -> blocked -> escalation.
-  assert.ok(dispatchIdx < blockedIdx, "dispatch precedes the block")
+  // Ordering: dispatchIdx is the first ALLOWED dispatch (recorded before the
+  // guards), so it precedes the blocked dispatch's guard-blocked entry. The
+  // blocked dispatch's own entry now comes AFTER its blocked+escalation
+  // entries (stamped blocked:true) — the per-dispatch order inverts under
+  // guards-then-journal, so this assertion survives only via the earlier allow.
+  assert.ok(dispatchIdx < blockedIdx, "an allowed dispatch precedes the block")
   assert.ok(blockedIdx < escalationIdx, "block precedes its escalation")
   dispose()
 })
@@ -179,6 +183,52 @@ test("test-runner leg cap: first dispatch succeeds pre-gate, third is blocked", 
   )
   assert.ok(
     entries.some((l) => l.type === "escalation" && l.reason === "loop-cap" && l.count === 2),
+  )
+  dispose()
+})
+
+/** A blocked dispatch still journals its dispatch entry (stamped
+ *  blocked:true) alongside the guard's blocked→escalation pair: audit sees the
+ *  attempt even though the dispatch never proceeded. */
+test("blocked dispatch journals its dispatch entry with blocked:true", async () => {
+  const { h, dispose, metricsDir } = await boot({ maxPlannerRounds: 2 })
+  await dispatch(h, "p1", "planner")
+  await dispatch(h, "p1", "planner")
+  await assert.rejects(
+    () => dispatch(h, "p1", "planner", "loop again"),
+    (e: Error) => e instanceof BlockError && e.message === PLANNER_LOOP_CAP_MESSAGE,
+  )
+  const entries = journalEntries(metricsDir)
+  const dispatched = entries.filter((l) => l.type === "dispatch")
+  // Two allowed + the blocked third: exactly three dispatch entries.
+  assert.equal(dispatched.length, 3)
+  assert.ok(dispatched.every((l) => l.agent === "planner"))
+  // The third (the blocked attempt) carries the stamp; the first allowed does
+  // not — the stamp is present only on a blocked attempt.
+  assert.equal(dispatched[2]!.blocked, true)
+  assert.ok(!("blocked" in dispatched[0]!))
+  // The guard's blocked→escalation pair is still present. The guard stamps
+  // `leg` on the blocked entry only; the escalation names the reason.
+  assert.ok(
+    entries.some((l) => l.type === "blocked" && l.reason === "loop-cap" && l.leg === "planner"),
+  )
+  assert.ok(entries.some((l) => l.type === "escalation" && l.reason === "loop-cap"))
+  dispose()
+})
+
+/** An allowed (non-blocked) dispatch carries no `blocked` field: the stamp is
+ *  added only on a blocked attempt, so an allowed dispatch is byte-identical to
+ *  before. */
+test("allowed dispatch carries no blocked field", async () => {
+  const { h, dispose, metricsDir } = await boot({ maxTestRunnerRounds: 2 })
+  await dispatch(h, "p1", "test-runner")
+  await dispatch(h, "p1", "test-runner")
+  const entries = journalEntries(metricsDir)
+  const dispatched = entries.filter((l) => l.type === "dispatch")
+  assert.ok(dispatched.length >= 2, "expected at least two allowed dispatches")
+  assert.ok(
+    dispatched.every((l) => l.agent === "test-runner" && !("blocked" in l)),
+    "no allowed dispatch carries a blocked field",
   )
   dispose()
 })

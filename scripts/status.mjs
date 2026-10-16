@@ -187,7 +187,10 @@ function aggregate(lines) {
       }
       a.planApproval.source = typeof e.source === "string" ? e.source : a.planApproval.source
     } else if (type === "dispatch") {
-      a.dispatches++
+      // A blocked attempt was never executed — its block is already counted by
+      // the guard's `blocked` entry, so exclude the `blocked:true` stamp from
+      // the dispatches counter (no double count).
+      if (e.blocked !== true) a.dispatches++
     } else if (type === "blocked") {
       a.blocks++
     } else if (type === "permission") {
