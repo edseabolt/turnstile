@@ -1406,40 +1406,54 @@ test("re-folding a delta window with a complete marker never re-fires it", async
  * scope), so a marker split across deltas around a dispatch is never completed.
  */
 test("a task dispatch clears the delta window so a stale split marker does not complete", async () => {
-  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
-  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
-  await waitUntil(() =>
-    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
-  )
-  // First chunk: a verdict (so its processing is observable via waitUntil) plus
-  // the incomplete head of a GATE: PASS marker. waitUntil(verdict) pins that
-  // delta1's window was fully set before the dispatch runs.
-  h.pushEvent({
-    type: "session.text.delta",
-    data: {
-      sessionID: "c1",
-      delta: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\nGATE: PASS tests=1 passed=1 fail",
-    },
-  })
-  await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
-  // The dispatch is the task boundary; it clears the window before the guards
-  // run (the block is expected), so the clear still takes effect.
-  await assert.rejects(
-    () =>
-      callTool(h, "execute.before", {
-        tool: "task",
-        sessionID: "p1",
-        input: { agent: "executor", prompt: "run the build" },
-      }),
-    (e: Error) => e instanceof BlockError,
-  )
-  // Completing chunk arrives after the window was cleared: never reassembled.
-  h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: "ed=1" } })
-  await new Promise((resolve) => setTimeout(resolve, 25))
-  const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
-  assert.equal(gates.length, 0)
-  dispose()
+  // The executor guard must actually run: create the plans dir the gate scans
+  // (an absent dir silently disables plan enforcement) and chdir to it, so the
+  // expected block does not depend on the developer's checkout state.
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const prev = process.cwd()
+  process.chdir(project)
+  let bootState: { h: FakeHost; dispose: () => void; metricsDir: string } | undefined
+  try {
+    bootState = await boot({ gateEvidence: "flag" })
+    const { h, dispose, metricsDir } = bootState
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+    )
+    // First chunk: a verdict (so its processing is observable via waitUntil) plus
+    // the incomplete head of a GATE: PASS marker. waitUntil(verdict) pins that
+    // delta1's window was fully set before the dispatch runs.
+    h.pushEvent({
+      type: "session.text.delta",
+      data: {
+        sessionID: "c1",
+        delta: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\nGATE: PASS tests=1 passed=1 fail",
+      },
+    })
+    await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
+    // The dispatch is the task boundary; it clears the window before the guards
+    // run (the block is expected), so the clear still takes effect.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "run the build" },
+        }),
+      (e: Error) => e instanceof BlockError,
+    )
+    // Completing chunk arrives after the window was cleared: never reassembled.
+    h.pushEvent({ type: "session.text.delta", data: { sessionID: "c1", delta: "ed=1" } })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    const gates = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+    assert.equal(gates.length, 0)
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
 })
 
 /**
