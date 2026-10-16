@@ -2,7 +2,10 @@
  * @fileoverview Config tests: default parity, layered merge, per-key
  * validation, env precedence, and fail-open handling of malformed files.
  * This file redirects XDG_DATA_HOME *before* importing the plugin so the
- * config-error journal lands in a temp directory.
+ * config-error journal lands in a temp directory. The journal path is
+ * resolved per read (see journalFile()), not from the import-time constant,
+ * so it stays correct under process isolation where journal.ts may have been
+ * imported earlier in the process.
  */
 
 import { test } from "node:test"
@@ -24,8 +27,16 @@ const {
   DEFAULT_EVIDENCE_PATTERN,
   DEFAULT_COMMIT_FORMAT,
 } = await import("../src/config.ts")
-const { DEFAULT_JOURNAL_PATH } = await import("../src/journal.ts")
+const { defaultMetricsDir } = await import("../src/journal.ts")
 const { GATE_RE } = await import("../src/markers.ts")
+
+/**
+ * Resolves the config-error journal at call time, mirroring
+ * journalConfigError's live-env resolution; the import-time constant is
+ * stale when another module imported journal.ts before the redirect below.
+ */
+const journalFile = () =>
+  path.join(process.env[ENV_KEYS.metricsDir] ?? defaultMetricsDir(process.env), "turnstile.jsonl")
 
 /** Verifies every default value matches the historical constants exactly. */
 test("defaultConfig reproduces the historical constants", () => {
@@ -196,7 +207,7 @@ test("malformed config file fails open: defaults + journaled error", () => {
   assert.equal(config.maxReviewerRounds, 2)
   assert.equal(warnings.length, 1)
   const errors = fs
-    .readFileSync(DEFAULT_JOURNAL_PATH, "utf8")
+    .readFileSync(journalFile(), "utf8")
     .trim()
     .split("\n")
     .filter(Boolean)
@@ -594,7 +605,7 @@ test("loadConfig journals each dropped bashDeny element as an error", () => {
   assert.deepEqual(config.toolPolicy.bashDeny, ["\\bnpm\\s+test\\b"])
   assert.deepEqual(config.toolPolicy.pathDeny, ["valid-regex"])
   const errors = fs
-    .readFileSync(DEFAULT_JOURNAL_PATH, "utf8")
+    .readFileSync(journalFile(), "utf8")
     .trim()
     .split("\n")
     .filter(Boolean)
@@ -718,4 +729,85 @@ test("loadConfig never warns the ensemble invariant in advise mode", () => {
     { reviewEnsemble: "advise", maxReviewerRounds: 1 },
   )
   assert.ok(!warnings.some((w) => w.includes("reviewEnsemble enforce needs")))
+})
+
+/** mergeConfig skips any non-object patch (array, string, number, null) with
+ *  exactly one "expected an object" warning and leaves the base untouched. */
+test("mergeConfig warns when the patch is not an object", () => {
+  const base = defaultConfig({})
+  for (const patch of [[1, 2], "str", 42, null]) {
+    const { config, warnings } = mergeConfig(base, patch)
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0] ?? "", /expected an object, got /)
+    assert.deepEqual(config.agents, base.agents)
+  }
+})
+
+/** A non-object agents value is rejected with one warning and every agent
+ *  keeps its default. */
+test("mergeConfig keeps defaults when agents is not an object", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { agents: "nope" })
+  assert.ok(warnings.some((w) => w.includes("agents must be an object")))
+  assert.deepEqual(config.agents, base.agents)
+})
+
+/** A non-string agent name is rejected with a warning and that agent keeps
+ *  its default. */
+test("mergeConfig drops non-string agent names with a warning", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { agents: { planner: 42 } })
+  assert.ok(warnings.some((w) => w.includes("agents.planner must be a non-empty string")))
+  assert.equal(config.agents.planner, base.agents.planner)
+})
+
+/** A non-string gitGates.commitFormat is rejected with one warning and the
+ *  default format is kept. */
+test("mergeConfig warns on non-string gitGates.commitFormat", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { gitGates: { commitFormat: 42 } })
+  assert.ok(warnings.some((w) => w.includes("commitFormat must be a string")))
+  assert.equal(config.gitGates.commitFormat, base.gitGates.commitFormat)
+})
+
+/** A relative plansDir value passes scalar validation and lands in the merged
+ *  config through assignScalar rather than being dropped or rejected. */
+test("mergeConfig copies a relative plansDir value through assignScalar", () => {
+  const base = defaultConfig({})
+  const { config } = mergeConfig(base, { plansDir: "docs/plans" })
+  assert.equal(config.plansDir, "docs/plans")
+})
+
+/** A config path that does not exist (ENOENT) adds no warning and the
+ *  defaults are kept intact. */
+test("loadConfig ignores an absent config file silently", () => {
+  const missing = path.join(xdgTmp, "absent.json")
+  const { config, warnings } = loadConfig({ [ENV_KEYS.config]: missing })
+  assert.equal(warnings.length, 0)
+  assert.equal(config.maxReviewerRounds, 2)
+})
+
+/** A config path that is a directory (EISDIR) is reported and ignored: the
+ *  warning names the path and the defaults are kept. */
+test("loadConfig warns a directory config path is ignored", () => {
+  const { config, warnings } = loadConfig({ [ENV_KEYS.config]: xdgTmp })
+  assert.ok(warnings.some((w) => w.includes("is a directory; ignored")))
+  assert.equal(config.maxReviewerRounds, 2)
+})
+
+/** An empty TURNSTILE_METRICS_DIR warns and keeps the current metrics dir; the
+ *  journal resolves to the empty directory, so its write is cwd-relative and
+ *  confined to the temp dir rather than the checkout (warnings-only by design). */
+test("loadConfig warns and keeps the value when the metrics dir env is empty", () => {
+  const env = { [ENV_KEYS.metricsDir]: "" }
+  const prev = process.cwd()
+  process.chdir(xdgTmp)
+  try {
+    const { config, warnings } = loadConfig(env)
+    assert.ok(warnings.some((w) => w.includes("TURNSTILE_METRICS_DIR empty")))
+    const expected = defaultConfig(env).metricsDir
+    assert.equal(config.metricsDir, expected)
+  } finally {
+    process.chdir(prev)
+  }
 })

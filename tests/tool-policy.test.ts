@@ -321,6 +321,14 @@ test("session_move directory honors the trace redaction gate", () => {
   assert.equal(off.entries[0].directory, "<redacted>")
 })
 
+/** A nullish move target resolves to an empty string under trace (the
+ *  `directory ?? ""` fallback) instead of throwing. */
+test("session_move records an empty directory when the payload is nullish", () => {
+  const on = makePolicy({ toolPolicy: { observeSessionMove: true } })
+  on.policy.observeSessionMove("s1", undefined)
+  assert.equal(on.entries[0].directory, "")
+})
+
 /** Extraction coercion never throws on a nullish host payload. */
 test("guards never throw on nullish command/path values", () => {
   const { policy } = makePolicy()

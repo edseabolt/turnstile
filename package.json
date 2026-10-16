@@ -25,7 +25,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:markers": "node scripts/check-markers.mjs",
-    "test": "node --test --experimental-strip-types --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-include='**/src/**' --test-coverage-include='**/turnstile.ts' tests/*.test.ts",
+    "test": "node --test --experimental-strip-types --test-isolation=none --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-include='**/src/**' --test-coverage-include='**/turnstile.ts' tests/*.test.ts",
     "init": "node scripts/install.mjs",
     "init:copy": "node scripts/install.mjs --copy",
     "init:check": "node scripts/install.mjs --check",
@@ -45,7 +45,7 @@
   },
   "homepage": "https://github.com/edseabolt/turnstile#readme",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.8"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
