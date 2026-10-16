@@ -117,7 +117,57 @@ test("traceEvent without a session ID omits the trailing segment", () => {
   assert.equal(line.split("|").length, 4)
 })
 
-/** plansSignature fails open (null) when the plans dir is unreadable. */
+/** The journal appends without renaming below the rotate tick: the rotation
+ *  runs only on the entry-count tick, and `rotateIfLarge` is a no-op while the
+ *  file stays under maxBytes — no generation appears and no `.lock` dir is
+ *  left behind. On a later tick the over-maxBytes file is renamed to `.1`. */
+test("journal appends without renaming below the rotate tick", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 100,
+    maxGenerations: 1,
+    rotateEveryEntries: 2,
+  })
+  // Writes 1 and 2: the write-2 tick fires, but the file is under maxBytes, so
+  // rotateIfLarge is a no-op — the counter advances and no generation appears.
+  j.journal({ t: 0 })
+  j.journal({ t: 0 })
+  assert.equal(fs.existsSync(`${journalPath}.1`), false)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), false)
+  // Writes 3 and 4: the write-4 tick fires with the file now over maxBytes, so
+  // the current file is renamed to `.1` and the lock is released again.
+  j.journal({ t: 0 })
+  j.journal({ t: 0 })
+  assert.equal(fs.existsSync(`${journalPath}.1`), true)
+  assert.match(fs.readFileSync(`${journalPath}.1`, "utf8"), /"t":0/)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), false)
+})
+
+/** A held `<file>.lock` directory makes the tick skip rotation without losing
+ *  an entry: the contended mkdir is swallowed by tickRotate's single outer
+ *  catch, so the entry still appends and the caller never sees the churn. */
+test("a held .lock directory skips the rotation tick and never loses an entry", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1_000_000,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  // Pre-create the lock so the first tick's mkdir fails (EEXIST); the swallow
+  // runs and the directory stays (no rmdir executed on the failed path).
+  fs.mkdirSync(`${journalPath}.lock`)
+  assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  assert.equal(journalEntries(metricsDir).length, 1)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), true)
+})
+
+/** pathsSignature fails open (null) when the plans dir is unreadable. */
 test("plansSignature fails open on an unreadable plans dir", () => {
   const project = tmpDir()
   const plans = path.join(project, ".opencode", "plans")

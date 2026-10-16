@@ -33,11 +33,14 @@ export const DEFAULT_METRICS_DIR: string = defaultMetricsDir()
 /** Default JSONL journal path inside {@link DEFAULT_METRICS_DIR}. */
 export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turnstile.jsonl")
 
-/** Rotation bound comment: a journal file rotates when it exceeds the
- * configured byte size; generations `.1`…`.N` shift up, the oldest is
- * pruned. Disk usage is bounded at (N + 1) × maxBytes per journal. The
- * stat cost per append is negligible; the shift is a handful of renames
- * that happens once per maxBytes of journal growth. */
+/** Rotation bound (S8 race fix): the append hot path never stats or renames
+ * the file — `journal()` only appends and advances a per-file counter. The
+ * rotate-then-rename sequence runs once per `rotateEveryEntries` appends
+ * (default 512) and only under a created `<file>.lock` directory (an atomic
+ * mutex: `mkdir` fails with EEXIST while another session holds it), so two
+ * concurrent sessions never both rename the shared file. Disk usage stays
+ * bounded at (N + 1) × maxBytes plus at most `rotateEveryEntries × ~2 KB` of
+ * overshoot between the size check and the rename. */
 
 /**
  * Returns the current time as an ISO-8601 timestamp.
@@ -80,9 +83,10 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
 
 /**
  * Appends one line to a file, creating the parent directory first. The
- * caller is responsible for rotating when a size bound applies (the
- * JSONL journal and trace both call `rotateIfLarge` before appending).
- * Silent on any failure: journaling must never break execution.
+ * caller is responsible for rotating when a size bound applies (the journaler's
+ * `journal()`/`traceEvent()` call `tickRotate` on an entry-count tick, under a
+ * lock-guarded rename). Silent on any failure: journaling must never break
+ * execution.
  * @param file Path of the file to append to.
  * @param text The line to append (a trailing newline is added).
  */
@@ -126,6 +130,10 @@ export interface Journaler {
  * @param options.trace Whether trace lines are written (journal always is).
  * @param options.maxBytes Rotation threshold per journal file.
  * @param options.maxGenerations Rotated generations kept per journal file.
+ * @param options.rotateEveryEntries Hot path is append-only; the size check
+ *     and rotation run once per this many appends (default 512, documented in
+ *     the rotation-bound comment above). Entries between the check and the
+ *     rename are the bounded overshoot.
  * @returns A Journaler writing `turnstile.jsonl` and `gate-events.jsonl`
  *     under `options.metricsDir`.
  */
@@ -134,21 +142,50 @@ export function createJournaler(options: {
   trace: boolean
   maxBytes: number
   maxGenerations: number
+  rotateEveryEntries?: number
 }): Journaler {
   const journalPath = path.join(options.metricsDir, "turnstile.jsonl")
   const tracePath = path.join(options.metricsDir, "gate-events.jsonl")
+  // Counter per file, never shared: the journal and the trace file each rotate
+  // on their own schedule (a trace-off journal still counts its own ticks).
+  const journalTick = { n: 0 }
+  const traceTick = { n: 0 }
+  /**
+   * Rotates `file` once per `rotateEveryEntries` writes, under a created
+   * `<file>.lock` directory that is an atomic mutex (mkdir fails with EEXIST
+   * while another session holds it) so concurrent sessions never both rename
+   * the shared file. Fail-open: a contended lock or any rotation error is
+   * swallowed by the single outer catch, so a throw inside the finally (a
+   * failed rmdir) or the rotate cannot propagate out of `journal()` into the
+   * hook. The per-write hot path never calls this past the counter gate.
+   * @param file Path of the file to rotate.
+   * @param counter A per-file `{ n }` counter; callers pass one bound here.
+   */
+  function tickRotate(file: string, counter: { n: number }): void {
+    if (++counter.n < (options.rotateEveryEntries ?? 512)) return
+    counter.n = 0
+    try {
+      const lock = `${file}.lock`
+      fs.mkdirSync(lock)
+      try {
+        rotateIfLarge(file, options.maxBytes, options.maxGenerations)
+      } finally {
+        fs.rmdirSync(lock)
+      }
+    } catch {
+      // Contended lock or any rotation failure: skip the tick. Journaling must
+      // never break execution, so every error here is swallowed (fail-open).
+    }
+  }
   return {
     journalPath,
     tracePath,
     journal(entry: Record<string, unknown>): void {
-      rotateIfLarge(journalPath, options.maxBytes, options.maxGenerations)
       appendLine(journalPath, JSON.stringify({ ts: now(), ...entry }))
+      tickRotate(journalPath, journalTick)
     },
     traceEvent(agent: string, event: string, detail: string, sessionID?: string): void {
       if (!options.trace) return
-      // The trace file shares the journal's rotation bound (AGENTS.md
-      // retention contract: bounded at (N + 1) × maxBytes per file).
-      rotateIfLarge(tracePath, options.maxBytes, options.maxGenerations)
       const d = new Date()
       const pad = (n: number): string => String(n).padStart(2, "0")
       // The session segment is optional and appended last; the first four
@@ -159,6 +196,9 @@ export function createJournaler(options: {
         tracePath,
         `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())} | ${agent} | ${event} | ${String(detail).slice(0, 200)}${tail}`,
       )
+      // The trace file shares the journal's rotation bound (AGENTS.md
+      // retention contract: bounded at (N + 1) × maxBytes per file).
+      tickRotate(tracePath, traceTick)
     },
   }
 }
