@@ -91,7 +91,25 @@ export interface CompactionDraft {
 /** Session record returned by the host's `session.get`. */
 export interface SessionRecord {
   parentID?: unknown
-  data?: { parentID?: unknown }
+  /**
+   * Directory of the session's current checkout, as delivered by the host.
+   * The host does not type this field, hence `unknown`; `src/setup.ts` reads it
+   * (against the candidate keys `directory` / `data.directory`) to resolve the
+   * project directory per dispatch and fails open when absent.
+   */
+  directory?: unknown
+  /**
+   * Hosted directory of the session's current checkout, as delivered by the
+   * host. The host does not type this field, hence `unknown`; `src/setup.ts`
+   * reads `location.directory` as a fourth candidate and fails open when
+   * absent.
+   */
+  location?: { directory?: unknown }
+  data?: {
+    parentID?: unknown
+    directory?: unknown
+    location?: { directory?: unknown }
+  }
 }
 
 /** Properties bag carried by host stream events. */

@@ -15,6 +15,7 @@ import { turnstile } from "../turnstile.ts"
 import { createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
+import { createLedger } from "../src/state.ts"
 import {
   callSession,
   callTool,
@@ -60,6 +61,52 @@ async function bootWithPlan(
     dispose,
     metricsDir,
     project,
+    restore: (): void => {
+      dispose()
+      process.chdir(prev)
+    },
+  }
+}
+
+/**
+ * Boots two temp project dirs (seed A with plan.md, sibling B) sharing a metrics
+ * dir and a mutable session-record map; chdir A so process.cwd() is A. The
+ * record map is shared with the fake host (session.get reads it at call time),
+ * so a test can retarget a session from A to B to simulate a same-project move.
+ */
+async function bootWithMove(
+  bodyA = "# P\n",
+  bodyB = "# P\n",
+): Promise<{
+  h: FakeHost
+  metricsDir: string
+  projectA: string
+  projectB: string
+  sessionRecords: Map<string, unknown>
+  restore: () => void
+}> {
+  const projectA = tmpDir()
+  const projectB = tmpDir()
+  fs.mkdirSync(path.join(projectA, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(projectA, ".opencode", "plans", "plan.md"), bodyA)
+  fs.mkdirSync(path.join(projectB, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(projectB, ".opencode", "plans", "plan.md"), bodyB)
+  const metricsDir = tmpDir()
+  const sessionRecords = new Map<string, unknown>()
+  const h = makeFakeHost({ sessionRecords })
+  const prev = process.cwd()
+  process.chdir(projectA)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  return {
+    h,
+    metricsDir,
+    projectA,
+    projectB,
+    sessionRecords,
     restore: (): void => {
       dispose()
       process.chdir(prev)
@@ -950,11 +997,14 @@ test("plan gate: same-mtime same-size edit invalidates the approval", async () =
 })
 
 /**
- * plansSignature is a stat-free, dir-prefixed content
- * signature `dir|name:sha256hex(,…)`: empty dir ⇒ `${dir}|`, adding a plan ⇒
- * `${dir}|plan.md:[0-9a-f]{64}`, and re-runs are identical. No mtime term.
+ * plansSignature is a stat-free, path-free content
+ * signature `name:sha256hex(,…)`: empty dir ⇒ the literal sentinel `"empty"`
+ * (never `""`, which would collide with the accept-once stamp), adding a plan
+ * ⇒ `plan.md:[0-9a-f]{64}`, a name-only rename changes just the name, and
+ * re-runs are identical. No mtime term. An approval stamped on the empty
+ * sentinel is dropped loudly (STALE) once a plan file appears.
  */
-test("plan gate: plansSignature is a content signature (dir|name:sha256hex)", async () => {
+test("plan gate: plansSignature is a content signature (name:sha256hex)", async () => {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   const plansDir = path.join(project, ".opencode", "plans")
@@ -967,17 +1017,33 @@ test("plan gate: plansSignature is a content signature (dir|name:sha256hex)", as
     maxGenerations: 5,
   })
   const gates = createGates(config, journaler)
-  // Empty dir ⇒ stable dir-prefixed empty signature, no stat/mtime term.
-  assert.equal(gates.plansSignature(project), `${plansDir}|`)
-  // Add a plan ⇒ dir|name:64-hex; the format carries no `mtime`.
+  const ledger = createLedger(path.join(metricsDir, "state.jsonl"), 64)
+  // Empty dir ⇒ the path-free empty sentinel, never "": an approval stamped on
+  // an empty dir must mismatch once a plan file appears. No stat/mtime term.
+  assert.equal(gates.plansSignature(project), "empty")
+  // An approval stamped on the empty sentinel is dropped loudly (STALE) once a
+  // plan file appears: "empty" differs from the new non-empty key.
+  const s = ledger.state("p1")
+  s.hasPlanVerdict = true
+  s.plansSignature = "empty"
   fs.writeFileSync(path.join(plansDir, "plan.md"), "# P\n")
+  const red = gates.planGateStatus(project, ledger, "p1")
+  assert.equal(red.red, true)
+  const stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
+  assert.equal(stale.length, 1)
+  // Add a plan ⇒ name:64-hex; the format carries no directory or `mtime`.
   const sig = gates.plansSignature(project)
   assert.ok(sig, "plansSignature returned null for an existing plan")
-  const escaped = plansDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  assert.match(sig, new RegExp(`^${escaped}\\|plan\\.md:[0-9a-f]{64}$`))
+  assert.match(sig, /^plan\.md:[0-9a-f]{64}$/)
   assert.doesNotMatch(sig, /mtime/)
+  // Name-only rename (bytes identical) changes only the name ⇒ the key changes.
+  fs.renameSync(path.join(plansDir, "plan.md"), path.join(plansDir, "renamed.md"))
+  const renamed = gates.plansSignature(project)
+  assert.ok(renamed, "plansSignature returned null for a renamed plan")
+  assert.match(renamed, /^renamed\.md:[0-9a-f]{64}$/)
+  assert.notEqual(sig, renamed)
   // Idempotent: a re-scan with unchanged content returns the same key.
-  assert.equal(gates.plansSignature(project), sig)
+  assert.equal(gates.plansSignature(project), renamed)
 })
 
 /**
@@ -1137,6 +1203,92 @@ test("plan gate: a re-review APPROVE after a prior BLOCK clears the gate", async
       sessionID: "p1",
       input: { agent: "executor", prompt: "do the work" },
     })
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * An approval survives a same-content move between directories: the path-free
+ * signature is stamped at A and re-read at B with byte-identical plans, so the
+ * next dispatch stays green and no STALE entry is journaled.
+ */
+test("plan gate: approval survives a same-content move between directories", async () => {
+  const { h, metricsDir, restore, projectB, sessionRecords } = await bootWithMove("# P\n", "# P\n")
+  try {
+    // Approve while resolving to the seed (A): the path-free signature is
+    // stamped from A's content.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    // Move the record to a byte-identical checkout B.
+    sessionRecords.set("p1", { location: { directory: projectB } })
+    // The next dispatch resolves B; identical content keeps the approval green.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    assert.equal(journalEntries(metricsDir).filter((l) => l.result === "STALE").length, 0)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A content change after a move invalidates loudly: the signature stamped at A
+ * differs from B's, so the next dispatch blocks and journals exactly one
+ * replay-inert STALE entry (and a journal carrying only it restores nothing).
+ */
+test("plan gate: a content change after a move invalidates loudly with STALE", async () => {
+  const { h, metricsDir, restore, projectB, sessionRecords } = await bootWithMove(
+    "# P\n",
+    "# P revised\n",
+  )
+  try {
+    // Approve while resolving to the seed (A): the path-free signature is
+    // stamped from A's content.
+    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    await settle()
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "plan-reviewer" },
+      result: { output: `${APPROVE}\n` },
+    })
+    // Move the record to a checkout B whose plan content differs from A's.
+    sessionRecords.set("p1", { location: { directory: projectB } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+    const stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
+    assert.equal(stale.length, 1)
+    assert.equal(stale[0]!.reason, "signature-mismatch")
+    // A STALE entry is replay-inert: a journal carrying only it must not restore
+    // the plan-approval gate.
+    const replayDir = tmpDir()
+    const replayJournal = path.join(replayDir, "turnstile.jsonl")
+    fs.writeFileSync(
+      replayJournal,
+      JSON.stringify({
+        type: "plan",
+        sessionID: "p1",
+        result: "STALE",
+        reason: "signature-mismatch",
+      }) + "\n",
+    )
+    assert.equal(createLedger(replayJournal, 64).peek("p1"), undefined)
   } finally {
     restore()
   }

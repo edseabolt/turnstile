@@ -45,6 +45,7 @@ import type {
   MarkerEvent,
   PermissionEvaluateEvent,
   PromptHookProperties,
+  SessionRecord,
   TaskInput,
   ToolHookEvent,
   TurnstileOptions,
@@ -128,6 +129,52 @@ const PLAN_ASK_MESSAGE_PREFIX = "turnstile: plan approval required"
  * session id) and route its reply to the landing gate.
  */
 const LANDING_ASK_MESSAGE_PREFIX = "turnstile: push/PR requires a reviewer"
+
+/**
+ * Candidate keys for the parent id on a session record, in priority order,
+ * dotted paths supported. The single source for the parent-id read so
+ * `resolveParent` and `readRecordString` share one extraction rule.
+ */
+const PARENT_KEYS = ["parentID", "data.parentID"] as const
+
+/**
+ * Candidate keys for the project directory on a session record, in priority
+ * order, dotted paths supported. The single source for the directory read so
+ * `resolveProjectDir` and `readRecordString` share one extraction rule.
+ */
+const DIRECTORY_KEYS = [
+  "directory",
+  "location.directory",
+  "data.directory",
+  "data.location.directory",
+] as const
+
+/**
+ * Returns the first non-empty string found at any key of `keys` on `rec`,
+ * supporting dotted nested paths (e.g. `data.location.directory`). "" when
+ * none holds a non-empty string or `rec` is absent. Shared candidate
+ * extraction for `resolveParent` (parent id) and `resolveProjectDir` (project
+ * directory): one field-extraction rule in one place.
+ * @param rec The record to read from (may be undefined or non-object).
+ * @param keys The candidate keys in priority order (dotted paths supported).
+ * @returns The first non-empty string, or "" when none resolves.
+ */
+function readRecordString(rec: unknown, keys: readonly string[]): string {
+  if (!rec || typeof rec !== "object") return ""
+  const obj = rec as Record<string, unknown>
+  for (const key of keys) {
+    let cur: unknown = obj
+    for (const part of key.split(".")) {
+      if (cur && typeof cur === "object") cur = (cur as Record<string, unknown>)[part]
+      else {
+        cur = undefined
+        break
+      }
+    }
+    if (typeof cur === "string" && cur !== "") return cur
+  }
+  return ""
+}
 
 /**
  * Builds the turnstile plugin for a host: resolves the layered config,
@@ -264,6 +311,15 @@ export function createTurnstile(
   const maxLookupAttempts = 3
   // Bound on tracked sessions: evict oldest (insertion order) when past.
   const maxTrackedLookups = 256
+  // Bound on tracked per-session project directories: evict oldest (insertion
+  // order) when past. Mirrors maxTrackedLookups.
+  const maxTrackedSessionDirs = 50
+  // Last-known project directory per session, resolved via session.get and
+  // invalidated on session_move. The per-dispatch resolver caches fresh here so
+  // the sync consumers (evaluate, continuation carry) read one dispatch behind;
+  // the sync consumers fall back to a cached value, then the root
+  // session.created seed, then process.cwd(). Bounded by boundSessionDirs.
+  const sessionDirs = new Map<string, string>()
 
   /**
    * Bounds the failed-lookup map by evicting its oldest entries.
@@ -273,6 +329,18 @@ export function createTurnstile(
       // The loop condition guarantees a first entry exists.
       const oldest = failedLookups.keys().next().value as string
       failedLookups.delete(oldest)
+    }
+  }
+
+  /**
+   * Bounds the session-directory map by evicting its oldest entries.
+   * Mirrors boundLookups; see sessionDirs.
+   */
+  function boundSessionDirs(): void {
+    while (sessionDirs.size > maxTrackedSessionDirs) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = sessionDirs.keys().next().value as string
+      sessionDirs.delete(oldest)
     }
   }
 
@@ -372,6 +440,48 @@ export function createTurnstile(
   }
 
   /**
+   * Returns the last-known project directory for a session: the per-session
+   * cache (resolved via `session.get`), then the root `session.created` seed,
+   * then `process.cwd()`. Called by the synchronous consumers (evaluate,
+   * continuation carry); each reads at most one dispatch behind a move, which
+   * converges once the next `execute.before` re-resolves.
+   * @param sessionID The session whose directory is read.
+   * @returns The last-known project directory.
+   */
+  function currentProjectDir(sessionID: string): string {
+    return sessionDirs.get(sessionID) ?? projectDir
+  }
+
+  /**
+   * Resolves the project directory for a dispatch from the host's session
+   * record, caching the result per session so the sync consumers can read it.
+   * A fresh `session.get` is awaited and its directory wins; on an absent API,
+   * a thrown lookup, or a record with no directory candidate the resolver
+   * falls back to the cache then the seed, journaling nothing (fail-open; the
+   * exact `type:"error"` counts in the open-suite must stay stable).
+   * @param sessionID The dispatching session to resolve.
+   * @returns The resolved (or fallback) project directory.
+   */
+  async function resolveProjectDir(sessionID: string): Promise<string> {
+    const get = hostSession?.get
+    if (typeof get !== "function") return currentProjectDir(sessionID)
+    let rec: SessionRecord | undefined
+    try {
+      rec = await get({ sessionID })
+    } catch {
+      // lookup failure: retryable; fall back to the cache then the seed.
+      return currentProjectDir(sessionID)
+    }
+    const dir = readRecordString(rec, DIRECTORY_KEYS)
+    if (dir !== "") {
+      sessionDirs.set(sessionID, dir)
+      boundSessionDirs()
+      return dir
+    }
+    return currentProjectDir(sessionID)
+  }
+
+  /**
    * Resolves and caches the parent of a child session via the host API.
    * Parent-less records are negatively cached (a stable signal: the session
    * exists and has no parent edge); thrown lookups are retried up to
@@ -380,9 +490,9 @@ export function createTurnstile(
    * `session.get` threw, `"no-parent-id"` when the record has no parent edge;
    * cleared on success.
    * Without a usable edge the caller falls back to keying by the session
-   * itself. Lifted to factory scope so the plan-reviewer delivery path can
-   * await it before attribution; byte-identical to the original
-   * per-setup definition.
+   * itself. The parent-id read is delegated to `readRecordString`, the shared
+   * candidate-extraction helper also used by `resolveProjectDir`; the
+   * negative-cache and retry semantics are unchanged.
    * @param sessionID Child session ID to resolve.
    */
   async function resolveParent(sessionID: string | undefined): Promise<void> {
@@ -393,8 +503,8 @@ export function createTurnstile(
     if (typeof get !== "function") return
     try {
       const rec = await get({ sessionID })
-      const parentID = rec?.parentID ?? rec?.data?.parentID
-      if (typeof parentID === "string") {
+      const parentID = readRecordString(rec, PARENT_KEYS)
+      if (parentID !== "") {
         ledger.setParent(sessionID, parentID)
         failedLookups.delete(sessionID)
       } else {
@@ -619,7 +729,7 @@ export function createTurnstile(
       const markerSource = own ? "task-result" : rec.source || "task-result"
       const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
       s.hasPlanVerdict = result === "APPROVE"
-      stampPlanApproval(s, result, projectDir)
+      stampPlanApproval(s, result, await resolveProjectDir(sid))
       journaler.journal({
         type: "plan",
         sessionID: sid,
@@ -691,7 +801,7 @@ export function createTurnstile(
       const markerSource = own ? "task-result" : rec.source
       const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
       s.hasPlanVerdict = result === "APPROVE"
-      stampPlanApproval(s, result, projectDir)
+      stampPlanApproval(s, result, await resolveProjectDir(sid))
       journaler.journal({
         type: "plan",
         sessionID: sid,
@@ -920,7 +1030,7 @@ export function createTurnstile(
       // carry decision is captured BEFORE mutating, not re-derived after.
       if (config.continuationCarry) {
         const prior = ledger.peek(sessionID)
-        const fingerprint = worktreeFingerprint(projectDir)
+        const fingerprint = worktreeFingerprint(currentProjectDir(sessionID))
         const carry = shouldCarryGate(prior, fingerprint, true)
         // shouldCarryGate guarantees carry ⇒ prior is defined, so the
         // non-null assertion cannot fire; keep the predicate's contract
@@ -1113,7 +1223,7 @@ export function createTurnstile(
             // escalation is driven purely by the parent's plan-gate state.
             if (pe?.action === "task") {
               const parent = ledger.parentOf(sessionID)
-              const status = gates.planGateStatus(projectDir, ledger, parent)
+              const status = gates.planGateStatus(currentProjectDir(parent), ledger, parent)
               if (!status.red) return
               // Red ⇒ summary is present by construction (planGateStatus builds
               // it from a scan whose names[0] was already read). Escalate:
@@ -1269,8 +1379,9 @@ export function createTurnstile(
               }
 
               if (agent === config.agents.executor) {
-                gates.enforcePlanApproval(sessionID, projectDir, ledger)
-                gates.enforceDecomposition(sessionID, prompt, projectDir)
+                const dir = await resolveProjectDir(sessionID)
+                gates.enforcePlanApproval(sessionID, dir, ledger)
+                gates.enforceDecomposition(sessionID, prompt, dir)
               }
               return
             }
@@ -1352,7 +1463,15 @@ export function createTurnstile(
               // Telemetry only (never blocks): journal the dispatched move. The
               // target directory comes from the (unconfirmed) tool payload.
               const moveDir = (event.input as { directory?: unknown } | undefined)?.directory
-              toolPolicy.observeSessionMove(asSessionID(event?.sessionID), moveDir)
+              const sid = asSessionID(event?.sessionID)
+              toolPolicy.observeSessionMove(sid, moveDir)
+              // Invalidate the per-session directory cache unconditionally,
+              // regardless of telemetry config: mechanics must not hide behind
+              // it. The next enforcement re-resolves via session.get, which
+              // reflects the completed move. A self-keyed dispatch has
+              // parentOf(sid) === sid, so the second delete is a no-op there.
+              sessionDirs.delete(sid)
+              sessionDirs.delete(ledger.parentOf(sid))
               return
             }
           } catch (e) {
@@ -1617,6 +1736,11 @@ export function createTurnstile(
                     projectDir = properties.location.directory
                   else if (typeof properties.directory === "string")
                     projectDir = properties.directory
+                  // Seed the per-session directory cache beside the seed
+                  // assignment so the continuation carry and the sync consumers
+                  // read this root session's directory from the cache.
+                  sessionDirs.set(properties.sessionID as string, projectDir)
+                  boundSessionDirs()
                 }
                 break
               }
