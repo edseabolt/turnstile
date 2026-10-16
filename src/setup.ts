@@ -1849,7 +1849,12 @@ export function createTurnstile(
                   deltaWindows.set(sid, window)
                   boundDeltaWindows()
                   await resolveParent(sid)
-                  parseMarkers(window, sid, "child-text-delta")
+                  // Parse from the map, not the local fold: a task dispatch that
+                  // interleaves during the await clears the window (the task
+                  // boundary), and a stale local string would complete a marker
+                  // that the clear was meant to drop.
+                  const pending = deltaWindows.get(sid)
+                  if (pending === window) parseMarkers(window, sid, "child-text-delta")
                 }
                 break
               }
