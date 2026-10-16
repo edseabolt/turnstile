@@ -134,8 +134,8 @@ a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
 parsing from streamed child text (`message.part.updated`,
 `session.text.ended`, `session.text.delta`), permission ask/reply bookkeeping,
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29, for hosts
-where the prompt hook does not fire), and error telemetry. A stream that ends
-without abort is journaled as an error — silent death is made loud.
+where the prompt hook does not fire), and error telemetry: a stream that ends
+without abort is journaled as an error.
 
 ---
 
