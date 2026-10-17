@@ -653,7 +653,10 @@ test("streamed child-text verdict records in the store and moves the parent gate
   const h = makeFakeHost()
   const { dispose, metricsDir } = await boot(h.host)
   try {
-    h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+    })
     h.pushEvent({
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: `review done\n${APPROVE}` },
@@ -820,6 +823,7 @@ test("a properties-only event parses markers like a data event", async () => {
   const h = makeFakeHost()
   const { dispose, metricsDir } = await boot(h.host)
   try {
+    h.pushEvent({ type: "session.created", properties: { sessionID: "c1", agent: "reviewer" } })
     h.pushEvent({
       type: "message.part.updated",
       properties: { part: { type: "text", text: `ok\n${APPROVE}`, sessionID: "c1" } },
@@ -837,6 +841,7 @@ test("message.part.updated falls back to the event properties as the part", asyn
   const { dispose, metricsDir } = await boot(h.host)
   try {
     // No nested `part`: the properties bag itself carries the text fields.
+    h.pushEvent({ type: "session.created", properties: { sessionID: "c1", agent: "reviewer" } })
     h.pushEvent({
       type: "message.part.updated",
       properties: { type: "text", text: `ok\n${APPROVE}`, sessionID: "c1" },
@@ -923,7 +928,10 @@ test("a marker-carrying self-keyed delivery attributes through its own verdict",
     // The delivery reports the parent's own session id and carries an APPROVE
     // marker; the edge candidate c1 agrees, so the pool is unanimous and the
     // delivery's own marker wins the plan entry.
-    h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+    })
     h.pushEvent({
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: `review\n${APPROVE}` },
@@ -960,10 +968,12 @@ test("a contradictory self-keyed pool reports plural candidates", async () => {
       input: { agent: "plan-reviewer", prompt: "review" },
     })
     await settle()
+    h.pushEvent({ type: "session.created", properties: { sessionID: "c1", agent: "reviewer" } })
     h.pushEvent({
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: "review\nVERDICT: BLOCK crit=1 high=0 med=0 low=0" },
     })
+    h.pushEvent({ type: "session.created", properties: { sessionID: "c2", agent: "reviewer" } })
     h.pushEvent({
       type: "session.text.delta",
       properties: { sessionID: "c2", delta: `review\n${APPROVE}` },

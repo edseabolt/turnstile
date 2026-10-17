@@ -99,6 +99,16 @@ export interface SessionRecord {
    */
   directory?: unknown
   /**
+   * Agent name of the session, as delivered by the host. The host does not
+   * type this field, hence `unknown`; `src/setup.ts` reads it (against the
+   * candidate keys `agent` / `data.agent`, the shared `AGENT_KEYS`) to decide
+   * whether the session's `GATE:`/`VERDICT:` marker text is authoritative for
+   * that kind. Fails open to unresolved: an unproven agent is denied (fail-closed
+   * for text observation), and the `execute.after` delivery path seeds the agent
+   * from dispatch input as the recovery channel.
+   */
+  agent?: unknown
+  /**
    * Hosted directory of the session's current checkout, as delivered by the
    * host. The host does not type this field, hence `unknown`; `src/setup.ts`
    * reads `location.directory` as a fourth candidate and fails open when
@@ -108,6 +118,7 @@ export interface SessionRecord {
   data?: {
     parentID?: unknown
     directory?: unknown
+    agent?: unknown
     location?: { directory?: unknown }
   }
 }
@@ -115,6 +126,14 @@ export interface SessionRecord {
 /** Properties bag carried by host stream events. */
 export interface EventProperties {
   type?: unknown
+  /**
+   * Agent name carried on a `session.created` event, when the host includes
+   * it. `unknown` (untyped by the host); `src/setup.ts` reads it against
+   * `typeof ... === "string"` to seed the emitter-authority cache. Fails open
+   * to empty: a created event without the agent stays unseeded at streaming
+   * time and rests on the `execute.after` delivery seed.
+   */
+  agent?: unknown
   sessionID?: unknown
   parentID?: unknown
   directory?: unknown
@@ -410,8 +429,22 @@ export interface MarkerEvent {
   /** Evidence mode at the time this event was stamped, when `verified` is. */
   mode?: GateEvidenceMode
   /** Marker matches observed in the same text but not journaled
-   *  (latest-wins policy); 0 when this was the only match. */
-  suppressed: number
+   *  (latest-wins policy); 0 when this was the only match. Omitted on an
+   *  `authority:"suppressed"` event (which stamps nothing).
+   */
+  suppressed?: number
+  /**
+   * Present only on a marker observation denied authority: the emitting
+   * session's resolved agent name was not contracted for this kind (gate↔
+   * test-runner, verdict↔reviewer/plan-reviewer). The caller journals a
+   * `type:"suppressed"` audit entry for it and applies nothing, so a quoted or
+   * echoed marker from an unauthoritative session flips no state. `result` /
+   * `rounds` / `verified` / the numeric `suppressed` count are all omitted on
+   * such an event (it stamps nothing; the marker string alone carries the
+   * digits for audit). The field name `authority` is intentionally distinct
+   * from the numeric `suppressed` match count above.
+   */
+  authority?: "suppressed"
 }
 
 /**

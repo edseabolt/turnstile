@@ -162,10 +162,12 @@ export interface GateLedger {
    *
    * Overwrites the child's latest `VERDICT:` marker observation and its
    * provenance source label. Recording is verdict-kind only (only `VERDICT:`
-   * markers are ever stored; never `GATE:`) and is unconditioned on agent
-   * type: the plan gate is the sole consumer, and because attribution is
-   * keyed by child ID this cannot leak a verdict to a different child or let
-   * a GATE-only child suppress a plan-reviewer bare-output violation.
+   * markers are ever stored; never `GATE:`) and is conditioned on the caller
+   * having emitter authority for the verdict kind (the authority decision lives
+   * in the wiring layer — `src/setup.ts` — not here; the ledger itself stays
+   * agent-agnostic). The plan gate is the sole consumer, and because
+   * attribution is keyed by child ID this cannot leak a verdict to a different
+   * child or let a GATE-only child suppress a plan-reviewer bare-output violation.
    *
    * Returns whether the stored observation actually changed (its `marker` or
    * `source` differed from the prior entry): the setup/store layer journals a

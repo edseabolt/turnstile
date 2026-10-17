@@ -136,7 +136,11 @@ test("T2: a registered parents GATE: PASS survives >64 noisy unregistered childr
     assert.equal(gateCount(metricsDir), 1, "p1's gate flipped green and is registered")
 
     // 100 unregistered children stream GATE: PASS, each self-keying a bucket.
+    // Each seeds its emitter agent (test-runner) so its gate is honored and the
+    // session-agents cache churns past its bound; a genuine delivery is what
+    // would be required in production, but the stream seed is enough here.
     for (let i = 1; i <= 100; i++) {
+      h.pushEvent({ type: "session.created", data: { sessionID: "n" + i, agent: "test-runner" } })
       h.pushEvent({ type: "session.text.ended", data: { sessionID: "n" + i, text: GATE_PASS } })
     }
     await waitUntil(() => gateCount(metricsDir) >= 100, 2000)
@@ -165,7 +169,10 @@ test("T3: a registered parents plan approval survives >64 noisy children and pro
   try {
     // Register the edge c1 -> p1 via a created event, then have c1 stream an
     // APPROVE so the edge is resolved before the delivery that attributes it.
-    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "plan-reviewer" },
+    })
     h.pushEvent({
       type: "session.text.ended",
       data: { sessionID: "c1", text: `\nreview\n\n${APPROVE}\n` },
@@ -190,6 +197,7 @@ test("T3: a registered parents plan approval survives >64 noisy children and pro
     // 100 unregistered children stream markers, each self-keying a bucket and
     // churning p1's bucket out past the cap on HEAD.
     for (let i = 1; i <= 100; i++) {
+      h.pushEvent({ type: "session.created", data: { sessionID: "n" + i, agent: "plan-reviewer" } })
       h.pushEvent({ type: "session.text.ended", data: { sessionID: "n" + i, text: APPROVE } })
     }
     await waitUntil(() => verdictCount(metricsDir) >= 100, 2000)

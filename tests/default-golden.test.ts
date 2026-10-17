@@ -159,7 +159,7 @@ test("golden: verdict entry shape with rounds", async () => {
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "test-runner" },
+    input: { agent: "reviewer" },
     result: { output: "VERDICT: APPROVE crit=0 high=0 med=1 low=2\n" },
   })
   const verdict = journalEntries(metricsDir).find((l) => l.type === "verdict")

@@ -15,6 +15,14 @@
  * - `ctx.event.subscribe({ signal })`
  *
  * Enforced mechanically:
+ * - Marker authority: text observation mutates gate/verdict state only from a
+ *   marker-contracted emitter. A `GATE:` is authoritative only from the
+ *   `test-runner` agent and a `VERDICT:` only from `reviewer` / `plan-reviewer`
+ *   (each also in `agents.bareOutput`); a quoted, echoed, or prompt-injected
+ *   marker from any other or unresolved emitter flips nothing and is journaled
+ *   as a replay-inert `type:"suppressed"` audit entry. The same marker delivered
+ *   authoritatively via an `execute.after` task result still flips — delivery is
+ *   the recovery channel for a stream-time authority lookup failure.
  * - Plan-approval gate: `task` dispatches to `executor` require a current
  *   plan approval whenever a plan file exists in `.opencode/plans/`: a
  *   plan-reviewer `VERDICT: APPROVE`, a prompt-channel human approval, or a

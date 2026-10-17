@@ -140,6 +140,12 @@ function takePending(state: GateState): number {
  *     event must stay byte-identical to legacy output (the `"off"` mode).
  * @param stampMode Evidence mode at stamp time (replay uses it to distinguish
  *     enforce non-flipping entries from flag flipping ones).
+ * @param kindAllowed Optional predicate deciding whether a kind is
+ *     authoritative for the emitting session. Absent ⇒ every kind is allowed
+ *     (all existing callers are byte-identical); when present, a denied kind
+ *     is applied nowhere and emitted first-sight with `authority:"suppressed"`
+ *     for the caller to journal and drop (dedup is still registered, so the
+ *     same text re-delivered stays silent).
  * @returns Marker events observed for the first time in this text.
  */
 export function parseGateMarkers(
@@ -152,6 +158,7 @@ export function parseGateMarkers(
   passVerified?: boolean,
   stampVerified?: boolean,
   stampMode?: GateEvidenceMode,
+  kindAllowed?: (kind: "gate" | "verdict") => boolean,
 ): MarkerEvent[] {
   const events: MarkerEvent[] = []
   if (!text) return events
@@ -162,53 +169,66 @@ export function parseGateMarkers(
   if (gate) {
     const key = `${dedupScope}gate\u0000${gate}`
     if (observeMarker(state, key, raw, true)) {
-      const result: "PASS" | "FAIL" = gate.includes("PASS") ? "PASS" : "FAIL"
-      if (result === "PASS") {
-        // passVerified === false (enforce-only) flags the last unverified
-        // claim without flipping; undefined (flag/off) or true flips as before.
-        if (passVerified === false) {
-          state.unverifiedPass = gate
-        } else {
-          state.hasGatePass = true
-          state.unverifiedPass = ""
-        }
-        // Stamp verified/mode only when the caller supplied a stamp: the
-        // `"off"` mode leaves both undefined for byte-identical legacy output.
-        const stamp =
-          stampVerified !== undefined ? { verified: stampVerified, mode: stampMode } : {}
-        events.push({
-          kind: "gate",
-          marker: gate,
-          result,
-          suppressed: gates.length - 1 + takePending(state),
-          ...stamp,
-        })
+      // Denied kind: applied nowhere and stamps nothing. observeMarker has
+      // already registered the dedup key, so re-delivery of the same text
+      // stays silent; the marker alone is emitted first-sight for audit.
+      if (kindAllowed && !kindAllowed("gate")) {
+        events.push({ kind: "gate", marker: gate, authority: "suppressed" })
       } else {
-        // A re-run's FAIL un-greens a gate set by an earlier PASS, even across
-        // different texts: the latest observed result wins. Clears any
-        // unverified PASS left by an earlier enforce-only rejection.
-        state.hasGatePass = false
-        state.unverifiedPass = ""
-        events.push({
-          kind: "gate",
-          marker: gate,
-          result,
-          suppressed: gates.length - 1 + takePending(state),
-        })
+        const result: "PASS" | "FAIL" = gate.includes("PASS") ? "PASS" : "FAIL"
+        if (result === "PASS") {
+          // passVerified === false (enforce-only) flags the last unverified
+          // claim without flipping; undefined (flag/off) or true flips as before.
+          if (passVerified === false) {
+            state.unverifiedPass = gate
+          } else {
+            state.hasGatePass = true
+            state.unverifiedPass = ""
+          }
+          // Stamp verified/mode only when the caller supplied a stamp: the
+          // `"off"` mode leaves both undefined for byte-identical legacy output.
+          const stamp =
+            stampVerified !== undefined ? { verified: stampVerified, mode: stampMode } : {}
+          events.push({
+            kind: "gate",
+            marker: gate,
+            result,
+            suppressed: gates.length - 1 + takePending(state),
+            ...stamp,
+          })
+        } else {
+          // A re-run's FAIL un-greens a gate set by an earlier PASS, even across
+          // different texts: the latest observed result wins. Clears any
+          // unverified PASS left by an earlier enforce-only rejection.
+          state.hasGatePass = false
+          state.unverifiedPass = ""
+          events.push({
+            kind: "gate",
+            marker: gate,
+            result,
+            suppressed: gates.length - 1 + takePending(state),
+          })
+        }
       }
     }
   }
   if (verdict) {
     const key = `${dedupScope}verdict\u0000${verdict}`
     if (observeMarker(state, key, raw, false)) {
-      // `rounds` reflects the dispatch-based reviewer round count; verdicts
-      // no longer increment it (cap is enforced per dispatch in gates.ts).
-      events.push({
-        kind: "verdict",
-        marker: verdict,
-        rounds: state.reviewRounds,
-        suppressed: verdicts.length - 1 + takePending(state),
-      })
+      // Denied kind: applied nowhere (not even the verdict store) and stamps
+      // nothing; marker-only first-sight event for the caller to journal.
+      if (kindAllowed && !kindAllowed("verdict")) {
+        events.push({ kind: "verdict", marker: verdict, authority: "suppressed" })
+      } else {
+        // `rounds` reflects the dispatch-based reviewer round count; verdicts
+        // no longer increment it (cap is enforced per dispatch in gates.ts).
+        events.push({
+          kind: "verdict",
+          marker: verdict,
+          rounds: state.reviewRounds,
+          suppressed: verdicts.length - 1 + takePending(state),
+        })
+      }
     }
   }
   return events
