@@ -334,6 +334,19 @@ test("boundDispatches evicts plan-reviewer dispatch stamps past the cap", async 
   }
 })
 
+/** The task-window bound evicts its oldest stamps past 256 parents. */
+test("boundTaskWindows evicts task-window stamps past the cap", async () => {
+  const h = makeFakeHost()
+  const { dispose } = await boot(h.host)
+  try {
+    for (let i = 0; i < 257; i++) {
+      await callSession(h, "prompt", { sessionID: `p${i}`, text: "work" })
+    }
+  } finally {
+    dispose()
+  }
+})
+
 /** An internal error inside execute.before journals instead of blocking. */
 test("execute.before journals an internal error and proceeds", async () => {
   const h = makeFakeHost()

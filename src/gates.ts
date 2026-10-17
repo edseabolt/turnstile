@@ -28,6 +28,37 @@ export class BlockError extends Error {
   }
 }
 
+/**
+ * Attribution diagnostic for a gate-unverified refusal: which journaled test
+ * executions exist and why none verified the claim. Built by the wiring layer
+ * (the only layer that can see the evidence tracker) and consumed by
+ * `guardReviewerDispatch` purely for the refusal text and the `searched`
+ * journal field — never for the gate decision itself. Lists render in stable
+ * order: attributed children first, then unresolved ones, insertion order.
+ */
+export interface EvidenceSearch {
+  /**
+   * Child sessions whose executions resolve to the searched parent but fall
+   * outside its current task window (the executions are real and attributed;
+   * they predate the task the claim belongs to).
+   */
+  attributed: string[]
+  /**
+   * Child sessions whose executions cannot be attributed to the searched
+   * parent. `reason` is "no parent edge" when no child→parent edge is
+   * registered and "edge: <parent>" when the edge resolves to a different
+   * parent.
+   */
+  unresolved: Array<{ session: string; reason: string }>
+  /**
+   * Whether the searched parent itself carries an in-window hit bucket.
+   * Always false on a live gate-unverified block: an in-window direct bucket
+   * would have been promoted by the decision-time re-check that precedes the
+   * guard. Retained for forensic completeness.
+   */
+  direct: boolean
+}
+
 /** Enforcement functions bound to one resolved config + journaler. */
 export interface Gates {
   /**
@@ -37,13 +68,17 @@ export interface Gates {
    * hook) is set, then blocks when the dispatch cap is exhausted or the test
    * gate has not gone green. A waiver bypasses the cap without counting toward
    * it and is consumed by the dispatch that unlocks it (per-dispatch); the
-   * task waiver otherwise stays live.
+   * task waiver otherwise stays live. Without `search` the gate-unverified
+   * refusal renders byte-identical to the legacy message and journals no
+   * `searched` field; with one, the refusal names the searched sessions and
+   * the `blocked` entry gains `searched` (IDs only).
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
+   * @param search Optional attribution diagnostic for the refusal text.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
    *     must not proceed.
    */
-  guardReviewerDispatch(sessionID: string, ledger: GateLedger): void
+  guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
   /**
    * Decides whether the landing gate may credit a reviewer `VERDICT: APPROVE`
    * for a task. Under `reviewEnsemble: enforce` the task needs at least two
@@ -180,6 +215,67 @@ export interface Gates {
  */
 export function createGates(config: TurnstileConfig, journaler: Journaler): Gates {
   /**
+   * The session IDs a gate-unverified refusal searched: the searched parent
+   * first, then every child named by the search (attributed, then
+   * unresolved, in the search's stable order). IDs only — no command text
+   * (redaction contract) — so the refusal is forensically reconstructable.
+   * @param sessionID The searched parent session ID.
+   * @param search The attribution diagnostic.
+   * @returns The searched session IDs.
+   */
+  function searchedSessionIds(sessionID: string, search: EvidenceSearch): string[] {
+    return [sessionID, ...search.attributed, ...search.unresolved.map((u) => u.session)]
+  }
+
+  /**
+   * Renders the gate-unverified block message. Without a search context the
+   * legacy message renders byte-identical; with one, the searched parent and
+   * the attribution summary of the journaled executions are inserted between
+   * the finding and the remediation clause.
+   * @param sessionID The searched parent session ID.
+   * @param search Optional attribution diagnostic.
+   * @returns The block message.
+   */
+  function unverifiedBlockMessage(sessionID: string, search?: EvidenceSearch): string {
+    const finding =
+      "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
+      "was recorded without a journaled successful test-command execution for this session"
+    const remediation =
+      `Run the ${config.agents.testRunner} subagent first, or obtain an explicit user waiver ` +
+      `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`
+    if (search === undefined) return `${finding}. ${remediation}`
+    return `${finding} (searched ${sessionID}; journaled test executions: ${searchSummary(
+      search,
+    )}). ${remediation}`
+  }
+
+  /**
+   * Renders the attribution summary of journaled test executions for a
+   * gate-unverified refusal: "none" when no execution is on record anywhere
+   * for the searched scope; a comma-joined `id (reason)` list when
+   * attributable executions exist (attributed children first, then
+   * unattributable ones, insertion order); or an unattributable list after a
+   * "none —" lead-in when only unattributable children carry executions.
+   * Labels stay timestamp-factual: the evidence layer stores execution
+   * timestamps only, so an attributed child's executions predate the current
+   * task window (a verdict-layer "unwaived" notion would over-claim here).
+   * @param search The attribution diagnostic.
+   * @returns The summary text.
+   */
+  function searchSummary(search: EvidenceSearch): string {
+    const attributable = search.attributed.map(
+      (child) => `${child} (executions predate the current task window)`,
+    )
+    const unattributable = search.unresolved.map((u) => `${u.session} (${u.reason})`)
+    if (attributable.length > 0) return [...attributable, ...unattributable].join(", ")
+    if (unattributable.length === 0) return "none"
+    const n = unattributable.length
+    const was = n === 1 ? "was" : "were"
+    const noun = n === 1 ? "session" : "sessions"
+    return `none — ${n} child ${noun} with executions ${was} unattributable: ${unattributable.join(", ")}`
+  }
+
+  /**
    * Enforces the reviewer dispatch gate for a pending `task` dispatch.
    * Waives the dispatch when the task's prompt-channel waiver
    * (`s.userWaiver`, captured from the user prompt in the setup hook) is set,
@@ -192,10 +288,16 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * waiver is read from the task prompt, never the dispatch prompt.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
+   * @param search Optional attribution diagnostic for the refusal text and
+   *     the `searched` journal field.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
    *     must not proceed.
    */
-  function guardReviewerDispatch(sessionID: string, ledger: GateLedger): void {
+  function guardReviewerDispatch(
+    sessionID: string,
+    ledger: GateLedger,
+    search?: EvidenceSearch,
+  ): void {
     const s = ledger.state(sessionID)
     const waived = s.userWaiver !== ""
     if (waived) {
@@ -253,14 +355,11 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
           sessionID,
           agent: config.agents.reviewer,
           reason: "gate-unverified",
+          // Searched session IDs only (no command text — redaction contract),
+          // so the refusal is forensically reconstructable.
+          ...(search ? { searched: searchedSessionIds(sessionID, search) } : {}),
         })
-        throw new BlockError(
-          "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
-            "was recorded without a journaled successful test-command execution for this " +
-            `session. Run the ${config.agents.testRunner} subagent first, or obtain an ` +
-            `explicit user waiver ` +
-            `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
-        )
+        throw new BlockError(unverifiedBlockMessage(sessionID, search))
       }
       journaler.journal({
         type: "blocked",

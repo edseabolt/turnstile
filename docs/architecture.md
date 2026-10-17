@@ -70,20 +70,20 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ![Module map](images/d01-modules.svg)
 
-| Module               | Responsibility                                                                                                                                      |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turnstile.ts`       | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                  |
-| `src/setup.ts`       | Everything wired at runtime: config resolution, hook registration, prompt admission, verdict attribution, the event stream loop, lifecycle/disposal |
-| `src/config.ts`      | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                   |
-| `src/state.ts`       | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay                                         |
-| `src/markers.ts`     | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                              |
-| `src/gates.ts`       | Enforcement decisions: reviewer dispatch gate, loop caps, read horizon, plan-approval and decomposition gates, ensemble completeness                |
-| `src/tool-policy.ts` | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                         |
-| `src/evidence.ts`    | Correlates `GATE: PASS` against recorded exit-0 test executions per parent                                                                          |
-| `src/fingerprint.ts` | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                         |
-| `src/journal.ts`     | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends            |
-| `src/policy.ts`      | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                  |
-| `src/types.ts`       | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                    |
+| Module               | Responsibility                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `turnstile.ts`       | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                    |
+| `src/setup.ts`       | Everything wired at runtime: config resolution, hook registration, prompt admission, verdict attribution, the event stream loop, lifecycle/disposal                   |
+| `src/config.ts`      | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                     |
+| `src/state.ts`       | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay                                                           |
+| `src/markers.ts`     | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                |
+| `src/gates.ts`       | Enforcement decisions: reviewer dispatch gate, loop caps, read horizon, plan-approval and decomposition gates, ensemble completeness                                  |
+| `src/tool-policy.ts` | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                           |
+| `src/evidence.ts`    | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics |
+| `src/fingerprint.ts` | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                                           |
+| `src/journal.ts`     | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                              |
+| `src/policy.ts`      | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                                    |
+| `src/types.ts`       | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                      |
 
 ---
 
@@ -130,7 +130,10 @@ parses markers out of task deliveries, attributes plan verdicts, credits reviewe
 approval (ensemble-gated), prepends the orchestrator policy once per task,
 corrects the read counter charge down when a read produced no string output
 (`execute.before` charged it on the guard), and promotes an `unverifiedPass`
-when a correlated exit-0 test execution appears.
+when a correlated exit-0 test execution appears — the same correlation
+re-checks when a child→parent edge resolves late (a background dispatch, via
+`session.created` or `session.get`) and again at reviewer-dispatch time,
+bounded to the parent's current task window (stamped at prompt admission).
 
 **`permission.hook("evaluate")`** — never blocks; when the plan gate is red on
 a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
@@ -179,7 +182,9 @@ A typical enforced run:
    `AC-n` entries from the decomposition.
 5. The test-runner's `GATE: PASS` may require corroborating exit-0 bash
    evidence (`gateEvidence:"enforce"`); without it the flag is held as
-   `unverifiedPass` and promoted when evidence arrives.
+   `unverifiedPass` and promoted when evidence arrives — including when a
+   late child→parent edge back-fills the correlation, and only for
+   executions journaled within the parent's current task window.
 6. The reviewer's APPROVE credits the landing gate — under
    `reviewEnsemble:"enforce"` only after ≥2 unwaived reviewer dispatches.
 7. `git push` is blocked until reviewer approval exists; a repeat push arms the
@@ -475,7 +480,14 @@ each maps to a turnstile mechanism:
   `GATE: PASS` marker with a recorded exit-0 test execution matching
   `evidencePattern` before the reviewer gate flips; a bare marker stays
   `unverifiedPass` and never greens the gate under
-  `gateEvidence:"enforce"`.
+  `gateEvidence:"enforce"`. The correlation re-runs when a child→parent
+  edge resolves late (a background dispatch) and at reviewer-dispatch
+  time, bounded to the parent's current task window (a prompt-admission
+  stamp), so a stale prior-task execution cannot verify a new task's
+  claim; a gate-unverified refusal names the sessions it searched
+  (parent plus every child with journaled executions, with attribution
+  reasons) in the `BLOCKED` message and the `searched` field of the
+  journaled `blocked` entry.
 - **A decision journal.** OpenCode logs are diagnostics, not a
   structured decision record. `src/journal.ts` appends every gate
   transition, block, waiver, and dispatch to a replayable JSONL trail

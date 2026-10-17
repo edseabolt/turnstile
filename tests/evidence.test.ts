@@ -1,8 +1,9 @@
 /**
  * @fileoverview Evidence-tracker unit tests: observe/has/clear semantics,
  * exit-code and pattern gating, child→parent attribution with lazy re-key,
- * LRU eviction beyond maxSessions, and the invalid-pattern fallback. Pure
- * against an injected parent resolver (no host, no journal).
+ * the windowed has (task-window lower bound) and snapshot (pure-read
+ * diagnostic view), LRU eviction beyond maxSessions, and the invalid-pattern
+ * fallback. Pure against an injected parent resolver (no host, no journal).
  */
 
 import { test } from "node:test"
@@ -131,6 +132,90 @@ test("evidence falls back to the default pattern on a bad evidencePattern", () =
   assert.equal(t.has("c1"), false)
   t.observe("c1", "npm test", 0)
   assert.equal(t.has("c1"), true)
+})
+
+/** The windowed has excludes a bucket whose latest hit predates the window
+ *  and includes a same-millisecond-boundary hit (inclusive join). */
+test("evidence.has with a task window bounds by the latest hit (inclusive)", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.observe("c1", "npm test", 0)
+  const last = t.snapshot()[0]!.last
+  assert.equal(t.has("c1", last), true, "same-millisecond boundary is inclusive")
+  assert.equal(t.has("c1", last + 1), false, "a predating hit is outside the window")
+  // The un-windowed check is unaffected by the windowed miss.
+  assert.equal(t.has("c1"), true)
+})
+
+/** A windowed miss does not re-key: the child bucket stays under the child,
+ *  and a later qualifying call still re-keys it (laziness preserved). */
+test("evidence.has with a task window keeps a filtered-out child keyed under the child", () => {
+  const edges = new Map<string, string>([["c1", "p1"]])
+  const parentOf = (raw: string): string => edges.get(raw) ?? raw
+  const t = createEvidenceTracker(cfg(), parentOf)
+  t.observe("c1", "npm test", 0)
+  const last = t.snapshot()[0]!.last
+  assert.equal(t.has("p1", last + 1), false, "out-of-window: no attribution")
+  assert.deepEqual(
+    t.snapshot().map((e) => e.session),
+    ["c1"],
+    "no re-key on a miss",
+  )
+  assert.equal(t.has("p1", last), true, "a later in-window call re-keys")
+  assert.deepEqual(
+    t.snapshot().map((e) => e.session),
+    ["p1"],
+  )
+})
+
+/** A stale direct bucket does not hide an in-window child hit: the windowed
+ *  check falls through to the child scan, and a window beyond every hit
+ *  still reports false. */
+test("evidence.has with a task window falls through a stale direct bucket to an in-window child", async () => {
+  const edges = new Map<string, string>([["c1", "p1"]])
+  const parentOf = (raw: string): string => edges.get(raw) ?? raw
+  const t = createEvidenceTracker(cfg(), parentOf)
+  t.observe("p1", "npm test", 0)
+  const staleLast = t.snapshot().find((e) => e.session === "p1")!.last
+  // A distinct-millisecond gap so the child's hit is strictly later.
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  t.observe("c1", "npm test", 0)
+  assert.equal(t.has("p1", staleLast + 1), true, "the in-window child qualifies")
+  const childLast = t.snapshot().find((e) => e.session === "p1")!.last
+  assert.equal(t.has("p1", childLast + 1), false, "a window beyond every hit is false")
+})
+
+/** snapshot returns copies (mutations never reach the tracker) and includes
+ *  every tracked session with its latest timestamp. */
+test("evidence.snapshot copies every tracked session with its latest timestamp", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.observe("a", "npm test", 0)
+  t.observe("b", "pytest", 0)
+  const view = t.snapshot()
+  assert.deepEqual([...view].map((e) => e.session).sort(), ["a", "b"])
+  for (const e of view) assert.equal(typeof e.last, "number")
+  view.push({ session: "ghost", last: 0 })
+  view[0]!.last = 0
+  assert.equal(t.snapshot().length, 2, "mutating the view never touches the tracker")
+  assert.equal(t.has("ghost"), false)
+})
+
+/** snapshot is a pure read: the eviction order after a snapshot matches a
+ *  control tracker that never called one (no LRU promotion). */
+test("evidence.snapshot is a pure read that leaves the eviction order unchanged", () => {
+  const t = createEvidenceTracker({ ...cfg(), maxSessions: 2 }, identityParent)
+  const control = createEvidenceTracker({ ...cfg(), maxSessions: 2 }, identityParent)
+  t.observe("a", "npm test", 0)
+  control.observe("a", "npm test", 0)
+  t.observe("b", "npm test", 0)
+  control.observe("b", "npm test", 0)
+  t.snapshot()
+  t.observe("c", "npm test", 0)
+  control.observe("c", "npm test", 0)
+  assert.equal(t.has("a"), false, "the oldest bucket evicted as in the control")
+  assert.equal(t.has("b"), true)
+  assert.equal(t.has("c"), true)
+  assert.equal(control.has("a"), false)
+  assert.equal(control.has("b"), true)
 })
 
 /** the default pattern matches the repo-relevant JS and non-JS runners. */

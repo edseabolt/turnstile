@@ -92,9 +92,20 @@
  *   mode a `GATE: PASS` satisfies the gate only when the current task's
  *   bash/shell executions include a matching exit-0 test command (plausibility
  *   via `evidencePattern`); an unverified PASS is journaled `verified:false`
- *   and does not flip the gate. `flag` degrades to the historical
- *   flip-on-trust semantics while still stamping `verified`, and `off`
- *   journals without the field — both documented in the README. A
+ *   and does not flip the gate. A pending unverified PASS re-checks its
+ *   evidence correlation when a child→parent edge resolves late (a background
+ *   dispatch) and, as a cheap safety net, again at reviewer-dispatch time —
+ *   by then the edge-resolution triggers have normally already promoted, so
+ *   the decision-time check usually runs as a no-op — bounded to the parent's
+ *   current task window (stamped at prompt admission) so a stale prior-task
+ *   execution cannot verify the new task's claim; a parent that never admits
+ *   a prompt keeps the unbounded join (fail-open). When the gate is refused
+ *   with a pending unverified PASS, the `BLOCKED` message and the journaled
+ *   `blocked` entry name the searched sessions (the parent and every child
+ *   with journaled executions, each with its attribution reason) so the
+ *   missing evidence is diagnosable without guessing. `flag` degrades to the
+ *   historical flip-on-trust semantics while still stamping `verified`, and
+ *   `off` journals without the field — both documented in the README. A
  *   journal-replayed `GATE: PASS` survives the first prompt after a restart
  *   (the resume prompt) and then every later prompt starts a clean cycle.
  *   When `continuationCarry` is on (default off), a prompt re-admitted in an

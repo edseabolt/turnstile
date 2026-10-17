@@ -1,7 +1,8 @@
 /**
  * @fileoverview Evidence boundary: correlates an observed `GATE: PASS` against
  * journaled successful (exit 0) bash/shell test-command executions attributed
- * to the emitting session's parent within the current task window.
+ * to the emitting session's parent, with an optional task-window lower bound
+ * on the correlation and a pure-read snapshot for diagnostics.
  *
  * This owns only the *evidence* dimension — whether the claimed tests ran.
  * Marker authority (*who* may flip gates) is deliberately separate
@@ -58,11 +59,26 @@ export interface EvidenceTracker {
    * True when `sid` or any child whose child→parent edge resolves to `sid`
    * has a recorded hit. Re-keys a found child bucket to `sid` (lazy
    * promotion, so an async parent edge established after `observe` still
-   * resolves).
+   * resolves). With `since`, a bucket (direct or re-keyed) qualifies only
+   * when its latest hit is at-or-after `since` (inclusive,
+   * same-millisecond-tolerant); a filtered-out child stays keyed under the
+   * child (no re-key on a miss, preserving laziness for a later call). When
+   * a stale direct bucket exists and an in-window child qualifies, the
+   * qualifying child bucket replaces the direct one (only stale timestamps
+   * are discarded, since the direct bucket's latest hit predates `since`).
    * @param sid The parent (or raw) session ID to check.
+   * @param since Optional inclusive lower bound (the task window).
    * @returns True when correlated evidence exists.
    */
-  has(sid: string): boolean
+  has(sid: string, since?: number): boolean
+  /**
+   * Diagnostic view: a copy of every tracked session ID with its latest hit
+   * timestamp, in insertion order. Pure read: no LRU promotion, no cap, no
+   * mutation — safe for the attribution layer that decides what a refusal
+   * must name.
+   * @returns One `{ session, last }` per tracked session.
+   */
+  snapshot(): Array<{ session: string; last: number }>
   /**
    * Drops `sid`'s bucket and every child's bucket whose edge resolves to `sid`.
    * @param sid The parent (or raw) session ID to clear.
@@ -78,7 +94,7 @@ export interface EvidenceTracker {
  * @param parentOf Resolves a raw session ID to its parent (the ledger's `parentOf`).
  * @param journaler Optional telemetry writer; used only to journal the
  *     pattern-fallback (a compile failure) when set.
- * @returns The observe/has/clear tracker.
+ * @returns The observe/has/clear/snapshot tracker.
  */
 export function createEvidenceTracker(
   config: TurnstileConfig,
@@ -134,13 +150,27 @@ export function createEvidenceTracker(
     return true
   }
 
-  function has(sid: string): boolean {
+  /**
+   * Whether a bucket's latest hit satisfies the window bound.
+   * @param bucket The bucket's hit timestamps (always non-empty).
+   * @param since The inclusive lower bound, or undefined for no bound.
+   * @returns True when the bucket qualifies.
+   */
+  function windowQualifies(bucket: number[], since: number | undefined): boolean {
+    if (since === undefined) return true
+    return bucket[bucket.length - 1]! >= since
+  }
+
+  function has(sid: string, since?: number): boolean {
     if (!sid) return false
     // Touch unconditionally: present keys reorder to MRU, absent keys no-op.
     promote(hits, sid)
-    if (hits.has(sid)) return true
+    // A stale direct bucket falls through to the child scan: an in-window
+    // child hit still qualifies when the direct one predates the window.
+    // Without `since` this is byte-identical to the legacy direct-hit return.
+    if (hits.has(sid) && windowQualifies(hits.get(sid)!, since)) return true
     for (const [child, bucket] of hits) {
-      if (parentOf(child) === sid) {
+      if (parentOf(child) === sid && windowQualifies(bucket, since)) {
         hits.delete(child)
         hits.set(sid, bucket)
         promote(hits, sid)
@@ -148,6 +178,14 @@ export function createEvidenceTracker(
       }
     }
     return false
+  }
+
+  function snapshot(): Array<{ session: string; last: number }> {
+    const view: Array<{ session: string; last: number }> = []
+    for (const [session, bucket] of hits) {
+      view.push({ session, last: bucket[bucket.length - 1]! })
+    }
+    return view
   }
 
   function clear(sid: string): void {
@@ -158,5 +196,5 @@ export function createEvidenceTracker(
     }
   }
 
-  return { observe, has, clear }
+  return { observe, has, clear, snapshot }
 }
