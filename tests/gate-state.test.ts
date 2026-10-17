@@ -11,7 +11,9 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { BlockError } from "../src/gates.ts"
+import { BlockError, createGates } from "../src/gates.ts"
+import { defaultConfig } from "../src/config.ts"
+import { createJournaler } from "../src/journal.ts"
 import { createLedger, newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
 import {
@@ -33,11 +35,21 @@ const NO_GATE_MESSAGE =
   "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** The gate-unverified block message: a PASS was recorded without
- *  a correlating journaled test-command execution (enforce mode). */
+ *  a correlating journaled test-command execution (enforce mode). Rendered
+ *  by the two-argument guard call (no search context) — the legacy bytes. */
 const GATE_UNVERIFIED_MESSAGE =
   "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
   "was recorded without a journaled successful test-command execution for this " +
   "session. Run the test-runner subagent first, or obtain an explicit user waiver " +
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+
+/** The gate-unverified block message when the guard ran with a search
+ *  context and no journaled test execution is on record anywhere for the
+ *  searched scope (the setup-driven path always supplies the context). */
+const GATE_UNVERIFIED_SEARCHED_NONE_MESSAGE =
+  "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
+  "was recorded without a journaled successful test-command execution for this " +
+  "session (searched p1; journaled test executions: none). Run the test-runner subagent first, or obtain an explicit user waiver " +
   "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
 /** Boots the plugin over a fake host with a temp metrics dir. */
@@ -2368,13 +2380,98 @@ test("enforce mode: an unverified PASS blocks reviewer dispatch with reason gate
         sessionID: "p1",
         input: { agent: "reviewer", prompt: "review it" },
       }),
-    (e: Error) => e.message === GATE_UNVERIFIED_MESSAGE,
+    (e: Error) => e.message === GATE_UNVERIFIED_SEARCHED_NONE_MESSAGE,
   )
   const blocked = journalEntries(metricsDir).find(
     (l) => l.type === "blocked" && l.reason === "gate-unverified",
   )
   assert.ok(blocked)
+  // The refusal names what it searched: the parent ID, no children on record.
+  assert.deepEqual(blocked.searched, ["p1"])
   dispose()
+})
+
+/** Boots a gate ledger + gates pair over a temp metrics dir for direct
+ *  (two-argument / crafted-search) guard assertions. */
+function bootGates(): {
+  gates: ReturnType<typeof createGates>
+  ledger: ReturnType<typeof createLedger>
+  metricsDir: string
+} {
+  const metricsDir = tmpDir()
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const journaler = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  return { gates: createGates(defaultConfig(), journaler), ledger, metricsDir }
+}
+
+/** A two-argument guardReviewerDispatch renders the byte-identical legacy
+ *  gate-unverified message and journals the blocked entry without a searched
+ *  field. */
+test("guardReviewerDispatch without a search context keeps the legacy gate-unverified message", () => {
+  const { gates, ledger, metricsDir } = bootGates()
+  ledger.state("p1").unverifiedPass = "GATE: PASS tests=1 passed=1 failed=0"
+  assert.throws(
+    () => gates.guardReviewerDispatch("p1", ledger),
+    (e: Error) => e instanceof BlockError && e.message === GATE_UNVERIFIED_MESSAGE,
+  )
+  const blocked = journalEntries(metricsDir).find(
+    (l) => l.type === "blocked" && l.reason === "gate-unverified",
+  )
+  assert.ok(blocked)
+  assert.equal(blocked.searched, undefined, "no search context: no searched field")
+})
+
+/** With a search context the refusal lists the unattributable child
+ *  (singular lead-in) and journals the searched IDs (parent first). */
+test("guardReviewerDispatch with a search context lists an unattributable child", () => {
+  const { gates, ledger, metricsDir } = bootGates()
+  ledger.state("p1").unverifiedPass = "GATE: PASS tests=1 passed=1 failed=0"
+  assert.throws(
+    () =>
+      gates.guardReviewerDispatch("p1", ledger, {
+        attributed: [],
+        unresolved: [{ session: "c1", reason: "no parent edge" }],
+        direct: false,
+      }),
+    (e: Error) =>
+      e instanceof BlockError &&
+      e.message ===
+        "BLOCKED by turnstile: reviewer dispatch without gate evidence: a GATE: PASS " +
+          "was recorded without a journaled successful test-command execution for this " +
+          "session (searched p1; journaled test executions: none — 1 child session with executions was unattributable: c1 (no parent edge)). " +
+          "Run the test-runner subagent first, or obtain an explicit user waiver " +
+          "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+  )
+  const blocked = journalEntries(metricsDir).find(
+    (l) => l.type === "blocked" && l.reason === "gate-unverified",
+  )
+  assert.ok(blocked)
+  assert.deepEqual(blocked.searched, ["p1", "c1"])
+})
+
+/** With a search context, attributable (stale-window) children render first,
+ *  then unattributable ones, as comma-joined id (reason) items. */
+test("guardReviewerDispatch with a search context lists attributed children before unattributable ones", () => {
+  const { gates, ledger, metricsDir } = bootGates()
+  ledger.state("p1").unverifiedPass = "GATE: PASS tests=1 passed=1 failed=0"
+  assert.throws(
+    () =>
+      gates.guardReviewerDispatch("p1", ledger, {
+        attributed: ["cA"],
+        unresolved: [{ session: "cB", reason: "edge: p2" }],
+        direct: false,
+      }),
+    (e: Error) =>
+      e instanceof BlockError &&
+      e.message.includes(
+        "(searched p1; journaled test executions: cA (executions predate the current task window), cB (edge: p2))",
+      ),
+  )
+  const blocked = journalEntries(metricsDir).find(
+    (l) => l.type === "blocked" && l.reason === "gate-unverified",
+  )
+  assert.ok(blocked)
+  assert.deepEqual(blocked.searched, ["p1", "cA", "cB"])
 })
 
 /** enforce mode: a PASS observed while a matching exit-0 bash test
@@ -2554,7 +2651,7 @@ test("runtime: FAIL then a later unverified enforce PASS keeps the gate red", as
         sessionID: "p1",
         input: { agent: "reviewer", prompt: "review it" },
       }),
-    (e: Error) => e.message === GATE_UNVERIFIED_MESSAGE,
+    (e: Error) => e.message === GATE_UNVERIFIED_SEARCHED_NONE_MESSAGE,
   )
   dispose()
 })
@@ -2593,7 +2690,7 @@ test("enforce mode: non-zero exit and non-matching command are not evidence", as
           sessionID: "p1",
           input: { agent: "reviewer", prompt: "review it" },
         }),
-      (e: Error) => e.message === GATE_UNVERIFIED_MESSAGE,
+      (e: Error) => e.message === GATE_UNVERIFIED_SEARCHED_NONE_MESSAGE,
     )
     dispose()
   }

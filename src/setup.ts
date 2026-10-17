@@ -25,7 +25,7 @@ import {
   GATE_RE,
   VERDICT_RE,
 } from "./markers.ts"
-import { BlockError, createGates, type Gates } from "./gates.ts"
+import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
 import { createEvidenceTracker } from "./evidence.ts"
 import {
   LANDING_REQUIREMENT,
@@ -339,6 +339,14 @@ export function createTurnstile(
   // parents). Capped via boundDispatches, the same eviction idiom as
   // boundLookups.
   const planReviewerDispatch = new Map<string, number>()
+  // Parent session ID → Date.now() of its LATEST admitted prompt: the current
+  // task's evidence window. A GATE: PASS may only be promoted by executions
+  // journaled at-or-after the stamp, so a stale prior-task execution
+  // (surviving under an unresolved child) cannot verify a new task's claim.
+  // A parent that never admits a prompt has no stamp and keeps the unbounded
+  // join (fail-open, documented). Capped via boundTaskWindows, the same
+  // eviction idiom as boundDispatches.
+  const taskWindows = new Map<string, number>()
   // Plan-gate permission asks, keyed by host request id → the parent session
   // the ask was raised for + when it was recorded. Only asks escalated by the
   // evaluate handler (reason "plan-gate") are recorded, so a reply to an
@@ -455,6 +463,18 @@ export function createTurnstile(
       // The loop condition guarantees a first entry exists.
       const oldest = planReviewerDispatch.keys().next().value as string
       planReviewerDispatch.delete(oldest)
+    }
+  }
+
+  /**
+   * Bounds the task-window map by evicting its oldest entries.
+   * Mirrors boundDispatches; see taskWindows.
+   */
+  function boundTaskWindows(): void {
+    while (taskWindows.size > maxTrackedLookups) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = taskWindows.keys().next().value as string
+      taskWindows.delete(oldest)
     }
   }
 
@@ -669,6 +689,9 @@ export function createTurnstile(
       seedEmitter(sessionID, readRecordString(rec, AGENT_KEYS))
       if (parentID !== "") {
         ledger.setParent(sessionID, parentID)
+        // Back-fill: the edge may land after the claim and its evidence were
+        // recorded, so a pending unverified PASS verifies the moment it can.
+        promoteOnEvidence(parentID)
         failedLookups.delete(sessionID)
       } else {
         // Record present but parent-less: negatively cached (a stable signal).
@@ -684,6 +707,78 @@ export function createTurnstile(
       failedLookups.set(sessionID, { attempts: attempts + 1, reason: LOOKUP_REASON_NOT_VISIBLE })
       boundLookups()
     }
+  }
+
+  /**
+   * Re-evaluates evidence correlation for a parent whose pending unverified
+   * PASS may now verify: peeks the parent bucket (never mints one — a fresh
+   * bucket can never carry a claim, so unknown sessions stay out of the LRU)
+   * and, when the bucket holds an unverified claim and the tracker still
+   * correlates an in-window exit-0 hit for it, flips the gate green, clears
+   * the claim, and journals the promoted gate entry plus its trace event —
+   * byte-identical to the evidence-arrival promotion this helper was
+   * extracted from. A parent with no admitted-prompt task-window stamp keeps
+   * the unbounded join (`?? 0`), preserving today's correlation for hosts
+   * that never admit a prompt (fail-open, documented). No-op otherwise;
+   * never throws.
+   * @param parent The parent session whose pending claim is re-evaluated.
+   */
+  function promoteOnEvidence(parent: string): void {
+    const ps = ledger.peek(parent)
+    if (ps && ps.unverifiedPass && evidence.has(parent, taskWindows.get(parent) ?? 0)) {
+      ps.hasGatePass = true
+      ps.unverifiedPass = ""
+      journaler.journal({
+        type: "gate",
+        sessionID: parent,
+        result: "PASS",
+        event: "promoted",
+        verified: true,
+        mode: config.gateEvidence,
+      })
+      journaler.traceEvent("test-runner", "gate", "GATE: PASS promoted on evidence", parent)
+    }
+  }
+
+  /**
+   * Builds the attribution diagnostic for a gate-unverified refusal: which
+   * journaled test executions exist and why none verified the claim. A child
+   * whose executions resolve to `sid` but predate its task window is
+   * `attributed`; every other execution-bearing child is `unresolved` with
+   * its reason ("no parent edge" when no edge is registered,
+   * "edge: <parent>" when the edge resolves elsewhere); `direct` reports an
+   * in-window bucket on `sid` itself (always false on a live refusal — see
+   * EvidenceSearch). Pure read with respect to the evidence tracker: the
+   * tracker is never mutated and nothing is journaled. `ledger.parentOf`
+   * does LRU bookkeeping on the ledger's edge map (state-boundary
+   * contract), so the purity claim is scoped to the tracker and gate state,
+   * not the edge map's ordering.
+   * @param sid The parent session the reviewer dispatch was searched for.
+   * @returns The EvidenceSearch diagnostic for `sid`.
+   */
+  function evidenceSearch(sid: string): EvidenceSearch {
+    const window = taskWindows.get(sid) ?? 0
+    const attributed: string[] = []
+    const unresolved: Array<{ session: string; reason: string }> = []
+    let direct = false
+    for (const { session, last } of evidence.snapshot()) {
+      if (session === sid) {
+        direct = last >= window
+        continue
+      }
+      const parent = ledger.parentOf(session)
+      if (parent === sid) {
+        // In-window attributed hits were already promoted (the decision-time
+        // re-check ran first), so only stale ones reach a refusal.
+        if (last < window) attributed.push(session)
+        continue
+      }
+      unresolved.push({
+        session,
+        reason: ledger.childToParent.has(session) ? `edge: ${parent}` : "no parent edge",
+      })
+    }
+    return { attributed, unresolved, direct }
   }
 
   /**
@@ -1243,6 +1338,13 @@ export function createTurnstile(
       // Evidence is task-scoped, exactly like gate state: a new user
       // prompt drops the in-memory correlation.
       evidence.clear(sessionID)
+      // Stamp the parent's current task window beside the evidence clear:
+      // from this moment a GATE: PASS may only be promoted by executions
+      // journaled at-or-after the stamp, so a stale prior-task execution
+      // (still keyed under an unresolved child) cannot verify the new task's
+      // claim. A parent that never admits a prompt keeps the unbounded join.
+      taskWindows.set(sessionID, Date.now())
+      boundTaskWindows()
       // A prompt reset also drops any pending plan-ask latch: the
       // escalation's stream event belongs to the previous task scope, so
       // a new prompt must not let a later unrelated ask be recorded as
@@ -1588,7 +1690,13 @@ export function createTurnstile(
                 }
 
                 if (agent === config.agents.reviewer) {
-                  gates.guardReviewerDispatch(sessionID, ledger)
+                  // Decision-time re-check: edges may have resolved since the
+                  // last promotion opportunity (a session.get lookup, a
+                  // stream event); re-run the correlation against the fully
+                  // resolved ledger at the exact moment of enforcement, then
+                  // let the guard name what it searched when it refuses.
+                  promoteOnEvidence(sessionID)
+                  gates.guardReviewerDispatch(sessionID, ledger, evidenceSearch(sessionID))
                 }
 
                 if (agent === config.agents.executor) {
@@ -1726,12 +1834,12 @@ export function createTurnstile(
               // child's markers land authoritatively even when every streaming
               // seed failed (fail-closed at streaming, authoritative at delivery).
               seedEmitter(child, agent)
-              // Plan-reviewer delivery path only: await the child→parent edge
-              // before marker parsing and attribution, so a continued subagent
-              // session (no new session.created; edge resolved via session.get)
-              // still attributes. Every other agent keeps today's byte-identical
-              // sync ordering.
-              if (agent === config.agents.planReviewer) {
+              // Plan-reviewer and test-runner delivery paths only: await the
+              // child→parent edge before marker parsing and attribution, so a
+              // background dispatch whose edge resolves late (or only via
+              // session.get) still attributes. Every other agent keeps today's
+              // byte-identical sync ordering.
+              if (agent === config.agents.planReviewer || agent === config.agents.testRunner) {
                 await resolveParent(child)
               }
               // Mark the resolved parent live: covers both host
@@ -1900,29 +2008,10 @@ export function createTurnstile(
                     exit,
                   })
                 }
-                const parent = ledger.parentOf(obsSid)
-                // Peek, don't insert: a fresh bucket can never carry a
-                // non-empty `unverifiedPass`, so unknown bash sessions must
-                // not enter the LRU (behavior-preserving guard).
-                const ps = ledger.peek(parent)
-                if (ps && ps.unverifiedPass && evidence.has(parent)) {
-                  ps.hasGatePass = true
-                  ps.unverifiedPass = ""
-                  journaler.journal({
-                    type: "gate",
-                    sessionID: parent,
-                    result: "PASS",
-                    event: "promoted",
-                    verified: true,
-                    mode: config.gateEvidence,
-                  })
-                  journaler.traceEvent(
-                    "test-runner",
-                    "gate",
-                    "GATE: PASS promoted on evidence",
-                    parent,
-                  )
-                }
+                // Promote a pending unverified PASS the moment in-window
+                // evidence correlates; the helper peeks (never mints) the
+                // parent bucket, so unknown bash sessions stay out of the LRU.
+                promoteOnEvidence(ledger.parentOf(obsSid))
               }
             }
           } catch (e) {
@@ -1961,6 +2050,9 @@ export function createTurnstile(
                   const agent = typeof properties.agent === "string" ? properties.agent : ""
                   if (typeof properties.parentID === "string") {
                     ledger.setParent(sid, properties.parentID)
+                    // Back-fill: a background child's edge often lands after
+                    // its evidence and claim were recorded.
+                    promoteOnEvidence(properties.parentID)
                   } else {
                     // Root sessions are live parents; the edge branch above is
                     // covered by setParent marking the parent.
