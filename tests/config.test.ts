@@ -24,11 +24,14 @@ const {
   ENV_KEYS,
   loadConfig,
   mergeConfig,
+  validateResolved,
+  formatConfigWarnings,
   DEFAULT_EVIDENCE_PATTERN,
   DEFAULT_COMMIT_FORMAT,
 } = await import("../src/config.ts")
 const { defaultMetricsDir } = await import("../src/journal.ts")
-const { GATE_RE } = await import("../src/markers.ts")
+const { GATE_RE, VERDICT_RE, CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER } =
+  await import("../src/markers.ts")
 
 /**
  * Resolves the config-error journal at call time, mirroring
@@ -820,4 +823,119 @@ test("loadConfig warns and keeps the value when the metrics dir env is empty", (
   } finally {
     process.chdir(prev)
   }
+})
+
+/** (1) A string $schema is accepted silently and never lands in the resolved
+ *  config; a non-string $schema warns once naming the key. */
+test("mergeConfig accepts a string $schema silently and warns on a non-string one", () => {
+  const base = defaultConfig({})
+  const ok = mergeConfig(base, { $schema: "/abs/path/schemas/turnstile.schema.json" })
+  assert.equal(ok.warnings.length, 0, "a string $schema adds no warning")
+  assert.ok(!("$schema" in ok.config), "$schema is not a TurnstileConfig key")
+  const bad = mergeConfig(base, { $schema: 42 as unknown })
+  assert.equal(bad.warnings.length, 1)
+  assert.equal(bad.warnings[0], 'config: "$schema" must be a string URI or path; ignored')
+})
+
+/** (2) The breadth oracle is silent for the default markers and for a
+ *  source that matches no more than the default (a narrower PASS-only gate
+ *  regex): no marker warning either way. */
+test("validateResolved stays silent for the default and narrower marker sources", () => {
+  const defaults = validateResolved(defaultConfig({}))
+  assert.ok(
+    !defaults.some((w) => w.includes("gateMarker") || w.includes("verdictMarker")),
+    "the default markers produce no breadth warning",
+  )
+  const narrower = defaultConfig({})
+  narrower.gateMarker = "^\\s*[`>#*\\s]*GATE: PASS tests=\\d+ passed=\\d+ failed=\\d+"
+  const narrowerWarnings = validateResolved(narrower)
+  assert.ok(
+    !narrowerWarnings.some((w) => w.includes("gateMarker") || w.includes("verdictMarker")),
+    "a source that matches no more than the default stays silent",
+  )
+})
+
+/** (3) A gateMarker source without the ^ start anchor is broader: it matches a
+ *  probe the default rejects, so exactly one gateMarker warning is emitted. */
+test("validateResolved warns once for a broader (un-anchored) gateMarker", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: (PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+"
+  const warnings = validateResolved(config)
+  const gate = warnings.filter((w) => w.includes("gateMarker"))
+  assert.equal(gate.length, 1, "exactly one gateMarker breadth warning")
+  assert.ok(gate[0]!.includes("gateMarker"))
+  assert.ok(gate[0]!.includes(CANONICAL_GATE_MARKER), "the warning names the offending probe")
+})
+
+/** (4) A verdictMarker source with a .* end broadening is broader: it matches
+ *  a probe the default rejects, so exactly one verdictMarker warning is
+ *  emitted. */
+test("validateResolved warns once for a broader (.*-suffixed) verdictMarker", () => {
+  const config = defaultConfig({})
+  config.verdictMarker =
+    "^\\s*[`>#*\\s]*VERDICT: (APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+.*"
+  const warnings = validateResolved(config)
+  const verdict = warnings.filter((w) => w.includes("verdictMarker"))
+  assert.equal(verdict.length, 1, "exactly one verdictMarker breadth warning")
+  assert.ok(verdict[0]!.includes(CANONICAL_VERDICT_MARKER), "the warning names the offending probe")
+})
+
+/** (5) A marker source that cannot compile is skipped (its silent fallback is
+ *  already journaled at setup), so no breadth warning is produced. */
+test("validateResolved skips the breadth check for a non-compiling marker source", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: (unclosed"
+  config.verdictMarker = "VERDICT: [unclosed"
+  const warnings = validateResolved(config)
+  assert.ok(
+    !warnings.some((w) => w.includes("gateMarker") || w.includes("verdictMarker")),
+    "a non-compiling source produces no breadth warning",
+  )
+})
+
+/** (6) Each canonical example literal still parses under its default regex. */
+test("the canonical marker literals each match their default regex", () => {
+  assert.ok(
+    CANONICAL_GATE_MARKER.match(GATE_RE) !== null,
+    "CANONICAL_GATE_MARKER parses under GATE_RE",
+  )
+  assert.ok(
+    CANONICAL_VERDICT_MARKER.match(VERDICT_RE) !== null,
+    "CANONICAL_VERDICT_MARKER parses under VERDICT_RE",
+  )
+})
+
+/** (7) formatConfigWarnings renders the header (count + journal path), one
+ *  line per warning up to maxLines, and a truncation tail naming the hidden
+ *  remainder past maxLines. */
+test("formatConfigWarnings renders the header, lines, and a truncation tail", () => {
+  const few = formatConfigWarnings(["alpha", "beta"], "/journal/turnstile.jsonl")
+  assert.ok(
+    few.startsWith(
+      "[turnstile] config: 2 validation warning(s) (journal: /journal/turnstile.jsonl):",
+    ),
+  )
+  assert.ok(few.includes("- alpha"))
+  assert.ok(few.includes("- beta"))
+  assert.ok(!few.includes("more; see the journal"), "no tail at or under maxLines")
+  const many = formatConfigWarnings(["a", "b", "c", "d", "e", "f", "g"], "/journal/turnstile.jsonl")
+  assert.ok(many.startsWith("[turnstile] config: 7 validation warning(s)"))
+  assert.ok(many.includes("- a"))
+  assert.ok(!many.includes("- f"), "warnings past maxLines are not rendered")
+  assert.ok(many.includes("(2 more; see the journal)"), "the tail counts the hidden warnings")
+})
+
+/** (8) The match-oracle signal is probe-divergence, not a subsumption proof:
+ *  a narrower un-anchored PASS-only gateMarker still matches the leading-noise
+ *  probe the anchored default rejects, so it warns once, naming both the label
+ *  and the probe, in the "differs" wording. */
+test("validateResolved flags a narrower un-anchored gateMarker that matches a probe", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: PASS tests=\\d+ passed=\\d+ failed=\\d+"
+  const warnings = validateResolved(config)
+  const gate = warnings.filter((w) => w.includes("gateMarker"))
+  assert.equal(gate.length, 1, "exactly one gateMarker divergence warning")
+  assert.ok(gate[0]!.includes("differs from the default marker regex"))
+  assert.ok(gate[0]!.includes(CANONICAL_GATE_MARKER), "the warning names the leading-noise probe")
+  assert.ok(!gate[0]!.includes("broader"), "the wording no longer claims breadth")
 })

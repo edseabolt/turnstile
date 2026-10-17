@@ -22,6 +22,20 @@ export const GATE_RE = /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ fail
 export const VERDICT_RE = /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm
 
 /**
+ * Canonical example matching the default GATE_RE. Display and breadth-probe
+ * source only (see `src/config.ts`): not a new marker-validated source, so it
+ * is not checked by scripts/check-markers.mjs. Guarded by a test asserting it
+ * still parses under GATE_RE, mirroring the policy-template probe precedent.
+ */
+export const CANONICAL_GATE_MARKER = "GATE: PASS tests=3 passed=3 failed=0"
+/**
+ * Canonical example matching the default VERDICT_RE. Display and breadth-probe
+ * source only (see `src/config.ts`); guarded by a test asserting it still
+ * parses under VERDICT_RE.
+ */
+export const CANONICAL_VERDICT_MARKER = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+
+/**
  * Strips a marker's leading authority token so de-tokenized text can never
  * re-parse as an authoritative first-sight marker. The default `GATE_RE`/
  * `VERDICT_RE` match a case-sensitive uppercase `GATE:`/`VERDICT:` token, so

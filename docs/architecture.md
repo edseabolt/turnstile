@@ -123,8 +123,10 @@ counted into the load heartbeat (`type:"setup"`).
   (`git push` requires reviewer approval).
 - `write`/`edit`: path denylist.
 
-**`tool.hook("execute.after")`** — observation only, never blocks: parses
-markers out of task deliveries, attributes plan verdicts, credits reviewer
+**`tool.hook("execute.after")`** — observation only, never blocks: first surfaces any
+config-validation warnings once per load (a `[turnstile] config:` block
+prepended to the first string-output result, journaled `type:"config"`), then
+parses markers out of task deliveries, attributes plan verdicts, credits reviewer
 approval (ensemble-gated), prepends the orchestrator policy once per task,
 corrects the read counter charge down when a read produced no string output
 (`execute.before` charged it on the guard), and promotes an `unverifiedPass`
@@ -231,9 +233,9 @@ continuing prompt has an unchanged worktree fingerprint.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (17 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (18 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
-  `escalation`, `permission`, `attribution`, `policy`, `continuation`,
+  `escalation`, `permission`, `attribution`, `policy`, `config`, `continuation`,
   `evidence`, `violation`, `tool`, `error`, `suppressed`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
@@ -246,6 +248,12 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   string carries the digits for forensics, and a re-delivery of identical text
   adds none (dedup stays registered). Both journal replay and the status
   aggregate treat it as inert.
+  A `config` entry is the surface audit for the once-per-load `[turnstile]
+ config:` block: `{type:"config", sessionID, surfaced:true, count}` on a
+  successful prepend, or `{..., surfaced:false, error}` when the prepend threw
+  (fail-open). It is replay-inert (a surface record, not gate state) and never
+  re-journaled — the warnings themselves are journaled exactly once by the
+  config layer, so this entry is a count-only audit, not a second copy.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `rotateEveryEntries` appends (default 512), only under a
@@ -279,7 +287,13 @@ gate/plan/verdict/dispatch/blocked/permission entries per parent session.
 Config resolves in four layers — code defaults ⊕ `~/.config/opencode/turnstile.json`
 ⊕ environment (`TURNSTILE_TRACE`, `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`)
 ⊕ injected options — with per-key validation; invalid values are warned into
-the journal (never thrown). Highlights:
+the journal (never thrown) and summarized once into the session context at
+startup (a `[turnstile] config:` block). A shipped JSON schema
+(`schemas/turnstile.schema.json`, editor opt-in via a `$schema` key that is
+silently ignored at load) documents every key; the marker keys
+(`gateMarker`/`verdictMarker`) are additionally breadth-checked against the
+canonical defaults, so a user regex that matches text the default rejects is
+warned. Highlights:
 
 | Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                             |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -288,11 +302,13 @@ the journal (never thrown). Highlights:
 | Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                             |
 | Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time    |
 | Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`                                                                        | mode `enforce`; denylist covers worktree ops, branch switch/checkout, merge, `gh pr create\|merge` |
-| Git gates   | `gitGates.mode`, `gitGates.commitLint`, `gitGates.commitFormat`, `gitGates.landingGate`                                                | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                         |
+| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`                                            | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                         |
 
-Known guarded interaction: `reviewEnsemble:"enforce"` with
+Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically
-unsatisfiable.
+unsatisfiable. A user `gateMarker`/`verdictMarker` that matches text the
+shipped default rejects is warned as different from the default (a match-oracle
+probe; a disjoint custom syntax stays silent).
 
 ---
 

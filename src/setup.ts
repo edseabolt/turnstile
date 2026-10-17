@@ -15,7 +15,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { configDigest, loadConfig } from "./config.ts"
+import { configDigest, formatConfigWarnings, loadConfig } from "./config.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
   agentFromTaskInput,
@@ -200,7 +200,7 @@ export function createTurnstile(
   opts: TurnstileOptions = {},
 ): (h: Host) => Promise<(() => void) | void> {
   const env = opts.env ?? process.env
-  const { config } = loadConfig(env, opts.config)
+  const { config, warnings: configWarnings } = loadConfig(env, opts.config)
   // Version is read once here (fail-open, alongside loadConfig) for the load
   // heartbeat; null on exotic installs where package.json is unreadable.
   const version = readPluginVersion()
@@ -210,8 +210,48 @@ export function createTurnstile(
     maxBytes: config.journalMaxBytes,
     maxGenerations: config.journalMaxGenerations,
   })
-  // Config warnings are already journaled by config.ts (the pre-journaler
-  // sink); journaling them here too would double-write every entry.
+  // Config warnings are journaled exactly once, by config.ts (the pre-journaler
+  // sink); they are now also *surfaced* once into the model context by the
+  // first tool delivery that carries string output (see
+  // `surfaceConfigWarnings`), and never re-journaled here (that would
+  // double-write every entry).
+  // One-time config-warning surfacing: true while `configWarnings` still
+  // deserve a context block. Set at plugin build (no warnings ⇒ already
+  // surfaced, zero behavior change); consumed by the first execute.after
+  // delivery that carries string output — the same model-facing channel as
+  // the policy injection and the read-budget warning prefix.
+  let configWarningsPending = configWarnings.length > 0
+  // Surfaces unresolved config-validation warnings once per plugin load by
+  // prepending a `[turnstile] config:` block to the first tool result with
+  // string output — from any session, primary or child — the model-facing
+  // channel proven by the policy injection and the read-budget prefix.
+  // Fail-open: a throwing mutation journals
+  // `{type:"config", surfaced:false}` and never blocks the tool; the journal
+  // already carries every warning (loadConfig journaled them), so this entry
+  // is a surface audit (surfaced/count), not a second copy of the warnings.
+  function surfaceConfigWarnings(event: ToolHookEvent): void {
+    if (!configWarningsPending) return
+    if (!event?.result || typeof event.result.output !== "string") return
+    const sessionID = asSessionID(event.sessionID)
+    try {
+      event.result.output =
+        formatConfigWarnings(configWarnings, journaler.journalPath) + "\n" + event.result.output
+      configWarningsPending = false
+      journaler.journal({
+        type: "config",
+        sessionID,
+        surfaced: true,
+        count: configWarnings.length,
+      })
+    } catch (e) {
+      journaler.journal({
+        type: "config",
+        sessionID,
+        surfaced: false,
+        error: String(e),
+      })
+    }
+  }
   const gateRe = compileMarkerRegex(config.gateMarker, GATE_RE, (cause) =>
     journaler.journal({
       type: "error",
@@ -1669,6 +1709,12 @@ export function createTurnstile(
       try {
         const reg = await h.tool.hook("execute.after", async (event: ToolHookEvent) => {
           try {
+            // Invariant: this runs BEFORE the policy injection below, so on a
+            // task delivery carrying both surfaces the policy prepend lands on
+            // top — output reads ORCHESTRATOR_POLICY, then `[turnstile]
+            // config:`, then the child's own output. Both are fail-open and
+            // once-per-scope (policy per task, config per plugin load).
+            surfaceConfigWarnings(event)
             if (event?.tool === "task" || event?.tool === "subagent") {
               const output = String(event.result?.output ?? "")
               const child = asSessionID(event?.sessionID)

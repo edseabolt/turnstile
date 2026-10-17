@@ -16,7 +16,7 @@ ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
 
-writers.hooks -> jsonl: "every decision,\n16 entry types"
+writers.hooks -> jsonl: "every decision,\n18 entry types"
 writers.hooks -> trace: "trace:true only"
 jsonl -> replay: "at ledger creation:\nlast 2000 lines of current + .1"
 replay -> ledger
