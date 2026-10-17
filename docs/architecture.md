@@ -302,12 +302,12 @@ warned. Highlights:
 | Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                             |
 | Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time    |
 | Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`                                                                        | mode `enforce`; denylist covers worktree ops, branch switch/checkout, merge, `gh pr create\|merge` |
-| Git gates   | `gitGates.mode`, `gitGates.commitLint`, `gitGates.commitFormat`, `gitGates.landingGate`                                                | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                         |
+| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`                                            | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                         |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically
 unsatisfiable. A user `gateMarker`/`verdictMarker` that matches text the
-shipped default rejects is warned as broader than the default (a match-oracle
+shipped default rejects is warned as different from the default (a match-oracle
 probe; a disjoint custom syntax stays silent).
 
 ---

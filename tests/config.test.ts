@@ -924,3 +924,18 @@ test("formatConfigWarnings renders the header, lines, and a truncation tail", ()
   assert.ok(!many.includes("- f"), "warnings past maxLines are not rendered")
   assert.ok(many.includes("(2 more; see the journal)"), "the tail counts the hidden warnings")
 })
+
+/** (8) The match-oracle signal is probe-divergence, not a subsumption proof:
+ *  a narrower un-anchored PASS-only gateMarker still matches the leading-noise
+ *  probe the anchored default rejects, so it warns once, naming both the label
+ *  and the probe, in the "differs" wording. */
+test("validateResolved flags a narrower un-anchored gateMarker that matches a probe", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: PASS tests=\\d+ passed=\\d+ failed=\\d+"
+  const warnings = validateResolved(config)
+  const gate = warnings.filter((w) => w.includes("gateMarker"))
+  assert.equal(gate.length, 1, "exactly one gateMarker divergence warning")
+  assert.ok(gate[0]!.includes("differs from the default marker regex"))
+  assert.ok(gate[0]!.includes(CANONICAL_GATE_MARKER), "the warning names the leading-noise probe")
+  assert.ok(!gate[0]!.includes("broader"), "the wording no longer claims breadth")
+})

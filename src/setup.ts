@@ -223,8 +223,9 @@ export function createTurnstile(
   let configWarningsPending = configWarnings.length > 0
   // Surfaces unresolved config-validation warnings once per plugin load by
   // prepending a `[turnstile] config:` block to the first tool result with
-  // string output — the model-facing channel proven by the policy injection
-  // and the read-budget prefix. Fail-open: a throwing mutation journals
+  // string output — from any session, primary or child — the model-facing
+  // channel proven by the policy injection and the read-budget prefix.
+  // Fail-open: a throwing mutation journals
   // `{type:"config", surfaced:false}` and never blocks the tool; the journal
   // already carries every warning (loadConfig journaled them), so this entry
   // is a surface audit (surfaced/count), not a second copy of the warnings.

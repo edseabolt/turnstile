@@ -210,3 +210,29 @@ test("config surfacing: on a task delivery the policy lands above the config blo
     dispose()
   }
 })
+
+/** (18) The block keys off the first string-output delivery, not session
+ *  identity: a first delivery from an unregistered session id consumes the
+ *  flag, journals one `config` entry with `surfaced:true`, and preserves the
+ *  original output. Fixture caveat: the fake host registers no parent edges,
+ *  so this fixture cannot distinguish a child from a primary session — the
+ *  test pins the documented any-delivery contract, not child-specific
+ *  handling. */
+test("config surfacing: the first delivery from an unregistered session consumes the flag", async () => {
+  const { h, dispose, metricsDir } = await boot(WARNING_CONFIG)
+  try {
+    const event = { tool: "read", sessionID: "child-1", result: { output: "body" } }
+    await callTool(h, "execute.after", event)
+    const out = String(event.result.output)
+    assert.ok(
+      out.startsWith("[turnstile] config:"),
+      "the unregistered session's output is prefixed",
+    )
+    assert.ok(out.endsWith("body"), "the original output is preserved")
+    const configEntries = journalEntries(metricsDir).filter((l) => l.type === "config")
+    assert.equal(configEntries.length, 1, "exactly one config journal entry")
+    assert.equal(configEntries[0]!.surfaced, true, "the entry reports surfaced:true")
+  } finally {
+    dispose()
+  }
+})

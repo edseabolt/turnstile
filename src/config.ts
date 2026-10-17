@@ -500,21 +500,24 @@ function applyEnvLayer(config: TurnstileConfig, env: Record<string, string | und
 }
 
 /**
- * Warns when a user-configured marker regex is broader than the shipped
- * default — i.e. it accepts text the canonical syntax rejects. This is a
- * match-oracle, not a full subsumption proof: it is sound (never warns for a
- * source that matches no more than the default on the probes) but incomplete
- * (broadening that the probes do not exercise is not caught). A missing `^`
- * start anchor is caught by a probe that leads the canonical marker with
- * junk; a `.*` end broadening is caught by a probe that trails it. A source
- * that matches neither probe (a disjoint custom syntax) stays silent, so an
- * intentional re-skinning never trips a false positive.
+ * Warns when a user-configured marker regex differs from the shipped default
+ * on the match-oracle probes — i.e. it accepts text the canonical syntax
+ * rejects. This is a match-oracle, not a full subsumption proof: it is sound
+ * (never warns for a source that matches no more than the default on the
+ * probes) but incomplete (broadening that the probes do not exercise is not
+ * caught). The signal is probe-divergence, not a subsumption proof, so a
+ * narrower un-anchored source can also trip it when it matches a probe the
+ * default does not. A missing `^` start anchor is caught by a probe that leads
+ * the canonical marker with junk; a `.*` end broadening is caught by a probe
+ * that trails it. A source that matches neither probe (a disjoint custom
+ * syntax) stays silent, so an intentional re-skinning never trips a false
+ * positive.
  * @param label The config key name to surface in the warning.
  * @param source The user-provided regex source string.
  * @param defaultRe The compiled canonical regex to compare against.
  * @param canonical A canonical example the default regex must match.
- * @returns One warning string when the source is broadly a superset of the
- *     default on a probe, otherwise undefined.
+ * @returns One warning string when the source matches a probe the default
+ *     rejects, otherwise undefined.
  */
 function warnIfBroaderMarker(
   label: string,
@@ -536,9 +539,9 @@ function warnIfBroaderMarker(
     const userMatches: string[] = probe.match(compiled) ?? []
     // `String.match` (never `.test`): the `g` flag's `lastIndex` would make a
     // stateful `.test` unreliable. A user match the default does not produce
-    // for the same probe is the broadness signal.
+    // for the same probe is the divergence signal.
     if (userMatches.some((m) => !defaultMatches.includes(m))) {
-      return `config: ${label} is broader than the default marker regex: it matches "${probe}" which the default does not match`
+      return `config: ${label} differs from the default marker regex: it matches "${probe}" which the default does not match`
     }
   }
   return undefined
