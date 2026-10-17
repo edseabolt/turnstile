@@ -14,6 +14,12 @@
  * - `ctx.session.hook("prompt" | "generate" | "compaction", cb)`
  * - `ctx.event.subscribe({ signal })`
  *
+ * - `compaction` → appends the preserve-verbatim instruction plus the live
+ *   gate-state snapshot (`formatGateSnapshot`), sourced from the ledger and
+ *   keyed off `draft.sessionID` (falling back to the last-admitted parent when
+ *   absent). Its `GATE:`/`VERDICT:` tokens are de-tokenized so it can never
+ *   re-parse as an authoritative marker. Fully guarded and fail-open.
+ *
  * Enforced mechanically:
  * - Marker authority: text observation mutates gate/verdict state only from a
  *   marker-contracted emitter. A `GATE:` is authoritative only from the

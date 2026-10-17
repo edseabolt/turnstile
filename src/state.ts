@@ -16,6 +16,10 @@ export function newState(): GateState {
   return {
     hasGatePass: false,
     unverifiedPass: "",
+    // Task-scoped last-marker text: fresh "" on every prompt reset and never
+    // carried through mergeAfterReplay (display-only, like unverifiedPass).
+    lastGateMarker: "",
+    lastVerdictMarker: "",
     hasPlanVerdict: false,
     hasReviewApprove: false,
     userWaiver: "",
@@ -51,6 +55,32 @@ export function newState(): GateState {
     // worktree/branch identity this carry predicate keys off.
     taskFingerprint: "",
   }
+}
+
+/**
+ * Projects a live ledger bucket into the system-block turnstile appends at
+ * compaction: the concrete gate state (last GATE/VERDICT markers, plan and
+ * reviewer approval, round/dispatch counts, waiver/human flags, landing and
+ * read counts, task fingerprint) rather than merely demanding markers the
+ * orchestrator may no longer remember. A pure read of `GateState` — it never
+ * journals, mints, or throws, so it is safe on the compaction hook — and a
+ * restart-restored bucket still renders `GREEN`/`APPROVED` with `last=none`
+ * because replay restores the flags (journaled) but not the raw marker text.
+ * @param s The gate state bucket to render (from `ledger.peek`).
+ * @returns The snapshot block, one fact per line, joined by newlines.
+ */
+export function formatGateSnapshot(s: GateState): string {
+  const gateUnverified = s.unverifiedPass ? ` unverified=${s.unverifiedPass}` : ""
+  return [
+    "turnstile gate snapshot (live ledger; authoritative; do not re-derive):",
+    `- gate: ${s.hasGatePass ? "GREEN" : "RED"} last=${s.lastGateMarker || "none"}${gateUnverified}`,
+    `- plan: ${s.hasPlanVerdict ? "APPROVED" : "PENDING"} stamp=${s.plansSignature ? "known" : "unknown"}`,
+    `- reviewer: ${s.hasReviewApprove ? "APPROVED" : "PENDING"} dispatches=${s.reviewerDispatches} last=${s.lastVerdictMarker || "none"}`,
+    `- waiver: ${s.userWaiver ? "ACTIVE" : "none"} human: ${s.humanApproval ? "APPROVED" : "none"}`,
+    `- rounds: planner=${s.plannerRounds} plan-reviewer=${s.planReviewerRounds} test-runner=${s.testRunnerRounds} reviewer=${s.reviewRounds} total=${s.totalDispatches}`,
+    `- landing: blocks=${s.landingBlocks} reads=${s.reads}`,
+    `- task: ${s.taskFingerprint || "unstamped"}`,
+  ].join("\n")
 }
 
 /**
@@ -158,6 +188,15 @@ export interface GateLedger {
    * @returns True when the session is a registered live parent.
    */
   isParent(sessionID: string): boolean
+  /**
+   * Returns the most-recently-admitted live parent (the MRU of the registry,
+   * which `markParent` promotes to the end on), or "" when none is registered.
+   * Used as a fallback when a compaction payload carries no `sessionID`: the
+   * most-recently-active parent is otherwise unresolvable. Fail-open — the
+   * registry is never mutated, so this reads without an LRU reorder.
+   * @returns The last admitted parent session ID, or "" when the registry is empty.
+   */
+  lastParent(): string
   /**
    *
    * Overwrites the child's latest `VERDICT:` marker observation and its
@@ -491,6 +530,20 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     return known
   }
 
+  /**
+   * Returns the most-recently-admitted live parent: the registry map is
+   * MRU-ordered (markParent promotes the key to the end on every admission),
+   * so the last key is the most-recently-admitted parent. "" when the registry
+   * is empty. Pure read — no LRU promotion — so a fallback lookup never
+   * disturbs the registry ordering.
+   * @returns The last admitted parent session ID, or "" when empty.
+   */
+  function lastParent(): string {
+    let last = ""
+    for (const p of parents.keys()) last = p
+    return last
+  }
+
   // Replay runs before capping so the restored set honors the LRU cap too.
   replayGatePasses(states, journalPath)
   cap(states, isParent)
@@ -499,6 +552,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     childToParent,
     markParent,
     isParent,
+    lastParent,
     state(sessionID: string): GateState {
       promote(states, sessionID)
       let s = states.get(sessionID)
