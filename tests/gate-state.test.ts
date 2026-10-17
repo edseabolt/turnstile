@@ -195,7 +195,7 @@ test("task-result re-runs with identical markers are journaled per delivery", as
     await callTool(h, "execute.after", {
       tool: "task",
       sessionID: "p1",
-      input: { agent: "test-runner" },
+      input: { agent: "reviewer" },
       result,
     })
   }
@@ -212,7 +212,10 @@ test("task-result re-runs with identical markers are journaled per delivery", as
 /** Repeated streaming of the same text dedups to a single verdict entry. */
 test("streaming re-delivery of the same text dedups to one journal entry", async () => {
   const { h, dispose, metricsDir } = await boot()
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -255,8 +258,14 @@ test("only the last marker per text is journaled; earlier matches counted as sup
 test("a cross-child dedup hit surfaces as suppressed on the parent's next marker event", async () => {
   const { h, dispose, metricsDir } = await boot()
   // Two children share parent p1; both stream byte-identical GATE: PASS.
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c2", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   h.pushEvent({ type: "session.error", data: { sessionID: "c2", error: "warmup" } })
   await waitUntil(
@@ -290,7 +299,10 @@ test("a cross-child dedup hit surfaces as suppressed on the parent's next marker
  *  that child journals suppressed 0. */
 test("same-child re-delivery never counts as suppression", async () => {
   const { h, dispose, metricsDir } = await boot()
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -325,9 +337,16 @@ test("same-child re-delivery never counts as suppression", async () => {
  */
 test("a verdict cross-child dedup hit stays out of the next gate event's suppressed", async () => {
   const { h, dispose, metricsDir } = await boot()
-  // Two children share parent p1; both stream byte-identical APPROVE.
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c2", parentID: "p1" } })
+  // c1, c2 are reviewer children; their byte-identical APPROVE form a verdict
+  // cross-child dedup hit (silent, never charged to the pending counter).
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+  })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c2", parentID: "p1", agent: "reviewer" },
+  })
   // c1 first-sight (a verdict event); c2 a cross-child verdict hit (silent,
   // never charged to the pending counter — verdict-kind hits don't feed the
   // gate-event suppressed field).
@@ -335,10 +354,20 @@ test("a verdict cross-child dedup hit stays out of the next gate event's suppres
   h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
   h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: `${APPROVE}\n` } })
   await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "verdict"))
-  // c1 then emits a genuinely new GATE: PASS: the parent's next marker event.
+  // A test-runner child (c3) emits a genuinely new GATE: PASS: the parent's
+  // next marker event.
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c3", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({
     type: "session.text.ended",
-    data: { sessionID: "c1", text: "GATE: PASS tests=2 passed=2 failed=0" },
+    data: {
+      sessionID: "c3",
+      parentID: "p1",
+      agent: "test-runner",
+      text: "GATE: PASS tests=2 passed=2 failed=0",
+    },
   })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
@@ -360,13 +389,13 @@ test("two concurrent task-result deliveries with identical markers journal suppr
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "test-runner" },
+    input: { agent: "reviewer" },
     result,
   })
   await callTool(h, "execute.after", {
     tool: "task",
     sessionID: "p1",
-    input: { agent: "test-runner" },
+    input: { agent: "reviewer" },
     result,
   })
   const verdicts = journalEntries(metricsDir).filter((l) => l.type === "verdict")
@@ -1000,7 +1029,10 @@ test("prompt for an untracked session stays a plain reset", async () => {
 test("event loop: session.created edge maps child markers to the parent session", async () => {
   // flag keeps today's flip semantics so the child PASS greens the parent gate.
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
   // In-order consumption: when the warmup error lands, the created event
   // has been processed and the child→parent edge is set.
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
@@ -1030,7 +1062,9 @@ test("event loop: session.created edge maps child markers to the parent session"
 /** message.part.updated markers resolve the parent via the host session.get API. */
 test("event loop: message.part.updated markers resolve the parent via session.get", async () => {
   const metricsDir = tmpDir()
-  const h = makeFakeHost({ sessionRecords: new Map([["c1", { parentID: "p1" }]]) })
+  const h = makeFakeHost({
+    sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
+  })
   const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
   const dispose = (await setup(h.host)) as () => void
   h.pushEvent({
@@ -1207,7 +1241,7 @@ test("event loop: thrown parent lookups retry and resolve once the record appear
   session.get = async () => {
     calls++
     if (calls === 1) throw new Error("record not yet visible")
-    return { parentID: "p1" }
+    return { parentID: "p1", agent: "test-runner" }
   }
   const part = { type: "text", text: "just talking, no markers" }
   for (let i = 0; i < 3; i++) {
@@ -1350,7 +1384,10 @@ test("setup degrades cleanly when the session and tool surfaces are absent", asy
  */
 test("a GATE: PASS split across two session.text.delta chunks still flips the gate once", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -1378,7 +1415,10 @@ test("a GATE: PASS split across two session.text.delta chunks still flips the ga
  */
 test("re-folding a delta window with a complete marker never re-fires it", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -1418,7 +1458,10 @@ test("a task dispatch clears the delta window so a stale split marker does not c
   try {
     bootState = await boot({ gateEvidence: "flag" })
     const { h, dispose, metricsDir } = bootState
-    h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+    })
     h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -1464,7 +1507,10 @@ test("a task dispatch clears the delta window so a stale split marker does not c
  */
 test("delta windows are bounded past 50 sessions, evicting the oldest", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -1475,6 +1521,10 @@ test("delta windows are bounded past 50 sessions, evicting the oldest", async ()
     data: { sessionID: "c1", delta: "GATE: PASS tests=100 passed=100 fail" },
   })
   // A full marker in a second session is the control (still completes).
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c2", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({
     type: "session.text.delta",
     data: { sessionID: "c2", delta: "GATE: PASS tests=200 passed=200 failed=200" },
@@ -1556,7 +1606,10 @@ test("a dead event stream resumes ingestion on re-subscribe within the restart b
   const dispose = (await setup(h.host)) as () => void
   // The first (dead) consume has finished and the supervisor re-subscribed.
   await waitUntil(() => subscribeCalls >= 2)
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
   h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
   await waitUntil(() =>
     journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
@@ -1855,7 +1908,10 @@ test("a reviewer task-result verdict BLOCK does not restore hasReviewApprove", a
  *  source that replay never credits. */
 test("a streamed verdict does not restore hasReviewApprove", async () => {
   const { h, dispose, metricsDir } = await boot()
-  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+  })
   h.pushEvent({
     type: "session.text.ended",
     data: {
@@ -2083,7 +2139,9 @@ test("trace lines carry a trailing ` | <sessionID>` when wired to a session", as
  * with the parent session's ` | <id>` tail. */
 test("trace lines carry a trailing ` | <sessionID>` for a child verdict", async () => {
   const metricsDir = tmpDir()
-  const h = makeFakeHost({ sessionRecords: new Map([["c1", { parentID: "p1" }]]) })
+  const h = makeFakeHost({
+    sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
+  })
   const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
   const dispose = (await setup(h.host)) as () => void
   h.pushEvent({

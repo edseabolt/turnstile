@@ -133,7 +133,11 @@ a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
 
 **`event.subscribe` loop** — child→parent edges (`session.created`), marker
 parsing from streamed child text (`message.part.updated`,
-`session.text.ended`, `session.text.delta`), permission ask/reply bookkeeping,
+`session.text.ended`, `session.text.delta`): each `GATE:`/`VERDICT:`
+observation is applied only when the emitting session's agent holds the marker
+contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
+`reviewer` / `plan-reviewer`), and a denied observation is journaled
+`suppressed` rather than flipping state, permission ask/reply bookkeeping,
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29, for hosts
 where the prompt hook does not fire), and error telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
@@ -221,13 +225,21 @@ continuing prompt has an unchanged worktree fingerprint.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (16 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (17 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `continuation`,
-  `evidence`, `violation`, `tool`, `error`). A `dispatch` entry is written at
+  `evidence`, `violation`, `tool`, `error`, `suppressed`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
+  A `suppressed` entry is the audit trail for a `GATE:`/`VERDICT:` marker first
+  observed from an unauthoritative emitter — an agent without the marker
+  contract for that kind (`GATE:`↔`test-runner`, `VERDICT:`↔`reviewer` /
+  `plan-reviewer`), or one whose agent could not be resolved. It is
+  audit-only and replay-inert (nothing replays against a denial), its marker
+  string carries the digits for forensics, and a re-delivery of identical text
+  adds none (dedup stays registered). Both journal replay and the status
+  aggregate treat it as inert.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `rotateEveryEntries` appends (default 512), only under a
@@ -325,9 +337,12 @@ uninstall–reinstall cycles.
   markers with `<n>` placeholders (e.g. `GATE: PASS tests=<n> passed=<n>
 failed=<n>`, `VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`) rather
   than concrete digits, and never the pipe-joined `PASS|FAIL` form. The
-  plugin parses markers from _any_ session text, so a fully concrete example
-  echoed back by the model could flip a gate; the placeholder form stays
-  unparseable while remaining human-readable.
+  plugin parses markers from _any_ session text but applies them only from a
+  marker-contracted emitter, so a fully concrete example echoed back by an
+  unauthoritative session is journaled `suppressed` rather than flipping a
+  gate. The placeholder form stays unparseable, which is defense in depth
+  against a contracted emitter echoing a fully concrete line (e.g. a reviewer
+  re-stating a verdict) and against contract drift.
 - **Per-agent instructions** are not injected by the plugin: they live in
   each `agents/<name>.md` installed alongside the plugin.
 

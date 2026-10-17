@@ -110,10 +110,11 @@ async function pushAdmission(h: FakeHost, data: InboxEnvelope, metricsDir: strin
       text: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
     },
   })
+  // The canary's verdict is journaled (as `verdict` when the drain session is
+  // authoritative, or `suppressed` when it is not); either way its raw carries
+  // the drain id once the async consumer has drained the queue up to it.
   await waitUntil(() =>
-    journalEntries(metricsDir).some(
-      (l) => l.type === "verdict" && typeof l.raw === "string" && l.raw.startsWith("drain:"),
-    ),
+    journalEntries(metricsDir).some((l) => typeof l.raw === "string" && l.raw.startsWith("drain:")),
   )
 }
 
@@ -138,9 +139,7 @@ async function drain(h: FakeHost, metricsDir: string): Promise<void> {
     type: "session.text.ended",
     data: { sessionID: id, text: "VERDICT: APPROVE crit=0 high=0 med=0 low=0" },
   })
-  await waitUntil(() =>
-    journalEntries(metricsDir).some((l) => l.type === "verdict" && l.raw === id),
-  )
+  await waitUntil(() => journalEntries(metricsDir).some((l) => l.raw === id))
 }
 
 /** The one-time "prompt hook never fired" dead-channel error, if journaled. */
@@ -403,7 +402,7 @@ test("inbox admission is inert unless every guard holds", async () => {
       })
       await waitUntil(() =>
         journalEntries(metricsDir).some(
-          (l) => l.type === "verdict" && typeof l.raw === "string" && l.raw.startsWith("drain:"),
+          (l) => typeof l.raw === "string" && l.raw.startsWith("drain:"),
         ),
       )
       assert.equal(promptApproval(metricsDir, "p1"), false, `${label} never approves`)

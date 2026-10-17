@@ -150,6 +150,15 @@ const DIRECTORY_KEYS = [
 ] as const
 
 /**
+ * Candidate keys for the agent name on a session record, in priority order,
+ * dotted paths supported. The single source for the agent-name read so
+ * `resolveParent` and `readRecordString` share one extraction rule; an
+ * unresolved read ("") fails the emitter-authority check (fail-closed for
+ * text observation).
+ */
+const AGENT_KEYS = ["agent", "data.agent"] as const
+
+/**
  * Returns the first non-empty string found at any key of `keys` on `rec`,
  * supporting dotted nested paths (e.g. `data.location.directory`). "" when
  * none holds a non-empty string or `rec` is absent. Shared candidate
@@ -473,6 +482,61 @@ export function createTurnstile(
   }
 
   /**
+   * Emitter-authority cache: a child session ID → its resolved agent name,
+   * seeded at three redundant points (`resolveParent` record read,
+   * `session.created`, and `execute.after` task input). Read by
+   * `markerKindAllowed` to decide whether a session's `GATE:`/`VERDICT:` text
+   * is authoritative for that kind. Bounded by boundSessionAgents.
+   */
+  const sessionAgents = new Map<string, string>()
+  const maxTrackedEmitters = 50
+  /**
+   * Bounds the emitter-authority cache by evicting its oldest entries.
+   * Mirrors boundLookups; see sessionAgents.
+   */
+  function boundSessionAgents(): void {
+    while (sessionAgents.size > maxTrackedEmitters) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = sessionAgents.keys().next().value as string
+      sessionAgents.delete(oldest)
+    }
+  }
+  /**
+   * Seeds (or refreshes) a child session's emitter agent. No-op when either
+   * argument is empty, so an unresolved record read ("") never clobbers a
+   * known agent. `markerKindAllowed` reads the cache lazily at parse time, so
+   * a seed arriving before the marker's parse still applies.
+   * @param sessionID The child session ID.
+   * @param agent The resolved agent name, or "" when unresolved.
+   */
+  function seedEmitter(sessionID: string, agent: string): void {
+    if (sessionID && agent) {
+      sessionAgents.set(sessionID, agent)
+      boundSessionAgents()
+    }
+  }
+
+  /**
+   * Emits a predicate answering whether a gate/verdict kind is authoritative
+   * for a session's emitter agent. A gate flips only for `test-runner`; a
+   * verdict only for `reviewer`/`plan-reviewer` — each also required to be in
+   * `bareOutput` (the aggregated marker-contracted set). Unseeded or unknown
+   * agents are denied: text observation mutates only for contracted emitters,
+   * and a legitimate child's markers always land authoritatively at
+   * `execute.after` delivery, which seeds the agent from dispatch input.
+   * @param sessionID The emitting session ID.
+   * @returns A per-kind authority predicate.
+   */
+  function markerKindAllowed(sessionID: string): (kind: "gate" | "verdict") => boolean {
+    const agent = sessionAgents.get(sessionID) ?? ""
+    return (kind) => {
+      if (agent === "" || !config.agents.bareOutput.includes(agent)) return false
+      if (kind === "gate") return agent === config.agents.testRunner
+      return agent === config.agents.reviewer || agent === config.agents.planReviewer
+    }
+  }
+
+  /**
    * Reads (and expires) the pending-landing-ask latch for a session: an arm
    * older than the TTL is dropped and reported as absent. Fail-toward-strict:
    * an expired latch arms nothing, so a later ask is inert and the landing gate
@@ -556,6 +620,12 @@ export function createTurnstile(
     try {
       const rec = await get({ sessionID })
       const parentID = readRecordString(rec, PARENT_KEYS)
+      // Redundant emitter seed: an agent resolved from the record would make
+      // streamed markers authoritative. resolveParent early-returns once the
+      // edge is set (session.created seeds the edge), so this only fires when
+      // the first resolve happens before the edge lands; `execute.after`
+      // delivery remains the always-firing seed (see seedEmitter).
+      seedEmitter(sessionID, readRecordString(rec, AGENT_KEYS))
       if (parentID !== "") {
         ledger.setParent(sessionID, parentID)
         failedLookups.delete(sessionID)
@@ -904,7 +974,11 @@ export function createTurnstile(
     // (scope, marker), so identical re-delivery and a cross-source same-marker
     // replay (a source change with an unchanged marker, e.g. delta→ended) are
     // both silently suppressed; only a marker flip reaches the journal.
-    if (sessionID && source !== "task-result") {
+    // Authority gate: only a marker-contracted emitter (see markerKindAllowed)
+    // may record or apply a verdict; a quoted/echoed verdict is denied here
+    // (never stored) and surfaces as authority:"suppressed" below.
+    const allowed = markerKindAllowed(sessionID)
+    if (sessionID && source !== "task-result" && allowed("verdict")) {
       const m = lastMatch(text, verdictRe)
       if (m) ledger.recordChildVerdict(sessionID, m, source)
     }
@@ -933,8 +1007,31 @@ export function createTurnstile(
       passVerified,
       stampVerified,
       stampMode,
+      allowed,
     )) {
-      const suppressed = event.suppressed > 0 ? { suppressed: event.suppressed } : {}
+      // Denied observation: journal it keyed on the EMITTER (sessionID, not
+      // sid) as a replay-inert type:"suppressed" audit entry, then skip it —
+      // it is never returned, so hasReviewApprove and own-match attribution
+      // cannot fire on it. Keyed on the emitter (not the parent) because
+      // nothing replays against a denied observation; this runs for every
+      // non-empty sessionID, including unresolved-edge ones (self-keyed).
+      if (event.authority === "suppressed") {
+        journaler.journal({
+          type: "suppressed",
+          sessionID,
+          raw: sessionID,
+          agent: sessionAgents.get(sessionID) ?? "",
+          kind: event.kind,
+          marker: event.marker,
+          source,
+        })
+        continue
+      }
+      // The `authority:"suppressed"` events above `continue` before here, so
+      // every event reaching this point carries a defined numeric `suppressed`;
+      // assert that shape to the type checker (it is not optional at runtime).
+      const suppressed = event.suppressed!
+      const suppressedCount = suppressed > 0 ? { suppressed } : {}
       if (event.kind === "gate") {
         // Keyed by parent session so journal replay restores state where the
         // reviewer gate looks it up; raw child ID kept for forensics.
@@ -948,7 +1045,7 @@ export function createTurnstile(
           source,
           marker: event.marker,
           ...evidenceStamp,
-          ...suppressed,
+          ...suppressedCount,
         })
         journaler.traceEvent("test-runner", "gate", event.marker, sid)
       } else {
@@ -964,7 +1061,7 @@ export function createTurnstile(
           marker: event.marker,
           rounds: event.rounds,
           source,
-          ...suppressed,
+          ...suppressedCount,
         })
         journaler.traceEvent("reviewer", "verdict", event.marker, sid)
       }
@@ -1564,6 +1661,11 @@ export function createTurnstile(
               const agent =
                 agentFromTaskInput(event.input) ||
                 agentFromTaskInput(event.result?.input as TaskInput | undefined)
+              // Delivery seed: the always-firing emitter-authority source. The
+              // agent is resolved from dispatch input here, so a legitimate
+              // child's markers land authoritatively even when every streaming
+              // seed failed (fail-closed at streaming, authoritative at delivery).
+              seedEmitter(child, agent)
               // Plan-reviewer delivery path only: await the child→parent edge
               // before marker parsing and attribution, so a continued subagent
               // session (no new session.created; edge resolved via session.get)
@@ -1794,28 +1896,35 @@ export function createTurnstile(
             const properties: EventProperties = event.data ?? event.properties ?? {}
             switch (event.type) {
               case "session.created": {
-                if (
-                  typeof properties.sessionID === "string" &&
-                  typeof properties.parentID === "string"
-                ) {
-                  ledger.setParent(properties.sessionID, properties.parentID)
-                } else if (typeof properties.sessionID === "string") {
-                  // Root sessions are live parents; the edge
-                  // branch above is covered by setParent marking the parent.
-                  ledger.markParent(properties.sessionID)
-                  // Root sessions only: child-session created events must not
-                  // move the project dir (any directory they carry belongs to
-                  // the parent's context, and last-writer-wins across child
-                  // events would point the plans scan at the wrong place).
-                  if (typeof properties.location?.directory === "string")
-                    projectDir = properties.location.directory
-                  else if (typeof properties.directory === "string")
-                    projectDir = properties.directory
-                  // Seed the per-session directory cache beside the seed
-                  // assignment so the continuation carry and the sync consumers
-                  // read this root session's directory from the cache.
-                  sessionDirs.set(properties.sessionID as string, projectDir)
-                  boundSessionDirs()
+                const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+                if (sid) {
+                  const agent = typeof properties.agent === "string" ? properties.agent : ""
+                  if (typeof properties.parentID === "string") {
+                    ledger.setParent(sid, properties.parentID)
+                  } else {
+                    // Root sessions are live parents; the edge branch above is
+                    // covered by setParent marking the parent.
+                    ledger.markParent(sid)
+                    // Root sessions only: child-session created events must not
+                    // move the project dir (any directory they carry belongs to
+                    // the parent's context, and last-writer-wins across child
+                    // events would point the plans scan at the wrong place).
+                    if (typeof properties.location?.directory === "string")
+                      projectDir = properties.location.directory
+                    else if (typeof properties.directory === "string")
+                      projectDir = properties.directory
+                    // Seed the per-session directory cache beside the seed
+                    // assignment so the continuation carry and the sync consumers
+                    // read this root session's directory from the cache.
+                    sessionDirs.set(sid, projectDir)
+                    boundSessionDirs()
+                  }
+                  // Redundant emitter seed from the created event's agent: this
+                  // fires with or without the edge, so a child that streams a
+                  // marker before its edge lands (or an unresolved child) still
+                  // seeds the authority cache; a genuine delivery remains the
+                  // always-firing seed (see seedEmitter).
+                  seedEmitter(sid, agent)
                 }
                 break
               }
