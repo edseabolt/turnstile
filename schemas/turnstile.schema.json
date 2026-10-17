@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/edseabolt/turnstile/schemas/turnstile.schema.json",
+  "title": "OpenCode turnstile configuration",
+  "description": "Schema for ~/.config/opencode/turnstile.json. Every key is optional and falls back to the code defaults in src/config.ts; a missing key is never an error. The $schema key itself is silently ignored at load (it is the editor convention pointing at this file). Markers and regex sources (gateMarker, verdictMarker, evidencePattern, the toolPolicy/gitGates regex lists, commitFormat) are strings; their compile check happens at merge time, not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "metricsDir": {
+      "type": "string",
+      "description": "Directory for both telemetry files; must be an absolute path (not expanded). Computed at load time when omitted."
+    },
+    "journalMaxBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Rotate a journal file past this many bytes (default 5242880)."
+    },
+    "journalMaxGenerations": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of rotated journal generations to keep (default 5)."
+    },
+    "maxReviewerRounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max reviewer dispatches per task (default 2)."
+    },
+    "maxPlannerRounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max planner dispatches per task (default 3)."
+    },
+    "maxPlanReviewerRounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max plan-reviewer dispatches per task (default 3)."
+    },
+    "maxTestRunnerRounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max test-runner dispatches per task (default 4)."
+    },
+    "maxTotalDispatches": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total task/subagent dispatches per task, the global loop backstop (default 16)."
+    },
+    "maxSessions": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "LRU cap on tracked sessions (default 64)."
+    },
+    "readWarn": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Whole-file read count at which the horizon warning is injected (default 8)."
+    },
+    "readBlock": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Whole-file read count at which further reads are blocked (default 15)."
+    },
+    "waiverMarker": {
+      "type": "string",
+      "description": "Literal marker that waives the reviewer gate when in the prompt (default USER WAIVER:)."
+    },
+    "approvalMarker": {
+      "type": "string",
+      "description": "Literal prompt-channel plan-approval marker (default PLAN APPROVED:)."
+    },
+    "plansDir": {
+      "type": "string",
+      "description": "Project-relative directory scanned for ## Decomposition plans (default .opencode/plans)."
+    },
+    "trace": {
+      "type": "boolean",
+      "description": "Write the human-readable trace file (JSONL journal always writes) (default true)."
+    },
+    "continuationCarry": {
+      "type": "boolean",
+      "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default false)."
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agent names turnstile recognizes in dispatches.",
+      "properties": {
+        "planner": { "type": "string", "description": "Planner agent name (default planner)." },
+        "reviewer": { "type": "string", "description": "Reviewer agent name (default reviewer)." },
+        "planReviewer": {
+          "type": "string",
+          "description": "Plan-reviewer agent name (default plan-reviewer)."
+        },
+        "executor": { "type": "string", "description": "Executor agent name (default executor)." },
+        "testRunner": {
+          "type": "string",
+          "description": "Test-runner agent name (default test-runner)."
+        },
+        "debugger": { "type": "string", "description": "Debugger agent name (default debugger)." },
+        "bareOutput": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Agents contracted to emit GATE/VERDICT markers (default [test-runner, reviewer, plan-reviewer])."
+        }
+      }
+    },
+    "gateMarker": {
+      "type": "string",
+      "description": "Gate marker regex source, compiled with gm."
+    },
+    "verdictMarker": {
+      "type": "string",
+      "description": "Verdict marker regex source, compiled with gm."
+    },
+    "gateEvidence": {
+      "type": "string",
+      "enum": ["enforce", "flag", "off"],
+      "description": "Evidence-correlation mode for the reviewer gate (default enforce)."
+    },
+    "reviewEnsemble": {
+      "type": "string",
+      "enum": ["enforce", "advise"],
+      "description": "Enforcement mode for the reviewer ensemble (default enforce)."
+    },
+    "evidencePattern": {
+      "type": "string",
+      "description": "Case-insensitive regex source matched against bash/shell commands to count as test-execution evidence."
+    },
+    "toolPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Denylist policy for bash/shell and write/edit tools in execute.before.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["enforce", "shadow", "off"],
+          "description": "Enforcement mode (default enforce)."
+        },
+        "bashDeny": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Case-insensitive regex sources matched against bash/shell commands."
+        },
+        "pathDeny": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Case-insensitive regex sources matched against write/edit target paths (default empty)."
+        },
+        "observeSessionMove": {
+          "type": "boolean",
+          "description": "Journal session_move dispatches as telemetry (default true)."
+        }
+      }
+    },
+    "gitGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Git-and-commit gate configuration (default mode shadow, audit-only).",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["enforce", "shadow", "off"],
+          "description": "Enforcement mode (default shadow)."
+        },
+        "commitMessages": {
+          "type": "boolean",
+          "description": "Whether git commit messages are linted as conventional commits (default true)."
+        },
+        "commitFormat": {
+          "type": "string",
+          "description": "Conventional-commit regex source (compiled ^...$ with s) matched against each subject."
+        },
+        "landingGate": {
+          "type": "boolean",
+          "description": "Whether pushing/PR-landing is gated on a reviewer VERDICT: APPROVE (default true)."
+        }
+      }
+    }
+  }
+}

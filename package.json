@@ -10,6 +10,7 @@
   "files": [
     "turnstile.ts",
     "src",
+    "schemas",
     "scripts",
     "bin",
     "install.json",

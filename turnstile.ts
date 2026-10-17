@@ -9,6 +9,17 @@
  *   proceeds). Nothing is written to an instructions file at install time — the
  *   AGENTS.md contract block is a historical install step, removed.
  *
+ * - Config warnings: surfaced into the session context once per plugin load.
+ *   When the resolved config produced validation warnings (a typo'd key, a
+ *   readWarn/readBlock clamp, a marker regex broader than the default), the
+ *   first tool result carrying string output is prefixed with a
+ *   `[turnstile] config:` block listing each warning and the journal path.
+ *   Once per load (warnings are static for the process; re-injecting per task
+ *   would be spam), fully guarded and fail-open (a broken prefix journals a
+ *   `type:"config"` entry and proceeds); the journal already carries every
+ *   warning, so this is a model-facing summary, not a second copy. A host
+ *   without a tool surface never reaches it, so its warnings stay journal-only.
+ *
  * Written for OpenCode v2.x promise-plugin host (`{ id, setup }`):
  * - `ctx.tool.hook("execute.before" | "execute.after", cb)`
  * - `ctx.session.hook("prompt" | "generate" | "compaction", cb)`

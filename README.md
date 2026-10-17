@@ -511,9 +511,26 @@ see the format; leave them alone unless you are intentionally changing
 the marker syntax (the shipped subagent definitions emit the canonical
 markers).
 
+**Schema** — `schemas/turnstile.schema.json` ships with the package and
+describes every key in the table below. To get editor completion, point your
+config at the shipped schema with a `$schema` key (an absolute path to the
+installed package's schema file):
+
+```json
+{
+  "$schema": "/abs/path/to/opencode-turnstile/schemas/turnstile.schema.json"
+}
+```
+
+The `$schema` key is silently ignored at load (it is not a turnstile key),
+and validation itself stays in `mergeConfig` — the schema is an editor and
+documentation artifact, not a runtime validator.
+
 Precedence: defaults < config file < env. The plugin reads config once, at
-setup; restart sessions to apply. Invalid keys are ignored and journaled
-(fail-open); a malformed config file never breaks the host.
+setup; restart sessions to apply. Invalid keys are ignored, journaled, and
+summarized once into the session context at startup — a `[turnstile] config:`
+block naming each warning and the journal path, with the full list in the
+journal (fail-open); a malformed config file never breaks the host.
 
 | Key                                                                                                                        | Default                                                                            | Meaning                                                                                                                                                                                                                                |
 | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

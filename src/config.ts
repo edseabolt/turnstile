@@ -14,7 +14,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { appendLine, defaultMetricsDir } from "./journal.ts"
-import { GATE_RE, VERDICT_RE } from "./markers.ts"
+import { CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER, GATE_RE, VERDICT_RE } from "./markers.ts"
 import type {
   GateEvidenceMode,
   ReviewEnsembleMode,
@@ -383,6 +383,17 @@ export function mergeConfig(
       config.gitGates = merged
       continue
     }
+    if (key === "$schema") {
+      // Editor convention (VS Code json.schemas) lives in the config file the
+      // schema validates; it is not a TurnstileConfig key, so it is consumed
+      // here silently rather than warning "unknown key" on every load. A
+      // non-string is not a usable URI/path, so it warns instead of being
+      // dropped silently.
+      if (typeof value !== "string") {
+        warnings.push('config: "$schema" must be a string URI or path; ignored')
+      }
+      continue
+    }
     if (!(key in config)) {
       warnings.push(`config: unknown key "${key}" ignored`)
       continue
@@ -489,6 +500,51 @@ function applyEnvLayer(config: TurnstileConfig, env: Record<string, string | und
 }
 
 /**
+ * Warns when a user-configured marker regex is broader than the shipped
+ * default — i.e. it accepts text the canonical syntax rejects. This is a
+ * match-oracle, not a full subsumption proof: it is sound (never warns for a
+ * source that matches no more than the default on the probes) but incomplete
+ * (broadening that the probes do not exercise is not caught). A missing `^`
+ * start anchor is caught by a probe that leads the canonical marker with
+ * junk; a `.*` end broadening is caught by a probe that trails it. A source
+ * that matches neither probe (a disjoint custom syntax) stays silent, so an
+ * intentional re-skinning never trips a false positive.
+ * @param label The config key name to surface in the warning.
+ * @param source The user-provided regex source string.
+ * @param defaultRe The compiled canonical regex to compare against.
+ * @param canonical A canonical example the default regex must match.
+ * @returns One warning string when the source is broadly a superset of the
+ *     default on a probe, otherwise undefined.
+ */
+function warnIfBroaderMarker(
+  label: string,
+  source: string,
+  defaultRe: RegExp,
+  canonical: string,
+): string | undefined {
+  if (source === defaultRe.source) return undefined
+  let compiled: RegExp
+  try {
+    compiled = new RegExp(source, "gm")
+  } catch {
+    // A source that cannot compile already fell back to the default at setup
+    // time (journaled there); there is nothing left to warn about here.
+    return undefined
+  }
+  for (const probe of [`noise ${canonical}`, `${canonical} trailing noise`]) {
+    const defaultMatches: string[] = probe.match(defaultRe) ?? []
+    const userMatches: string[] = probe.match(compiled) ?? []
+    // `String.match` (never `.test`): the `g` flag's `lastIndex` would make a
+    // stateful `.test` unreliable. A user match the default does not produce
+    // for the same probe is the broadness signal.
+    if (userMatches.some((m) => !defaultMatches.includes(m))) {
+      return `config: ${label} is broader than the default marker regex: it matches "${probe}" which the default does not match`
+    }
+  }
+  return undefined
+}
+
+/**
  * Defends the fully-resolved config against inter-key and path invariants that
  * no single layer validator catches, so hand-constructed configs cannot slip a
  * bad value past the merge-time checks. Mutates `config` in place (clamping
@@ -504,6 +560,20 @@ function applyEnvLayer(config: TurnstileConfig, env: Record<string, string | und
  */
 export function validateResolved(config: TurnstileConfig): string[] {
   const warnings: string[] = []
+  const gateWarning = warnIfBroaderMarker(
+    "gateMarker",
+    config.gateMarker,
+    GATE_RE,
+    CANONICAL_GATE_MARKER,
+  )
+  if (gateWarning) warnings.push(gateWarning)
+  const verdictWarning = warnIfBroaderMarker(
+    "verdictMarker",
+    config.verdictMarker,
+    VERDICT_RE,
+    CANONICAL_VERDICT_MARKER,
+  )
+  if (verdictWarning) warnings.push(verdictWarning)
   if (config.readWarn >= config.readBlock) {
     const warn = config.readWarn
     const block = config.readBlock
@@ -583,6 +653,31 @@ export function loadConfig(
     if (!warning.startsWith("config file")) journalConfigError(warning, env)
   }
   return { config: resolved, warnings }
+}
+
+/**
+ * Renders a resolved list of config-validation warnings as a compact,
+ * model-facing block for the once-per-load surfacing in `src/setup.ts`. Pure
+ * and side-effect free (throws nothing): a fixed header carries the count and
+ * the journal path, one `- ` line per warning up to `maxLines`, and a tail
+ * naming the hidden remainder past `maxLines` (the journal holds the full
+ * list). An empty list renders a zero-count header with no lines; callers
+ * gate on a non-empty list so the block is never injected for a clean config.
+ * @param warnings The resolved warning strings to render.
+ * @param journalPath Absolute path of the JSONL journal (named in the header).
+ * @param maxLines Maximum warning lines before the truncation tail (default 5).
+ * @returns The formatted `[turnstile] config:` block.
+ */
+export function formatConfigWarnings(
+  warnings: string[],
+  journalPath: string,
+  maxLines: number = 5,
+): string {
+  const header = `[turnstile] config: ${warnings.length} validation warning(s) (journal: ${journalPath}):`
+  const shown = warnings.slice(0, maxLines)
+  const tail =
+    warnings.length > maxLines ? `\n(${warnings.length - maxLines} more; see the journal)` : ""
+  return [header, ...shown.map((w) => `- ${w}`)].join("\n") + tail
 }
 
 /**
