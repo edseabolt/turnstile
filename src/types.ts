@@ -86,6 +86,14 @@ export interface GenerateDraft {
 /** Compaction draft passed to the `session.compaction` hook. */
 export interface CompactionDraft {
   system?: Array<{ type: string; text?: string }>
+  /**
+   * Session identity on v2.x's compaction payload (host contract mirrors the
+   * session-scoped prompt/generate payloads, which carry a lenient
+   * `sessionID?: unknown`). Read through the `asSessionID` helper in
+   * `src/setup.ts` so the snapshot hydrates the parent bucket; a missing or
+   * hostile value degrades to instruction-only (fail-open).
+   */
+  sessionID?: unknown
 }
 
 /** Session record returned by the host's `session.get`. */
@@ -265,6 +273,21 @@ export interface GateState {
    * `mergeAfterReplay`.
    */
   unverifiedPass: string
+  /**
+   * Verbatim text of the task's last first-sight `GATE:` marker, de-tokenized
+   * (leading `GATE:` lowercased) so an injected echo can never re-parse as an
+   * authoritative marker; "" until observed. Task-scoped: fresh "" on every
+   * prompt reset and never carried through mergeAfterReplay. Display only —
+   * rendered into the compaction snapshot, never consulted by enforcement.
+   */
+  lastGateMarker: string
+  /**
+   * Same for the task's last first-sight `VERDICT:` marker (reviewer or
+   * plan-reviewer), de-tokenized for echo-safety. "" until observed.
+   * Task-scoped: fresh "" on every prompt reset and never carried through
+   * mergeAfterReplay. Display only.
+   */
+  lastVerdictMarker: string
   /** True when this task's plan has a current plan-reviewer APPROVE. */
   hasPlanVerdict: boolean
   /**

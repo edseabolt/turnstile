@@ -21,6 +21,7 @@ import {
   agentFromTaskInput,
   compileMarkerRegex,
   parseGateMarkers,
+  deTokenizeMarker,
   GATE_RE,
   VERDICT_RE,
 } from "./markers.ts"
@@ -32,7 +33,7 @@ import {
   isPushLanding,
   type ToolPolicy,
 } from "./tool-policy.ts"
-import { createLedger, type GateLedger } from "./state.ts"
+import { createLedger, formatGateSnapshot, type GateLedger } from "./state.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
@@ -1048,6 +1049,9 @@ export function createTurnstile(
           ...suppressedCount,
         })
         journaler.traceEvent("test-runner", "gate", event.marker, sid)
+        // Carry the de-tokenized marker text for the compaction snapshot; the
+        // state boundary records it, the caller journals the event.
+        s.lastGateMarker = deTokenizeMarker(event.marker)
       } else {
         // Streaming verdict dedup is per (child, marker, source) via the store
         // (a source change with an unchanged marker re-journals; identical
@@ -1064,6 +1068,7 @@ export function createTurnstile(
           ...suppressedCount,
         })
         journaler.traceEvent("reviewer", "verdict", event.marker, sid)
+        s.lastVerdictMarker = deTokenizeMarker(event.marker)
       }
       // Collected for the caller: the execute.after reviewer branch uses these
       // events to detect a first-sight verdict APPROVE and set hasReviewApprove.
@@ -1339,12 +1344,21 @@ export function createTurnstile(
       try {
         const reg = await h.session.hook("compaction", (draft: CompactionDraft) => {
           try {
-            if (Array.isArray(draft?.system)) {
-              draft.system.push({
-                type: "text",
-                text: "Preserve verbatim: open findings, AC status table, last GATE/VERDICT markers, current worktree/branch paths.",
-              })
-            }
+            if (!Array.isArray(draft?.system)) return
+            draft.system.push({
+              type: "text",
+              text: "Preserve verbatim: open findings, AC status table, last GATE/VERDICT markers, current worktree/branch paths.",
+            })
+            // Inject the concrete gate state from the live ledger alongside the
+            // instruction: key off the parent bucket (child compaction maps to
+            // its parent, matching the read-counter keying rule). The compaction
+            // payload is typed leniently, so a host that omits `sessionID` falls
+            // back to the most-recently-admitted parent; both paths that yield no
+            // bucket degrade to instruction-only (fail-open, no mint, no journal
+            // spam). The snapshot is de-tokenized, so it never re-parses.
+            const id = asSessionID(draft.sessionID)
+            const s = ledger.peek(ledger.parentOf(id) || ledger.lastParent())
+            if (s) draft.system.push({ type: "text", text: formatGateSnapshot(s) })
           } catch (e) {
             journaler.journal({ type: "error", error: `compaction hook: ${e}` })
           }

@@ -21,6 +21,25 @@ export const GATE_RE = /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ fail
 // prettier-ignore
 export const VERDICT_RE = /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm
 
+/**
+ * Strips a marker's leading authority token so de-tokenized text can never
+ * re-parse as an authoritative first-sight marker. The default `GATE_RE`/
+ * `VERDICT_RE` match a case-sensitive uppercase `GATE:`/`VERDICT:` token, so
+ * lowercasing the token (leaving the rest of the marker verbatim) makes any
+ * embedded value unparsable while keeping it legible to the orchestrator. This
+ * is the same rationale the ORCHESTRATOR_POLICY placeholders encode: injected
+ * context that must not be mistaken for a real marker (see `policy.ts`).
+ * @param marker The raw marker text, e.g. `GATE: PASS tests=2 passed=2 failed=0`.
+ * @returns The same text with `GATE:`/`VERDICT:` lowercased, or the input
+ *     unchanged when neither token prefixes it.
+ */
+export function deTokenizeMarker(marker: string): string {
+  return marker.replace(
+    /^(GATE|VERDICT):/,
+    (_full, kind: string): string => `${kind.toLowerCase()}:`,
+  )
+}
+
 /** Agents contracted to emit GATE/VERDICT markers; marker-less output from
  * anything else is normal, not a violation. */
 export const BARE_OUTPUT_AGENTS: readonly string[] = ["test-runner", "reviewer", "plan-reviewer"]

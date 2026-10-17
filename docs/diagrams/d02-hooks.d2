@@ -10,7 +10,7 @@ admit: "admitPrompt:\ndedupe by message id ▸ markParent ▸ resetState\n(+cont
 
 clamp: "clamp temperature:\nreviewer/plan-reviewer → 0,\nexecutor/test-runner/debugger ≤ 0.2"
 
-preserve: "append 'preserve verbatim'\nsystem block"
+preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-tokenized)"
 
 permission: "permission.hook('evaluate')\nnever blocks, forces 'ask'" {
   plan-arm: "action == task\nand plan gate red?"
