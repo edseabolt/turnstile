@@ -361,31 +361,52 @@ makes that policy available by injecting it at runtime. When the plugin is
 loaded, `src/setup.ts` prepends the orchestrator policy paragraph from
 `src/policy.ts` to the first `task` (or `subagent`) result delivery per task,
 once per task, via the `tool.hook("execute.after")` handler — the same hook
-the plugin already uses to rewrite tool output reaching the model. The
-handler attributes each delivery through the `childToParent` edge (seeded by
-`session.created`, back-filled via `session.get` in `resolveParent`) and
-prepends on the delivery's parent-side output, so both host delivery shapes —
-parent-keyed (`task`) and child-keyed (`subagent`) — reach the receiving
-parent; the `policyInjected` flag and the `injected:true` journal entry key
-on that resolved parent. The source of truth is code shipped with the plugin,
-so a fresh install can never lose it, and it follows the plugin through
-updates and uninstall–reinstall cycles.
+the plugin already uses to rewrite tool output reaching the model. Each
+delivery is classified once by `classifyDelivery` into its host shape — the
+v1 string shape (child-keyed event, text in `result.output`, the child
+optionally named by a string `metadata.sessionID`) or the v2 structured shape
+(parent-keyed event, structured `result.output`, the child on
+`metadata.sessionID` or the structured `output.sessionID`, model-visible text
+in `result.content`) — and the prepend lands on that shape's text:
+`result.output` for the string shape, `result.content` for the structured one
+(the structured `output` object stays unmutated, its text already inside
+`content`). The classified child and text also drive marker parsing, the
+bare-output check, and the reviewer capture, so a structured delivery parses
+and attributes to the real child exactly like its string twin. Attribution is
+edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
+via `session.get` in `resolveParent`) decides where the policy lands, so both
+shapes inject on the receiving parent; the `policyInjected` flag and the
+`injected:true` journal entry key on that resolved parent. The source of truth
+is code shipped with the plugin, so a fresh install can never lose it, and it
+follows the plugin through updates and uninstall–reinstall cycles.
 
 - **Fail-open.** The injection is fully guarded with an inner try/catch; on
   failure it journals a `type:"policy"` entry with `injected:false` and
-  proceeds — a broken injection never blocks a tool call.
+  proceeds — a broken injection never blocks a tool call. The only silent
+  skips are the once-flag (the policy already landed this task) and an absent
+  result (nothing to deliver); a present-but-unclassifiable result journals
+  loudly instead — `{type:"policy", injected:false,
+reason:"unknown-shape", shape:<descriptor>}` — where the descriptor is a
+  bounded, value-free summary of the unrecognized result (per-field types
+  plus the sorted key names of an object `output`, capped at 8), so a broken
+  shape is discoverable by grepping `type:"policy"` like every other skip.
 - **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
   each new prompt, so the block re-injects per task) means the policy is
   prepended exactly once per task, not once per turn.
 - **Edge-first attribution.** A delivery whose child→parent edge is
   registered injects regardless of the `event.agent` name — the name
   heuristic never excludes an edge-resolved delivery. The name guard survives
-  only as a conservative fallback: a delivery carrying a config-known
-  subagent name whose edge is unresolvable (no `session.created` and no
-  `session.get` record) is skipped and journaled `{type:"policy",
-sessionID:<child>, injected:false, skipped:true, reason:"agent-name"}` so
-  the decision is observable. The one residual corner that still injects
-  without an edge is a config-UNKNOWN name on a host without a session API:
+  only as a conservative fallback for non-structured deliveries: a delivery
+  carrying a config-known subagent name whose edge is unresolvable (no
+  `session.created` and no `session.get` record) is skipped and journaled
+  `{type:"policy", sessionID:<child>, injected:false, skipped:true,
+reason:"agent-name"}` so the decision is observable. Structured deliveries
+  skip the guard by construction: the host builds that result on the
+  parent's own tool call, so it is always the parent-facing channel and
+  `event.agent` there is the parent's agent name — consulting it risks a
+  bogus skip for a parent running under a config-known name. The one
+  residual corner that still injects without an edge is a config-UNKNOWN
+  name on a host without a session API:
   with neither an edge nor a name signal there is no way to tell a
   parent-facing delivery from a child-own session one, so the self-keyed
   injection there is a documented, accepted residual — the handler fires only

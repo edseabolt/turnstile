@@ -49,6 +49,7 @@ import type {
   SessionRecord,
   TaskInput,
   ToolHookEvent,
+  ToolResult,
   TurnstileOptions,
 } from "./types.ts"
 
@@ -60,6 +61,138 @@ import type {
  */
 function asSessionID(value: unknown): string {
   return String(value ?? "")
+}
+
+/**
+ * One classified `execute.after` task/subagent delivery. The shape decision
+ * is made exactly once per delivery by `classifyDelivery`, and every
+ * consumer (marker parsing, the bare-output check, policy injection) reads
+ * the classified child ID and text from here — never re-deriving the shape.
+ */
+type Delivery =
+  | { kind: "string"; child: string; text: string } // v1 task: string output, child-keyed event
+  | { kind: "structured"; child: string; text: string } // v2 subagent: structured output, parent-keyed event
+  | { kind: "unknown"; child: string; text: ""; shape: string } // present but unclassifiable — journaled loudly
+  | { kind: "absent"; child: string; text: "" } // nothing to deliver — documented silent case
+
+/**
+ * Whether a value is a plain object (neither null nor array-like): the guard
+ * both `describeResultShape` and `structuredChildOf` need before touching
+ * object fields, so a hostile or reshaped payload can never throw.
+ * @param value The value to test.
+ * @returns True for a plain object.
+ */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+/**
+ * Child session ID read from a result's `metadata.sessionID`.
+ * @param result The tool result whose metadata is read.
+ * @returns The ID as a string, or "" when it is not a string.
+ */
+function metadataChildOf(result: ToolResult): string {
+  const sid = result.metadata?.sessionID
+  return typeof sid === "string" ? sid : ""
+}
+
+/**
+ * Short safe type label for the shape descriptor: `"null"`, `"array"`, or
+ * the value's `typeof`.
+ * @param value Any value to label.
+ * @returns The type label.
+ */
+function shapeOf(value: unknown): string {
+  if (value === null) return "null"
+  if (Array.isArray(value)) return "array"
+  return typeof value
+}
+
+/**
+ * Safe bounded descriptor of an unrecognized tool result: per-field type
+ * labels plus the sorted key names of a plain-object `output` (capped at 8).
+ * Never serializes values, so a hostile getter or a huge payload cannot
+ * escape through the journal.
+ * @param result The present-but-unclassifiable tool result.
+ * @returns A single-line `output=… content=… metadata=…` descriptor.
+ */
+function describeResultShape(result: ToolResult): string {
+  const output = result.output
+  const record = isPlainRecord(output)
+  const keys = record ? Object.keys(output).sort().slice(0, 8).join(",") : ""
+  return (
+    `output=${shapeOf(output)}${record ? `[${keys}]` : ""} ` +
+    `content=${shapeOf(result.content)} metadata=${shapeOf(result.metadata)}`
+  )
+}
+
+/**
+ * The child session ID of a structured subagent result, "" when the result
+ * is not a structured delivery or carries no child ID: the string
+ * `metadata.sessionID` first, then the structured `output.sessionID`.
+ * @param result The tool result to read.
+ * @returns The child session ID, or "" when unresolvable.
+ */
+function structuredChildOf(result: ToolResult): string {
+  const output = result.output
+  if (!isPlainRecord(output) || typeof output.output !== "string") return ""
+  if (typeof result.content !== "string") return ""
+  return metadataChildOf(result) || (typeof output.sessionID === "string" ? output.sessionID : "")
+}
+
+/**
+ * Classifies an `execute.after` task/subagent delivery into its host shape —
+ * the single shape decision per delivery. The v1 `task` shape delivers a
+ * string `result.output` with a child-keyed event (a string
+ * `metadata.sessionID`, when present, names the real child); the v2
+ * `subagent` shape delivers a structured `result.output` with a parent-keyed
+ * event, the child on `metadata.sessionID` (or `output.sessionID`), and the
+ * model-visible string in `result.content`. A present result matching
+ * neither shape is `unknown` (the caller journals it loudly); an absent
+ * result is `absent` (a documented silent case).
+ * @param event The execute.after payload.
+ * @returns The classified delivery.
+ */
+function classifyDelivery(event: ToolHookEvent): Delivery {
+  const result = event.result
+  if (!result) return { kind: "absent", child: asSessionID(event.sessionID), text: "" }
+  if (typeof result.output === "string") {
+    return {
+      kind: "string",
+      child: metadataChildOf(result) || asSessionID(event.sessionID),
+      text: result.output,
+    }
+  }
+  const child = structuredChildOf(result)
+  if (child !== "") {
+    return { kind: "structured", child, text: result.content as string }
+  }
+  return {
+    kind: "unknown",
+    child: asSessionID(event.sessionID),
+    text: "",
+    shape: describeResultShape(result),
+  }
+}
+
+/**
+ * Prepends the orchestrator policy to the classified delivery's
+ * model-visible text: `result.output` for the v1 string shape (byte-
+ * identical to the historical prepend) and `result.content` for the
+ * structured shape (the string the parent model reads; the structured
+ * `output` object stays unmutated, its text already inside `content`).
+ * Throws propagate to the caller's fail-open catch.
+ * @param event The execute.after payload whose result is mutated.
+ * @param delivery The classified delivery (string or structured only).
+ */
+function prependDeliveryText(
+  event: ToolHookEvent,
+  delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+): void {
+  const result = event.result as ToolResult
+  const prefixed = ORCHESTRATOR_POLICY + "\n" + delivery.text
+  if (delivery.kind === "structured") result.content = prefixed
+  else result.output = prefixed
 }
 
 /**
@@ -1036,53 +1169,72 @@ export function createTurnstile(
    * `task`/`subagent` result delivery per task, so the model always carries
    * the pipeline contract. Attribution is edge-first: the child→parent edge
    * (`ledger.childToParent`, seeded by `session.created` and back-filled via
-   * `session.get` in `resolveParent`) decides where the policy lands, so both
-   * host delivery shapes — parent-keyed (`task`) and child-keyed
-   * (`subagent`) — inject when the edge resolves; the once-flag and the
-   * `injected:true` journal entry key on the resolved parent (identical to
-   * the raw child for the self-keyed shape). The `event.agent` name guard is
-   * a conservative fallback that fires ONLY when the edge is unresolvable
-   * (no `session.created` record AND no `session.get` record) and the
-   * delivery carries a config-known subagent name: refusing there is the
-   * safe choice, and the skip is journaled (`skipped:true`,
-   * `reason:"agent-name"`) so the decision is observable. The one residual
-   * corner that still injects without an edge is a config-UNKNOWN agent
-   * name on a host without a session API: with no edge and no name signal
-   * there is no way to tell a parent-facing delivery from a child-own
-   * session one, so the self-keyed injection there is a documented, accepted
-   * residual (the handler fires only on `task`/`subagent` tool results, so
-   * child streaming text never reaches it). Every non-injection is journaled
-   * except two documented silent cases: the policy already landed this task
-   * (once-flag), and a non-string result (no confirmed delivery shape).
-   * Fail-open: a prepend failure journals `injected:false` and never throws.
-   * @param event The execute.after payload whose `result.output` is mutated.
-   * @param child The delivery's session ID (parent or child per host shape).
+   * `session.get` in `resolveParent`) decides where the policy lands, so
+   * both host delivery shapes — the v1 string shape (child-keyed event,
+   * text in `result.output`) and the v2 structured shape (parent-keyed
+   * event, child on `metadata.sessionID`, text in `result.content`) —
+   * inject when the edge resolves; the once-flag and the `injected:true`
+   * journal entry key on the resolved parent (identical to the raw child
+   * for the self-keyed shape). The `event.agent` name guard is a
+   * conservative fallback that fires ONLY for non-structured deliveries
+   * when the edge is unresolvable (no `session.created` record AND no
+   * `session.get` record) and the delivery carries a config-known subagent
+   * name: refusing there is the safe choice, and the skip is journaled
+   * (`skipped:true`, `reason:"agent-name"`) so the decision is observable.
+   * Structured deliveries skip the guard by construction: the host builds
+   * that result on the parent's own tool call, so it is always the
+   * parent-facing channel and `event.agent` there is the parent's agent
+   * name — consulting it risks a bogus skip for a parent running under a
+   * config-known name. The one residual corner that still injects without
+   * an edge is a config-UNKNOWN agent name on a host without a session API:
+   * with no edge and no name signal there is no way to tell a parent-facing
+   * delivery from a child-own session one, so the self-keyed injection
+   * there is a documented, accepted residual (the handler fires only on
+   * `task`/`subagent` tool results, so child streaming text never reaches
+   * it). Every non-injection is journaled except two documented silent
+   * cases: the policy already landed this task (once-flag), and an absent
+   * result (nothing to deliver); a present-but-unclassifiable result
+   * journals loudly instead (`reason:"unknown-shape"` with a safe shape
+   * descriptor). Fail-open: a prepend failure journals `injected:false`
+   * and never throws.
+   * @param event The execute.after payload whose result is mutated.
+   * @param child The delivery's child session ID (classified, per shape).
+   * @param delivery The classified delivery (see `classifyDelivery`).
    */
-  async function injectOrchestratorPolicy(event: ToolHookEvent, child: string): Promise<void> {
+  async function injectOrchestratorPolicy(
+    event: ToolHookEvent,
+    child: string,
+    delivery: Delivery,
+  ): Promise<void> {
     // Close the late-edge window for background dispatches before deciding:
     // idempotent (early-returns on a registered edge) and bounded by the
     // failedLookups retry cap, so the await is cheap on the common path.
     await resolveParent(child)
-    if (nameGuardSkips(event, child)) return
-    applyPolicyResult(ledger.parentOf(child), event)
+    if (delivery.kind !== "structured" && nameGuardSkips(event, child)) return
+    applyPolicyResult(ledger.parentOf(child), event, delivery)
   }
 
   /**
-   * Applies the injection once the name guard passes: respects the per-task
-   * once-flag, fails open silently on a non-string result, then prepends the
-   * policy and journals the outcome. Fail-open: a prepend failure journals
-   * `injected:false` and never throws.
+   * Applies the injection once the name guard passes. Dispatch table: the
+   * per-task once-flag (silent), an absent result (silent), a
+   * present-but-unclassifiable result (journaled loudly as
+   * `reason:"unknown-shape"` with the shape descriptor, never throwing),
+   * then the prepend and the outcome journal. Fail-open: a prepend failure
+   * journals `injected:false` and never throws.
    * @param parent The resolved parent session for the delivery.
-   * @param event The execute.after payload whose `result.output` is mutated.
+   * @param event The execute.after payload whose result is mutated.
+   * @param delivery The classified delivery (see `classifyDelivery`).
    */
-  function applyPolicyResult(parent: string, event: ToolHookEvent): void {
+  function applyPolicyResult(parent: string, event: ToolHookEvent, delivery: Delivery): void {
     const policyState = ledger.state(parent)
     if (policyState.policyInjected) return
-    // A string result is the confirmed task/subagent shape; any other shape
-    // fails open silently (no corruption, no journal entry).
-    if (!event.result || typeof event.result.output !== "string") return
+    if (delivery.kind === "absent") return
+    if (delivery.kind === "unknown") {
+      journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
+      return
+    }
     try {
-      event.result.output = ORCHESTRATOR_POLICY + "\n" + event.result.output
+      prependDeliveryText(event, delivery)
       policyState.policyInjected = true
       journalPolicy(parent, true)
     } catch (e) {
@@ -1987,8 +2139,13 @@ export function createTurnstile(
             // once-per-scope (policy per task, config per plugin load).
             surfaceConfigWarnings(event)
             if (event?.tool === "task" || event?.tool === "subagent") {
-              const output = String(event.result?.output ?? "")
-              const child = asSessionID(event?.sessionID)
+              // One shape decision per delivery: marker parsing, the
+              // bare-output check, and policy injection all read the
+              // classified child and text ("" for unknown/absent, so the
+              // marker and bare paths no-op on an unclassifiable shape).
+              const delivery = classifyDelivery(event)
+              const output = delivery.text
+              const child = delivery.child
               const agent =
                 agentFromTaskInput(event.input) ||
                 agentFromTaskInput(event.result?.input as TaskInput | undefined)
@@ -2071,7 +2228,7 @@ export function createTurnstile(
               // only, and its skip is journaled. Runs after the bare-output
               // phase, so the config-surface ordering invariant above (policy
               // prepend lands on top) is preserved.
-              await injectOrchestratorPolicy(event, child)
+              await injectOrchestratorPolicy(event, child, delivery)
               return
             }
             if (event?.tool === "read") {

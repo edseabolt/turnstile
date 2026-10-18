@@ -26,12 +26,38 @@ export interface TaskInput {
   path?: unknown
 }
 
-/** Tool result as delivered by the host's `execute.after` hook. */
+/**
+ * Tool result as delivered by the host's `execute.after` hook. Two host
+ * delivery shapes are observed: the v1 `task` shape, where `output` is the
+ * child's result string and the event is child-keyed; and the v2 `subagent`
+ * shape, where `output` is a structured object (`{ sessionID, status,
+ * output }`), the child session ID rides on `metadata.sessionID` (the
+ * structured `output` object carries it too), and `content` is the string
+ * the parent model reads — the host normalizes `content` into the transcript
+ * and only stringifies `output` when `content` is absent. Fields are
+ * `unknown` because the host does not type them; `src/setup.ts` classifies
+ * the shape once per delivery (`classifyDelivery`) and fails open on an
+ * unrecognized one.
+ */
 export interface ToolResult {
   output?: unknown
   title?: unknown
   input?: unknown
-  metadata?: { exit?: unknown; exitCode?: unknown; code?: unknown }
+  /**
+   * Model-visible string text on structured subagent results: the string the
+   * parent model reads in the transcript. Absent on the v1 string shape,
+   * whose text is `output` itself.
+   */
+  content?: unknown
+  metadata?: {
+    exit?: unknown
+    exitCode?: unknown
+    code?: unknown
+    /** Child session ID on structured subagent results (v2 shape). */
+    sessionID?: unknown
+    /** Dispatch state on structured subagent results (e.g. `"completed"`). */
+    status?: unknown
+  }
 }
 
 /** Payload of the `tool.execute.before` and `tool.execute.after` hooks. */

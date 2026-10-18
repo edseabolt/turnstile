@@ -7,13 +7,28 @@
  *   per task, attributed to the delivery's parent through the `childToParent`
  *   edge (seeded by `session.created`, back-filled via `session.get`), with
  *   per-task idempotency via `GateState.policyInjected` keyed on that parent.
- *   The name-based exclusion is a conservative fallback for deliveries whose
- *   edge is unresolvable: a config-known subagent name with no registered
- *   edge is skipped and journaled `skipped:true` (`reason:"agent-name"`)
- *   rather than injected. Fully guarded and fail-open (a broken injection
- *   journals `type:"policy"` and proceeds). Nothing is written to an
- *   instructions file at install time — the AGENTS.md contract block is a
- *   historical install step, removed.
+ *   Each delivery is classified once (`classifyDelivery`) into its host shape:
+ *   the v1 string shape (child-keyed event, text in `result.output`, a string
+ *   `metadata.sessionID` naming the child when present) or the v2 structured
+ *   shape (parent-keyed event, structured `result.output`, child via
+ *   `metadata.sessionID` or the structured `output.sessionID`, model-visible
+ *   text in `result.content`). The prepend lands on the shape's text —
+ *   `result.output` for the string shape, `result.content` for the structured
+ *   one (the structured `output` object stays unmutated) — and the classified
+ *   child and text drive marker parsing, the bare-output check, and the
+ *   reviewer capture with no re-derivation. Only two skips are silent: the
+ *   once-flag and an absent result; a present-but-unclassifiable result
+ *   journals loudly instead (`{type:"policy", injected:false,
+ *   reason:"unknown-shape", shape:<descriptor>}`). The name-based exclusion
+ *   is a conservative fallback for non-structured deliveries whose edge is
+ *   unresolvable: a config-known subagent name with no registered edge is
+ *   skipped and journaled `skipped:true` (`reason:"agent-name"`) rather than
+ *   injected; structured deliveries skip the guard by construction (the host
+ *   builds that result on the parent's own tool call, so it is always
+ *   parent-facing). Fully guarded and fail-open (a broken injection journals
+ *   `type:"policy"` and proceeds). Nothing is written to an instructions file
+ *   at install time — the AGENTS.md contract block is a historical install
+ *   step, removed.
  *
  * - Config warnings: surfaced into the session context once per plugin load.
  *   When the resolved config produced validation warnings (a typo'd key, a
