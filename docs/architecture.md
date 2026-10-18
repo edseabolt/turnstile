@@ -454,7 +454,8 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
   under the default `gateEvidence:enforce` mode and does not flip
   `hasGatePass` unless the current task's bash/shell executions contain a
   matching exit-0 test command (plausibility checked against
-  `evidencePattern`). An agent that wants a green gate can no longer emit
+  `evidencePattern`; the default covers the canonical `npm run ci`
+  verification chain). An agent that wants a green gate can no longer emit
   `GATE: PASS tests=1 passed=1 failed=0` without running anything — but
   `gateEvidence:flag` reverts to the historical flip-on-trust semantics
   (still stamped `verified:false`), and `gateEvidence:off` journals without
@@ -534,7 +535,8 @@ each maps to a turnstile mechanism:
 - **Evidence correlation.** No host feature verifies a model's claim
   against actual tool history. `src/evidence.ts` correlates a
   `GATE: PASS` marker with a recorded exit-0 test execution matching
-  `evidencePattern` before the reviewer gate flips; a bare marker stays
+  `evidencePattern` (the default covers the canonical `npm run ci`
+  verification chain) before the reviewer gate flips; a bare marker stays
   `unverifiedPass` and never greens the gate under
   `gateEvidence:"enforce"`. The correlation re-runs when a child→parent
   edge resolves late (a background dispatch) and at reviewer-dispatch
