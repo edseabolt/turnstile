@@ -279,10 +279,11 @@ test("a continuation prompt in a changed worktree resets the gate like any promp
   try {
     await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
     await earnGate(h, "p1")
-    // A root session.created carrying a foreign directory moves projectDir to a
-    // different worktree (it maps from location.directory on a parent-less
-    // created event); the companion error is a deterministic signal that the
-    // event loop consumed the created event first.
+    // A root session.created carrying a foreign directory re-seeds the
+    // session's cached directory to a different worktree (it maps from
+    // location.directory on a parent-less created event); the companion error
+    // is a deterministic signal that the event loop consumed the created
+    // event first.
     const otherDir = tmpDir("turnstile-mismatch-")
     h.pushEvent({
       type: "session.created",

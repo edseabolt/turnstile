@@ -290,15 +290,32 @@ test("an invalid regex element is dropped and journaled as an error", async () =
   allow(() => policy.guardBash("bash", "git merge", "s1"))
 })
 
-/** session_move journals one telemetry entry when observing, none otherwise. */
+/** session_move journals one telemetry entry when observing, none otherwise;
+ *  the tool-hook call shape is byte-stable (no reason key) and the resolver
+ *  channel carries its origin as reason. */
 test("session_move journals when observing and is silent otherwise", () => {
   const { policy, entries } = makePolicy()
   allow(() => policy.observeSessionMove("s1", "/repo/subdir"))
   const sm = entries.find((e) => e.tool === "session_move")
   assert.ok(sm)
   assert.equal(sm.type, "tool")
+  // The tool-hook call journals the exact pre-origin shape — deep equality
+  // proves no extra keys (notably no reason) were added.
+  assert.deepEqual(sm, {
+    type: "tool",
+    sessionID: "s1",
+    tool: "session_move",
+    directory: "/repo/subdir",
+  })
   // Never blocks, even for a child-style sessionID.
   allow(() => policy.observeSessionMove("child-xyz", "/repo"))
+  // The resolver channel (a cached directory replaced by a different one)
+  // carries its origin as a reason marker on the entry.
+  allow(() => policy.observeSessionMove("s1", "/repo/moved", "re-resolved"))
+  const re = entries.find((e) => e.tool === "session_move" && e.reason === "re-resolved")
+  assert.ok(re)
+  assert.equal(re.sessionID, "s1")
+  assert.equal(re.directory, "/repo/moved")
 
   const { policy: p2, entries: e2 } = makePolicy({
     toolPolicy: { observeSessionMove: false },
@@ -310,15 +327,22 @@ test("session_move journals when observing and is silent otherwise", () => {
   )
 })
 
-/** The session_move directory is redacted when the trace is disabled. */
+/** The session_move directory is redacted when the trace is disabled; the
+ *  resolver's origin marker rides the entry under both trace settings. */
 test("session_move directory honors the trace redaction gate", () => {
   const on = makePolicy({ toolPolicy: { observeSessionMove: true } })
   on.policy.observeSessionMove("s1", "/secret/dir")
   assert.equal(on.entries[0].directory, "/secret/dir")
+  on.policy.observeSessionMove("s1", "/secret/dir", "re-resolved")
+  assert.equal(on.entries[1].directory, "/secret/dir")
+  assert.equal(on.entries[1].reason, "re-resolved")
 
   const off = makePolicy({ trace: false, toolPolicy: { observeSessionMove: true } })
   off.policy.observeSessionMove("s1", "/secret/dir")
   assert.equal(off.entries[0].directory, "<redacted>")
+  off.policy.observeSessionMove("s1", "/secret/dir", "re-resolved")
+  assert.equal(off.entries[1].directory, "<redacted>")
+  assert.equal(off.entries[1].reason, "re-resolved")
 })
 
 /** A nullish move target resolves to an empty string under trace (the

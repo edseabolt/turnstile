@@ -822,7 +822,10 @@ export function createTurnstile(
    * a thrown lookup, or a record with no directory candidate the resolver
    * falls back to the cache then `process.cwd()`, journaling nothing
    * (fail-open; the exact `type:"error"` counts in the open-suite must stay
-   * stable).
+   * stable). One journal exception: when the resolved directory differs from
+   * this session's cached one, a `session_move` telemetry entry
+   * (`reason:"re-resolved"`) is written — a move the `session_move` tool hook
+   * did not witness — so an enforced project switch is never silent.
    * @param sessionID The dispatching session to resolve.
    * @returns The resolved (or fallback) project directory.
    */
@@ -838,6 +841,10 @@ export function createTurnstile(
     }
     const dir = readRecordString(rec, DIRECTORY_KEYS)
     if (dir !== "") {
+      const prior = sessionDirs.get(sessionID)
+      if (prior !== undefined && prior !== dir) {
+        toolPolicy.observeSessionMove(sessionID, dir, "re-resolved")
+      }
       sessionDirs.set(sessionID, dir)
       boundSessionDirs()
       return dir

@@ -327,6 +327,115 @@ test("another session's fallback is the process cwd, not a seeded directory", as
 })
 
 /**
+ * When the resolver replaces a session's cached directory with a different one
+ * (a move the session_move tool hook did not witness), it journals a loud
+ * session_move telemetry entry: after a record flip from B to A the next
+ * dispatch blocks on A's plan file, the journal holds exactly one
+ * session_move entry carrying reason "re-resolved", and no type:"error"
+ * entries are added.
+ */
+test("the resolver journals a loud session_move when a session's cached directory changes", async () => {
+  const { h, metricsDir, restore, projectA, projectB, sessionRecords } = await boot()
+  try {
+    sessionRecords.set("p1", { location: { directory: projectB } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      blocksOn("other.md"),
+    )
+    sessionRecords.set("p1", { location: { directory: projectA } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      blocksOn("plan.md"),
+    )
+    const moves = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.tool === "session_move",
+    )
+    assert.equal(moves.length, 1)
+    const first = moves[0]
+    assert.ok(first)
+    assert.equal(first.sessionID, "p1")
+    assert.equal(first.reason, "re-resolved")
+    assert.equal(journalEntries(metricsDir).filter((e) => e.type === "error").length, 0)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Re-resolving a session whose record still points at its cached directory
+ * journals no telemetry: two dispatches against the same B record emit zero
+ * session_move entries, so a stable project produces no audit noise.
+ */
+test("a cache that re-resolves to the same directory journals nothing", async () => {
+  const { h, metricsDir, restore, projectB, sessionRecords } = await boot()
+  try {
+    sessionRecords.set("p1", { location: { directory: projectB } })
+    for (let i = 0; i < 2; i++) {
+      await assert.rejects(
+        () =>
+          callTool(h, "execute.before", {
+            tool: "task",
+            sessionID: "p1",
+            input: { agent: "executor", prompt: "do the work" },
+          }),
+        blocksOn("other.md"),
+      )
+    }
+    const moves = journalEntries(metricsDir).filter((e) => e.tool === "session_move")
+    assert.equal(moves.length, 0)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The re-resolution telemetry honors the observeSessionMove kill-switch: with
+ * the flag false a record flip from B to A still switches enforcement to A, but
+ * the journal holds no session_move entries at all.
+ */
+test("re-resolution telemetry honors the observeSessionMove kill-switch", async () => {
+  const { h, metricsDir, restore, projectA, projectB, sessionRecords } = await boot({
+    observeSessionMove: false,
+  })
+  try {
+    sessionRecords.set("p1", { location: { directory: projectB } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      blocksOn("other.md"),
+    )
+    sessionRecords.set("p1", { location: { directory: projectA } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      blocksOn("plan.md"),
+    )
+    const moves = journalEntries(metricsDir).filter((e) => e.tool === "session_move")
+    assert.equal(moves.length, 0)
+  } finally {
+    restore()
+  }
+})
+
+/**
  * Caching past the bounded-directory cap evicts the oldest entry without
  * corrupting the most recent resolutions: 55 sessions in one instance each
  * resolve to the same B.
