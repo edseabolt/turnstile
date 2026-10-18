@@ -467,7 +467,6 @@ export function createTurnstile(
   // bash/shell test executions attributed to the parent. Owns only the
   // *evidence* dimension; marker authority is separate.
   const evidence = createEvidenceTracker(config, (raw) => ledger.parentOf(raw), journaler)
-  let projectDir: string = process.cwd()
   // Per-delivery dedup scope counter: each task result is a distinct
   // delivery, so a re-run emitting a byte-identical marker is still
   // journaled; streaming sources share the empty scope (re-delivery dedup).
@@ -576,8 +575,8 @@ export function createTurnstile(
   // Last-known project directory per session, resolved via session.get and
   // invalidated on session_move. The per-dispatch resolver caches fresh here so
   // the sync consumers (evaluate, continuation carry) read one dispatch behind;
-  // the sync consumers fall back to a cached value, then the root
-  // session.created seed, then process.cwd(). Bounded by boundSessionDirs.
+  // the sync consumers fall back to a cached value, then process.cwd().
+  // Bounded by boundSessionDirs.
   const sessionDirs = new Map<string, string>()
 
   /**
@@ -805,15 +804,15 @@ export function createTurnstile(
 
   /**
    * Returns the last-known project directory for a session: the per-session
-   * cache (resolved via `session.get`), then the root `session.created` seed,
-   * then `process.cwd()`. Called by the synchronous consumers (evaluate,
-   * continuation carry); each reads at most one dispatch behind a move, which
-   * converges once the next `execute.before` re-resolves.
+   * cache (resolved via `session.get`), else `process.cwd()`. Called by the
+   * synchronous consumers (evaluate, continuation carry); each reads at most
+   * one dispatch behind a move, which converges once the next
+   * `execute.before` re-resolves.
    * @param sessionID The session whose directory is read.
    * @returns The last-known project directory.
    */
   function currentProjectDir(sessionID: string): string {
-    return sessionDirs.get(sessionID) ?? projectDir
+    return sessionDirs.get(sessionID) ?? process.cwd()
   }
 
   /**
@@ -821,8 +820,9 @@ export function createTurnstile(
    * record, caching the result per session so the sync consumers can read it.
    * A fresh `session.get` is awaited and its directory wins; on an absent API,
    * a thrown lookup, or a record with no directory candidate the resolver
-   * falls back to the cache then the seed, journaling nothing (fail-open; the
-   * exact `type:"error"` counts in the open-suite must stay stable).
+   * falls back to the cache then `process.cwd()`, journaling nothing
+   * (fail-open; the exact `type:"error"` counts in the open-suite must stay
+   * stable).
    * @param sessionID The dispatching session to resolve.
    * @returns The resolved (or fallback) project directory.
    */
@@ -833,7 +833,7 @@ export function createTurnstile(
     try {
       rec = await get({ sessionID })
     } catch {
-      // lookup failure: retryable; fall back to the cache then the seed.
+      // lookup failure: retryable; fall back to the cache then process.cwd().
       return currentProjectDir(sessionID)
     }
     const dir = readRecordString(rec, DIRECTORY_KEYS)
@@ -2366,19 +2366,15 @@ export function createTurnstile(
                     // Root sessions are live parents; the edge branch above is
                     // covered by setParent marking the parent.
                     ledger.markParent(sid)
-                    // Root sessions only: child-session created events must not
-                    // move the project dir (any directory they carry belongs to
-                    // the parent's context, and last-writer-wins across child
-                    // events would point the plans scan at the wrong place).
-                    if (typeof properties.location?.directory === "string")
-                      projectDir = properties.location.directory
-                    else if (typeof properties.directory === "string")
-                      projectDir = properties.directory
-                    // Seed the per-session directory cache beside the seed
-                    // assignment so the continuation carry and the sync consumers
-                    // read this root session's directory from the cache.
-                    sessionDirs.set(sid, projectDir)
-                    boundSessionDirs()
+                    // Root sessions only: the edge branch's parent is already
+                    // keyed by its own created event, and a directory a child
+                    // event carries belongs to the parent's context, so only
+                    // parent-less events seed the per-session cache.
+                    const dir = readRecordString(properties, DIRECTORY_KEYS)
+                    if (dir !== "") {
+                      sessionDirs.set(sid, dir)
+                      boundSessionDirs()
+                    }
                   }
                   // Redundant emitter seed from the created event's agent: this
                   // fires with or without the edge, so a child that streams a

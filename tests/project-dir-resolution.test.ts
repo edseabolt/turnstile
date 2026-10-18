@@ -299,6 +299,34 @@ test("root session.created seeds the per-session directory cache", async () => {
 })
 
 /**
+ * A session with no cache entry and no session record falls back to the
+ * process cwd, never to a directory carried by another root session's created
+ * event: after p1's created event seeds B, dispatching p2 (no record) blocks
+ * on the cwd's plan file.
+ */
+test("another session's fallback is the process cwd, not a seeded directory", async () => {
+  const { h, restore, projectB } = await boot()
+  try {
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "p1", location: { directory: projectB } },
+    })
+    await settle()
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p2",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      blocksOn("plan.md"),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
  * Caching past the bounded-directory cap evicts the oldest entry without
  * corrupting the most recent resolutions: 55 sessions in one instance each
  * resolve to the same B.
