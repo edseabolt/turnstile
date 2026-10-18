@@ -37,11 +37,16 @@ export const ENV_KEYS = {
 
 /**
  * Default case-insensitive evidence pattern: plausible test commands across
- * the common JS and non-JS toolchains. Compiled with `"i"`; a host can override
- * `evidencePattern` for toolchains the default does not cover.
+ * the common JS and non-JS toolchains, plus the full-CI-chain convention
+ * (`npm run ci` and its colon legs, e.g. `ci:host` / `ci:installed`) for repos
+ * whose tests run behind a combined CI script. Node CLI flags may interpolate
+ * between `node` and `--test` (e.g. `node --experimental-strip-types --test`);
+ * script-path arguments deliberately do not qualify (`node server.js --test`
+ * is not evidence). Compiled with `"i"`; a host can override `evidencePattern`
+ * for toolchains the default does not cover.
  */
 export const DEFAULT_EVIDENCE_PATTERN =
-  "\\b(npm\\s+(run\\s+)?test|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+--test|npx\\s+node\\s+--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
+  "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
 
 /**
  * Default conventional-commits regex SOURCE string for `gitGates.commitFormat`

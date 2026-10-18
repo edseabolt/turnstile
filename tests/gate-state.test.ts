@@ -2826,6 +2826,42 @@ test("enforce mode: attributes a child's bash evidence to the parent via lazy re
   dispose()
 })
 
+/** the repo's canonical verification chain counts as evidence: a child's
+ *  exit-0 `npm run ci` in the task window verifies the test-runner's enforce
+ *  PASS (journaled `verified:true` plus an evidence entry), and the reviewer
+ *  dispatch is no longer blocked. */
+test("enforce mode: a child's exit-0 npm run ci verifies the PASS and unblocks the reviewer", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  h.pushEvent({ type: "session.created", data: { sessionID: "c1", parentID: "p1" } })
+  // Warmup signal confirms the created event was processed (edge set).
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  // The child runs the combined CI chain; the parent later emits the PASS.
+  await callTool(h, "execute.after", {
+    tool: "bash",
+    sessionID: "c1",
+    input: { command: "npm run ci" },
+    result: { metadata: { exit: 0 } },
+  })
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+  })
+  const gate = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "PASS")
+  assert.equal(gate?.verified, true)
+  assert.ok(journalEntries(metricsDir).some((l) => l.type === "evidence"))
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+  dispose()
+})
+
 /** a new user prompt clears the in-memory evidence correlation, so a
  *  later PASS is again unverified. */
 test("enforce mode: a new prompt clears evidence so a later PASS is unverified", async () => {
