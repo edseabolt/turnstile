@@ -32,7 +32,7 @@ after-read: "read: correct the read-counter charge\nwhen the read produced no ou
 after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
 
 eventloop: "event.subscribe stream loop (5 restarts)" {
-  created: "session.created → child→parent edge;\nroot stamps projectDir"
+  created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
   text: "message.part.updated / .ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
   inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"

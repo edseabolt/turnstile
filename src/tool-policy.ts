@@ -229,10 +229,19 @@ export interface ToolPolicy {
    * Journals a `session_move` dispatch as telemetry; never blocks. Only writes
    * when `toolPolicy.observeSessionMove` is true. The directory is recorded only
    * when the trace is enabled (the same redaction gating `bash` commands).
+   * Serves two channels: the `session_move` tool hook, and the project-directory
+   * resolver when it replaces a session's cached directory with a different one
+   * — a move the tool hook did not witness. The resolver passes `origin` so the
+   * journal entry carries `reason` and an enforced project switch is never
+   * silent.
    * @param sessionID The session ID, recorded in the journal entry.
-   * @param directory The move target directory from the host payload (`unknown`).
+   * @param directory The move target directory from the host payload or the
+   *     resolver (`unknown`).
+   * @param origin The telemetry channel label, recorded as `reason` on the
+   *     journal entry (`"re-resolved"` when the resolver, not the tool hook,
+   *     witnessed the change).
    */
-  observeSessionMove(sessionID: string, directory: unknown): void
+  observeSessionMove(sessionID: string, directory: unknown, origin?: "re-resolved"): void
   /**
    * Lints `git commit` messages as conventional commits under `gitGates.commitMessages`.
    * Extracts `git commit` invocations (not substrings such as `git commit-graph`
@@ -507,17 +516,23 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
 
   /**
    * Journals a `session_move` dispatch as telemetry only; never blocks. No-op
-   * when `observeSessionMove` is false.
+   * when `observeSessionMove` is false. Called by two channels: the
+   * `session_move` tool hook, and the project-directory resolver when it
+   * replaces a session's cached directory with a different one (a move the
+   * tool hook did not witness); the resolver passes `origin` so its entry
+   * carries `reason` and the enforced project switch is observable.
    * @param sessionID The session ID, recorded in the journal entry.
-   * @param directory The move target directory from the host payload.
+   * @param directory The move target directory from the host payload or the resolver.
+   * @param origin The telemetry channel label, recorded as `reason` when provided.
    */
-  function observeSessionMove(sessionID: string, directory: unknown): void {
+  function observeSessionMove(sessionID: string, directory: unknown, origin?: "re-resolved"): void {
     if (!config.toolPolicy.observeSessionMove) return
     journaler.journal({
       type: "tool",
       sessionID,
       tool: "session_move",
       directory: config.trace ? String(directory ?? "").slice(0, 200) : "<redacted>",
+      ...(origin ? { reason: origin } : {}),
     })
   }
 

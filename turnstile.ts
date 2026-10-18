@@ -96,8 +96,10 @@
  *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert,
  *   closing the injection hole. The enforcing dispatch resolves the
  *   session's own directory via `session.get`, falling back to the cached
- *   last-known directory, then the root `session.created` seed, then
- *   `process.cwd()`. A plan-reviewer APPROVE whose dispatch prompt names
+ *   last-known directory, then `process.cwd()`; a cache replaced by a
+ *   different resolved directory journals `session_move` telemetry
+ *   (`reason:"re-resolved"`) so an enforced project switch is never
+ *   silent. A plan-reviewer APPROVE whose dispatch prompt names
  *   exactly one existing plan file binds the approval to that plan (the
  *   file name + its content key, journaled as `plan`/`planKey` on the
  *   `plan` entry so journal replay restores the identity): a bound
