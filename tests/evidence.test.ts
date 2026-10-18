@@ -116,8 +116,8 @@ test("evidence.clear no-ops on an empty id and tolerates children of others", ()
   assert.equal(t.has("p1"), true)
 })
 
-/** a bad evidencePattern journals the fallback once and still matches npm test
- *  via the default fallback pattern. */
+/** a bad evidencePattern journals the fallback once and still matches both
+ *  `npm test` and `npm run ci` via the default fallback pattern. */
 test("evidence falls back to the default pattern on a bad evidencePattern", () => {
   const entries: Array<Record<string, unknown>> = []
   const t = createEvidenceTracker({ ...cfg(), evidencePattern: "(" }, identityParent, {
@@ -131,6 +131,7 @@ test("evidence falls back to the default pattern on a bad evidencePattern", () =
   assert.match(String(first.error), /evidencePattern/)
   assert.equal(t.has("c1"), false)
   t.observe("c1", "npm test", 0)
+  t.observe("c1", "npm run ci", 0)
   assert.equal(t.has("c1"), true)
 })
 
@@ -218,13 +219,45 @@ test("evidence.snapshot is a pure read that leaves the eviction order unchanged"
   assert.equal(control.has("b"), true)
 })
 
-/** the default pattern matches the repo-relevant JS and non-JS runners. */
-test("default evidence pattern matches npm test and pytest", () => {
+/** the default pattern matches the repo-relevant JS and non-JS runners, the
+ *  `npm run ci` verification chain and its colon legs, and flag-interpolated
+ *  `node --test` invocations (the subsumption probe locks that the bare
+ *  `node --test` substring still matches `npx node --test` without a dedicated
+ *  npx alternative). */
+test("default evidence pattern matches npm test, npm run ci, and flag-interpolated node --test", () => {
   const t = createEvidenceTracker(cfg(), identityParent)
   assert.equal(t.observe("c1", "npm test", 0), true)
   assert.equal(t.observe("c2", "python -m pytest", 0), true)
+  assert.equal(t.observe("c1", "npm run ci", 0), true)
+  assert.equal(t.observe("c1", "npm run ci:host", 0), true)
+  assert.equal(t.observe("c1", "npm run ci:installed", 0), true)
+  assert.equal(t.observe("c1", "npm run test", 0), true)
+  assert.equal(t.observe("c1", "node --test", 0), true)
+  assert.equal(t.observe("c1", "node --experimental-strip-types --test t.ts", 0), true)
+  assert.equal(
+    t.observe(
+      "c1",
+      "npx --no-install node --experimental-strip-types --test tests/injection.test.ts",
+      0,
+    ),
+    true,
+  )
+  // Subsumption: matches via its `node --test` substring, not an npx alternative.
+  assert.equal(t.observe("c1", "npx node --test", 0), true)
   assert.equal(
     DEFAULT_EVIDENCE_PATTERN,
-    "\\b(npm\\s+(run\\s+)?test|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+--test|npx\\s+node\\s+--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b",
+    "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b",
   )
+})
+
+/** the default pattern stays conservative: script names that merely start like
+ *  the chain, non-test npm scripts, a script-path argument before `--test`,
+ *  and ordinary shell noise all miss. */
+test("default evidence pattern rejects near-miss script names and non-test commands", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  assert.equal(t.observe("c1", "npm run lint", 0), false)
+  assert.equal(t.observe("c1", "npm run clean", 0), false)
+  assert.equal(t.observe("c1", "npm run citation", 0), false)
+  assert.equal(t.observe("c1", "node server.js --test", 0), false)
+  assert.equal(t.observe("c1", "ls -la", 0), false)
 })
