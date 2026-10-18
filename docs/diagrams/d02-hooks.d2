@@ -27,7 +27,7 @@ before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn
 before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
 before-write: "write/edit: path denylist"
 
-after-task: "task delivery: parseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ policy prepend (once)"
+after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
 after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
 
