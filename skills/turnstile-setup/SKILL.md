@@ -5,56 +5,69 @@ description: Install the turnstile plugin and pipeline agents into the user's ~/
 
 # Turnstile setup
 
-Install the artifacts this repo owns into `~/.config/opencode` — the plugin and
-the pipeline agent definitions — as symlinks (`scripts/install.mjs`, driven by
-`install.json`). This repo no longer owns a contract block: the orchestrator
-policy is injected at runtime by the plugin, not written to the user's global
-instructions file (`~/.config/opencode/AGENTS.md`) at install time.
+Install the turnstile plugin and the pipeline agent definitions into the
+user's `~/.config/opencode` and verify the install. The orchestrator policy
+is injected at runtime by the plugin (`src/policy.ts`) — nothing is written
+to any instructions file, ever.
+
+Two contexts this skill can run in; detect which one you are in first:
+
+- **Inside the turnstile git repo** (a `package.json` with an `init` script
+  is present): use the repo commands `npm run init` / `npm run install:check`.
+  Symlink mode is the default there — the checkout stays the source of truth.
+- **Anywhere else** (npm-package or npx context): use the CLI,
+  `npx opencode-turnstile init` / `npx opencode-turnstile check`. Do NOT run
+  `npm run init` — that script only exists in the repo. The CLI auto-detects
+  the mode: a git checkout installs by linking, a package install copies.
 
 ## Steps
 
-1. Install the plugin and agents from the repo's root:
+1. Install:
 
-   ```
-   npm run init
-   ```
+   - In the repo: `npm run init`
+   - Elsewhere: `npx opencode-turnstile init`
 
-   - Default is symlink mode (repo edits live); use
-     `npm run init -- --copy` for real copies when the user refuses
-     symlinks — copy mode keeps a ledger recording what it installed.
-   - Targets come from `install.json`; unowned files are never touched.
-   - Conflicts (a real file differing from the repo, or a user-edited
-     copy) fail with a summary. Review with the user, then re-run with
-     `--force` to back up and replace.
-   - Verify with `npm run install:check` (add `-- --copy` for copy mode)
-     — must exit 0.
+   Don't override the mode unless a step fails. Use `--copy` only when the
+   user refuses symlinks or the install target is a dotfiles repo that
+   rejects them (repo: `npm run init -- --copy`; CLI:
+   `npx opencode-turnstile init --copy`). Copy mode records everything in a
+   ledger (`~/.config/opencode/.turnstile-install.json`).
 
-2. Confirm the runtime policy. The plugin injects the orchestrator policy
-   into the primary session per task from `src/policy.ts`; there is no
-   block to verify on disk. If the user's `~/.config/opencode/AGENTS.md`
-   still contains a legacy turnstile sentinel block (from an install before
-   the runtime-injection change), delete it by hand — the plugin does not
-   read or manage it, and there is deliberately no installer to remove it:
+   Targets come from `install.json`; unowned files in the target directories
+   are never touched. Conflicts (a real file differing from the repo, or a
+   user-edited copy) fail with a per-path summary. Show the user the output
+   and stop — don't force anything with `--force` without asking.
 
-   ```
-   # ~/.config/opencode/AGENTS.md — delete the section between the
-   # `<!-- turnstile:start -->` and `<!-- turnstile:end -->` sentinels
-   ```
+2. Verify — must exit 0:
 
-3. Verify the marker contract is still in sync with the parser:
+   - In the repo: `npm run install:check` (add `-- --copy` for copy mode)
+   - Elsewhere: `npx opencode-turnstile check`
 
-   ```
-   node scripts/check-markers.mjs
-   ```
+   Drift or a conflict is reported per path; resolve it with the user before
+   re-running.
 
-   Must pass. It validates the README's concrete examples, the `<n>`-placeholder
-   templates in `agents/*.md`, and those in `src/policy.ts` against the parser
-   regexes in `src/markers.ts`. If it fails, the README examples and the regex
-   literals in `src/markers.ts` have drifted — fix both together.
+3. AGENTS.md is out of scope: turnstile never writes to any instructions
+   file — the orchestrator policy is injected at runtime from `src/policy.ts`,
+   and nothing under `~/.config/opencode` besides the manifest targets
+   should be touched. Do not paste anything into AGENTS.md.
+
+4. Tell the user to **restart OpenCode** (or `opencode service restart`) so
+   the plugin loads. Give them the status command for later:
+
+   - In the repo: `node bin/cli.mjs status [--json]` (the local checkout)
+   - Elsewhere: `npx opencode-turnstile status [--json]`
+
+## Repo-only maintenance note
+
+Inside the repo after changing marker syntax, run `node scripts/check-markers.mjs`
+(it validates the README examples and the agent/policy templates against the
+parser regexes in `src/markers.ts`); that is a development check, not part of
+a user install — skip it elsewhere.
 
 ## Report
 
-Tell the user: which files were linked or copied (created or updated), that the
-orchestrator policy is injected at runtime (no instructions-file block), and —
-if a legacy sentinel block was present — that it was removed by hand. Do not
-quote the injected policy back; summarize.
+Tell the user: which files were linked or copied (created or updated), which
+mode was used (link vs copy), that the orchestrator policy is injected at
+runtime (no instructions-file block), that OpenCode must be restarted to
+load the plugin, and the status command for later. Do not quote the injected
+policy back; summarize.
