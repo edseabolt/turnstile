@@ -8,7 +8,7 @@ file (`types`, `config`, `policy`, `journal`, `state`, `markers`, `evidence`,
 `gates`, `tool-policy`, `setup`). It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
-into the primary session at runtime by the plugin (from `src/policy.ts`
+into the parent session at runtime by the plugin (from `src/policy.ts`
 via the `execute.after` hook) rather than written to any instructions
 file at install time — a fresh install can never lose it; per-agent
 instruction lines live in each `agents/<name>.md`.

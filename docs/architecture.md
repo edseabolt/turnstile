@@ -347,12 +347,17 @@ probe; a disjoint custom syntax stays silent).
 Turnstile does not read orchestrator policy from a file at install time — it
 makes that policy available by injecting it at runtime. When the plugin is
 loaded, `src/setup.ts` prepends the orchestrator policy paragraph from
-`src/policy.ts` to the primary session's first `task` (or `subagent`) result
-delivery, once per task, via the `tool.hook("execute.after")` handler — the
-same hook the plugin already uses to rewrite tool output reaching the model.
-The source of truth is code shipped with the plugin, so a fresh install can
-never lose it, and it follows the plugin through updates and
-uninstall–reinstall cycles.
+`src/policy.ts` to the first `task` (or `subagent`) result delivery per task,
+once per task, via the `tool.hook("execute.after")` handler — the same hook
+the plugin already uses to rewrite tool output reaching the model. The
+handler attributes each delivery through the `childToParent` edge (seeded by
+`session.created`, back-filled via `session.get` in `resolveParent`) and
+prepends on the delivery's parent-side output, so both host delivery shapes —
+parent-keyed (`task`) and child-keyed (`subagent`) — reach the receiving
+parent; the `policyInjected` flag and the `injected:true` journal entry key
+on that resolved parent. The source of truth is code shipped with the plugin,
+so a fresh install can never lose it, and it follows the plugin through
+updates and uninstall–reinstall cycles.
 
 - **Fail-open.** The injection is fully guarded with an inner try/catch; on
   failure it journals a `type:"policy"` entry with `injected:false` and
@@ -360,6 +365,20 @@ uninstall–reinstall cycles.
 - **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
   each new prompt, so the block re-injects per task) means the policy is
   prepended exactly once per task, not once per turn.
+- **Edge-first attribution.** A delivery whose child→parent edge is
+  registered injects regardless of the `event.agent` name — the name
+  heuristic never excludes an edge-resolved delivery. The name guard survives
+  only as a conservative fallback: a delivery carrying a config-known
+  subagent name whose edge is unresolvable (no `session.created` and no
+  `session.get` record) is skipped and journaled `{type:"policy",
+sessionID:<child>, injected:false, skipped:true, reason:"agent-name"}` so
+  the decision is observable. The one residual corner that still injects
+  without an edge is a config-UNKNOWN name on a host without a session API:
+  with neither an edge nor a name signal there is no way to tell a
+  parent-facing delivery from a child-own session one, so the self-keyed
+  injection there is a documented, accepted residual — the handler fires only
+  on `task`/`subagent` tool results, so child streaming text never receives
+  the policy.
 - **Marker placeholders.** The injected paragraph quotes the gate/verdict
   markers with `<n>` placeholders (e.g. `GATE: PASS tests=<n> passed=<n>
 failed=<n>`, `VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`) rather

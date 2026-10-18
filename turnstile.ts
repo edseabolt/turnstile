@@ -1,13 +1,19 @@
 /**
  * turnstile: runtime enforcement of the orchestrator pipeline contracts.
  *
- * - Orchestrator policy: injected into the primary (parent) session per task
+ * - Orchestrator policy: injected into the receiving parent session per task
  *   via the `execute.after` hook — the `ORCHESTRATOR_POLICY` block from
  *   `src/policy.ts` is prepended to the first `task`/`subagent` result delivery
- *   per task, with per-task idempotency via `GateState.policyInjected`, fully
- *   guarded and fail-open (a broken injection journals `type:"policy"` and
- *   proceeds). Nothing is written to an instructions file at install time — the
- *   AGENTS.md contract block is a historical install step, removed.
+ *   per task, attributed to the delivery's parent through the `childToParent`
+ *   edge (seeded by `session.created`, back-filled via `session.get`), with
+ *   per-task idempotency via `GateState.policyInjected` keyed on that parent.
+ *   The name-based exclusion is a conservative fallback for deliveries whose
+ *   edge is unresolvable: a config-known subagent name with no registered
+ *   edge is skipped and journaled `skipped:true` (`reason:"agent-name"`)
+ *   rather than injected. Fully guarded and fail-open (a broken injection
+ *   journals `type:"policy"` and proceeds). Nothing is written to an
+ *   instructions file at install time — the AGENTS.md contract block is a
+ *   historical install step, removed.
  *
  * - Config warnings: surfaced into the session context once per plugin load.
  *   When the resolved config produced validation warnings (a typo'd key, a
