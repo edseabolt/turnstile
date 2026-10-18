@@ -11,12 +11,14 @@
  *   the v1 string shape (child-keyed event, text in `result.output`, a string
  *   `metadata.sessionID` naming the child when present) or the v2 structured
  *   shape (parent-keyed event, structured `result.output`, child via
- *   `metadata.sessionID` or the structured `output.sessionID`, model-visible
- *   text in `result.content`). The prepend lands on the shape's text —
- *   `result.output` for the string shape, `result.content` for the structured
- *   one (the structured `output` object stays unmutated) — and the classified
- *   child and text drive marker parsing, the bare-output check, and the
- *   reviewer capture with no re-derivation. Only two skips are silent: the
+ *   `metadata.sessionID` or the structured `output.sessionID`, canonical
+ *   child text in `output.output`, model-visible `content` as a string or a
+ *   block array). The prepend lands on the shape's model-visible text —
+ *   `result.output` for the string shape; string or block-array
+ *   `result.content` for the structured one (absent falls back to the
+ *   structured output string, and the `output` object otherwise stays
+ *   unmutated) — and the classified child and text drive marker parsing, the
+ *   bare-output check, and the reviewer capture with no re-derivation. Only two skips are silent: the
  *   once-flag and an absent result; a present-but-unclassifiable result
  *   journals loudly instead (`{type:"policy", injected:false,
  *   reason:"unknown-shape", shape:<descriptor>}`). The name-based exclusion

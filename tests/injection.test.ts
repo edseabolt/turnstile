@@ -16,15 +16,19 @@
  * shape injecting on a registered edge; the task shape with `event.agent`
  * set; once-per-parent keying across sibling children; late-edge resolution
  * via `session.get`, with the unresolvable fallback journaled; structured
- * injection into `result.content` (the `result.output` object stays
- * object-identical); the once-flag across shapes; marker attribution through
- * a structured delivery (reviewer verdict credit and plan-reviewer plan
- * entry, `raw` = the real child, no forensic path); spurious-violation
- * regressions (a streamed verdict suppresses; a marker-less delivery keys
- * the violation on the real child); the name guard inert on structured
- * deliveries; child attribution through the `output.sessionID` fallback;
- * fail-open on a frozen structured prepend; the background-ack parity
- * violation; and string-shape child attribution via `metadata.sessionID`.
+ * injection into the model-visible `result.content` (a block array gains a
+ * prepended text block; a plain string is prefixed in place; absent or
+ * other content falls back to the structured output string) with the
+ * `result.output` object staying object-identical; the once-flag across
+ * shapes; marker attribution through a structured delivery (reviewer
+ * verdict credit and plan-reviewer plan entry, `raw` = the real child, no
+ * forensic path — parsed from the canonical `output.output` string, not the
+ * content block); spurious-violation regressions (a streamed verdict
+ * suppresses; a marker-less delivery keys the violation on the real child);
+ * the name guard inert on structured deliveries; child attribution through
+ * the `output.sessionID` fallback; fail-open on a frozen structured prepend;
+ * the background-ack parity violation; and string-shape child attribution
+ * via `metadata.sessionID`.
  */
 
 import * as path from "node:path"
@@ -94,6 +98,19 @@ async function resolveEdgeViaCreated(
 /** How many times the policy block appears in a (possibly prepended) string. */
 function countPolicy(text: string): number {
   return text.split(ORCHESTRATOR_POLICY).length - 1
+}
+
+/**
+ * Counts the policy block across a model-visible `content` value: the joined
+ * text of a content block array, or the string itself.
+ * @param content The delivery's `result.content` (string, block array, or absent).
+ * @returns The number of policy blocks.
+ */
+function policyCountOf(content: unknown): number {
+  const text = Array.isArray(content)
+    ? content.map((block: { text?: unknown }) => String(block?.text ?? "")).join("")
+    : String(content)
+  return countPolicy(text)
 }
 
 /** 1. Prepend happens once, a repeat within the same task adds nothing, and
@@ -463,15 +480,24 @@ test("injection: a late session.get edge injects; an unresolvable known name jou
 /**
  * Builds a v2 host delivery event: structured `result.output`
  * (`{ sessionID, status, output }`), a parent-keyed `sessionID` ("p1"), the
- * model-visible text wrapped in `<subagent …>` tags in `result.content`, and
- * the child on `metadata.sessionID`. The dispatch agent defaults to a
+ * child on `metadata.sessionID`, and the model-visible `result.content` —
+ * a content block array by default (the real host shape: one text block
+ * carrying the `<subagent …>`-wrapped child text), or a plain string when
+ * `contentShape` is "string". The dispatch agent defaults to a
  * config-UNKNOWN name so the bare-output check and reviewer capture stay
  * quiet in pure-injection cases; override it to exercise them.
  * @param child The child session ID.
- * @param text The child's result text (inside the wrapper).
+ * @param text The child's result text (the canonical `output.output`).
  * @param agent The dispatch agent (event.agent and input.agent).
+ * @param contentShape Block-array (default) or plain-string `content`.
  */
-function structured(child: string, text: string, agent: string = "build"): Record<string, any> {
+function structured(
+  child: string,
+  text: string,
+  agent: string = "build",
+  contentShape: "array" | "string" = "array",
+): Record<string, any> {
+  const wrapped = `<subagent sessionID="${child}" state="completed">\n${text}\n</subagent>`
   return {
     tool: "subagent",
     sessionID: "p1",
@@ -479,7 +505,7 @@ function structured(child: string, text: string, agent: string = "build"): Recor
     input: { agent, prompt: "run it" },
     result: {
       output: { sessionID: child, status: "completed", output: text },
-      content: `<subagent sessionID="${child}" state="completed">\n${text}\n</subagent>`,
+      content: contentShape === "string" ? wrapped : [{ type: "text", text: wrapped }],
       metadata: { sessionID: child, status: "completed" },
     },
   }
@@ -495,15 +521,21 @@ test("injection: a structured delivery injects into result.content, leaving resu
     const outRef = { sessionID: "c1", status: "completed", output: "planner body" }
     const ev = structured("c1", "planner body", "planner")
     ev.result.output = outRef
-    const contentBefore = ev.result.content
+    const blockBefore = ev.result.content[0]
     await callTool(h, "execute.after", ev)
-    assert.ok(
-      String(ev.result.content).startsWith(ORCHESTRATOR_POLICY),
-      "the model-visible string is policy-prefixed",
+    const content = ev.result.content
+    assert.equal(Array.isArray(content) && content.length, 2, "the content array gains one block")
+    assert.equal(content[0].type, "text", "the prepended block is a text block")
+    assert.equal(
+      content[0].text,
+      ORCHESTRATOR_POLICY + "\n",
+      "the prepended block carries the policy",
     )
-    assert.ok(
-      String(ev.result.content).includes(contentBefore),
-      "the wrapper text is preserved below the policy",
+    assert.equal(content[1], blockBefore, "the original block is preserved below the policy")
+    assert.equal(
+      content[1].text,
+      `<subagent sessionID="c1" state="completed">\nplanner body\n</subagent>`,
+      "the wrapper text is unmutated",
     )
     assert.equal(ev.result.output, outRef, "the structured output object is object-identical")
     assert.equal(ev.result.output.output, "planner body", "its inner text is unmutated")
@@ -512,7 +544,7 @@ test("injection: a structured delivery injects into result.content, leaving resu
     assert.equal(policies[0]!.injected, true, "the entry reports injected:true")
     assert.equal(policies[0]!.sessionID, "p1", "keyed under the resolved parent")
     await callTool(h, "execute.after", ev)
-    assert.equal(countPolicy(String(ev.result.content)), 1, "a repeat delivery prepends nothing")
+    assert.equal(policyCountOf(ev.result.content), 1, "a repeat delivery prepends nothing")
     assert.equal(
       journalEntries(metricsDir).filter((l) => l.type === "policy").length,
       1,
@@ -535,7 +567,7 @@ test("injection: the once-flag holds across delivery shapes within one task", as
     assert.ok(String(v1.result.output).startsWith(ORCHESTRATOR_POLICY), "the v1 delivery injects")
     const ev = structured("c1", "structured body")
     await callTool(h, "execute.after", ev)
-    assert.equal(countPolicy(String(ev.result.content)), 0, "the structured delivery is silent")
+    assert.equal(policyCountOf(ev.result.content), 0, "the structured delivery is silent")
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 1, "still exactly one policy entry")
     assert.equal(policies[0]!.injected, true)
@@ -661,11 +693,8 @@ test("injection: three unclassifiable result shapes each journal loudly with the
         shape: "output=object[nope] content=undefined metadata=undefined",
       },
       {
-        result: {
-          output: { sessionID: "cU", status: "completed", output: "text" },
-          metadata: { sessionID: "cU", status: "completed" },
-        },
-        shape: "output=object[output,sessionID,status] content=undefined metadata=object",
+        result: { output: { output: "text" }, content: "text block" },
+        shape: "output=object[output] content=string metadata=undefined",
       },
     ]
     for (let i = 0; i < cases.length; i++) {
@@ -700,8 +729,8 @@ test("injection: three unclassifiable result shapes each journal loudly with the
 
 /** 18. The shape descriptor branches: undefined/null/array/object
  *  (key-cap truncation) outputs, a record output with a string inner
- *  output but no child ID (unknown, not structured), a non-string
- *  content, and an absent (null) result that stays silent. */
+ *  output but no resolvable child ID (unknown, not structured), a
+ *  non-string content, and an absent (null) result that stays silent. */
 test("injection: the unknown-shape descriptor covers every result branch", async () => {
   const { h, dispose, metricsDir } = await boot()
   try {
@@ -719,9 +748,9 @@ test("injection: the unknown-shape descriptor covers every result branch", async
       },
       {
         result: {
-          output: { sessionID: "cF", output: "x" },
+          output: { sessionID: 42, output: "x" },
           content: 42,
-          metadata: { sessionID: "cF" },
+          metadata: { sessionID: 42 },
         },
         shape: "output=object[output,sessionID] content=number metadata=object",
       },
@@ -763,7 +792,7 @@ test("injection: the name guard is inert on a structured delivery with an unreso
     const ev = structured("cX", "body", "planner")
     await callTool(h, "execute.after", ev)
     assert.ok(
-      String(ev.result.content).startsWith(ORCHESTRATOR_POLICY),
+      ev.result.content[0].text.startsWith(ORCHESTRATOR_POLICY),
       "injected despite the config-known name",
     )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
@@ -823,7 +852,11 @@ test("injection: a frozen structured result fails open with injected:false and n
       threw = true
     }
     assert.equal(threw, false, "the hook completes even when the prepend throws")
-    assert.ok(!String(ev.result.content).startsWith(ORCHESTRATOR_POLICY), "no policy text landed")
+    assert.equal(
+      ev.result.content[0].text,
+      `<subagent sessionID="cF2" state="completed">\nfrozen body\n</subagent>`,
+      "no policy block landed",
+    )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 1, "the failure is journaled")
     assert.equal(policies[0]!.injected, false, "the entry reports injected:false")
@@ -879,6 +912,121 @@ test("injection: a string delivery with a metadata child keys the violation on t
     assert.equal(policies.length, 1)
     assert.equal(policies[0]!.injected, true)
     assert.equal(policies[0]!.sessionID, "p1", "the policy keys on the edge-resolved parent")
+  } finally {
+    dispose()
+  }
+})
+
+/** 24. The structured shape with a plain-string `content`: the policy is
+ *  prefixed into the string in place, the wrapper is preserved below it,
+ *  and the `result.output` object stays object-identical. */
+test("injection: a structured delivery with string content prefixes the policy into the string", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await resolveEdgeViaCreated(h, "cS", "p1", metricsDir)
+    const ev = structured("cS", "string content body", "planner", "string")
+    const outRef = ev.result.output
+    const contentBefore = ev.result.content
+    await callTool(h, "execute.after", ev)
+    const content = ev.result.content
+    assert.equal(typeof content, "string", "content stays a string")
+    assert.ok(content.startsWith(ORCHESTRATOR_POLICY), "the string is policy-prefixed")
+    assert.ok(
+      content.endsWith(String(contentBefore)),
+      "the wrapper text is preserved below the policy",
+    )
+    assert.equal(policyCountOf(content), 1, "the policy appears exactly once")
+    assert.equal(ev.result.output, outRef, "the structured output object is object-identical")
+    assert.equal(ev.result.output.output, "string content body", "its inner text is unmutated")
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1, "exactly one policy journal entry")
+    assert.equal(policies[0]!.injected, true, "the entry reports injected:true")
+    assert.equal(policies[0]!.sessionID, "p1", "keyed under the resolved parent")
+  } finally {
+    dispose()
+  }
+})
+
+/** 25. Structured deliveries whose `content` is absent (or present but
+ *  neither a string nor a block array) fall back to the structured output
+ *  string: the host stringifies `output` into the transcript when
+ *  `content` is absent, so the mutation there is model-visible; the policy
+ *  still lands exactly once per delivery. */
+test("injection: a structured delivery without block content mutates the output string instead", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    // Absent content: the policy lands on the structured output string.
+    const ev = structured("cA", "absent content body")
+    delete ev.result.content
+    await callTool(h, "execute.after", ev)
+    assert.equal(
+      ev.result.output.output,
+      ORCHESTRATOR_POLICY + "\nabsent content body",
+      "the output string is policy-prefixed",
+    )
+    assert.equal(ev.result.content, undefined, "content stays absent")
+    // Repeat: the once-flag holds, so the fallback prepends exactly once.
+    await callTool(h, "execute.after", ev)
+    assert.equal(policyCountOf(ev.result.output.output), 1, "the fallback prepends exactly once")
+    // Present-but-odd content: the same fallback, content left untouched.
+    const ev2 = structured("cB", "odd content body")
+    ev2.result.content = 42
+    await callTool(h, "execute.after", ev2)
+    assert.equal(
+      ev2.result.output.output,
+      ORCHESTRATOR_POLICY + "\nodd content body",
+      "a non-block content falls back to the output string",
+    )
+    assert.equal(ev2.result.content, 42, "the odd content is left untouched")
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 2, "one injected:true entry per delivery")
+    assert.ok(
+      policies.every((p) => p.injected === true),
+      "both entries report injected:true",
+    )
+    assert.equal(
+      policies[0]!.sessionID,
+      "cA",
+      "the unresolvable edge self-keys the entry (documented residual)",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 26. A marker-carrying structured delivery parses through the structured
+ *  shape from the canonical `output.output` string: a verdict there credits
+ *  the landing gate through the registered edge even when the content block
+ *  the model reads carries a different, marker-less wrapper. */
+test("injection: a structured marker parses from the canonical output string, not the content block", async () => {
+  const { h, dispose, metricsDir } = await boot({ reviewEnsemble: "advise" })
+  try {
+    await resolveEdgeViaCreated(h, "cM", "p1", metricsDir)
+    const ev = structured("cM", "VERDICT: APPROVE crit=0 high=0 med=0 low=0\nbody", "reviewer")
+    // Decouple the content block from the canonical text: the block carries
+    // no marker, only the canonical output string does.
+    ev.result.content = [
+      {
+        type: "text",
+        text: `<subagent sessionID="cM" state="completed">\nsummarized, marker-less\n</subagent>`,
+      },
+    ]
+    await callTool(h, "execute.after", ev)
+    const verdicts = journalEntries(metricsDir).filter((l) => l.type === "verdict")
+    assert.equal(verdicts.length, 1, "the verdict in the canonical text is journaled")
+    assert.equal(verdicts[0]!.sessionID, "p1", "keyed under the resolved parent")
+    assert.equal(verdicts[0]!.raw, "cM", "raw is the real child")
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    assert.equal(
+      ledger.state("p1").hasReviewApprove,
+      true,
+      "the landing credit lands through the registered edge",
+    )
+    assert.equal(
+      journalEntries(metricsDir).filter((l) => l.type === "violation").length,
+      0,
+      "the marker in the canonical text satisfies the bare check",
+    )
   } finally {
     dispose()
   }

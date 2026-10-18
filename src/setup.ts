@@ -77,7 +77,7 @@ type Delivery =
 
 /**
  * Whether a value is a plain object (neither null nor array-like): the guard
- * both `describeResultShape` and `structuredChildOf` need before touching
+ * both `describeResultShape` and `structuredPartsOf` need before touching
  * object fields, so a hostile or reshaped payload can never throw.
  * @param value The value to test.
  * @returns True for a plain object.
@@ -98,7 +98,9 @@ function metadataChildOf(result: ToolResult): string {
 
 /**
  * Short safe type label for the shape descriptor: `"null"`, `"array"`, or
- * the value's `typeof`.
+ * the value's `typeof`. The array label is load-bearing: a real host
+ * delivers structured subagent `content` as an array of content blocks, so
+ * the descriptor must distinguish that from a plain object.
  * @param value Any value to label.
  * @returns The type label.
  */
@@ -127,17 +129,23 @@ function describeResultShape(result: ToolResult): string {
 }
 
 /**
- * The child session ID of a structured subagent result, "" when the result
- * is not a structured delivery or carries no child ID: the string
- * `metadata.sessionID` first, then the structured `output.sessionID`.
+ * The child session ID and canonical child text of a structured subagent
+ * result, null when the result is not a structured delivery or carries no
+ * child ID. The child resolves from the string `metadata.sessionID` first,
+ * then the structured `output.sessionID`; the canonical text is the string
+ * `output.output`. `content` is deliberately not part of the decision: a
+ * real host delivers it as an array of content blocks (or a string), and
+ * either form — or its absence — classifies as structured.
  * @param result The tool result to read.
- * @returns The child session ID, or "" when unresolvable.
+ * @returns The child and canonical text, or null when unresolvable.
  */
-function structuredChildOf(result: ToolResult): string {
+function structuredPartsOf(result: ToolResult): { child: string; text: string } | null {
   const output = result.output
-  if (!isPlainRecord(output) || typeof output.output !== "string") return ""
-  if (typeof result.content !== "string") return ""
-  return metadataChildOf(result) || (typeof output.sessionID === "string" ? output.sessionID : "")
+  if (!isPlainRecord(output) || typeof output.output !== "string") return null
+  const child =
+    metadataChildOf(result) || (typeof output.sessionID === "string" ? output.sessionID : "")
+  if (child === "") return null
+  return { child, text: output.output }
 }
 
 /**
@@ -146,10 +154,12 @@ function structuredChildOf(result: ToolResult): string {
  * string `result.output` with a child-keyed event (a string
  * `metadata.sessionID`, when present, names the real child); the v2
  * `subagent` shape delivers a structured `result.output` with a parent-keyed
- * event, the child on `metadata.sessionID` (or `output.sessionID`), and the
- * model-visible string in `result.content`. A present result matching
- * neither shape is `unknown` (the caller journals it loudly); an absent
- * result is `absent` (a documented silent case).
+ * event, the child on `metadata.sessionID` (or `output.sessionID`), the
+ * canonical child text in `output.output`, and model-visible `content` as a
+ * string or a block array (absent `content` is fine too: the host then
+ * stringifies `output`). A present result matching neither shape is
+ * `unknown` (the caller journals it loudly); an absent result is `absent`
+ * (a documented silent case).
  * @param event The execute.after payload.
  * @returns The classified delivery.
  */
@@ -163,10 +173,8 @@ function classifyDelivery(event: ToolHookEvent): Delivery {
       text: result.output,
     }
   }
-  const child = structuredChildOf(result)
-  if (child !== "") {
-    return { kind: "structured", child, text: result.content as string }
-  }
+  const parts = structuredPartsOf(result)
+  if (parts) return { kind: "structured", ...parts }
   return {
     kind: "unknown",
     child: asSessionID(event.sessionID),
@@ -177,11 +185,14 @@ function classifyDelivery(event: ToolHookEvent): Delivery {
 
 /**
  * Prepends the orchestrator policy to the classified delivery's
- * model-visible text: `result.output` for the v1 string shape (byte-
- * identical to the historical prepend) and `result.content` for the
- * structured shape (the string the parent model reads; the structured
- * `output` object stays unmutated, its text already inside `content`).
- * Throws propagate to the caller's fail-open catch.
+ * model-visible text. String shape: `result.output` (byte-identical to the
+ * historical prepend). Structured shape: a string `result.content` is
+ * prefixed in place; a block-array `content` gains one prepended text block
+ * (the host passes a content array through to the model unchanged); absent
+ * or other `content` falls back to the structured output string
+ * (`output.output`, which the host stringifies when `content` is absent).
+ * The structured `output` object otherwise stays unmutated. Throws
+ * propagate to the caller's fail-open catch.
  * @param event The execute.after payload whose result is mutated.
  * @param delivery The classified delivery (string or structured only).
  */
@@ -190,9 +201,22 @@ function prependDeliveryText(
   delivery: Extract<Delivery, { kind: "string" | "structured" }>,
 ): void {
   const result = event.result as ToolResult
-  const prefixed = ORCHESTRATOR_POLICY + "\n" + delivery.text
-  if (delivery.kind === "structured") result.content = prefixed
-  else result.output = prefixed
+  const head = ORCHESTRATOR_POLICY + "\n"
+  if (delivery.kind !== "structured") {
+    result.output = head + delivery.text
+    return
+  }
+  const content = result.content
+  if (typeof content === "string") {
+    result.content = head + content
+    return
+  }
+  if (Array.isArray(content)) {
+    result.content = [{ type: "text", text: head }, ...content]
+    return
+  }
+  const structuredOutput = result.output as Record<string, unknown>
+  structuredOutput.output = head + delivery.text
 }
 
 /**
@@ -1172,8 +1196,9 @@ export function createTurnstile(
    * `session.get` in `resolveParent`) decides where the policy lands, so
    * both host delivery shapes — the v1 string shape (child-keyed event,
    * text in `result.output`) and the v2 structured shape (parent-keyed
-   * event, child on `metadata.sessionID`, text in `result.content`) —
-   * inject when the edge resolves; the once-flag and the `injected:true`
+   * event, child on `metadata.sessionID`, canonical text in
+   * `output.output`, string or block-array `content`) — inject when the
+   * edge resolves; the once-flag and the `injected:true`
    * journal entry key on the resolved parent (identical to the raw child
    * for the self-keyed shape). The `event.agent` name guard is a
    * conservative fallback that fires ONLY for non-structured deliveries

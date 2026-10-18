@@ -366,13 +366,17 @@ delivery is classified once by `classifyDelivery` into its host shape — the
 v1 string shape (child-keyed event, text in `result.output`, the child
 optionally named by a string `metadata.sessionID`) or the v2 structured shape
 (parent-keyed event, structured `result.output`, the child on
-`metadata.sessionID` or the structured `output.sessionID`, model-visible text
-in `result.content`) — and the prepend lands on that shape's text:
-`result.output` for the string shape, `result.content` for the structured one
-(the structured `output` object stays unmutated, its text already inside
-`content`). The classified child and text also drive marker parsing, the
-bare-output check, and the reviewer capture, so a structured delivery parses
-and attributes to the real child exactly like its string twin. Attribution is
+`metadata.sessionID` or the structured `output.sessionID`, the canonical
+child text in `output.output`, model-visible `content` as a string or a block
+array) — and the prepend lands on that shape's model-visible text:
+`result.output` for the string shape; string or block-array `result.content`
+for the structured one (a string is prefixed in place, a block array gains
+one prepended text block, and absent or other content falls back to the
+structured output string, which the host stringifies into the transcript).
+The classified child and text also drive marker parsing, the bare-output
+check, and the reviewer capture — always from the canonical `output.output`
+string — so a structured delivery parses and attributes to the real child
+exactly like its string twin. Attribution is
 edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
 via `session.get` in `resolveParent`) decides where the policy lands, so both
 shapes inject on the receiving parent; the `policyInjected` flag and the
