@@ -14,7 +14,7 @@ import * as path from "node:path"
 import { BlockError, createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
-import { createLedger, newState } from "../src/state.ts"
+import { createLedger, formatGateSnapshot, newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,
@@ -2047,6 +2047,102 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
   const afterReset = ledger.state("p1")
   assert.equal(afterReset.hasPlanVerdict, false, "hasPlanVerdict cleared on full reset")
   assert.equal(afterReset.humanApproval, false, "humanApproval cleared on full reset")
+})
+
+/** Replay restores the bound plan identity from a fielded plan APPROVE; a
+ *  field-less (legacy) line restores unbound; a trailing BLOCK restores
+ *  nothing. */
+test("replay restores bound plan identity; legacy lines restore unbound; BLOCK restores nothing", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  fs.writeFileSync(
+    journalPath,
+    [
+      JSON.stringify({
+        ts: "t1",
+        type: "plan",
+        sessionID: "p1",
+        result: "APPROVE",
+        plan: "z-work.md",
+        planKey: "abc123",
+      }),
+      JSON.stringify({ ts: "t2", type: "plan", sessionID: "p2", result: "APPROVE" }),
+      JSON.stringify({
+        ts: "t3",
+        type: "plan",
+        sessionID: "p3",
+        result: "APPROVE",
+        plan: "other.md",
+        planKey: "def456",
+      }),
+      JSON.stringify({ ts: "t4", type: "plan", sessionID: "p3", result: "BLOCK" }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(journalPath)
+  const s1 = ledger.state("p1")
+  assert.equal(s1.hasPlanVerdict, true)
+  assert.equal(s1.approvedPlan, "z-work.md", "replay restores the bound plan name")
+  assert.equal(s1.approvedPlanKey, "abc123", "replay restores the bound plan key")
+  const s2 = ledger.state("p2")
+  assert.equal(s2.hasPlanVerdict, true)
+  assert.equal(s2.approvedPlan, "", "legacy field-less APPROVE restores unbound")
+  assert.equal(s2.approvedPlanKey, "", "legacy field-less APPROVE restores an empty key")
+  const s3 = ledger.state("p3")
+  assert.equal(s3.hasPlanVerdict, false, "a trailing BLOCK never restores")
+  assert.equal(s3.approvedPlan, "")
+  assert.equal(s3.approvedPlanKey, "")
+})
+
+/** The bound plan identity is restart-sticky exactly like hasPlanVerdict: the
+ *  grace prompt carries the pair forward and a full reset clears both. */
+test("grace prompt carries the bound plan identity; a full reset clears it", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      plan: "z-work.md",
+      planKey: "abc123",
+    })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const s = ledger.state("p1")
+  assert.equal(s.hasPlanVerdict, true)
+  assert.equal(s.approvedPlan, "z-work.md")
+  // Grace prompt: the identity carries with the verdict.
+  ledger.resetState("p1")
+  const afterGrace = ledger.state("p1")
+  assert.equal(afterGrace.hasPlanVerdict, true)
+  assert.equal(afterGrace.approvedPlan, "z-work.md", "plan name carried by grace")
+  assert.equal(afterGrace.approvedPlanKey, "abc123", "plan key carried by grace")
+  // Second prompt: a full reset clears both fields.
+  ledger.resetState("p1")
+  const afterReset = ledger.state("p1")
+  assert.equal(afterReset.hasPlanVerdict, false)
+  assert.equal(afterReset.approvedPlan, "", "plan name cleared on full reset")
+  assert.equal(afterReset.approvedPlanKey, "", "plan key cleared on full reset")
+})
+
+/** formatGateSnapshot renders the plan=<name> suffix only when a bound plan
+ *  identity is present; unbound buckets render the plan line unchanged. */
+test("snapshot renders the bound plan suffix only when bound", () => {
+  const unbound = formatGateSnapshot({
+    ...newState(),
+    hasPlanVerdict: true,
+    plansSignature: "abc",
+  }).split("\n")
+  assert.match(unbound[2]!, /^- plan: APPROVED stamp=known$/)
+  const bound = formatGateSnapshot({
+    ...newState(),
+    hasPlanVerdict: true,
+    plansSignature: "abc",
+    approvedPlan: "z-work.md",
+    approvedPlanKey: "abc123",
+  }).split("\n")
+  assert.match(bound[2]!, /^- plan: APPROVED plan=z-work\.md stamp=known$/)
 })
 
 /** An invalid `gateMarker` config falls back to the canonical regex and journals

@@ -80,13 +80,23 @@
  *   closing the injection hole. The enforcing dispatch resolves the
  *   session's own directory via `session.get`, falling back to the cached
  *   last-known directory, then the root `session.created` seed, then
- *   `process.cwd()`. Approvals stamp a path-free plans-dir signature
- *   (directory-independent): a same-content move to another checkout
- *   survives, while a genuine content change drops the verdict loudly,
- *   journaling a replay-inert `STALE` entry rather than a silent mismatch.
- *   Plan-content changes invalidate approvals issued against the previous
- *   signature, while a replayed approval is accepted once and re-stamped. A
- *   journal-replayed approval
+ *   `process.cwd()`. A plan-reviewer APPROVE whose dispatch prompt names
+ *   exactly one existing plan file binds the approval to that plan (the
+ *   file name + its content key, journaled as `plan`/`planKey` on the
+ *   `plan` entry so journal replay restores the identity): a bound
+ *   approval goes stale only when THAT plan's content changes
+ *   (`plan-edited`) or the file disappears (`plan-missing`) — changes to
+ *   other plans do not invalidate it. Unbound approvals (human releases,
+ *   prompts naming no single plan, legacy replays) stamp the path-free
+ *   plans-dir signature (directory-independent): a same-content move to
+ *   another checkout survives, while any plans-dir change drops the
+ *   verdict loudly, journaling a replay-inert `STALE` entry
+ *   (`signature-mismatch`) rather than a silent mismatch. A replayed
+ *   unbound approval is accepted once and re-stamped; a replayed bound
+ *   approval is validated against the current files immediately. The block
+ *   and permission-ask preview name the resolved plan — the dispatch's
+ *   named plan, then the session's bound plan, then the first sorted plan.
+ *   A journal-replayed approval
  *   survives the first prompt after a restart (the resume prompt) and then
  *   every later prompt starts a clean cycle.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
@@ -170,7 +180,9 @@
  *   before the guard fires, so an in-flight child draws down the parent's
  *   budget; a still-unresolved child self-keys and journals a bounded signal.
  * - Decomposition: `task -> executor` dispatches must cite `chunk-N` / `AC-n`
- *   when a plan file with a `## Decomposition` block exists.
+ *   when the resolved plan — the dispatch's named plan, then the session's
+ *   bound plan, then the first sorted decomposed plan — carries a
+ *   `## Decomposition` block.
  * - Status: `turnstile status` (the `opencode-turnstile status` CLI) reads
  *   the journal read-only — it never writes — and reports gate + plan state
  *   per parent session: gate flags restored like replay, prompt-channel plan

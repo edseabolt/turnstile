@@ -48,6 +48,11 @@ export function newState(): GateState {
     reads: 0,
     seen: new Set(),
     plansSignature: "",
+    // Bound plan identity: "" = unbound until a plan-reviewer dispatch names a
+    // single existing plan file (see src/gates.ts). Restart-sticky, paired
+    // with hasPlanVerdict across replay and the grace-prompt carry.
+    approvedPlan: "",
+    approvedPlanKey: "",
     // A freshly-built bucket has no outstanding replay grace; only a journal
     // replay (createLedger) grants it, and only for one prompt.
     replayGrace: false,
@@ -74,7 +79,7 @@ export function formatGateSnapshot(s: GateState): string {
   return [
     "turnstile gate snapshot (live ledger; authoritative; do not re-derive):",
     `- gate: ${s.hasGatePass ? "GREEN" : "RED"} last=${s.lastGateMarker || "none"}${gateUnverified}`,
-    `- plan: ${s.hasPlanVerdict ? "APPROVED" : "PENDING"} stamp=${s.plansSignature ? "known" : "unknown"}`,
+    `- plan: ${s.hasPlanVerdict ? "APPROVED" : "PENDING"}${s.approvedPlan !== "" ? ` plan=${s.approvedPlan}` : ""} stamp=${s.plansSignature ? "known" : "unknown"}`,
     `- reviewer: ${s.hasReviewApprove ? "APPROVED" : "PENDING"} dispatches=${s.reviewerDispatches} last=${s.lastVerdictMarker || "none"}`,
     `- waiver: ${s.userWaiver ? "ACTIVE" : "none"} human: ${s.humanApproval ? "APPROVED" : "none"}`,
     `- rounds: planner=${s.plannerRounds} plan-reviewer=${s.planReviewerRounds} test-runner=${s.testRunnerRounds} reviewer=${s.reviewRounds} total=${s.totalDispatches}`,
@@ -86,10 +91,13 @@ export function formatGateSnapshot(s: GateState): string {
 /**
  * Builds the gate state for the first post-restart prompt (the grace prompt):
  * carries the replayed bucket's current flag _values_ forward — not provenance
- * — so a live `GATE: FAIL` after replay is never resurrected. All other fields
- * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reviewerDispatches`,
- * `reads`, `seen`, the empty `plansSignature` stamp) come fresh; the returned
- * bucket's `replayGrace` is consumed (false).
+ * — so a live `GATE: FAIL` after replay is never resurrected. The restart-
+ * sticky fields paired with `hasPlanVerdict` — the `plansSignature` stamp and
+ * the bound plan identity (`approvedPlan`/`approvedPlanKey`) — are carried
+ * only while `hasPlanVerdict` itself survives. All other fields
+ * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reads`, `seen`, the
+ * empty `plansSignature` stamp) come fresh; the returned bucket's
+ * `replayGrace` is consumed (false).
  * @param prior The replayed bucket being reset.
  * @returns A reset bucket with the prior flags; grace consumed.
  */
@@ -111,6 +119,10 @@ function mergeAfterReplay(prior: GateState): GateState {
   // prompt carries the carried-together count too.
   s.reviewerDispatches = prior.reviewerDispatches
   s.plansSignature = prior.hasPlanVerdict ? prior.plansSignature : ""
+  // Bound plan identity travels with hasPlanVerdict exactly like the dir
+  // signature: a wiped (or absent) verdict carries no identity.
+  s.approvedPlan = prior.hasPlanVerdict ? prior.approvedPlan : ""
+  s.approvedPlanKey = prior.hasPlanVerdict ? prior.approvedPlanKey : ""
   return s
 }
 
@@ -261,7 +273,13 @@ export interface GateLedger {
  * restored `hasPlanVerdict` is trusted for exactly the current plans-dir state
  * (no signature is journaled, so it stamps an empty ""), which the grace
  * prompt's executor dispatch accepts once and re-stamps via reconcilePlanStamp
- * — edits _after_ restart still invalidate the restored approval.
+ * — edits _after_ restart still invalidate the restored approval. A plan
+ * APPROVE entry may carry the bound identity fields `plan` (file name) and
+ * `planKey` (that file's content hash); when present they restore
+ * `approvedPlan`/`approvedPlanKey` (absent or non-string → unbound ""). A
+ * restored *bound* verdict is stricter than the unbound accept-once rule: it
+ * is validated against the current files immediately on the next enforcing
+ * dispatch (bound plan edited or removed → stale, no accept-once window).
  *
  * The reviewer-approval restore is refusal-suppressed: when the last counted
  * reviewer-ensemble entry for a session stamped `refusedApprove:true` (the
@@ -292,7 +310,10 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         fs.readFileSync(p, "utf8").split("\n").filter(Boolean),
       )
       const lastGateResult = new Map<string, string>()
-      const lastPlanResult = new Map<string, string>()
+      // The last flipping plan entry per session: the result plus the bound
+      // identity fields (plan/planKey) so a fielded APPROVE restores a bound
+      // approval and a field-less legacy line restores unbound.
+      const lastPlanResult = new Map<string, { result: string; plan: unknown; planKey: unknown }>()
       const lastReviewVerdict = new Map<string, string>()
       // The last ensemble entry per session. lastEnsemble is the restored
       // count; lastRefusedApprove records that entry's refusal state, which the
@@ -318,6 +339,8 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
             mode?: unknown
             count?: unknown
             refusedApprove?: unknown
+            plan?: unknown
+            planKey?: unknown
           }
           if (e.type === "gate" && e.sessionID && (e.result === "PASS" || e.result === "FAIL")) {
             // Flipping-entry rule (map-fill, not the restore loop): an
@@ -333,7 +356,11 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
             e.sessionID &&
             (e.result === "APPROVE" || e.result === "BLOCK")
           ) {
-            lastPlanResult.set(e.sessionID as string, e.result)
+            lastPlanResult.set(e.sessionID as string, {
+              result: e.result,
+              plan: e.plan,
+              planKey: e.planKey,
+            })
           }
           // Reviewer-APPROVE restore (landing gate): a `VERDICT:
           // APPROVE` verdict delivered on a task-result restores
@@ -385,11 +412,18 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         s.replayGrace = true
         states.set(sessionID, s)
       }
-      for (const [sessionID, result] of lastPlanResult) {
-        if (result !== "APPROVE") continue
+      for (const [sessionID, entry] of lastPlanResult) {
+        if (entry.result !== "APPROVE") continue
         const s = states.get(sessionID) ?? newState()
         s.hasPlanVerdict = true
         s.replayGrace = true
+        // Bound identity restores verbatim: a string field binds, anything
+        // absent or non-string degrades to unbound "" (legacy lines replay
+        // unchanged). A restored bound verdict is validated against the
+        // current plans dir immediately on the next enforcing dispatch —
+        // stricter than the unbound accept-once rule.
+        s.approvedPlan = typeof entry.plan === "string" ? entry.plan : ""
+        s.approvedPlanKey = typeof entry.planKey === "string" ? entry.planKey : ""
         states.set(sessionID, s)
       }
       for (const [sessionID, result] of lastReviewVerdict) {

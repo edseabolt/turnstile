@@ -10,13 +10,15 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 
 import { turnstile } from "../turnstile.ts"
-import { createGates } from "../src/gates.ts"
+import { createGates, type Gates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
-import { createLedger } from "../src/state.ts"
+import { createLedger, type GateLedger } from "../src/state.ts"
 import {
+  callPermission,
   callSession,
   callTool,
   isolatedEnv,
@@ -1388,6 +1390,629 @@ test("plan gate: a content change after a move invalidates loudly with STALE", a
       }) + "\n",
     )
     assert.equal(createLedger(replayJournal, 64).peek("p1"), undefined)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Boots a unit-level gates + ledger pair over a temp project whose plans dir
+ * holds the given `name → body` plan files, so the active-plan resolution,
+ * binding, and staleness helpers are exercisable without a host.
+ * @param planFiles The plan file names and bodies to seed.
+ * @returns The project root, the absolute plans dir, the gates, the ledger,
+ *     and the metrics dir (for journal assertions).
+ */
+function bootUnitPlans(planFiles: Record<string, string>): {
+  project: string
+  plansDir: string
+  gates: Gates
+  ledger: GateLedger
+  metricsDir: string
+} {
+  const project = tmpDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  for (const [name, body] of Object.entries(planFiles)) {
+    fs.writeFileSync(path.join(plansDir, name), body)
+  }
+  const metricsDir = tmpDir()
+  const journaler = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 5 * 1024 * 1024,
+    maxGenerations: 5,
+  })
+  const gates = createGates({ ...defaultConfig(process.env), metricsDir }, journaler)
+  const ledger = createLedger(path.join(metricsDir, "state.jsonl"), 64)
+  return { project, plansDir, gates, ledger, metricsDir }
+}
+
+/** The two-plan seed used by the multi-plan unit tests (both decomposed). */
+const DECOY_BODY = "# A\nalpha body\n## Decomposition\n\n- chunk-1\n"
+const WORK_BODY = "# Z\nzeta body\n## Decomposition\n\n- chunk-1\n"
+
+/**
+ * promptPlanNames extracts the basenames of the *.md tokens a prompt mentions
+ * (non-.md tokens ignored, a path yields its basename), and caps the result at
+ * the last five mentions; planApprovalBinding binds exactly one distinct
+ * existing candidate and fails open to undefined on zero, ambiguous, absent,
+ * or unreadable dirs (the last journaling the error).
+ */
+test("promptPlanNames and planApprovalBinding resolve the dispatch's plan candidates", () => {
+  const { project, plansDir, gates, metricsDir } = bootUnitPlans({
+    "a-decoy.md": DECOY_BODY,
+    "z-work.md": WORK_BODY,
+  })
+  // No .md token → none; a path yields its basename; non-.md tokens are inert.
+  assert.deepEqual(gates.promptPlanNames("nothing to see here"), [])
+  assert.deepEqual(
+    gates.promptPlanNames(
+      `review ${path.join(plansDir, "z-work.md")} then notes.md, skip plan.txt`,
+    ),
+    ["z-work.md", "notes.md"],
+  )
+  // A pathological prompt is capped at the last five mentions.
+  const many = Array.from({ length: 7 }, (_, i) => `plan-${i}.md`).join(" ")
+  assert.deepEqual(gates.promptPlanNames(many), [
+    "plan-2.md",
+    "plan-3.md",
+    "plan-4.md",
+    "plan-5.md",
+    "plan-6.md",
+  ])
+  // A unique existing candidate binds with that file's content key.
+  const bound = gates.planApprovalBinding(project, ["z-work.md"])
+  assert.equal(bound?.name, "z-work.md")
+  assert.match(bound?.key ?? "", /^[0-9a-f]{64}$/)
+  // Duplicate mentions of one plan are still unique.
+  assert.equal(gates.planApprovalBinding(project, ["z-work.md", "z-work.md"])?.name, "z-work.md")
+  // Zero existing candidates → unbound.
+  assert.equal(gates.planApprovalBinding(project, ["ghost.md"]), undefined)
+  // Two distinct existing candidates → ambiguous → unbound.
+  assert.equal(gates.planApprovalBinding(project, ["a-decoy.md", "z-work.md"]), undefined)
+  // Absent dir → unbound, no journal entry.
+  assert.equal(gates.planApprovalBinding(path.join(project, "elsewhere"), ["z-work.md"]), undefined)
+  assert.equal(journalEntries(metricsDir).length, 0)
+  // Unreadable dir → unbound + a journaled error (skipped as root).
+  if (process.getuid?.() === 0) return
+  fs.chmodSync(plansDir, 0o000)
+  try {
+    assert.equal(gates.planApprovalBinding(project, ["z-work.md"]), undefined)
+  } finally {
+    fs.chmodSync(plansDir, 0o755)
+  }
+  assert.ok(
+    journalEntries(metricsDir).some(
+      (e) => e.type === "error" && String(e.error).includes("plans dir unreadable"),
+    ),
+  )
+})
+
+/**
+ * The preview and the red plan-gate summary name the resolved active plan: an
+ * explicit name, else the prompt's unique existing mention, else the
+ * session's bound plan when it still exists, else the first sorted plan
+ * (byte-identical fallback). A prompt naming two plans is ambiguous and falls
+ * through to the session binding.
+ */
+test("plan preview names the bound or named plan, falling back to first sorted", () => {
+  const { project, plansDir, gates, ledger } = bootUnitPlans({
+    "a-decoy.md": "# A\nalpha body\n",
+    "z-work.md": "# Z\nzeta body\n",
+  })
+  // No binding, no prompt → the first sorted plan (the legacy preview).
+  assert.deepEqual(gates.planSummary(project), { file: "a-decoy.md", head: "alpha body" })
+  const unbound = gates.planGateStatus(project, ledger, "p-unbound")
+  assert.equal(unbound.red, true)
+  assert.equal(unbound.summary?.file, "a-decoy.md")
+  // An explicit active name previews that plan.
+  assert.deepEqual(gates.planSummary(project, "z-work.md"), {
+    file: "z-work.md",
+    head: "zeta body",
+  })
+  // A session bound to z-work.md previews it even though a-decoy.md sorts first.
+  ledger.state("p-bound").approvedPlan = "z-work.md"
+  const bound = gates.planGateStatus(project, ledger, "p-bound")
+  assert.equal(bound.red, true)
+  assert.equal(bound.summary?.file, "z-work.md")
+  // A prompt naming one existing plan beats the session binding.
+  ledger.state("p-named").approvedPlan = "a-decoy.md"
+  const named = gates.planGateStatus(
+    project,
+    ledger,
+    "p-named",
+    `implement ${path.join(plansDir, "z-work.md")}`,
+  )
+  assert.equal(named.red, true)
+  assert.equal(named.summary?.file, "z-work.md")
+  // A prompt naming two existing plans is ambiguous → the session binding.
+  const ambiguous = gates.planGateStatus(
+    project,
+    ledger,
+    "p-named",
+    "compare a-decoy.md with z-work.md",
+  )
+  assert.equal(ambiguous.red, true)
+  assert.equal(ambiguous.summary?.file, "a-decoy.md")
+  // A bound plan that is missing from the dir resolves nothing → first sorted.
+  ledger.state("p-ghost").approvedPlan = "ghost.md"
+  const ghost = gates.planGateStatus(project, ledger, "p-ghost")
+  assert.equal(ghost.red, true)
+  assert.equal(ghost.summary?.file, "a-decoy.md")
+})
+
+/**
+ * A bound approval is checked per plan: adding or editing OTHER plans keeps
+ * it green (no STALE), editing the bound plan goes stale (plan-edited, and
+ * the red preview still names it), removing it goes stale (plan-missing), and
+ * a still-matching bound plan re-stamps idempotently. A bound name with an
+ * empty key keeps the dir-signature rule verbatim.
+ */
+test("bound approval staleness is per-plan (plan-edited / plan-missing)", () => {
+  const { project, plansDir, gates, ledger, metricsDir } = bootUnitPlans({
+    "a-decoy.md": "# A\n",
+    "z-work.md": "# Z\n",
+  })
+  const keyOf = (name: string): string => gates.planApprovalBinding(project, [name])!.key
+  const workPath = path.join(plansDir, "z-work.md")
+  const decoyPath = path.join(plansDir, "a-decoy.md")
+  const staleCount = (): number =>
+    journalEntries(metricsDir).filter((l) => l.result === "STALE").length
+  // Changes to the other plan (and a new plan) keep the bound approval green.
+  const s1 = ledger.state("b1")
+  s1.hasPlanVerdict = true
+  s1.approvedPlan = "z-work.md"
+  s1.approvedPlanKey = keyOf("z-work.md")
+  s1.plansSignature = gates.plansSignature(project) ?? ""
+  fs.appendFileSync(decoyPath, "decoy edit\n")
+  fs.writeFileSync(path.join(plansDir, "m-extra.md"), "# M\n")
+  const g1 = gates.planGateStatus(project, ledger, "b1")
+  assert.equal(g1.red, false)
+  assert.equal(staleCount(), 0)
+  // Editing the bound plan goes stale (plan-edited); the red preview names it.
+  fs.appendFileSync(workPath, "edit\n")
+  const g2 = gates.planGateStatus(project, ledger, "b1")
+  assert.equal(g2.red, true)
+  assert.equal(g2.summary?.file, "z-work.md")
+  assert.equal(staleCount(), 1)
+  assert.equal(
+    journalEntries(metricsDir).filter((l) => l.result === "STALE")[0]!.reason,
+    "plan-edited",
+  )
+  // Removing the bound plan goes stale (plan-missing).
+  const s3 = ledger.state("b3")
+  s3.hasPlanVerdict = true
+  s3.approvedPlan = "z-work.md"
+  s3.approvedPlanKey = keyOf("z-work.md")
+  fs.rmSync(workPath)
+  const g3 = gates.planGateStatus(project, ledger, "b3")
+  assert.equal(g3.red, true)
+  assert.equal(staleCount(), 2)
+  assert.equal(
+    journalEntries(metricsDir).filter((l) => l.result === "STALE")[1]!.reason,
+    "plan-missing",
+  )
+  // A still-matching bound plan re-stamps idempotently (green, no STALE).
+  fs.writeFileSync(workPath, "# Z restored\n")
+  const s4 = ledger.state("b4")
+  s4.hasPlanVerdict = true
+  s4.approvedPlan = "z-work.md"
+  s4.approvedPlanKey = keyOf("z-work.md")
+  const g4 = gates.planGateStatus(project, ledger, "b4")
+  assert.equal(g4.red, false)
+  assert.equal(s4.plansSignature, gates.plansSignature(project))
+  assert.equal(staleCount(), 2)
+  // A bound name with an empty key keeps the dir-signature rule verbatim.
+  const s5 = ledger.state("b5")
+  s5.hasPlanVerdict = true
+  s5.approvedPlan = "z-work.md"
+  s5.approvedPlanKey = ""
+  s5.plansSignature = gates.plansSignature(project) ?? ""
+  fs.writeFileSync(workPath, "# Z v2\n")
+  const g5 = gates.planGateStatus(project, ledger, "b5")
+  assert.equal(g5.red, true)
+  assert.equal(staleCount(), 3)
+  assert.equal(
+    journalEntries(metricsDir).filter((l) => l.result === "STALE")[2]!.reason,
+    "signature-mismatch",
+  )
+})
+
+/**
+ * With a ledger, enforceDecomposition enforces the resolved plan: the session
+ * bound plan or the prompt-named plan carries its own decomposition
+ * requirement (a bound non-decomposed plan allows the dispatch even when
+ * another decomposed plan sorts first); without a ledger the legacy
+ * first-sorted decomposed rule applies, and a chunk citation always passes.
+ */
+test("enforceDecomposition enforces the resolved plan when a ledger is given", () => {
+  const { project, plansDir, gates, ledger } = bootUnitPlans({
+    "a-decoy.md": DECOY_BODY,
+    "z-work.md": WORK_BODY,
+  })
+  // Session bound to z-work.md: the block names z-work.md, not a-decoy.md.
+  ledger.state("d1").approvedPlan = "z-work.md"
+  assert.throws(
+    () => gates.enforceDecomposition("d1", "do the work", project, ledger),
+    /plan "z-work\.md" has a ## Decomposition block/,
+  )
+  // A prompt naming a-decoy.md beats the session binding.
+  assert.throws(
+    () => gates.enforceDecomposition("d1", "work on a-decoy.md now", project, ledger),
+    /plan "a-decoy\.md" has a ## Decomposition block/,
+  )
+  // A bound plan without a decomposition allows the dispatch (the decoy's
+  // decomposition no longer binds this session).
+  fs.writeFileSync(path.join(plansDir, "z-work.md"), "# Z\nno decomposition here\n")
+  gates.enforceDecomposition("d1", "do the work", project, ledger)
+  // A chunk citation passes regardless of the resolved plan.
+  gates.enforceDecomposition("d1", "do the work in chunk-1", project, ledger)
+  // Without a ledger: the legacy first-sorted decomposed rule.
+  assert.throws(
+    () => gates.enforceDecomposition("d2", "do the work", project),
+    /plan "a-decoy\.md" has a ## Decomposition block/,
+  )
+})
+
+/**
+ * Boots in a temp project dir containing the given `name → body` plan files
+ * (multi-plan variant of bootWithPlan).
+ * @param plans The plan file names and bodies to seed.
+ * @param config Override config spread over the per-test metrics directory.
+ * @returns The fake host, the dispose callback, the metrics directory, the
+ *     project root, and a `restore` that disposes and returns the cwd.
+ */
+async function bootWithPlans(
+  plans: Record<string, string>,
+  config: Record<string, any> = {},
+): Promise<{
+  h: FakeHost
+  dispose: () => void
+  metricsDir: string
+  project: string
+  restore: () => void
+}> {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  for (const [name, body] of Object.entries(plans)) {
+    fs.writeFileSync(path.join(project, ".opencode", "plans", name), body)
+  }
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, ...config },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  return {
+    h,
+    dispose,
+    metricsDir,
+    project,
+    restore: (): void => {
+      dispose()
+      process.chdir(prev)
+    },
+  }
+}
+
+/**
+ * Runs one plan-review round: dispatches the plan-reviewer (so the dispatch
+ * prompt is the approval's binding candidates) and delivers the verdict on a
+ * fresh edge-registered child.
+ * @param h The fake host.
+ * @param parent The parent session ID the approval attributes to.
+ * @param child The child session ID the verdict is delivered on.
+ * @param prompt The dispatch prompt (plan mentions become binding candidates).
+ * @param verdict The verdict marker line to deliver.
+ */
+async function reviewRound(
+  h: FakeHost,
+  parent: string,
+  child: string,
+  prompt: string,
+  verdict: string,
+): Promise<void> {
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: parent,
+    input: { agent: "plan-reviewer", prompt },
+  })
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: child, parentID: parent, agent: "plan-reviewer" },
+  })
+  await settle()
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID: child,
+    input: { agent: "plan-reviewer" },
+    result: { output: `${verdict}\n` },
+  })
+}
+
+/** Fires an executor dispatch on `parent` with the given prompt. */
+async function execDispatch(h: FakeHost, parent: string, prompt: string): Promise<void> {
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: parent,
+    input: { agent: "executor", prompt },
+  })
+}
+
+/**
+ * With two decomposed plans (a-decoy.md sorts first), a dispatch bound to
+ * z-work.md enforces against z-work.md: a named dispatch without a chunk cite
+ * is blocked naming z-work.md, the same dispatch with a chunk cite passes, an
+ * unnamed dispatch enforces the session binding (never the first sorted
+ * plan), and a dispatch naming the decoy is blocked naming the decoy.
+ */
+test("multi-plan: executor dispatch enforces the named or bound plan, never the first sorted", async () => {
+  const { h, restore, project } = await bootWithPlans({
+    "a-decoy.md": DECOY_BODY,
+    "z-work.md": WORK_BODY,
+  })
+  try {
+    const plansDir = path.join(project, ".opencode", "plans")
+    await reviewRound(h, "p1", "c1", `review ${path.join(plansDir, "z-work.md")}`, APPROVE)
+    // Named dispatch without a chunk cite → blocked naming z-work.md.
+    await assert.rejects(
+      () => execDispatch(h, "p1", `implement ${path.join(plansDir, "z-work.md")}`),
+      /plan "z-work\.md" has a ## Decomposition block/,
+    )
+    // The same dispatch with a chunk cite passes.
+    await execDispatch(h, "p1", `implement ${path.join(plansDir, "z-work.md")} chunk-1`)
+    // Unnamed dispatch → the session binding, never the first sorted plan.
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      (e: Error) =>
+        e.message ===
+        'BLOCKED by turnstile: plan "z-work.md" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.',
+    )
+    // A dispatch naming the decoy → blocked naming a-decoy.md.
+    await assert.rejects(
+      () => execDispatch(h, "p1", "work on a-decoy.md"),
+      /plan "a-decoy\.md" has a ## Decomposition block/,
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A bound approval on z-work.md survives changes to OTHER plans (add, edit,
+ * delete — no STALE journaled, dispatch stays green), but the bound plan's
+ * own edit goes stale (plan-edited) and its rename goes stale (plan-missing),
+ * each blocking the next dispatch.
+ */
+test("multi-plan: other-plan changes never invalidate a bound approval; the bound plan's own edit or rename does", async () => {
+  const { h, restore, project, metricsDir } = await bootWithPlans({
+    "a-decoy.md": "# A\n## Decomposition\n\n- chunk-1\n",
+    "z-work.md": "# Z\nplain plan body\n",
+  })
+  try {
+    const plansDir = path.join(project, ".opencode", "plans")
+    const workPath = path.join(plansDir, "z-work.md")
+    const decoyPath = path.join(plansDir, "a-decoy.md")
+    await reviewRound(h, "p1", "c1", `review ${workPath}`, APPROVE)
+    // Baseline: the dispatch is allowed (the bound plan is non-decomposed).
+    await execDispatch(h, "p1", "do the work")
+    // Add a plan, edit the decoy, delete the decoy → stays allowed, no STALE.
+    fs.writeFileSync(path.join(plansDir, "m-extra.md"), "# M\n")
+    fs.appendFileSync(decoyPath, "decoy edit\n")
+    fs.rmSync(decoyPath)
+    await execDispatch(h, "p1", "do the work")
+    assert.equal(journalEntries(metricsDir).filter((l) => l.result === "STALE").length, 0)
+    // Edit the bound plan → the next dispatch blocks + journals plan-edited.
+    fs.appendFileSync(workPath, "edit\n")
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      /no plan approval for "z-work\.md"/,
+    )
+    let stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
+    assert.equal(stale.length, 1)
+    assert.equal(stale[0]!.reason, "plan-edited")
+    // Re-approve (a new round naming z-work.md), then rename the plan → the
+    // next dispatch journals plan-missing.
+    await reviewRound(h, "p1", "c2", `review ${workPath}`, APPROVE)
+    fs.renameSync(workPath, path.join(plansDir, "z-renamed.md"))
+    await assert.rejects(() => execDispatch(h, "p1", "do the work"), /no plan approval for/)
+    stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
+    assert.equal(stale.length, 2)
+    assert.equal(stale[1]!.reason, "plan-missing")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A later review round whose dispatch names a-decoy.md re-binds the session:
+ * the z-work.md approval is gone, so the same unnamed dispatch that was
+ * blocked on z-work.md's decomposition is now allowed (a-decoy.md is the
+ * non-decomposed bound plan), and the two journaled APPROVE entries carry the
+ * distinct plan identities.
+ */
+test("multi-plan: a later review round naming another plan rebinds the session", async () => {
+  const { h, restore, project, metricsDir } = await bootWithPlans({
+    "a-decoy.md": "# A\nplain decoy body\n",
+    "z-work.md": "# Z\n## Decomposition\n\n- chunk-1\n",
+  })
+  try {
+    const plansDir = path.join(project, ".opencode", "plans")
+    // Round 1: bound to z-work.md → the unnamed dispatch blocks on it.
+    await reviewRound(h, "p1", "c1", `review ${path.join(plansDir, "z-work.md")}`, APPROVE)
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      /plan "z-work\.md" has a ## Decomposition block/,
+    )
+    // Round 2: a re-review naming a-decoy.md re-binds the session → the same
+    // dispatch is now allowed.
+    await reviewRound(h, "p1", "c2", `review ${path.join(plansDir, "a-decoy.md")}`, APPROVE)
+    await execDispatch(h, "p1", "do the work")
+    // The journal shows the rebind: the APPROVE entries carry distinct plans.
+    const plans = journalEntries(metricsDir)
+      .filter((l) => l.type === "plan" && l.result === "APPROVE")
+      .map((l) => l.plan)
+    assert.ok(plans.includes("z-work.md"), "the first approval bound z-work.md")
+    assert.ok(plans.includes("a-decoy.md"), "the later approval re-bound a-decoy.md")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A red plan gate with a bound-but-edited plan escalates to a human ask that
+ * names the session's plan (z-work.md), not the alphabetically-first plan.
+ */
+test("multi-plan: the plan-gate ask names the session's bound plan, not the first sorted", async () => {
+  const { h, restore, project, metricsDir } = await bootWithPlans({
+    "a-decoy.md": "# A\ndecoy body line.\n",
+    "z-work.md": "# Z\nwork body line.\n",
+  })
+  try {
+    const workPath = path.join(project, ".opencode", "plans", "z-work.md")
+    await reviewRound(h, "p1", "c1", `review ${workPath}`, APPROVE)
+    // Edit the bound plan: the approval goes stale and the gate is red.
+    fs.appendFileSync(workPath, "edit\n")
+    const event: Record<string, any> = { sessionID: "p1", action: "task" }
+    await callPermission(h, "evaluate", event)
+    // The ask names z-work.md and its body, never a-decoy.md.
+    assert.equal(event.effect, "ask")
+    assert.match(event.message, /^turnstile: plan approval required — z-work\.md: work body line\./)
+    assert.doesNotMatch(event.message, /a-decoy\.md/)
+    const ask = journalEntries(metricsDir).find(
+      (l) => l.type === "permission" && l.action === "ask",
+    )
+    assert.equal(ask?.plan, "z-work.md")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A fielded plan APPROVE in the journal restores the bound identity across a
+ * restart: the first executor dispatch naming z-work.md without a chunk cite
+ * is blocked naming z-work.md. A field-less (legacy) APPROVE restores
+ * unbound: the dir-signature rule applies, so adding a plan invalidates the
+ * accepted-once approval.
+ */
+test("multi-plan: journal replay restores the bound identity; a legacy line restores unbound", async () => {
+  // Fielded APPROVE: the bound identity is honored across the restart.
+  const project = tmpDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  fs.writeFileSync(path.join(plansDir, "a-decoy.md"), "# A\nplain\n")
+  const workPath = path.join(plansDir, "z-work.md")
+  fs.writeFileSync(workPath, "# Z\n## Decomposition\n\n- chunk-1\n")
+  const planKey = createHash("sha256").update(fs.readFileSync(workPath)).digest("hex")
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      plan: "z-work.md",
+      planKey,
+    }) + "\n",
+  )
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await assert.rejects(
+      () => execDispatch(h, "p1", `implement ${workPath}`),
+      /plan "z-work\.md" has a ## Decomposition block/,
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+  // Legacy field-less APPROVE: unbound, so the dir-signature rule applies.
+  const project2 = tmpDir()
+  const plansDir2 = path.join(project2, ".opencode", "plans")
+  fs.mkdirSync(plansDir2, { recursive: true })
+  fs.writeFileSync(path.join(plansDir2, "z-work.md"), "# Z\nplain\n")
+  const metricsDir2 = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir2, "turnstile.jsonl"),
+    JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE" }) + "\n",
+  )
+  const h2 = makeFakeHost()
+  process.chdir(project2)
+  try {
+    const setup2 = turnstile(h2.host, {
+      env: isolatedEnv(metricsDir2),
+      config: { metricsDir: metricsDir2 },
+    })
+    const dispose2 = (await setup2(h2.host)) as () => void
+    // The replayed unbound approval is accepted once and stamped…
+    await execDispatch(h2, "p1", "do the work")
+    // …and adding a plan (the dir signature changes) invalidates it.
+    fs.writeFileSync(path.join(plansDir2, "m-extra.md"), "# M\n")
+    await assert.rejects(() => execDispatch(h2, "p1", "do the work"), /no plan approval for/)
+    dispose2()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * A self-keyed APPROVE delivery (the parent's own session id, marker-less
+ * output) attributes through the round's edge child and binds the plan
+ * identity from the round's dispatch prompt: the journaled plan entry carries
+ * the plan name + content key, and the session's enforcement follows the
+ * bound plan.
+ */
+test("multi-plan: a self-keyed round APPROVE binds the plan identity from the dispatch prompt", async () => {
+  const { h, restore, project, metricsDir } = await bootWithPlans({
+    "a-decoy.md": "# A\nplain decoy body\n",
+    "z-work.md": "# Z\n## Decomposition\n\n- chunk-1\n",
+  })
+  try {
+    const plansDir = path.join(project, ".opencode", "plans")
+    // The round's dispatch names z-work.md (the binding candidates).
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer", prompt: `review ${path.join(plansDir, "z-work.md")}` },
+    })
+    // The edge child streams the APPROVE; the self-keyed delivery (the
+    // parent's own session id, marker-less output) attributes through it.
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "plan-reviewer" },
+    })
+    await settle()
+    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
+    )
+    await settle()
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "plan-reviewer" },
+      result: { output: "Task finished." },
+    })
+    // The journaled plan entry carries the bound identity.
+    const entry = journalEntries(metricsDir).find(
+      (l) => l.type === "plan" && l.result === "APPROVE" && l.raw === "c1",
+    )
+    assert.ok(entry, "the self-keyed delivery journaled an APPROVE for the edge child")
+    assert.equal(entry?.plan, "z-work.md")
+    assert.match(String(entry?.planKey ?? ""), /^[0-9a-f]{64}$/)
+    // The session is bound: the unnamed dispatch enforces z-work.md.
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      /plan "z-work\.md" has a ## Decomposition block/,
+    )
   } finally {
     restore()
   }

@@ -412,9 +412,26 @@ export interface GateState {
   /**
    * Plans-dir signature the approval was issued against; "" means
    * unknown (journal-replayed or pre-stamp) and is accepted once, then
-   * stamped, on the next enforcing dispatch.
+   * stamped, on the next enforcing dispatch. Governs unbound approvals only.
    */
   plansSignature: string
+  /**
+   * Name of the plan file this task's plan approval is bound to; "" = unbound
+   * (human release, legacy journal replay, or an approval whose dispatch
+   * prompt named no single existing plan file). Restart-sticky and paired with
+   * `hasPlanVerdict`: restored by journal replay (a `plan` entry's optional
+   * `plan` field) and carried one prompt via `mergeAfterReplay`; fresh "" on
+   * an ordinary prompt reset.
+   */
+  approvedPlan: string
+  /**
+   * sha256 hex of the bound plan file's bytes at approval time; "" = unknown.
+   * A bound approval is stale when the bound plan's current file hash differs
+   * (`plan-edited`) or the file no longer exists (`plan-missing`); changes to
+   * other plans-dir files do not invalidate it. Paired with `approvedPlan`
+   * across replay and the grace-prompt carry.
+   */
+  approvedPlanKey: string
   /**
    * True while a journal-replayed bucket's unconsumed one-prompt grace is
    * outstanding: the next reset carries hasGatePass/hasPlanVerdict forward
