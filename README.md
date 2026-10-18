@@ -205,7 +205,7 @@ the CLI install.
 
 1. **Zero-config enforcement (plugin only).** Add the package to your
    OpenCode config's plugin array and restart. turnstile loads and enforces
-   its gates, injecting the orchestrator policy into the primary session at
+   its gates, injecting the orchestrator policy into the parent session at
    runtime (see
    [Policy injection](docs/architecture.md#9-policy-injection)) — nothing is
    written to any instructions file, and the pipeline agent definitions are

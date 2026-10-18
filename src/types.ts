@@ -41,8 +41,10 @@ export interface ToolHookEvent {
    * Dispatched subagent/agent name, observed on v2.0.27
    * execute.before/after payloads. The host contract does not type this
    * field, hence `unknown`; `src/setup.ts` reads it (against the configured
-   * agent-name set) to skip injecting orchestrator policy into child
-   * sessions.
+   * agent-name set) as a conservative exclusion fallback for orchestrator
+   * policy injection: it applies only when the child→parent edge is
+   * unresolvable, to avoid injecting into an unregistered child's own text;
+   * every such skip is journaled (`skipped:true`, `reason:"agent-name"`).
    */
   agent?: unknown
   sessionID?: unknown

@@ -1,13 +1,17 @@
 /**
  * @fileoverview Orchestrator-policy injection tests: the
- * `tool.execute.after` handler prepends `ORCHESTRATOR_POLICY` to the model-
- * facing output text of the first per-parent per-task result delivery, once,
- * for the primary session only. Cases: exact-once prepend + repeat no-op +
- * journal (`injected:true`); child/subagent and ordinary-tool exclusions;
- * per-task reset re-injection; fail-open on a prepend that throws
- * (`injected:false`); silent skip on a missing/odd result; a marker-example
- * audit of the injected policy (placeholders never parse, substituted
- * templates do); and the config `planner` default.
+ * `tool.execute.after` handler attributes each `task`/`subagent` result
+ * delivery through the child→parent edge (`childToParent`) and prepends
+ * `ORCHESTRATOR_POLICY` to the delivery's parent-side output once per task.
+ * Cases: exact-once prepend + repeat no-op + journal (`injected:true`);
+ * ordinary-tool exclusion and the journaled conservative skip (config-known
+ * name with no resolvable edge); per-task reset re-injection; fail-open on a
+ * prepend that throws (`injected:false`); silent skip on a missing/odd
+ * result; a marker-example audit of the injected policy (placeholders never
+ * parse, substituted templates do); the subagent-tool shape injecting on a
+ * registered edge; the task shape with `event.agent` set; once-per-parent
+ * keying across sibling children; and late-edge resolution via
+ * `session.get`, with the unresolvable fallback journaled.
  */
 
 import { test } from "node:test"
@@ -24,6 +28,7 @@ import {
   journalEntries,
   makeFakeHost,
   tmpDir,
+  waitUntil,
   type FakeHost,
 } from "./helpers.ts"
 
@@ -39,15 +44,37 @@ const SUBAGENT_NAMES = [
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(
   config: Record<string, any> = {},
+  sessionRecords?: Map<string, any>,
 ): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string }> {
   const metricsDir = tmpDir()
-  const h = makeFakeHost()
+  const h = makeFakeHost({ sessionRecords })
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
     config: { metricsDir, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }
+}
+
+/**
+ * Pushes a `session.created` edge event, then a warmup error event that
+ * confirms (FIFO stream order) the created event was already processed.
+ * @param h The fake host.
+ * @param child The child session ID.
+ * @param parent The parent session ID.
+ * @param metricsDir The metrics dir to poll for the warmup signal.
+ */
+async function resolveEdgeViaCreated(
+  h: FakeHost,
+  child: string,
+  parent: string,
+  metricsDir: string,
+): Promise<void> {
+  h.pushEvent({ type: "session.created", data: { sessionID: child, parentID: parent } })
+  h.pushEvent({ type: "session.error", data: { sessionID: child, error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
 }
 
 /** How many times the policy block appears in a (possibly prepended) string. */
@@ -82,7 +109,9 @@ test("injection: parent task result prepended once; repeat adds nothing; journal
   }
 })
 
-/** 2. Child/subagent results and ordinary-tool results are untouched. */
+/** 2. Ordinary tools journal nothing; a config-known name with no
+ *  resolvable edge journals the conservative skip; a config-unknown name
+ *  still injects (the documented self-keyed residual). */
 test("injection: ordinary tools and config-named subagents are excluded", async () => {
   const { h, dispose, metricsDir } = await boot()
   try {
@@ -98,7 +127,9 @@ test("injection: ordinary tools and config-named subagents are excluded", async 
         )
       }
     }
-    // task/subagent dispatched under a config-known subagent name: skipped.
+    // task/subagent dispatched under a config-known subagent name with no
+    // resolvable edge: skipped, and the skip is journaled so the decision
+    // is observable.
     for (const name of SUBAGENT_NAMES) {
       const event = {
         tool: "task",
@@ -113,9 +144,10 @@ test("injection: ordinary tools and config-named subagents are excluded", async 
         `task under ${name} untouched`,
       )
     }
-    // And a subagent dispatched under a name NOT in config still receives the
-    // policy (documented under-exclusion); here the guard relies on tool name
-    // + the absence of a known subagent name on the primary.
+    // And a subagent dispatched under a name NOT in config with no edge still
+    // receives the policy: on a host without a session API there is no way
+    // to tell a parent-facing delivery from a child-own one, so the
+    // self-keyed injection is the documented, accepted residual.
     const untracked = {
       tool: "task",
       sessionID: "p-untracked",
@@ -128,8 +160,21 @@ test("injection: ordinary tools and config-named subagents are excluded", async 
       "a config-unknown subagent name is treated as primary-session prose",
     )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
-    assert.equal(policies.length, 1, "only the untracked delivery injected")
-    assert.equal(policies[0]!.injected, true)
+    const skips = policies.filter((p) => String(p.sessionID).startsWith("sub-"))
+    assert.equal(skips.length, SUBAGENT_NAMES.length, "every config-known skip is journaled")
+    for (const s of skips) {
+      assert.equal(s.injected, false, "the skip reports injected:false")
+      assert.equal(s.skipped, true, "the skip is flagged skipped:true")
+      assert.equal(s.reason, "agent-name", "the skip names the reason")
+    }
+    assert.equal(
+      policies.filter((p) => String(p.sessionID).startsWith("t-")).length,
+      0,
+      "ordinary tools journal no policy entries",
+    )
+    const injected = policies.filter((p) => p.injected === true)
+    assert.equal(injected.length, 1, "only the untracked delivery injected")
+    assert.equal(injected[0]!.sessionID, "p-untracked")
   } finally {
     dispose()
   }
@@ -219,4 +264,161 @@ test("injection: ORCHESTRATOR_POLICY templates parse only after <n>-substitution
   // session text (the parse path uses the canonical regexes directly).
   const echoed = parseGateMarkers(newState(), ORCHESTRATOR_POLICY, GATE_RE, VERDICT_RE)
   assert.equal(echoed.length, 0, "the raw placeholder text never parses into a marker")
+})
+
+/** 7. The subagent-tool shape (child-keyed, event.agent set) injects on a
+ *  registered edge and journals under the resolved parent — the
+ *  name heuristic no longer excludes edge-resolved deliveries. */
+test("injection: subagent-tool delivery with a registered edge injects, journaled under the parent", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
+    const event = {
+      tool: "subagent",
+      sessionID: "c1",
+      agent: "reviewer",
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\nbody" },
+    }
+    await callTool(h, "execute.after", event)
+    const out = String(event.result.output)
+    assert.ok(out.startsWith(ORCHESTRATOR_POLICY), "the parent-facing delivery is policy-prefixed")
+    assert.equal(countPolicy(out), 1, "the policy appears exactly once")
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1, "exactly one policy journal entry")
+    assert.equal(policies[0]!.injected, true, "the entry reports injected:true")
+    assert.equal(policies[0]!.sessionID, "p1", "the entry is keyed under the resolved parent")
+  } finally {
+    dispose()
+  }
+})
+
+/** 8. The task-tool shape with event.agent set injects once; a repeat
+ *  delivery within the same task is silent (once-flag). */
+test("injection: task-tool delivery with event.agent set injects once; repeat is silent", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
+    const event = {
+      tool: "task",
+      sessionID: "c1",
+      agent: "planner",
+      result: { output: "plan body" },
+    }
+    await callTool(h, "execute.after", event)
+    assert.ok(
+      String(event.result.output).startsWith(ORCHESTRATOR_POLICY),
+      "prepended on first delivery",
+    )
+    await callTool(h, "execute.after", event)
+    assert.equal(countPolicy(String(event.result.output)), 1, "a second call prepends nothing")
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1, "one policy journal entry")
+    assert.equal(policies[0]!.injected, true)
+    assert.equal(policies[0]!.sessionID, "p1")
+  } finally {
+    dispose()
+  }
+})
+
+/** 9. The once-flag keys on the resolved parent: a sibling child's delivery
+ *  in the same task is not re-prepended, and a fresh parent prompt re-arms
+ *  both children's deliveries. */
+test("injection: the once-flag keys on the resolved parent across sibling children", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
+    const first = {
+      tool: "subagent",
+      sessionID: "c1",
+      agent: "reviewer",
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0" },
+    }
+    await callTool(h, "execute.after", first)
+    assert.ok(
+      String(first.result.output).startsWith(ORCHESTRATOR_POLICY),
+      "the first child's delivery is prepended",
+    )
+    await resolveEdgeViaCreated(h, "c2", "p1", metricsDir)
+    const second = {
+      tool: "subagent",
+      sessionID: "c2",
+      agent: "reviewer",
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0" },
+    }
+    await callTool(h, "execute.after", second)
+    assert.equal(
+      countPolicy(String(second.result.output)),
+      0,
+      "the sibling child's delivery is not prepended (parent flag set)",
+    )
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1, "still exactly one policy entry")
+    assert.equal(policies[0]!.sessionID, "p1")
+    // A new user prompt on the parent resets the task state and re-arms
+    // every child's delivery for the next task.
+    await callSession(h, "prompt", { sessionID: "p1" })
+    const third = {
+      tool: "subagent",
+      sessionID: "c2",
+      agent: "reviewer",
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0" },
+    }
+    await callTool(h, "execute.after", third)
+    assert.ok(
+      String(third.result.output).startsWith(ORCHESTRATOR_POLICY),
+      "re-armed after the parent's prompt reset",
+    )
+    const policies2 = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies2.length, 2, "one entry per task")
+    assert.equal(policies2[1]!.sessionID, "p1")
+  } finally {
+    dispose()
+  }
+})
+
+/** 10. Late-edge resolution: with no session.created event the
+ *  session.get record still resolves the edge and the delivery injects;
+ *  the same shape with no host record at all falls to the journaled
+ *  conservative skip. */
+test("injection: a late session.get edge injects; an unresolvable known name journals the skip", async () => {
+  const records = new Map([["c9", { parentID: "p1", agent: "reviewer" }]])
+  const { h, dispose, metricsDir } = await boot({}, records)
+  try {
+    const event = {
+      tool: "subagent",
+      sessionID: "c9",
+      agent: "reviewer",
+      result: { output: "late-edge body" },
+    }
+    await callTool(h, "execute.after", event)
+    assert.ok(
+      String(event.result.output).startsWith(ORCHESTRATOR_POLICY),
+      "injected once the session.get edge resolves",
+    )
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1)
+    assert.equal(policies[0]!.injected, true)
+    assert.equal(policies[0]!.sessionID, "p1")
+  } finally {
+    dispose()
+  }
+  const plain = await boot()
+  try {
+    const event = {
+      tool: "subagent",
+      sessionID: "cX",
+      agent: "reviewer",
+      result: { output: "body" },
+    }
+    await callTool(plain.h, "execute.after", event)
+    assert.equal(String(event.result.output), "body", "not injected without a resolvable edge")
+    const policies = journalEntries(plain.metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1, "the fallback skip is journaled")
+    assert.equal(policies[0]!.injected, false)
+    assert.equal(policies[0]!.skipped, true)
+    assert.equal(policies[0]!.reason, "agent-name")
+    assert.equal(policies[0]!.sessionID, "cX")
+  } finally {
+    plain.dispose()
+  }
 })

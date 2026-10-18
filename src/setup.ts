@@ -315,6 +315,16 @@ export function createTurnstile(
   // delivery, so a re-run emitting a byte-identical marker is still
   // journaled; streaming sources share the empty scope (re-delivery dedup).
   let taskDeliverySeq = 0
+  // Dispatchable agent names, the conservative-exclusion fallback for
+  // orchestrator-policy injection: a delivery carrying one of these names
+  // with an UNRESOLVABLE child→parent edge is skipped (and journaled)
+  // rather than injected self-keyed. Same config.agents keys the dispatch
+  // guards read, so a renamed agent is excluded by name exactly as before.
+  const subagentNames = new Set(
+    (["reviewer", "planReviewer", "executor", "testRunner", "debugger", "planner"] as const).map(
+      (name) => config.agents[name],
+    ),
+  )
 
   // Host session API, bound at setup time (hooks already fire post-setup).
   // Kept in factory scope so the shared `resolveParent` helper can call it
@@ -943,6 +953,101 @@ export function createTurnstile(
         reason: failedLookups.get(c)?.reason ?? "resolved-or-never-tried",
       }
     return out
+  }
+
+  /**
+   * Journals a policy-injection outcome for a session: `{ type: "policy",
+   * sessionID, injected }` plus any extra fields. One source for the shared
+   * entry shape so the skip/success/failure call sites stay under the
+   * function-size ceiling instead of repeating the literals inline.
+   * @param sessionID The session the entry names: the child on a name-skip,
+   *     the resolved parent on success or failure.
+   * @param injected Whether the policy landed (`true`) or was rejected
+   *     (`false`).
+   * @param extra Additional entry fields, or an empty object when none.
+   */
+  function journalPolicy(
+    sessionID: string,
+    injected: boolean,
+    extra: Record<string, unknown> = {},
+  ): void {
+    journaler.journal({ type: "policy", sessionID, injected, ...extra })
+  }
+
+  /**
+   * Whether the conservative `event.agent` name guard must skip injection:
+   * only when the child→parent edge is unresolvable AND the delivery carries
+   * a config-known subagent name. The registered-edge case returns first (it
+   * always injects), so the name guard never contradicts a resolved edge;
+   * the skip is journaled so the decision stays observable.
+   * @param event The execute.after payload.
+   * @param child The delivery's session ID.
+   * @returns True when the delivery is skipped without injecting.
+   */
+  function nameGuardSkips(event: ToolHookEvent, child: string): boolean {
+    if (ledger.childToParent.has(child)) return false
+    const knownName = typeof event.agent === "string" && subagentNames.has(event.agent)
+    if (knownName) journalPolicy(child, false, { skipped: true, reason: "agent-name" })
+    return knownName
+  }
+
+  /**
+   * Prepends the orchestrator policy to the first parent-side
+   * `task`/`subagent` result delivery per task, so the model always carries
+   * the pipeline contract. Attribution is edge-first: the child→parent edge
+   * (`ledger.childToParent`, seeded by `session.created` and back-filled via
+   * `session.get` in `resolveParent`) decides where the policy lands, so both
+   * host delivery shapes — parent-keyed (`task`) and child-keyed
+   * (`subagent`) — inject when the edge resolves; the once-flag and the
+   * `injected:true` journal entry key on the resolved parent (identical to
+   * the raw child for the self-keyed shape). The `event.agent` name guard is
+   * a conservative fallback that fires ONLY when the edge is unresolvable
+   * (no `session.created` record AND no `session.get` record) and the
+   * delivery carries a config-known subagent name: refusing there is the
+   * safe choice, and the skip is journaled (`skipped:true`,
+   * `reason:"agent-name"`) so the decision is observable. The one residual
+   * corner that still injects without an edge is a config-UNKNOWN agent
+   * name on a host without a session API: with no edge and no name signal
+   * there is no way to tell a parent-facing delivery from a child-own
+   * session one, so the self-keyed injection there is a documented, accepted
+   * residual (the handler fires only on `task`/`subagent` tool results, so
+   * child streaming text never reaches it). Every non-injection is journaled
+   * except two documented silent cases: the policy already landed this task
+   * (once-flag), and a non-string result (no confirmed delivery shape).
+   * Fail-open: a prepend failure journals `injected:false` and never throws.
+   * @param event The execute.after payload whose `result.output` is mutated.
+   * @param child The delivery's session ID (parent or child per host shape).
+   */
+  async function injectOrchestratorPolicy(event: ToolHookEvent, child: string): Promise<void> {
+    // Close the late-edge window for background dispatches before deciding:
+    // idempotent (early-returns on a registered edge) and bounded by the
+    // failedLookups retry cap, so the await is cheap on the common path.
+    await resolveParent(child)
+    if (nameGuardSkips(event, child)) return
+    applyPolicyResult(ledger.parentOf(child), event)
+  }
+
+  /**
+   * Applies the injection once the name guard passes: respects the per-task
+   * once-flag, fails open silently on a non-string result, then prepends the
+   * policy and journals the outcome. Fail-open: a prepend failure journals
+   * `injected:false` and never throws.
+   * @param parent The resolved parent session for the delivery.
+   * @param event The execute.after payload whose `result.output` is mutated.
+   */
+  function applyPolicyResult(parent: string, event: ToolHookEvent): void {
+    const policyState = ledger.state(parent)
+    if (policyState.policyInjected) return
+    // A string result is the confirmed task/subagent shape; any other shape
+    // fails open silently (no corruption, no journal entry).
+    if (!event.result || typeof event.result.output !== "string") return
+    try {
+      event.result.output = ORCHESTRATOR_POLICY + "\n" + event.result.output
+      policyState.policyInjected = true
+      journalPolicy(parent, true)
+    } catch (e) {
+      journalPolicy(parent, false, { error: String(e) })
+    }
   }
 
   /**
@@ -1901,50 +2006,14 @@ export function createTurnstile(
                   reason: "task output contained no GATE/VERDICT marker",
                 })
               }
-              // Orchestrator policy injection: prepend
-              // the policy to the model-facing output text on the first
-              // per-parent per-task delivery, so the model always carries the
-              // pipeline contract. Scoped three ways: tool name (task/subagent
-              // only), config-known subagent name (children dispatch under
-              // their own name — defense in depth), and the policyInjected
-              // flag (once per task; reset per prompt re-supplies it, also
-              // after compaction). The mutation target is event.result.output
-              // in place — the same production-proven target as the read-budget
-              // warn prefix below. Fail-open via an inner try/catch scoped to
-              // ONLY this phase; the handler's shared outer catch (marker
-              // parsing, plan attribution, read-warn) is intentionally not
-              // disturbed, so a policy failure journals injected:false and
-              // swallows rather than blocking the tool.
-              const subagentNames = new Set(
-                (
-                  [
-                    "reviewer",
-                    "planReviewer",
-                    "executor",
-                    "testRunner",
-                    "debugger",
-                    "planner",
-                  ] as const
-                ).map((name) => config.agents[name]),
-              )
-              if (typeof event.agent === "string" && subagentNames.has(event.agent)) return
-              const policyState = ledger.state(child)
-              if (policyState.policyInjected) return
-              // A string result is the confirmed task/subagent shape; any other
-              // shape fails open silently (no corruption, no journal entry).
-              if (!event.result || typeof event.result.output !== "string") return
-              try {
-                event.result.output = ORCHESTRATOR_POLICY + "\n" + event.result.output
-                policyState.policyInjected = true
-                journaler.journal({ type: "policy", sessionID: child, injected: true })
-              } catch (e) {
-                journaler.journal({
-                  type: "policy",
-                  sessionID: child,
-                  injected: false,
-                  error: String(e),
-                })
-              }
+              // Orchestrator policy injection: see injectOrchestratorPolicy.
+              // Attribution is edge-first via childToParent (both host
+              // delivery shapes inject when the edge resolves); the name
+              // guard is a conservative fallback for unregistered children
+              // only, and its skip is journaled. Runs after the bare-output
+              // phase, so the config-surface ordering invariant above (policy
+              // prepend lands on top) is preserved.
+              await injectOrchestratorPolicy(event, child)
               return
             }
             if (event?.tool === "read") {
