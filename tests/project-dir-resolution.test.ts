@@ -2,9 +2,11 @@
  * @fileoverview Per-dispatch project-directory resolution: the enforcing
  * dispatch resolves the session's directory from the host session record via
  * session.get, the sync consumers read a cached value, session_move
- * invalidates the cache unconditionally, a root session.created seeds both the
- * seed and the cache, and the cache is bounded. The resolver journals nothing
- * (fail-open), so the exact error-count assertions hold.
+ * invalidates the cache unconditionally, the root session.created event seeds
+ * the cache, the last-known fallback is the process cwd, a silent directory
+ * change is journaled as telemetry, and the cache is bounded. The resolver
+ * journals no error entries (fail-open), so the exact error-count assertions
+ * hold.
  */
 
 import { test } from "node:test"
