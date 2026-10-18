@@ -1689,7 +1689,8 @@ export function createTurnstile(
               const status = gates.planGateStatus(currentProjectDir(parent), ledger, parent)
               if (!status.red) return
               // Red ⇒ summary is present by construction (planGateStatus builds
-              // it from a scan whose names[0] was already read). Escalate:
+              // it from a scan whose active-plan preview was already resolved).
+              // Escalate:
               // force the host to ask the human, naming the plan file + head.
               // Journal the ask so a reply can be matched (the requestID rides
               // the permission.asked stream event).
