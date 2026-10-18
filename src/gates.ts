@@ -134,37 +134,55 @@ export interface Gates {
    */
   guardReadLimit(sessionID: string, ledger: GateLedger): void
   /**
-   * Enforces the decomposition gate: when any plan file in the configured
-   * plans directory carries a `## Decomposition` block, executor
-   * dispatches must cite the chunk-N / AC-n they implement. Unreadable
-   * plans dirs fail open.
+   * Enforces the decomposition gate: when the resolved plan carries a
+   * `## Decomposition` block, executor dispatches must cite the chunk-N /
+   * AC-n they implement. The resolved plan is the dispatch prompt's named
+   * plan when it names exactly one existing plan file, else the session's
+   * bound plan when it still exists, else the first sorted decomposed plan
+   * (the legacy rule — what a no-ledger call enforces, byte-identically).
+   * Unreadable plans dirs fail open.
    * @param sessionID The parent session ID (used in journal entries).
    * @param prompt The dispatch prompt text to check for chunk citations.
    * @param projectDir The current project directory.
-   * @throws Error with a `BLOCKED by turnstile:` prefix when a decomposed
-   *     plan exists and the prompt cites no chunk.
+   * @param ledger Optional gate ledger for active-plan resolution (session
+   *     binding or prompt naming); when absent the legacy first-sorted rule
+   *     applies.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the resolved
+   *     plan carries a decomposition and the prompt cites no chunk.
    */
-  enforceDecomposition(sessionID: string, prompt: string, projectDir: string): void
+  enforceDecomposition(
+    sessionID: string,
+    prompt: string,
+    projectDir: string,
+    ledger?: GateLedger,
+  ): void
   /**
    * Enforces the plan-approval gate: when any plan file exists in the
    * configured plans directory, executor dispatches require a current
-   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver).
-   * Approval is invalidated when this session's approval was issued against
-   * a different plans-dir signature, forcing re-review after a re-plan. The
-   * signature is path-free (directory-independent), so an approval survives a
-   * same-content move to another checkout; a genuine content change drops the
-   * verdict loudly, journaling a replay-inert `STALE` plan entry rather than a
-   * silent mismatch.
+   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A bound
+   * approval (the session's plan identity) is invalidated only when THAT
+   * plan's content changes or the file disappears; unbound approvals
+   * invalidate on any plans-dir change (the dir-signature rule, path-free so
+   * an approval survives a same-content move). A stale verdict is dropped
+   * loudly, journaling a replay-inert `STALE` plan entry rather than a
+   * silent mismatch. The block message names the resolved active plan
+   * (prompt-named, then session-bound, then first sorted).
    * The waiver is the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt): non-empty
    * waives this gate for the whole task (not per dispatch).
    * @param sessionID The parent session ID.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
+   * @param prompt Optional dispatch prompt text for active-plan resolution.
    * @throws Error with a `BLOCKED by turnstile:` prefix when no plan file
    *     exists yet is approved for this task.
    */
-  enforcePlanApproval(sessionID: string, projectDir: string, ledger: GateLedger): void
+  enforcePlanApproval(
+    sessionID: string,
+    projectDir: string,
+    ledger: GateLedger,
+    prompt?: string,
+  ): void
   /**
    * Returns the current plans-dir signature for approval-time stamping, or
    * null when the dir is absent or unreadable (fail-open: an unstampable
@@ -175,15 +193,18 @@ export interface Gates {
    */
   plansSignature(projectDir: string): string | null
   /**
-   * Returns the first plan file's name and a short body preview, or undefined
-   * when the plans dir is absent, unreadable, or empty (fail-open). The preview
-   * is the first ~40 non-heading lines; shared by the escalatable plan gate so
-   * the ask the evaluate handler surfaces names the same file and shows its
-   * body.
+   * Returns a plan file's name and a short body preview, or undefined when
+   * the plans dir is absent, unreadable, or empty (fail-open). The preview
+   * is the first ~40 non-heading lines of the named plan when `activeName`
+   * is given, else the first sorted plan; shared by the escalatable plan
+   * gate so the ask the evaluate handler surfaces names the same file and
+   * shows its body.
    * @param projectDir The current project directory.
-   * @returns `{ file, head }` for the first sorted plan, or undefined.
+   * @param activeName Optional resolved active plan name; undefined falls
+   *     back to the first sorted plan.
+   * @returns `{ file, head }` for the active (or first sorted) plan, or undefined.
    */
-  planSummary(projectDir: string): { file: string; head: string } | undefined
+  planSummary(projectDir: string, activeName?: string): { file: string; head: string } | undefined
   /**
    * Returns whether the plan-approval gate is currently red for a parent, and
    * when red, the plan file + body preview to surface in a permission ask.
@@ -191,20 +212,49 @@ export interface Gates {
    * approved verdict is not red; otherwise red) so the evaluate handler and the
    * enforcing dispatch decide escalation from the exact same scan. Waiver and
    * approval are folded into `red`: a red result implies a non-empty waiver is
-   * absent and `hasPlanVerdict` is false, so the caller only tests `red`.
+   * absent and `hasPlanVerdict` is false, so the caller only tests `red`. The
+   * red preview names the resolved active plan (prompt-named, then
+   * session-bound, then the first sorted fallback).
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
+   * @param prompt Optional dispatch prompt text for active-plan resolution.
    * @returns `{ red: false }` when the gate is not red, or `{ red: true, summary }` when it is.
    */
   planGateStatus(
     projectDir: string,
     ledger: GateLedger,
     sessionID: string,
+    prompt?: string,
   ): {
     red: boolean
     summary?: { file: string; head: string }
   }
+  /**
+   * Extracts the plan file names a dispatch prompt mentions: the basenames of
+   * every `*.md` token, last five (keeps a hostile or pathological prompt
+   * bounded). Pure text — no fs, no membership check; callers resolve the
+   * candidates against the current scan.
+   * @param prompt The dispatch prompt text.
+   * @returns The mentioned plan basenames in prompt order, capped at five.
+   */
+  promptPlanNames(prompt: string): string[]
+  /**
+   * Resolves the plan identity to bind an approval to: the dispatch prompt's
+   * plan candidates intersected with the current plans dir. Exactly one
+   * distinct candidate that exists in the dir binds (`{ name, key }`, the key
+   * being that file's sha256 hex); zero candidates, an ambiguous set, an
+   * absent dir, or an unreadable dir fail open to undefined (the approval
+   * stays unbound and keeps the dir-signature rule).
+   * @param projectDir The current project directory.
+   * @param candidates The plan names extracted from the dispatch prompt
+   *     (`promptPlanNames` output).
+   * @returns The unique bound identity, or undefined when unresolvable.
+   */
+  planApprovalBinding(
+    projectDir: string,
+    candidates: string[],
+  ): { name: string; key: string } | undefined
 }
 
 /**
@@ -612,9 +662,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    *     plan exists and the prompt cites no chunk.
    */
   // Cached plans-dir scan keyed by the directory's content signature
-  // (`dir|name:sha256hex,…`). A key hit returns the cached scan and skips the
-  // utf8 decode and the `## Decomposition` search; a key miss recomputes
-  // decompFile. Any fs error throws to the caller's fail-open.
+  // (`name:sha256hex,…`). A key hit returns the cached scan and skips the
+  // per-file hashing, the utf8 decode, and the `## Decomposition` search; a
+  // key miss recomputes the scan (fileKeys, decomp, decompFile). Any fs
+  // error throws to the caller's fail-open.
   let plansCache: { key: string; scan: PlansScan } | null = null
 
   /** What one plans-dir scan establishes for both plan gates. */
@@ -631,8 +682,16 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     key: string
     /** Sorted plan file names (empty when the dir holds no plans). */
     names: string[]
-    /** First (sorted) plan carrying a `## Decomposition` block, or null. */
+    /**
+     * First (sorted) plan carrying a `## Decomposition` block, or null.
+     * Derived from `decomp` for the legacy no-ledger rule; superseded by
+     * active-plan resolution when a plan is bound or named.
+     */
     decompFile: string | null
+    /** Every plan name whose bytes carry a `## Decomposition` block. */
+    decomp: Set<string>
+    /** Every plan name → sha256 hex of its bytes (the bound-staleness key). */
+    fileKeys: Map<string, string>
   }
 
   /**
@@ -650,6 +709,17 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
+   * sha256 hex of one plan file's bytes: the per-file content identity that
+   * both the dir key and a bound approval's key are built from — one hash per
+   * file per scan, never recomputed.
+   * @param bytes The plan file bytes.
+   * @returns The hex digest.
+   */
+  function hashEntry(bytes: Buffer): string {
+    return createHash("sha256").update(bytes).digest("hex")
+  }
+
+  /**
    * Content signature of the plans dir: `name:sha256hex,…`, path-free so a
    * same-content move survives an approval. Identical iff the plans dir's
    * content is identical — an add, delete, rename, or same-size/content edit
@@ -657,14 +727,12 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * literal sentinel `"empty"` (never `""`, which collides with the accept-once
    * stamp: an approval stamped on an empty dir must mismatch once a plan file
    * appears, journaling STALE loudly rather than silently re-stamping green).
-   * @param entries The plan entries from `readEntries`.
+   * @param pairs The plan name + per-file sha256 hex pairs from the scan.
    * @returns The path-free content signature, or `"empty"` when there are none.
    */
-  function plansKey(entries: Array<{ name: string; bytes: Buffer }>): string {
-    if (entries.length === 0) return "empty"
-    return entries
-      .map((e) => `${e.name}:${createHash("sha256").update(e.bytes).digest("hex")}`)
-      .join(",")
+  function plansKey(pairs: Array<{ name: string; hash: string }>): string {
+    if (pairs.length === 0) return "empty"
+    return pairs.map((p) => `${p.name}:${p.hash}`).join(",")
   }
 
   /**
@@ -673,20 +741,28 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * the cached scan, skipping the utf8 decode and `## Decomposition` search;
    * a key miss replaces it — either way the returned key reports the dir's
    * current content. The key is path-free, so the cached scan is
-   * directory-agnostic and a same-content move reuses it.
+   * directory-agnostic and a same-content move reuses it. One sha256 per file
+   * per scan feeds both the dir key and the per-file `fileKeys` map.
    * @param dir Absolute plans directory path.
    * @returns The current scan; `scan.key` is the dir's path-free content signature.
    */
   function scanPlans(dir: string): PlansScan {
     const entries = readEntries(dir)
-    const key = plansKey(entries)
+    const pairs = entries.map((e) => ({ name: e.name, hash: hashEntry(e.bytes) }))
+    const key = plansKey(pairs)
     const cached = plansCache
     if (cached !== null && cached.key === key) return cached.scan
+    const names = entries.map((e) => e.name)
+    const decomp = new Set<string>()
+    for (const e of entries) {
+      if (e.bytes.toString("utf8").includes("## Decomposition")) decomp.add(e.name)
+    }
     const scan: PlansScan = {
       key,
-      names: entries.map((e) => e.name),
-      decompFile:
-        entries.find((e) => e.bytes.toString("utf8").includes("## Decomposition"))?.name ?? null,
+      names,
+      decomp,
+      fileKeys: new Map(pairs.map((p) => [p.name, p.hash])),
+      decompFile: names.find((n) => decomp.has(n)) ?? null,
     }
     plansCache = { key, scan }
     return scan
@@ -705,26 +781,99 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Reconciles a session's approval with the current scan: a non-empty stamp
-   * that differs from `scan.key` means the plan was re-planned since approval,
-   * so the verdict is stale and re-review is required; a green pass re-stamps
-   * the current key (idempotent, and how a replay-restored "" becomes
-   * validated). A "" stamp is unknown — journal-replayed approvals must
-   * survive restart, so it is accepted once, mirroring the old first-scan
-   * rule. The accept-once window also covers a session that approved but never
-   * ran an enforcing dispatch: its stamp is still empty until the first green
-   * dispatch stamps it.
+   * Extracts the plan file names a dispatch prompt mentions: the basenames of
+   * every `*.md` token, last five (keeps a hostile or pathological prompt
+   * bounded). Pure text — no fs, no membership check; callers resolve the
+   * candidates against the current scan.
+   * @param prompt The dispatch prompt text.
+   * @returns The mentioned plan basenames in prompt order, capped at five.
+   */
+  function promptPlanNames(prompt: string): string[] {
+    const matches = prompt.match(/[\w.-]+\.md/g)
+    if (matches === null) return []
+    return matches.map((m) => path.basename(m)).slice(-5)
+  }
+
+  /**
+   * Resolves the plan a gate acts on: the dispatch prompt's name when it
+   * names exactly one existing plan file (a prompt name beats the session
+   * binding); else the session's bound plan when it still exists in the dir;
+   * else null (callers fall back to the legacy first-sorted rule). A prompt
+   * that names no plans, two or more distinct plans, or only missing files
+   * resolves nothing from the prompt.
+   * @param s The session's gate state (bound identity).
+   * @param scan The current plans-dir scan.
+   * @param prompt The dispatch prompt text.
+   * @returns The resolved plan name, or null when unresolved.
+   */
+  function resolveActivePlan(s: GateState, scan: PlansScan, prompt: string): string | null {
+    const named = new Set(promptPlanNames(prompt).filter((n) => scan.names.includes(n)))
+    if (named.size === 1) return [...named][0]!
+    if (s.approvedPlan !== "" && scan.names.includes(s.approvedPlan)) return s.approvedPlan
+    return null
+  }
+
+  /**
+   * Reconciles a session's approval with the current scan. A bound approval
+   * (verdict + bound plan name + that file's content key) is checked
+   * per-plan by `reconcileBoundStamp`; every other shape — including a bound
+   * name with an empty key — keeps the dir-signature rule verbatim: a
+   * non-empty stamp that differs from `scan.key` means the plan was
+   * re-planned since approval, so the verdict is stale and re-review is
+   * required; a green pass re-stamps the current key (idempotent, and how a
+   * replay-restored "" becomes validated). A "" stamp is unknown —
+   * journal-replayed approvals must survive restart, so it is accepted once,
+   * mirroring the old first-scan rule. The accept-once window also covers a
+   * session that approved but never ran an enforcing dispatch: its stamp is
+   * still empty until the first green dispatch stamps it.
    * @param s The session's gate state (mutated).
    * @param scan The current plans-dir scan.
    * @param sessionID The session whose stale drop is journaled.
    */
   function reconcilePlanStamp(s: GateState, scan: PlansScan, sessionID: string): void {
+    if (s.hasPlanVerdict && s.approvedPlan !== "" && s.approvedPlanKey !== "") {
+      reconcileBoundStamp(s, scan, sessionID)
+      return
+    }
     if (s.hasPlanVerdict && s.plansSignature !== "" && s.plansSignature !== scan.key) {
       s.hasPlanVerdict = false
       journaler.journal({ type: "plan", sessionID, result: "STALE", reason: "signature-mismatch" })
       journaler.traceEvent("plan-gate", "stale", "signature-mismatch", sessionID)
     }
     if (s.hasPlanVerdict) s.plansSignature = scan.key
+  }
+
+  /**
+   * The bound half of `reconcilePlanStamp`: a bound approval is stale when the
+   * bound plan has disappeared from the dir (`plan-missing`) or its content
+   * key has changed (`plan-edited`) — changes to OTHER plans-dir files never
+   * invalidate it. A still-matching bound plan re-stamps its key and the dir
+   * signature idempotently (how a replay-restored bound verdict validates on
+   * the next enforcing dispatch). A stale drop keeps the identity fields
+   * (they inform the red preview and clear on the next stamp or reset).
+   * @param s The session's gate state (mutated).
+   * @param scan The current plans-dir scan.
+   * @param sessionID The session whose stale drop is journaled.
+   */
+  function reconcileBoundStamp(s: GateState, scan: PlansScan, sessionID: string): void {
+    const name = s.approvedPlan
+    if (!scan.names.includes(name)) {
+      s.hasPlanVerdict = false
+      journaler.journal({ type: "plan", sessionID, result: "STALE", reason: "plan-missing" })
+      journaler.traceEvent("plan-gate", "stale", "plan-missing", sessionID)
+      return
+    }
+    // The name is a scan member, so its key exists (both structures are built
+    // from the same entries); the assertion cannot fire.
+    const currentKey = scan.fileKeys.get(name)!
+    if (currentKey !== s.approvedPlanKey) {
+      s.hasPlanVerdict = false
+      journaler.journal({ type: "plan", sessionID, result: "STALE", reason: "plan-edited" })
+      journaler.traceEvent("plan-gate", "stale", "plan-edited", sessionID)
+      return
+    }
+    s.approvedPlanKey = currentKey
+    s.plansSignature = scan.key
   }
 
   /**
@@ -745,38 +894,52 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Builds the `{ file, head }` preview for the first sorted plan of a scan,
-   * reading that plan's bytes once (they were already read to compute the scan
-   * key). Shared by both `planSummary` and the escalatable plan gate so the
-   * ask names exactly the plan `enforcePlanApproval` would block on.
+   * Builds the `{ file, head }` preview for one plan of a scan — the resolved
+   * active name when given, else the first sorted plan (the legacy preview) —
+   * reading that plan's bytes once (they were already read to compute the
+   * scan key). Shared by both `planSummary` and the escalatable plan gate so
+   * the ask names exactly the plan the resolved enforcement would act on.
    * @param scan The current plans-dir scan.
    * @param plansDir The absolute plans directory of `scan`.
-   * @returns The first plan's `{ file, head }`.
+   * @param activeName The resolved active plan name, or null/undefined for
+   *     the first-sorted fallback.
+   * @returns The plan's `{ file, head }`.
    */
-  function firstPlanSummary(scan: PlansScan, plansDir: string): { file: string; head: string } {
+  function planPreview(
+    scan: PlansScan,
+    plansDir: string,
+    activeName?: string | null,
+  ): { file: string; head: string } {
     // The callers guard names.length === 0 before calling, so names[0] exists;
     // the non-null assertion is enforced by that guard, not silently assumed.
-    const name = scan.names[0]!
+    const name = activeName ?? scan.names[0]!
     const bytes = fs.readFileSync(path.join(plansDir, name))
     return { file: name, head: planHead(bytes) }
   }
 
   /**
-   * Returns the first plan file's name and a short body preview, or undefined
-   * when the plans dir is absent, unreadable, or empty (fail-open). The preview
-   * is the first ~40 non-heading lines; shared with the escalatable plan gate
-   * so the ask the evaluate handler surfaces names the same file and shows its
-   * body.
+   * Returns a plan file's name and a short body preview, or undefined when
+   * the plans dir is absent, unreadable, or empty (fail-open; a named plan
+   * that has since vanished fails open the same way). The preview is the
+   * first ~40 non-heading lines of the named plan when `activeName` is
+   * given, else the first sorted plan; shared with the escalatable plan gate
+   * so the ask the evaluate handler surfaces names the same file and shows
+   * its body.
    * @param projectDir The current project directory.
-   * @returns `{ file, head }` for the first sorted plan, or undefined.
+   * @param activeName Optional resolved active plan name; undefined falls
+   *     back to the first sorted plan.
+   * @returns `{ file, head }` for the active (or first sorted) plan, or undefined.
    */
-  function planSummary(projectDir: string): { file: string; head: string } | undefined {
+  function planSummary(
+    projectDir: string,
+    activeName?: string,
+  ): { file: string; head: string } | undefined {
     const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return undefined
       const scan = scanPlans(plansDir)
       if (scan.names.length === 0) return undefined
-      return firstPlanSummary(scan, plansDir)
+      return planPreview(scan, plansDir, activeName)
     } catch (e) {
       // Journal the fail-open so the unreadable plans dir stays observable.
       journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
@@ -791,16 +954,22 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * approved verdict is not red; otherwise red) so the evaluate handler and the
    * enforcing dispatch decide escalation from the exact same scan. Waiver and
    * approval are folded into `red`: a red result implies a non-empty waiver is
-   * absent and `hasPlanVerdict` is false, so the caller only tests `red`.
+   * absent and `hasPlanVerdict` is false, so the caller only tests `red`. The
+   * red preview names the resolved active plan (prompt-named, then
+   * session-bound, then the first sorted fallback) — the same plan the
+   * enforcement would act on, so a stale bound approval's ask still names
+   * that plan.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
+   * @param prompt Optional dispatch prompt text for active-plan resolution.
    * @returns `{ red: false }` when not red, or `{ red: true, summary }` when red.
    */
   function planGateStatus(
     projectDir: string,
     ledger: GateLedger,
     sessionID: string,
+    prompt?: string,
   ): { red: boolean; summary?: { file: string; head: string } } {
     const s = ledger.state(sessionID)
     if (s.userWaiver !== "") return { red: false }
@@ -809,14 +978,18 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       if (!fs.existsSync(plansDir)) return { red: false }
       const scan = scanPlans(plansDir)
       if (scan.names.length === 0) return { red: false }
-      // Reconcile this session's approval with the current scan: a stamp that
-      // differs from the current key means re-plan → stale verdict. Same rule
-      // as enforcePlanApproval, so the handler and the dispatch agree. A
-      // mismatched stamp is dropped loudly (STALE journaled) so the evaluate
-      // ask never re-grants a stale approval.
+      // Resolve the active plan BEFORE reconciling: a reconcile drop (bound
+      // plan edited or missing) must still name that plan in the red preview
+      // (the identity outlives the drop until the next stamp or reset).
+      const active = resolveActivePlan(s, scan, prompt ?? "")
+      // Reconcile this session's approval with the current scan (bound
+      // per-plan rule or the unbound dir-signature rule — same as
+      // enforcePlanApproval, so the handler and the dispatch agree). A stale
+      // verdict is dropped loudly (STALE journaled) so the evaluate ask never
+      // re-grants a stale approval.
       reconcilePlanStamp(s, scan, sessionID)
       if (s.hasPlanVerdict) return { red: false }
-      return { red: true, summary: firstPlanSummary(scan, plansDir) }
+      return { red: true, summary: planPreview(scan, plansDir, active) }
     } catch (e) {
       // Journal the fail-open so an unreadable plans dir stays observable.
       journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
@@ -825,31 +998,45 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Enforces the decomposition gate: when any plan file in the configured
-   * plans directory carries a `## Decomposition` block, executor
-   * dispatches must cite the chunk-N / AC-n they implement.
+   * Enforces the decomposition gate: when the resolved plan carries a
+   * `## Decomposition` block, executor dispatches must cite the chunk-N /
+   * AC-n they implement. The resolved plan is the dispatch prompt's named
+   * plan when it names exactly one existing plan file, else the session's
+   * bound plan when it still exists, else the first sorted decomposed plan
+   * (the legacy rule — what a no-ledger call enforces, byte-identically).
+   * Unreadable plans dirs fail open.
    * @param sessionID The parent session ID (used in journal entries).
    * @param prompt The dispatch prompt text to check for chunk citations.
    * @param projectDir The current project directory.
-   * @throws Error with a `BLOCKED by turnstile:` prefix when a decomposed
-   *     plan exists and the prompt cites no chunk.
+   * @param ledger Optional gate ledger for active-plan resolution (session
+   *     binding or prompt naming); when absent the legacy first-sorted rule
+   *     applies.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the resolved
+   *     plan carries a decomposition and the prompt cites no chunk.
    */
-  function enforceDecomposition(sessionID: string, prompt: string, projectDir: string): void {
+  function enforceDecomposition(
+    sessionID: string,
+    prompt: string,
+    projectDir: string,
+    ledger?: GateLedger,
+  ): void {
     if (/\b(?:chunk-\d+|AC-\d+)\b/.test(prompt)) return
     const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return
       const scan = scanPlans(plansDir)
-      if (scan.decompFile !== null) {
+      const active = ledger ? resolveActivePlan(ledger.state(sessionID), scan, prompt) : null
+      const target = active ?? scan.decompFile
+      if (target !== null && scan.decomp.has(target)) {
         journaler.journal({
           type: "blocked",
           sessionID,
           agent: config.agents.executor,
           reason: "missing-chunk-ref",
-          plan: scan.decompFile,
+          plan: target,
         })
         throw new BlockError(
-          `BLOCKED by turnstile: plan "${scan.decompFile}" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.`,
+          `BLOCKED by turnstile: plan "${target}" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.`,
         )
       }
     } catch (e) {
@@ -879,7 +1066,65 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     }
   }
 
-  function enforcePlanApproval(sessionID: string, projectDir: string, ledger: GateLedger): void {
+  /**
+   * Returns the plan identity to bind an approval to: the dispatch prompt's
+   * plan candidates intersected with the current plans dir. Exactly one
+   * distinct candidate that exists in the dir binds (`{ name, key }`, the
+   * key being that file's sha256 hex); zero candidates, an ambiguous set, an
+   * absent dir, or an unreadable dir fail open to undefined (the approval
+   * stays unbound and keeps the dir-signature rule).
+   * @param projectDir The current project directory.
+   * @param candidates The plan names extracted from the dispatch prompt
+   *     (`promptPlanNames` output).
+   * @returns The unique bound identity, or undefined when unresolvable.
+   */
+  function planApprovalBinding(
+    projectDir: string,
+    candidates: string[],
+  ): { name: string; key: string } | undefined {
+    const plansDir = resolvePlansDir(projectDir)
+    try {
+      if (!fs.existsSync(plansDir)) return undefined
+      const scan = scanPlans(plansDir)
+      // Dedupe mentions: a prompt that names one plan twice is still unique.
+      const hits = [...new Set(candidates)].filter((c) => scan.names.includes(c))
+      if (hits.length !== 1) return undefined
+      const name = hits[0]!
+      // The name is a scan member, so its key exists.
+      return { name, key: scan.fileKeys.get(name)! }
+    } catch (e) {
+      // Journal the fail-open so the unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
+      return undefined
+    }
+  }
+
+  /**
+   * Enforces the plan-approval gate: when any plan file exists in the
+   * configured plans directory, executor dispatches require a current
+   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A bound
+   * approval (the session's plan identity) is invalidated only when THAT
+   * plan's content changes or the file disappears; unbound approvals
+   * invalidate on any plans-dir change (the dir-signature rule). A stale
+   * verdict is dropped loudly, journaling a replay-inert `STALE` plan entry
+   * rather than a silent mismatch. The block message names the resolved
+   * active plan (prompt-named, then session-bound, then first sorted).
+   * The waiver is the task's prompt-channel waiver
+   * (`ledger.state().userWaiver`, captured from the user prompt): non-empty
+   * waives this gate for the whole task (not per dispatch).
+   * @param sessionID The parent session ID.
+   * @param projectDir The current project directory.
+   * @param ledger The gate ledger to read and mutate plan state from.
+   * @param prompt Optional dispatch prompt text for active-plan resolution.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when no plan file
+   *     exists yet is approved for this task.
+   */
+  function enforcePlanApproval(
+    sessionID: string,
+    projectDir: string,
+    ledger: GateLedger,
+    prompt?: string,
+  ): void {
     const s = ledger.state(sessionID)
     if (s.userWaiver !== "") {
       journaler.journal({
@@ -897,11 +1142,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       journaler.traceEvent("user", "plan-waiver", s.userWaiver, sessionID)
       return
     }
-    const status = planGateStatus(projectDir, ledger, sessionID)
+    const status = planGateStatus(projectDir, ledger, sessionID, prompt)
     // status.red ⇒ summary is always present: planGateStatus builds it from a
-    // scan whose names[0] was already read to compute the scan key, so the
-    // non-null assertion is sound. The block message is byte-identical to the
-    // pre-refactor scan; only the source of `plan` changed.
+    // scan whose plan bytes were already read to compute the scan key, so the
+    // non-null assertion is sound.
     if (status.red) {
       const plan = status.summary!.file
       journaler.journal({
@@ -929,5 +1173,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     plansSignature,
     planSummary,
     planGateStatus,
+    promptPlanNames,
+    planApprovalBinding,
   }
 }

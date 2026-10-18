@@ -123,6 +123,8 @@ test("formatGateSnapshot renders a populated bucket", () => {
     lastGateMarker: "gate: PASS tests=2 passed=2 failed=0",
     hasPlanVerdict: true,
     plansSignature: "abc123",
+    approvedPlan: "z-work.md",
+    approvedPlanKey: "abcdef",
     hasReviewApprove: true,
     reviewerDispatches: 3,
     lastVerdictMarker: "verdict: APPROVE crit=0 high=0 med=1 low=0",
@@ -141,7 +143,8 @@ test("formatGateSnapshot renders a populated bucket", () => {
     lines[1]!,
     /^- gate: GREEN last=gate: PASS tests=2 passed=2 failed=0 unverified=GATE: PASS tests=1 passed=1 failed=0$/,
   )
-  assert.match(lines[2]!, /^- plan: APPROVED stamp=known$/)
+  // The bound plan identity renders a plan=<name> suffix on the plan line.
+  assert.match(lines[2]!, /^- plan: APPROVED plan=z-work\.md stamp=known$/)
   assert.match(
     lines[3]!,
     /^- reviewer: APPROVED dispatches=3 last=verdict: APPROVE crit=0 high=0 med=1 low=0$/,

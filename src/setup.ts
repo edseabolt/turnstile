@@ -349,6 +349,14 @@ export function createTurnstile(
   // parents). Capped via boundDispatches, the same eviction idiom as
   // boundLookups.
   const planReviewerDispatch = new Map<string, number>()
+  // Parent session ID → plan file names extracted from its LATEST
+  // plan-reviewer dispatch prompt (last-wins; cleared on prompt reset for
+  // that parent). Binding input: when the round's plan-reviewer APPROVE
+  // lands, this is the candidate set the approval binds to via
+  // gates.planApprovalBinding (a unique existing mention binds the plan name
+  // + content key; anything else stays unbound). Capped via boundTargets,
+  // the same eviction idiom as boundDispatches.
+  const planReviewTarget = new Map<string, string[]>()
   // Parent session ID → Date.now() of its LATEST admitted prompt: the current
   // task's evidence window. A GATE: PASS may only be promoted by executions
   // journaled at-or-after the stamp, so a stale prior-task execution
@@ -473,6 +481,18 @@ export function createTurnstile(
       // The loop condition guarantees a first entry exists.
       const oldest = planReviewerDispatch.keys().next().value as string
       planReviewerDispatch.delete(oldest)
+    }
+  }
+
+  /**
+   * Bounds the plan-review-target map by evicting its oldest entries.
+   * Mirrors boundDispatches; see planReviewTarget.
+   */
+  function boundTargets(): void {
+    while (planReviewTarget.size > maxTrackedLookups) {
+      // The loop condition guarantees a first entry exists.
+      const oldest = planReviewTarget.keys().next().value as string
+      planReviewTarget.delete(oldest)
     }
   }
 
@@ -840,14 +860,34 @@ export function createTurnstile(
    * Stamps a plan-reviewer verdict's approval against the current plans-dir
    * signature so a later re-plan is detectable at dispatch time. An APPROVE
    * against an unreadable dir stamps "" (unknown): the approval is accepted
-   * once and stamped on the next enforcing dispatch (fail-open); a BLOCK
-   * clears the stamp (hygiene). Mutates `s` in place.
+   * once and stamped on the next enforcing dispatch (fail-open). An APPROVE
+   * also binds the plan identity from the dispatch prompt's candidates: a
+   * unique existing mention sets `approvedPlan`/`approvedPlanKey` (per-plan
+   * staleness); an absent, ambiguous, or unreadable binding leaves the
+   * approval unbound (the dir-signature rule applies). A BLOCK clears the
+   * stamp and the identity (hygiene). Mutates `s` in place.
    * @param s The session's gate state (mutated).
    * @param result The verdict result ("APPROVE" or "BLOCK").
    * @param projectDir The current project directory (for the plans-dir scan).
+   * @param candidates The plan names extracted from the dispatch prompt
+   *     (the round's binding candidates).
    */
-  function stampPlanApproval(s: GateState, result: string, projectDir: string): void {
-    s.plansSignature = result === "APPROVE" ? (gates.plansSignature(projectDir) ?? "") : ""
+  function stampPlanApproval(
+    s: GateState,
+    result: string,
+    projectDir: string,
+    candidates: string[],
+  ): void {
+    if (result === "APPROVE") {
+      s.plansSignature = gates.plansSignature(projectDir) ?? ""
+      const b = gates.planApprovalBinding(projectDir, candidates)
+      s.approvedPlan = b?.name ?? ""
+      s.approvedPlanKey = b?.key ?? ""
+    } else {
+      s.plansSignature = ""
+      s.approvedPlan = ""
+      s.approvedPlanKey = ""
+    }
   }
 
   /**
@@ -1077,6 +1117,11 @@ export function createTurnstile(
    *   parent-keyed delivery can never clobber a live approval with a BLOCK, and any plausible streamed APPROVE makes a self-keyed BLOCK unreachable
    *   (structural fail-open).
    *
+   * An APPROVE also binds the plan identity from the round's dispatch-prompt
+   * candidates (`planReviewTarget`): a unique existing plan mention journals
+   * `plan`/`planKey` on the `plan` entry (restored by journal replay); an
+   * unbound approval journals neither field (legacy lines unchanged).
+   *
    * Never throws (fail-open).
    * @param child The raw child session ID, for the `plan` entry's `raw` field.
    * @param output The delivery's own result text.
@@ -1092,7 +1137,7 @@ export function createTurnstile(
       const markerSource = own ? "task-result" : rec.source || "task-result"
       const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
       s.hasPlanVerdict = result === "APPROVE"
-      stampPlanApproval(s, result, await resolveProjectDir(sid))
+      stampPlanApproval(s, result, await resolveProjectDir(sid), planReviewTarget.get(sid) ?? [])
       journaler.journal({
         type: "plan",
         sessionID: sid,
@@ -1100,6 +1145,9 @@ export function createTurnstile(
         result,
         marker: marker || "<none>",
         source: markerSource,
+        // A bound approval journals its identity so replay restores it; an
+        // unbound approval journals nothing extra (legacy lines unchanged).
+        ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
       })
       journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
       return
@@ -1164,7 +1212,7 @@ export function createTurnstile(
       const markerSource = own ? "task-result" : rec.source
       const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
       s.hasPlanVerdict = result === "APPROVE"
-      stampPlanApproval(s, result, await resolveProjectDir(sid))
+      stampPlanApproval(s, result, await resolveProjectDir(sid), planReviewTarget.get(sid) ?? [])
       journaler.journal({
         type: "plan",
         sessionID: sid,
@@ -1172,6 +1220,9 @@ export function createTurnstile(
         result,
         marker,
         source: markerSource,
+        // A bound approval journals its identity so replay restores it; an
+        // unbound approval journals nothing extra (legacy lines unchanged).
+        ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
       })
       journaler.traceEvent("plan-reviewer", "verdict", marker, sid)
       return
@@ -1438,8 +1489,10 @@ export function createTurnstile(
       }
       // A prompt reset invalidates all prior dispatch-scoped
       // evidence for this parent, so an unresolved-child verdict is only
-      // plausible within the parent's current task scope.
+      // plausible within the parent's current task scope, and the prior
+      // round's plan-mention candidates cannot bind a new task's approval.
       planReviewerDispatch.delete(sessionID)
+      planReviewTarget.delete(sessionID)
       // Evidence is task-scoped, exactly like gate state: a new user
       // prompt drops the in-memory correlation.
       evidence.clear(sessionID)
@@ -1636,7 +1689,8 @@ export function createTurnstile(
               const status = gates.planGateStatus(currentProjectDir(parent), ledger, parent)
               if (!status.red) return
               // Red ⇒ summary is present by construction (planGateStatus builds
-              // it from a scan whose names[0] was already read). Escalate:
+              // it from a scan whose active-plan preview was already resolved).
+              // Escalate:
               // force the host to ask the human, naming the plan file + head.
               // Journal the ask so a reply can be matched (the requestID rides
               // the permission.asked stream event).
@@ -1734,12 +1788,16 @@ export function createTurnstile(
                 : ""
 
               // Last-wins: record this parent's LATEST plan-reviewer
-              // dispatch time for the plausibility join. A prompt reset clears it
-              // (see the prompt hook), so a verdict is only plausible within the
-              // parent's current task scope. Bounded by boundDispatches.
+              // dispatch time for the plausibility join, and the prompt's plan
+              // mentions as the round's approval-binding candidates. A prompt
+              // reset clears both (see the prompt hook), so a verdict is only
+              // plausible — and only bindable — within the parent's current
+              // task scope. Bounded by boundDispatches / boundTargets.
               if (agent === config.agents.planReviewer) {
                 planReviewerDispatch.set(sessionID, Date.now())
                 boundDispatches()
+                planReviewTarget.set(sessionID, gates.promptPlanNames(prompt))
+                boundTargets()
               }
 
               // An empty agent name is the only reliable misconfiguration
@@ -1806,8 +1864,8 @@ export function createTurnstile(
 
                 if (agent === config.agents.executor) {
                   const dir = await resolveProjectDir(sessionID)
-                  gates.enforcePlanApproval(sessionID, dir, ledger)
-                  gates.enforceDecomposition(sessionID, prompt, dir)
+                  gates.enforcePlanApproval(sessionID, dir, ledger, prompt)
+                  gates.enforceDecomposition(sessionID, prompt, dir, ledger)
                 }
                 recordDispatch(sessionID, agent, description, false)
               } catch (e) {

@@ -41,7 +41,7 @@ green -> reviewed: "reviewer APPROVE ×2 (reviewEnsemble=enforce) | permission l
 reviewed -> reviewed: "git push allowed"
 green -> end
 
-planok-note: "plansSignature stamped at approval (path-free);\nsame-content move survives;\nplans-dir edit ⇒ mismatch ⇒ STALE journaled ⇒ re-review." {
+planok-note: "bound approval (dispatch-named plan):\nname + per-file key;\nbound-plan edit/removal ⇒ plan-edited / plan-missing STALE;\nunbound approval: path-free plansSignature;\nplans-dir change ⇒ signature-mismatch STALE ⇒ re-review." {
   style.stroke-dash: 4
   shape: parallelogram
 }
