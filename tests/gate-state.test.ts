@@ -34,6 +34,11 @@ const NO_GATE_MESSAGE =
   "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
   "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
+/** The clause a block appends when the task's unscoped waiver was already
+ *  consumed by the first dispatch it unlocked. */
+const CONSUMED_CLAUSE =
+  " The task's unscoped user waiver was consumed by the first dispatch it unlocked; a new waiver is needed for the next dispatch."
+
 /** The gate-unverified block message: a PASS was recorded without
  *  a correlating journaled test-command execution (enforce mode). Rendered
  *  by the two-argument guard call (no search context) — the legacy bytes. */
@@ -103,7 +108,7 @@ test("USER WAIVER: in the prompt waives the gate and is journaled", async () => 
 
 /** Waivers are per dispatch for the reviewer gate: after the prompt-channel
  *  waiver is consumed by the dispatch that unlocks it, a later marker-less
- *  dispatch is blocked again. */
+ *  dispatch is blocked again — and the block reports the consumed waiver. */
 test("waiver is per dispatch: a later marker-less dispatch is blocked again", async () => {
   const { h, dispose } = await boot()
   await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: user said ship it" })
@@ -119,7 +124,7 @@ test("waiver is per dispatch: a later marker-less dispatch is blocked again", as
         sessionID: "p1",
         input: { agent: "reviewer", prompt: "review it again" },
       }),
-    (e: Error) => e.message === NO_GATE_MESSAGE,
+    (e: Error) => e.message === NO_GATE_MESSAGE + CONSUMED_CLAUSE,
   )
   dispose()
 })
@@ -491,7 +496,8 @@ test("round cap: waived dispatches do not consume the cap; an unwaived dispatch 
 
 /** Waivers neither count toward nor reset the cap: after a prompt-channel
  *  waiver exactly `maxReviewerRounds` unwaived dispatches succeed and the
- *  next rejects with the golden round-limit message. */
+ *  next rejects with the golden round-limit message — plus the consumed
+ *  clause, since the waived dispatch consumed the unscoped waiver. */
 test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is blocked", async () => {
   // flag keeps today's flip semantics so the gate goes green after the PASS.
   const { h, dispose } = await boot({ gateEvidence: "flag" })
@@ -519,7 +525,8 @@ test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is b
       input: { agent: "reviewer", prompt: "review it" },
     })
   }
-  // The third unwaived dispatch rejects with the byte-identical golden message.
+  // The third unwaived dispatch rejects with the golden message plus the
+  // consumed clause (the waiver was spent by the first dispatch).
   await assert.rejects(
     () =>
       callTool(h, "execute.before", {
@@ -529,7 +536,8 @@ test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is b
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)." +
+        CONSUMED_CLAUSE,
   )
   dispose()
 })
@@ -1817,12 +1825,15 @@ test("newState initializes seenFrom and suppressedPending and omits verdicts", (
   assert.equal(s.policyInjected, false)
 })
 
-/** A fresh bucket initializes the three new primitives to their defaults:
- *  empty waiver, empty per-reason once-grants ({ plan, landing }), and a false
- *  human-provenance flag. */
+/** A fresh bucket initializes the waiver family to its defaults (empty
+ *  waiver, unscoped, unconsumed, zero allowance), the per-reason once-grants
+ *  ({ plan, landing }), and the false human-provenance flag. */
 test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defaults", () => {
   const s = newState()
   assert.equal(s.userWaiver, "")
+  assert.deepEqual(s.userWaiverScope, [], "a fresh waiver is unscoped")
+  assert.equal(s.userWaiverConsumed, false, "a fresh waiver is not consumed")
+  assert.equal(s.reviewWaiverRounds, 0, "a fresh task has spent no waiver allowance")
   assert.equal(s.humanApproval, false)
   assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "" })
 })
@@ -1992,17 +2003,24 @@ test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
   assert.equal(ledger.state("p1").hasReviewApprove, true, "GATE: FAIL never clears the approval")
 })
 
-/** resetState drops the task-scoped waiver and per-reason once-grants and
- *  resets humanApproval to false on an ordinary (non-grace) prompt reset. */
+/** resetState drops the task-scoped waiver (and its scope, consumed flag, and
+ *  allowance counter), the per-reason once-grants, and resets humanApproval to
+ *  false on an ordinary (non-grace) prompt reset. */
 test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {
   const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
   const s = ledger.state("p1")
   s.userWaiver = "USER WAIVER: proceed"
+  s.userWaiverScope = ["reviewer"]
+  s.userWaiverConsumed = true
+  s.reviewWaiverRounds = 1
   s.humanApproval = true
   s.pendingOnceGrant = { plan: "req-42", landing: "req-9" }
   ledger.resetState("p1")
   const cur = ledger.state("p1")
   assert.equal(cur.userWaiver, "", "userWaiver clears on reset")
+  assert.deepEqual(cur.userWaiverScope, [], "userWaiverScope clears on reset")
+  assert.equal(cur.userWaiverConsumed, false, "userWaiverConsumed clears on reset")
+  assert.equal(cur.reviewWaiverRounds, 0, "reviewWaiverRounds clears on reset")
   assert.deepEqual(
     cur.pendingOnceGrant,
     { plan: "", landing: "" },
@@ -2013,7 +2031,8 @@ test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => 
 
 /** humanApproval is restart-sticky exactly like hasPlanVerdict: a
  *  journal-restored flag survives the first post-restart (grace) prompt via
- *  mergeAfterReplay, then clears on the next full reset. Waiver/once-grant
+ *  mergeAfterReplay, then clears on the next full reset. The whole waiver
+ *  family (quote, scope, consumed flag, allowance counter) and the once-grant
  *  strings stay task-scoped and never carry through the merge. */
 test("grace prompt carries restored humanApproval forward then clears it", () => {
   const metricsDir = tmpDir()
@@ -2029,14 +2048,25 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
   assert.equal(s.hasPlanVerdict, true, "replay restored hasPlanVerdict")
   s.humanApproval = true
   s.userWaiver = "USER WAIVER: keep"
+  s.userWaiverScope = ["reviewer"]
+  s.userWaiverConsumed = true
+  s.reviewWaiverRounds = 1
   s.pendingOnceGrant = { plan: "req-keep", landing: "" }
   // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward,
-  // never wipes it; the task-scoped once-grants drop as usual.
+  // never wipes it; the task-scoped waiver family and once-grants drop as
+  // usual.
   ledger.resetState("p1")
   const afterGrace = ledger.state("p1")
   assert.equal(afterGrace.hasPlanVerdict, true, "hasPlanVerdict carried by grace")
   assert.equal(afterGrace.humanApproval, true, "humanApproval carried by grace")
   assert.equal(afterGrace.userWaiver, "", "userWaiver never carried through merge")
+  assert.deepEqual(afterGrace.userWaiverScope, [], "userWaiverScope never carried through merge")
+  assert.equal(
+    afterGrace.userWaiverConsumed,
+    false,
+    "userWaiverConsumed never carried through merge",
+  )
+  assert.equal(afterGrace.reviewWaiverRounds, 0, "reviewWaiverRounds never carried through merge")
   assert.deepEqual(
     afterGrace.pendingOnceGrant,
     { plan: "", landing: "" },
@@ -2047,6 +2077,9 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
   const afterReset = ledger.state("p1")
   assert.equal(afterReset.hasPlanVerdict, false, "hasPlanVerdict cleared on full reset")
   assert.equal(afterReset.humanApproval, false, "humanApproval cleared on full reset")
+  assert.deepEqual(afterReset.userWaiverScope, [], "userWaiverScope cleared on full reset")
+  assert.equal(afterReset.userWaiverConsumed, false, "userWaiverConsumed cleared on full reset")
+  assert.equal(afterReset.reviewWaiverRounds, 0, "reviewWaiverRounds cleared on full reset")
 })
 
 /** Replay restores the bound plan identity from a fielded plan APPROVE; a

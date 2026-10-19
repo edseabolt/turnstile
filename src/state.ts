@@ -22,7 +22,13 @@ export function newState(): GateState {
     lastVerdictMarker: "",
     hasPlanVerdict: false,
     hasReviewApprove: false,
+    // Waiver trio: task-scoped like userWaiver, cleared on every prompt reset
+    // and never carried through mergeAfterReplay. Scope is [] (unscoped);
+    // consumed is false; the scoped-waiver allowance counter starts at 0.
     userWaiver: "",
+    userWaiverScope: [],
+    userWaiverConsumed: false,
+    reviewWaiverRounds: 0,
     humanApproval: false,
     // Per-reason single-dispatch grants (plan / landing): fresh "" on every
     // task reset, task-scoped, never carried through mergeAfterReplay.
@@ -76,12 +82,25 @@ export function newState(): GateState {
  */
 export function formatGateSnapshot(s: GateState): string {
   const gateUnverified = s.unverifiedPass ? ` unverified=${s.unverifiedPass}` : ""
+  // Exactly one of four waiver states: live+unscoped, live+scoped (the parsed
+  // scope, comma-joined), consumed (an unscoped waiver the reviewer gate
+  // spent), or none. `reviewWaiverRounds` is deliberately not rendered here —
+  // the round-limit block message is the allowance authority, and the
+  // `- rounds:` line stays byte-stable.
+  const waiverStatus =
+    s.userWaiver !== ""
+      ? s.userWaiverScope.length > 0
+        ? `ACTIVE(${s.userWaiverScope.join(", ")})`
+        : "ACTIVE"
+      : s.userWaiverConsumed
+        ? "none(consumed)"
+        : "none"
   return [
     "turnstile gate snapshot (live ledger; authoritative; do not re-derive):",
     `- gate: ${s.hasGatePass ? "GREEN" : "RED"} last=${s.lastGateMarker || "none"}${gateUnverified}`,
     `- plan: ${s.hasPlanVerdict ? "APPROVED" : "PENDING"}${s.approvedPlan !== "" ? ` plan=${s.approvedPlan}` : ""} stamp=${s.plansSignature ? "known" : "unknown"}`,
     `- reviewer: ${s.hasReviewApprove ? "APPROVED" : "PENDING"} dispatches=${s.reviewerDispatches} last=${s.lastVerdictMarker || "none"}`,
-    `- waiver: ${s.userWaiver ? "ACTIVE" : "none"} human: ${s.humanApproval ? "APPROVED" : "none"}`,
+    `- waiver: ${waiverStatus} human: ${s.humanApproval ? "APPROVED" : "none"}`,
     `- rounds: planner=${s.plannerRounds} plan-reviewer=${s.planReviewerRounds} test-runner=${s.testRunnerRounds} reviewer=${s.reviewRounds} total=${s.totalDispatches}`,
     `- landing: blocks=${s.landingBlocks} reads=${s.reads}`,
     `- task: ${s.taskFingerprint || "unstamped"}`,
@@ -204,8 +223,9 @@ function mergeAfterReplay(prior: GateState): GateState {
   s.hasPlanVerdict = prior.hasPlanVerdict
   // Restart-sticky like hasPlanVerdict: a restored human approval survives the
   // first post-restart prompt (restart-sticky provenance, never task-scoped).
-  // userWaiver/pendingOnceGrant stay fresh here: they are task-scoped and never
-  // carried through the replay-merge path.
+  // userWaiver and its trio (userWaiverScope, userWaiverConsumed,
+  // reviewWaiverRounds) and pendingOnceGrant stay fresh here: they are
+  // task-scoped and never carried through the replay-merge path.
   s.humanApproval = prior.humanApproval
   // hasReviewApprove is the landing gate's release signal, restart-sticky like
   // hasPlanVerdict: a reviewer APPROVE restored by replay survives the first

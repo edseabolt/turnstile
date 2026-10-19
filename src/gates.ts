@@ -65,10 +65,15 @@ export interface Gates {
    * Enforces the reviewer dispatch gate for a pending `task` dispatch:
    * waives the dispatch when the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt in the setup
-   * hook) is set, then blocks when the dispatch cap is exhausted or the test
-   * gate has not gone green. A waiver bypasses the cap without counting toward
-   * it and is consumed by the dispatch that unlocks it (per-dispatch); the
-   * task waiver otherwise stays live. Without `search` the gate-unverified
+   * hook) covers the reviewer stage, then blocks when the dispatch cap is
+   * exhausted or the test gate has not gone green. The canonical waiver
+   * semantics: a waiver covers every gate while unscoped, but the reviewer
+   * gate consumes an unscoped waiver on the first dispatch it unlocks; naming
+   * configured agent names in the waiver text scopes it to those stages'
+   * gates (the plan gate is covered by either its plan-reviewer or executor
+   * stage name), and a scoped waiver stays live until that stage's waiver
+   * allowance is spent — metered separately from the ordinary dispatch caps.
+   * A new user prompt drops the waiver. Without `search` the gate-unverified
    * refusal renders byte-identical to the legacy message and journals no
    * `searched` field; with one, the refusal names the searched sessions and
    * the `blocked` entry gains `searched` (IDs only).
@@ -105,8 +110,10 @@ export interface Gates {
    * executor, debugger, reviewer, unknown): the dispatcher's leg cap
    * (`maxPlannerRounds` / `maxPlanReviewerRounds` / `maxTestRunnerRounds`) and
    * the global budget (`maxTotalDispatches`) are mechanical loop backstops,
-   * analogous to `reviewRounds`. A waiver exempts the whole task (both the leg
-   * caps and the budget) without counting — the user authorized the loop. When
+   * analogous to `reviewRounds`. A waiver covering the dispatched stage
+   * exempts its leg cap and the budget without counting (an unscoped waiver
+   * covers every stage — the legacy whole-task exemption) — the user
+   * authorized the loop. When
    * a leg cap is exceeded the block names the leg, journals a
    * `{type:"escalation"}` entry, and tells the dispatcher to STOP and escalate;
    * when the budget is exceeded it refuses every further dispatch. Either way
@@ -168,8 +175,15 @@ export interface Gates {
    * silent mismatch. The block message names the resolved active plan
    * (prompt-named, then session-bound, then first sorted).
    * The waiver is the task's prompt-channel waiver
-   * (`ledger.state().userWaiver`, captured from the user prompt): non-empty
-   * waives this gate for the whole task (not per dispatch).
+   * (`ledger.state().userWaiver`, captured from the user prompt): a waiver
+   * covers every gate while unscoped (the reviewer gate consumes an unscoped
+   * waiver on the first dispatch it unlocks); naming configured agent names
+   * in the waiver text scopes it to those stages' gates — this gate is
+   * covered by either its plan-reviewer or executor stage name — and a
+   * scoped waiver stays live until that stage's waiver allowance is spent,
+   * metered separately from the ordinary dispatch caps; a new user prompt
+   * drops the waiver. A waiver covering this gate is never consumed (the
+   * plan gate is sticky).
    * @param sessionID The parent session ID.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
@@ -211,10 +225,11 @@ export interface Gates {
    * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, or an
    * approved verdict is not red; otherwise red) so the evaluate handler and the
    * enforcing dispatch decide escalation from the exact same scan. Waiver and
-   * approval are folded into `red`: a red result implies a non-empty waiver is
-   * absent and `hasPlanVerdict` is false, so the caller only tests `red`. The
-   * red preview names the resolved active plan (prompt-named, then
-   * session-bound, then the first sorted fallback).
+   * approval are folded into `red`: a red result implies the task's waiver
+   * does not cover this gate's stage group (no live waiver, or a waiver
+   * scoped to other stages) and `hasPlanVerdict` is false, so the caller only
+   * tests `red`. The red preview names the resolved active plan (prompt-named,
+   * then session-bound, then the first sorted fallback).
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
@@ -326,16 +341,156 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
+   * The plan gate's guarding stage group: a user's waiver vocabulary for the
+   * plan gate names the plan-reviewer stage as often as the executor stage
+   * ("approve the plan, skip the plan-reviewer"), so either configured name
+   * covers the plan gate. One constant; the enforcing dispatch
+   * (`enforcePlanApproval`) and the status mirror (`planGateStatus`) both read
+   * it, so the handler/dispatch agreement stays exact.
+   */
+  const planGateStages = [config.agents.planReviewer, config.agents.executor]
+
+  /**
+   * Whether a live waiver covers any of the given stage names. A waiver
+   * covers when it is live AND either unscoped (scope `[]`) or its scope
+   * intersects the stages. A consumed or absent waiver covers nothing.
+   * @param s The gate state to read the waiver from.
+   * @param stages The stage names the guarding gate spans.
+   * @returns True when the live waiver covers at least one of the stages.
+   */
+  function waiverCovers(s: GateState, stages: readonly string[]): boolean {
+    return (
+      s.userWaiver !== "" &&
+      (s.userWaiverScope.length === 0 || stages.some((st) => s.userWaiverScope.includes(st)))
+    )
+  }
+
+  /**
+   * Renders the waiver-state clause appended to a gate block message so a
+   * refused dispatch reports whether a waiver is live-but-out-of-scope or
+   * already consumed. Exactly two reachable non-empty arms. Reachability
+   * invariant: every block site is gated on `!waiverCovers(...)`, so a live
+   * waiver observed at a block site is necessarily OUT of scope (a live
+   * unscoped waiver covers every stage ⇒ admits ⇒ no block; a live in-scope
+   * waiver at the reviewer cap goes through `blockReviewRoundLimit`'s
+   * allowance clause instead). A live-unscoped arm would be unreachable dead
+   * code — never add one.
+   * @param s The gate state to render the waiver state from.
+   * @param stagePhrase The guarding stage phrase to name in the out-of-scope
+   *     clause (the configured reviewer name at the reviewer gate, the
+   *     "executor or plan-reviewer" pair at the plan gate).
+   * @returns The clause (with a leading space), or "" when no clause applies.
+   */
+  function waiverStateNote(s: GateState, stagePhrase: string): string {
+    if (s.userWaiver !== "")
+      // invariant: scope is non-empty here (see the reachability note above)
+      return ` A user waiver is live this task but is scoped to: ${s.userWaiverScope.join(
+        ", ",
+      )} — it does not cover this gate; name ${stagePhrase} in a new waiver or escalate.`
+    if (s.userWaiverConsumed)
+      return " The task's unscoped user waiver was consumed by the first dispatch it unlocked; a new waiver is needed for the next dispatch."
+    return ""
+  }
+
+  /**
+   * Journals the `gate WAIVED` entry + trace for a covered reviewer dispatch.
+   * The `scope` field is stamped only when the waiver is scoped, so an
+   * unscoped entry stays byte-identical to the legacy shape. Provenance: the
+   * waiver opened the gate from the user prompt, not a dispatch prompt. The
+   * waiver quote carries raw prompt context and is already trace-gated by
+   * the prompt-hook capture (SECURITY.md redaction contract).
+   * @param sessionID The parent session ID.
+   * @param s The gate state carrying the live waiver.
+   */
+  function journalReviewerWaiver(sessionID: string, s: GateState): void {
+    journaler.journal({
+      type: "gate",
+      sessionID,
+      result: "WAIVED",
+      // Provenance: this waiver opened the gate from the user prompt, not a
+      // dispatch prompt.
+      channel: "prompt",
+      // Waiver quotes carry raw prompt context; journal them only when
+      // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`
+      // is already trace-gated by the prompt-hook capture.
+      waiver: s.userWaiver,
+      // The parsed scope is stamped only when the waiver is scoped, so
+      // unscoped entries stay byte-identical to the legacy shape.
+      ...(s.userWaiverScope.length > 0 ? { scope: s.userWaiverScope.join(", ") } : {}),
+    })
+    journaler.traceEvent("user", "waiver", s.userWaiver, sessionID)
+  }
+
+  /**
+   * Journals the round-limit `blocked` + `escalation` entries and trace, then
+   * throws the round-limit `BlockError`: the base message plus the given
+   * clause. The clause is "" for the ordinary unwaived cap (byte-identical
+   * message) and the scoped-allowance-exhausted clause for the waiver pool.
+   * @param sessionID The parent session ID.
+   * @param count The exhausted count to journal.
+   * @param cap The exhausted cap to journal and name in the message.
+   * @param clause The appended clause ("" for the legacy message).
+   */
+  function blockReviewRoundLimit(
+    sessionID: string,
+    count: number,
+    cap: number,
+    clause: string,
+  ): void {
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent: config.agents.reviewer,
+      reason: "round-limit",
+    })
+    // Visible escalation: exhausting the round cap means the reviewer is
+    // re-dispatched in a loop — journal an `escalation` entry and stop+
+    // escalate (a subagent never receives a fresh user prompt to reset the
+    // cap, so "wait for a new prompt" would dead-end).
+    journaler.journal({
+      type: "escalation",
+      sessionID,
+      agent: config.agents.reviewer,
+      reason: "round-limit",
+      count,
+      cap,
+    })
+    journaler.traceEvent(
+      config.agents.reviewer,
+      "round-limit",
+      "cap exhausted; escalate",
+      sessionID,
+    )
+    throw new BlockError(
+      `BLOCKED by turnstile: reviewer round limit (${cap}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).${clause}`,
+    )
+  }
+
+  /**
    * Enforces the reviewer dispatch gate for a pending `task` dispatch.
    * Waives the dispatch when the task's prompt-channel waiver
-   * (`s.userWaiver`, captured from the user prompt in the setup hook) is set,
-   * then blocks when the dispatch cap is exhausted or the test gate has not
-   * gone green. The cap counts reviewer dispatches themselves (per the
-   * documented "max 2 reviewer dispatches per task" contract), not BLOCK
-   * verdicts. A waiver bypasses the cap without counting toward it and is
-   * consumed by the dispatch that unlocks it (per-dispatch): a stale waiver
-   * cannot outlive that single reviewer dispatch. Provenance matters: the
+   * (`s.userWaiver`, captured from the user prompt in the setup hook) covers
+   * the reviewer stage, then blocks when the dispatch cap is exhausted or
+   * the test gate has not gone green. The canonical waiver semantics: a
+   * waiver covers every gate while unscoped, but the reviewer gate consumes
+   * an unscoped waiver on the first dispatch it unlocks; naming configured
+   * agent names in the waiver text scopes it to those stages' gates (the
+   * plan gate is covered by either its plan-reviewer or executor stage name),
+   * and a scoped waiver stays live until that stage's waiver allowance is
+   * spent — metered separately from the ordinary dispatch caps. A new user
+   * prompt drops the waiver. The cap counts reviewer dispatches themselves
+   * (per the documented "max 2 reviewer dispatches per task" contract), not
+   * BLOCK verdicts: the ordinary unwaived cap is `reviewRounds`, and a
+   * scoped-waived dispatch is metered on the separate `reviewWaiverRounds`
+   * allowance instead. A covered unscoped waiver stays fully cap-exempt and
+   * is consumed by the dispatch that unlocks it. Provenance matters: the
    * waiver is read from the task prompt, never the dispatch prompt.
+   *
+   * Size note (AGENTS.md 20–30-line cap): the body exceeds the cap because the
+   * two-round-cap + gate-evidence + three-way mutation decision flow reads
+   * top-to-bottom as one; the WAIVED journal and the round-limit escalation
+   * are extracted into `journalReviewerWaiver` / `blockReviewRoundLimit` so
+   * this body carries only the decisions.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
    * @param search Optional attribution diagnostic for the refusal text and
@@ -349,52 +504,29 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     search?: EvidenceSearch,
   ): void {
     const s = ledger.state(sessionID)
-    const waived = s.userWaiver !== ""
-    if (waived) {
-      journaler.journal({
-        type: "gate",
+    const covered = waiverCovers(s, [config.agents.reviewer])
+    const scoped = covered && s.userWaiverScope.length > 0
+    if (covered) journalReviewerWaiver(sessionID, s)
+    // Two independently bounded pools: the scoped-waiver allowance
+    // (reviewWaiverRounds) and the ordinary unwaived cap (reviewRounds). A
+    // covered unscoped waiver is fully cap-exempt (neither test fires).
+    if (covered && scoped && s.reviewWaiverRounds >= config.maxReviewerRounds) {
+      blockReviewRoundLimit(
         sessionID,
-        result: "WAIVED",
-        // Provenance: this waiver opened the gate from the user prompt, not a
-        // dispatch prompt.
-        channel: "prompt",
-        // Waiver quotes carry raw prompt context; journal them only when
-        // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`
-        // is already trace-gated by the prompt-hook capture.
-        waiver: s.userWaiver,
-      })
-      journaler.traceEvent("user", "waiver", s.userWaiver, sessionID)
-    }
-    if (s.reviewRounds >= config.maxReviewerRounds && !waived) {
-      journaler.journal({
-        type: "blocked",
-        sessionID,
-        agent: config.agents.reviewer,
-        reason: "round-limit",
-      })
-      // Visible escalation: exhausting the round cap means the
-      // reviewer is re-dispatched in a loop — journal an `escalation` entry and
-      // stop+escalate (a subagent never receives a fresh user prompt to reset
-      // the cap, so "wait for a new prompt" would dead-end).
-      journaler.journal({
-        type: "escalation",
-        sessionID,
-        agent: config.agents.reviewer,
-        reason: "round-limit",
-        count: s.reviewRounds,
-        cap: config.maxReviewerRounds,
-      })
-      journaler.traceEvent(
-        config.agents.reviewer,
-        "round-limit",
-        "cap exhausted; escalate",
-        sessionID,
-      )
-      throw new BlockError(
-        `BLOCKED by turnstile: reviewer round limit (${config.maxReviewerRounds}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).`,
+        s.reviewWaiverRounds,
+        config.maxReviewerRounds,
+        ` The scoped waiver's allowance of ${config.maxReviewerRounds} waiver-unblocked dispatches is exhausted; obtain a new waiver or escalate to the user.`,
       )
     }
-    if (!s.hasGatePass && !waived) {
+    if (!covered && s.reviewRounds >= config.maxReviewerRounds) {
+      blockReviewRoundLimit(
+        sessionID,
+        s.reviewRounds,
+        config.maxReviewerRounds,
+        waiverStateNote(s, config.agents.reviewer),
+      )
+    }
+    if (!s.hasGatePass && !covered) {
       // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
       // unverifiedPass set: the gate is genuinely not green, so the block names
       // the evidence contract. The legacy no-gate-pass path stays byte-identical
@@ -409,7 +541,9 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
           // so the refusal is forensically reconstructable.
           ...(search ? { searched: searchedSessionIds(sessionID, search) } : {}),
         })
-        throw new BlockError(unverifiedBlockMessage(sessionID, search))
+        throw new BlockError(
+          unverifiedBlockMessage(sessionID, search) + waiverStateNote(s, config.agents.reviewer),
+        )
       }
       journaler.journal({
         type: "blocked",
@@ -421,17 +555,17 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
           `Run the ${config.agents.testRunner} subagent first; dispatch ${config.agents.reviewer} only after its first line is ` +
           "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).` +
+          waiverStateNote(s, config.agents.reviewer),
       )
     }
     // Check-then-increment: the Nth dispatch is allowed and the (N+1)th is
     // blocked, so exactly `maxReviewerRounds` dispatches succeed per task.
-    // A waiver is an explicit per-dispatch user escape, so it bypasses the
-    // cap without counting toward it — the cap bounds the unwaived re-dispatch
-    // loop only. The waiver is consumed by the dispatch that unlocks it (per
-    // the historical quote-consumption semantics), so a stale task waiver
-    // cannot grant a later reviewer dispatch.
-    if (!waived) {
+    // Three-way final mutation: an unwaived dispatch advances the ordinary
+    // cap and the ensemble count; a scoped-waived dispatch spends one
+    // allowance slot; a covered unscoped waiver is consumed (it cannot grant
+    // a later reviewer dispatch).
+    if (!covered) {
       s.reviewRounds++
       // Count this unwaived reviewer dispatch toward the landing gate's
       // ensemble; journaled so the count is restart-sticky.
@@ -442,7 +576,13 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         agent: config.agents.reviewer,
         count: s.reviewerDispatches,
       })
-    } else s.userWaiver = ""
+    } else if (scoped) {
+      s.reviewWaiverRounds++
+    } else {
+      s.userWaiver = ""
+      s.userWaiverScope = []
+      s.userWaiverConsumed = true
+    }
   }
 
   /**
@@ -544,8 +684,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
 
   /**
    * Enforces the per-leg loop caps and the per-task total-dispatch budget.
-   * Waiver exempts the whole task (both the leg caps and the budget) without
-   * counting. A leg cap exhausted throws a loop-cap block naming the leg; the
+   * A waiver covering the dispatched stage exempts its leg cap and the total
+   * budget without counting (an unscoped waiver covers every stage — the
+   * legacy whole-task exemption). A leg cap exhausted throws a loop-cap block
+   * naming the leg; the
    * total budget exhausted throws a dispatch-budget block. Either way the
    * dispatcher is looping, so both journal an `escalation` entry and throw a
    * STOP-and-escalate `BlockError`. Increments the dispatched leg's counter and
@@ -559,10 +701,11 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    */
   function guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void {
     const s = ledger.state(sessionID)
-    // Waiver exempts the whole task (leg caps AND the total budget) without
-    // counting: a loop the user explicitly waived is bounded by the user, not
-    // the plugin (mirrors the plan-gate task-wide exemption).
-    if (s.userWaiver !== "") return
+    // A waiver covering the dispatched stage exempts its leg cap and the
+    // total budget without counting: a loop the user explicitly waived is
+    // bounded by the user, not the plugin. An unscoped waiver covers every
+    // stage (the legacy whole-task exemption, byte-identical).
+    if (waiverCovers(s, [agent])) return
 
     const leg = resolveDispatchLeg(agent)
     // Per-leg loop cap: the dispatching leg has hit its cap — the leg is
@@ -954,8 +1097,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, or an
    * approved verdict is not red; otherwise red) so the evaluate handler and the
    * enforcing dispatch decide escalation from the exact same scan. Waiver and
-   * approval are folded into `red`: a red result implies a non-empty waiver is
-   * absent and `hasPlanVerdict` is false, so the caller only tests `red`. The
+   * approval are folded into `red`: a red result implies the task's waiver
+   * does not cover this gate's stage group (no live waiver, or a waiver
+   * scoped to other stages) and `hasPlanVerdict` is false, so the caller only
+   * tests `red`. The
    * red preview names the resolved active plan (prompt-named, then
    * session-bound, then the first sorted fallback) — the same plan the
    * enforcement would act on, so a stale bound approval's ask still names
@@ -973,7 +1118,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     prompt?: string,
   ): { red: boolean; summary?: { file: string; head: string } } {
     const s = ledger.state(sessionID)
-    if (s.userWaiver !== "") return { red: false }
+    if (waiverCovers(s, planGateStages)) return { red: false }
     const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return { red: false }
@@ -1111,8 +1256,15 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * rather than a silent mismatch. The block message names the resolved
    * active plan (prompt-named, then session-bound, then first sorted).
    * The waiver is the task's prompt-channel waiver
-   * (`ledger.state().userWaiver`, captured from the user prompt): non-empty
-   * waives this gate for the whole task (not per dispatch).
+   * (`ledger.state().userWaiver`, captured from the user prompt): a waiver
+   * covers every gate while unscoped (the reviewer gate consumes an unscoped
+   * waiver on the first dispatch it unlocks); naming configured agent names
+   * in the waiver text scopes it to those stages' gates — this gate is
+   * covered by either its plan-reviewer or executor stage name — and a
+   * scoped waiver stays live until that stage's waiver allowance is spent,
+   * metered separately from the ordinary dispatch caps; a new user prompt
+   * drops the waiver. A waiver covering this gate is never consumed (the
+   * plan gate is sticky).
    * @param sessionID The parent session ID.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
@@ -1127,7 +1279,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     prompt?: string,
   ): void {
     const s = ledger.state(sessionID)
-    if (s.userWaiver !== "") {
+    if (waiverCovers(s, planGateStages)) {
       journaler.journal({
         type: "plan",
         sessionID,
@@ -1159,7 +1311,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       throw new BlockError(
         `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
-          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).`,
+          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).` +
+          waiverStateNote(s, `${config.agents.executor} or ${config.agents.planReviewer}`),
       )
     }
   }
