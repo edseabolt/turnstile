@@ -174,6 +174,18 @@ a gate, so the channel is checked, not the text.
   separately from the ordinary dispatch caps). A new user prompt drops the
   waiver; a blocked dispatch reports whether a waiver is live, out of scope,
   or consumed.
+
+  A waiver-admitted reviewer dispatch never counts toward the reviewer
+  ensemble: under `reviewEnsemble: enforce` a fully waived review leaves the
+  landing gate red — it is released only by the human permission ask, never
+  by the waived verdict.
+
+  Only the reviewer stage meters waiver exemptions (on `reviewWaiverRounds`,
+  max `maxReviewerRounds` dispatches); a waiver covering another stage
+  exempts that leg's loop cap and the total dispatch budget without counting
+  — by design, a planner-scoped waiver permits an unbounded planner loop
+  within the task; the bound is the user's own prompt.
+
 - **Prompt-channel approval.** Put `PLAN APPROVED:` in your prompt to approve
   the plan the same way a plan-reviewer `VERDICT: APPROVE` would; it records
   human provenance and replays across restart like a reviewer verdict.

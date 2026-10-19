@@ -40,6 +40,12 @@ const NO_GATE_MESSAGE =
   "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
   "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
+/** The exact plan-approval gate message. */
+const NO_PLAN_MESSAGE =
+  `BLOCKED by turnstile: no plan approval for "plan.md". Dispatch the plan-reviewer subagent first; proceed with executor only after the plan-reviewer's first line is ` +
+  "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
+  "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
+
 /** The base reviewer round-limit block message (before any appended clause). */
 const ROUND_LIMIT_MESSAGE =
   "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)."
@@ -48,6 +54,24 @@ const ROUND_LIMIT_MESSAGE =
  *  allowance of waiver-unblocked dispatches is exhausted. */
 const ALLOWANCE_CLAUSE =
   " The scoped waiver's allowance of 2 waiver-unblocked dispatches is exhausted; obtain a new waiver or escalate to the user."
+
+/** The clause a plan-gate block appends when the live waiver is scoped to a
+ *  stage outside the plan gate's stage group (the reviewer stage here). */
+const PLAN_OUT_OF_SCOPE_REVIEWER_CLAUSE =
+  " A user waiver is live this task but is scoped to: reviewer — it does not cover this gate; name executor or plan-reviewer in a new waiver or escalate."
+
+/** The base planner loop-cap block message (before any appended clause). */
+const PLANNER_LOOP_CAP_BASE =
+  "BLOCKED by turnstile: planner dispatch limit (3) reached this task — the pipeline is looping. STOP: do not re-dispatch planner. Escalate to the user: report the repeated planner failures and wait for new instructions (a new user prompt resets the caps; raise maxPlannerRounds in your config to widen the cap)."
+
+/** The clause a planner block appends when the live waiver is scoped to a
+ *  stage outside the planner leg (the reviewer stage here). */
+const PLANNER_OUT_OF_SCOPE_CLAUSE =
+  " A user waiver is live this task but is scoped to: reviewer — it does not cover this gate; name the planner stage in a new waiver or escalate."
+
+/** The base dispatch-budget block message (before any appended clause). */
+const DISPATCH_BUDGET_MESSAGE =
+  "BLOCKED by turnstile: task dispatch budget (16) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget)."
 
 /** Boots the plugin in a temp project dir containing a plan file, so the
  *  plan gate is live. */
@@ -238,10 +262,7 @@ test("a reviewer-scoped waiver leaves the plan gate blocked with the out-of-scop
           sessionID: "p1",
           input: { agent: "executor", prompt: "do the work" },
         }),
-      (e: Error) =>
-        e.message.includes(
-          "A user waiver is live this task but is scoped to: reviewer — it does not cover this gate; name executor or plan-reviewer in a new waiver or escalate.",
-        ),
+      (e: Error) => e.message === NO_PLAN_MESSAGE + PLAN_OUT_OF_SCOPE_REVIEWER_CLAUSE,
     )
   } finally {
     restore()
@@ -255,7 +276,7 @@ test("a reviewer-scoped waiver leaves the plan gate blocked with the out-of-scop
  *  counters untouched; the next dispatch blocks with the allowance clause;
  *  a prompt reset clears the allowance (task-scoped). */
 test("the waiver allowance is metered apart from the replayed round cap", () => {
-  const { gates, ledger } = bootGates()
+  const { gates, ledger, metricsDir } = bootGates()
   const s = ledger.state("p1")
   // A journal-replayed pre-waiver dispatch: one ordinary round spent.
   s.reviewRounds = 1
@@ -274,6 +295,13 @@ test("the waiver allowance is metered apart from the replayed round cap", () => 
   assert.throws(
     () => gates.guardReviewerDispatch("p1", ledger),
     (e: Error) => e instanceof BlockError && e.message === ROUND_LIMIT_MESSAGE + ALLOWANCE_CLAUSE,
+  )
+  // The refused dispatch journals no WAIVED entry: the count still reflects
+  // only the two admitted dispatches.
+  assert.equal(
+    journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "WAIVED").length,
+    2,
+    "the refused dispatch journals no WAIVED entry",
   )
   // A prompt reset clears the allowance counter (task-scoped).
   ledger.resetState("p1")
@@ -302,9 +330,7 @@ test("a reviewer-scoped waiver does not exempt the capped planner leg", () => {
   assert.throws(
     () => gates.guardDispatchBudget("p1", ledger, "planner"),
     (e: Error) =>
-      e instanceof BlockError &&
-      e.message ===
-        "BLOCKED by turnstile: planner dispatch limit (3) reached this task — the pipeline is looping. STOP: do not re-dispatch planner. Escalate to the user: report the repeated planner failures and wait for new instructions (a new user prompt resets the caps; raise maxPlannerRounds in your config to widen the cap).",
+      e instanceof BlockError && e.message === PLANNER_LOOP_CAP_BASE + PLANNER_OUT_OF_SCOPE_CLAUSE,
   )
   const entries = journalEntries(metricsDir)
   assert.ok(
@@ -329,6 +355,32 @@ test("an unscoped waiver keeps the whole-task budget exemption", () => {
     ledger.state("p1").totalDispatches,
     0,
     "the unscoped waiver exempts without counting",
+  )
+})
+
+/** A reviewer-scoped waiver does not exempt the total budget: an exhausted
+ *  task still blocks on the dispatch budget, and the block reports the live
+ *  waiver's scope and names the stage a new waiver would need to cover. */
+test("a reviewer-scoped waiver does not exempt the exhausted dispatch budget", () => {
+  const { gates, ledger, metricsDir } = bootGates()
+  const s = ledger.state("p1")
+  s.userWaiver = "USER WAIVER: I approve the reviewer"
+  s.userWaiverScope = ["reviewer"]
+  s.totalDispatches = 16 // the default maxTotalDispatches
+  assert.throws(
+    () => gates.guardDispatchBudget("p1", ledger, "planner"),
+    (e: Error) =>
+      e instanceof BlockError &&
+      e.message === DISPATCH_BUDGET_MESSAGE + PLANNER_OUT_OF_SCOPE_CLAUSE,
+  )
+  const entries = journalEntries(metricsDir)
+  assert.ok(
+    entries.some((l) => l.type === "blocked" && l.reason === "dispatch-budget"),
+    "the budget block is journaled",
+  )
+  assert.ok(
+    entries.some((l) => l.type === "escalation" && l.reason === "dispatch-budget"),
+    "the budget escalation is journaled",
   )
 })
 

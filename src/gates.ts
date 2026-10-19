@@ -366,7 +366,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   }
 
   /**
-   * Renders the waiver-state clause appended to a gate block message so a
+   * Renders the waiver-state clause appended to a block message so a
    * refused dispatch reports whether a waiver is live-but-out-of-scope or
    * already consumed. Exactly two reachable non-empty arms. Reachability
    * invariant: every block site is gated on `!waiverCovers(...)`, so a live
@@ -506,7 +506,6 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     const s = ledger.state(sessionID)
     const covered = waiverCovers(s, [config.agents.reviewer])
     const scoped = covered && s.userWaiverScope.length > 0
-    if (covered) journalReviewerWaiver(sessionID, s)
     // Two independently bounded pools: the scoped-waiver allowance
     // (reviewWaiverRounds) and the ordinary unwaived cap (reviewRounds). A
     // covered unscoped waiver is fully cap-exempt (neither test fires).
@@ -526,6 +525,10 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         waiverStateNote(s, config.agents.reviewer),
       )
     }
+    // Journal the WAIVED transition only after the allowance checks admit
+    // the dispatch: a dispatch refused on the cap must not record a waived
+    // gate transition that never happened.
+    if (covered) journalReviewerWaiver(sessionID, s)
     if (!s.hasGatePass && !covered) {
       // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
       // unverifiedPass set: the gate is genuinely not green, so the block names
@@ -690,7 +693,11 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * naming the leg; the
    * total budget exhausted throws a dispatch-budget block. Either way the
    * dispatcher is looping, so both journal an `escalation` entry and throw a
-   * STOP-and-escalate `BlockError`. Increments the dispatched leg's counter and
+   * STOP-and-escalate `BlockError`. A waiver covering the dispatched stage
+   * returns before either check, so when a block fires a live waiver is
+   * necessarily out of scope or already consumed — each block appends
+   * `waiverStateNote` so the message reports that state ("" otherwise).
+   * Increments the dispatched leg's counter and
    * `totalDispatches`; the reviewer has no leg and is counted toward the budget
    * solely here (single-count point — never in guardReviewerDispatch).
    * @param sessionID The parent session ID.
@@ -731,7 +738,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       })
       journaler.traceEvent(agent, "loop-cap", "cap exhausted; escalate", sessionID)
       throw new BlockError(
-        `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
+        `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).` +
+          waiverStateNote(s, `the ${agent} stage`),
       )
     }
     // Global backstop: the task has dispatched more than maxTotalDispatches
@@ -760,7 +768,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       })
       journaler.traceEvent(agent, "dispatch-budget", "budget exhausted; escalate", sessionID)
       throw new BlockError(
-        `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).`,
+        `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).` +
+          waiverStateNote(s, `the ${agent} stage`),
       )
     }
     // Check-then-increment: the leg counter then the total budget advance. The
