@@ -101,7 +101,10 @@ counted into the load heartbeat (`type:"setup"`).
   session a live parent, performs `resetState` (with optional
   continuation-carry via `fingerprint.ts` when the worktree is unchanged),
   clears evidence and latches, and captures `USER WAIVER:` / `PLAN APPROVED:`
-  literals.
+  literals. It also scans the text for marker-shaped near misses of the two
+  literals (case, separator, or colon variants) — diagnostic-only: the strict
+  literal capture is untouched, the hits are journaled `type:"marker"` and
+  parked for one-shot surfacing.
 - **`generate`** → decoding clamps: reviewer/plan-reviewer temperature forced
   to 0; executor/test-runner/debugger clamped ≤ 0.2.
 - **`compaction`** → appends a system block demanding verbatim preservation of
@@ -126,6 +129,9 @@ counted into the load heartbeat (`type:"setup"`).
 **`tool.hook("execute.after")`** — observation only, never blocks: first surfaces any
 config-validation warnings once per load (a `[turnstile] config:` block
 prepended to the first string-output result, journaled `type:"config"`), then
+surfaces pending near-miss marker diagnostics once per prompt batch (a
+`[turnstile] marker:` block prepended to the first string-output result of a
+parent with a parked hit, journaled `type:"marker"` / `surfaced`), then
 parses markers out of task deliveries, attributes plan verdicts, credits reviewer
 approval (ensemble-gated), appends the per-delivery `PIPELINE:` status tail
 (skipped when the delivery's agent is not a pipeline stage), prepends the
@@ -242,10 +248,10 @@ continuing prompt has an unchanged worktree fingerprint.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (18 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (19 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
-  `escalation`, `permission`, `attribution`, `policy`, `config`, `continuation`,
-  `evidence`, `violation`, `tool`, `error`, `suppressed`). A `dispatch` entry is written at
+  `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
+  `continuation`, `evidence`, `violation`, `tool`, `error`, `suppressed`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -263,6 +269,23 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   (fail-open). It is replay-inert (a surface record, not gate state) and never
   re-journaled — the warnings themselves are journaled exactly once by the
   config layer, so this entry is a count-only audit, not a second copy.
+  A `marker` entry is the near-miss diagnostic for a prompt that mistypes a
+  prompt-channel marker literal: at admission the text is scanned for
+  marker-shaped variants (case, separator, or colon) of the configured
+  `waiverMarker` / `approvalMarker`, and each hit is journaled
+  `{type:"marker", event:"near-miss", sessionID, found, literal}` — `found`
+  is the matched token, `literal` the exact configured string; the prompt
+  text itself is never journaled. The hit is parked per parent session and,
+  on that parent's next string-output tool delivery (a child delivery keys to
+  its parent), is surfaced once as a `[turnstile] marker:` block naming the
+  exact literal, with a surface audit
+  `{type:"marker", event:"surfaced", sessionID, surfaced:true, count}` — or
+  `surfaced:false, error` when the prepend threw (fail-open; the diagnostic
+  retries on the next delivery). A new user prompt drops any undelivered
+  diagnostic (task-scope lifecycle, like the other latches). The entries are
+  replay-inert and status-inert: a near miss admits nothing — gate semantics
+  stay strict-literal — so neither `replayGatePasses` nor the status
+  aggregate reads them.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `rotateEveryEntries` appends (default 512), only under a

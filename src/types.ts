@@ -518,6 +518,15 @@ export interface MarkerEvent {
   authority?: "suppressed"
 }
 
+/** One marker-shaped near miss found in user prompt text: the exact token
+ * that was seen (`found`), which gate it tried to move (`label`, e.g.
+ * "waiver"), and the exact configured literal it must match (`literal`). */
+export interface MarkerNearMiss {
+  found: string
+  label: string
+  literal: string
+}
+
 /**
  * The latest `VERDICT:` marker observation for a single child session and the
  * provenance label of the pipeline that carried it. The store is

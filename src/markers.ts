@@ -10,7 +10,13 @@
  * events byte-identical to legacy output).
  */
 
-import type { GateEvidenceMode, GateState, MarkerEvent, TaskInput } from "./types.ts"
+import type {
+  GateEvidenceMode,
+  GateState,
+  MarkerEvent,
+  MarkerNearMiss,
+  TaskInput,
+} from "./types.ts"
 
 // `export const` keeps the regex literals load-bearing for
 // scripts/check-markers.mjs, which extracts them by name and asserts the
@@ -80,6 +86,91 @@ export function compileMarkerRegex(
     onFallback?.(cause)
     return fallback
   }
+}
+
+/**
+ * Escapes one space-separated word of a marker literal for embedding in a
+ * RegExp source, neutralizing the metacharacters `[.*+?^${}()|[\]\\]` so a
+ * custom literal cannot throw at compile time.
+ * @param word The literal word to escape.
+ * @returns The regex-escaped word.
+ */
+function escapeNearMissWord(word: string): string {
+  return word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Scans user prompt text for marker-shaped near misses of the configured
+ * waiver/approval literals. Pure with respect to journal and state: the
+ * caller journals the returned hits and renders the surface block. A near miss
+ * is a token resembling an exact literal under a case variant, a separator
+ * variant (space ⇄ underscore), or a colon variant (zero, one, or two colons)
+ * — but never byte-identical to it. When the text contains a literal verbatim
+ * the gate path already speaks for itself, so that literal's scan is skipped
+ * entirely (a prompt that quotes a marker in prose while correctly using it is
+ * not flagged twice). Word-boundary guards reject substring hits inside longer
+ * words; the case-insensitive flag plus the `found !== literal` filter makes
+ * the case class diagnostic-only. Matches use `String.match`, so the `g` flag's
+ * `lastIndex` state is not an issue (see the note at `compileMarkerRegex`).
+ * @param text The user prompt text to scan.
+ * @param literals The configured literals to probe, each with the gate label
+ *     a hit tried to move (e.g. "waiver", "plan approval").
+ * @param maxPerLiteral Cap on distinct near-miss tokens reported per literal
+ *     (default 3).
+ * @returns Near-miss hits in first-seen order, deduped per literal.
+ */
+export function findMarkerNearMisses(
+  text: string,
+  literals: ReadonlyArray<{ literal: string; label: string }>,
+  maxPerLiteral = 3,
+): MarkerNearMiss[] {
+  const hits: MarkerNearMiss[] = []
+  if (text === "") return hits
+  for (const { literal, label } of literals) {
+    if (literal.trim() === "") continue
+    if (text.includes(literal)) continue
+    const words = literal.replace(/:+$/, "").split(/\s+/).filter(Boolean)
+    if (words.length === 0) continue
+    const core = words.map(escapeNearMissWord).join("[\\s_]+")
+    const pattern = new RegExp("(?<![\\w_])" + core + ":{0,2}(?![\\w_])", "gi")
+    const seen = new Set<string>()
+    let count = 0
+    for (const match of text.match(pattern) ?? []) {
+      if (match === literal || seen.has(match)) continue
+      seen.add(match)
+      count += 1
+      hits.push({ found: match, label, literal })
+      if (count >= maxPerLiteral) break
+    }
+  }
+  return hits
+}
+
+/**
+ * Renders marker near-miss hits as a compact, model-facing block for the
+ * prompt-admission surfacing in `src/setup.ts`. Pure and side-effect free
+ * (throws nothing), mirroring `formatConfigWarnings`: a fixed header carries
+ * the count and the journal path, one `- ` line per hit up to `maxLines`, and
+ * a tail naming the hidden remainder past `maxLines` (the journal holds every
+ * hit). The exact configured literal is named on each line so the model can
+ * retry with the byte-exact string; nothing here moves a gate.
+ * @param hits The near-miss hits to render (first-seen order).
+ * @param journalPath Absolute path of the JSONL journal (named in the header).
+ * @param maxLines Maximum hit lines before the truncation tail (default 3).
+ * @returns The formatted `[turnstile] marker:` block.
+ */
+export function formatNearMissDiagnostics(
+  hits: MarkerNearMiss[],
+  journalPath: string,
+  maxLines = 3,
+): string {
+  const header = `[turnstile] marker: ${hits.length} near-miss marker(s) — the strict literal is required (journal: ${journalPath}):`
+  const shown = hits.slice(0, maxLines)
+  const tail = hits.length > maxLines ? `\n(${hits.length - maxLines} more; see the journal)` : ""
+  const lines = shown.map(
+    (h) => `- found "${h.found}" — the ${h.label} marker is "${h.literal}" (exact string)`,
+  )
+  return [header, ...lines].join("\n") + tail
 }
 
 /**

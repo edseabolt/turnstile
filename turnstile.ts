@@ -144,7 +144,13 @@
  *   it), or an explicit user waiver captured at prompt admission — a
  *   `USER WAIVER:` literal in the user's prompt through the `session` prompt
  *   hook or the correlated `session.inbox.enqueued` stream carrying the same
- *   host message id. Under the default `gateEvidence:enforce`
+ *   host message id. A marker-shaped near-miss of either prompt-channel
+ *   literal (`USER WAIVER:` / `PLAN APPROVED:` — a case, separator, or colon
+ *   variant) is never admitted: the strict capture is byte-identical, the hit
+ *   is journaled as a `marker`/`near-miss` entry, and it surfaces once as a
+ *   `[turnstile] marker:` block on the session's next string tool output,
+ *   naming the exact expected literal (diagnostic-only, no gate effect).
+ *   Under the default `gateEvidence:enforce`
  *   mode a `GATE: PASS` satisfies the gate only when the current task's
  *   bash/shell executions include a matching exit-0 test command (plausibility
  *   via `evidencePattern`); an unverified PASS is journaled `verified:false`
