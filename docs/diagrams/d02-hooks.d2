@@ -19,7 +19,7 @@ permission: "permission.hook('evaluate')\nnever blocks, forces 'ask'" {
 
 tool: "tool.hook" {
   before: "execute.before\n(all gating lives here)"
-  after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\")"
+  after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\",\nnear-miss diagnostics → type:\"marker\")"
 }
 
 before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸\none-grants ▸ dispatch journaled at guard exit"

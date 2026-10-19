@@ -22,6 +22,8 @@ import {
   compileMarkerRegex,
   parseGateMarkers,
   deTokenizeMarker,
+  findMarkerNearMisses,
+  formatNearMissDiagnostics,
   GATE_RE,
   VERDICT_RE,
 } from "./markers.ts"
@@ -44,6 +46,7 @@ import type {
   GenerateDraft,
   Host,
   MarkerEvent,
+  MarkerNearMiss,
   PermissionEvaluateEvent,
   PromptHookProperties,
   SessionRecord,
@@ -488,6 +491,66 @@ export function createTurnstile(
     journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
   }
   const ledger: GateLedger = createLedger(journaler.journalPath, config.maxSessions)
+  // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
+  // Hits are detected and journaled at prompt admission (see admitPrompt) and
+  // parked here; the session's next string-output tool delivery surfaces them
+  // once as a `[turnstile] marker:` block — the same model-facing channel as
+  // the config-warning and read-budget blocks. A blocked dispatch never reaches
+  // execute.after, so the diagnostic lands on the next string output. Bounded
+  // like the admission dedupe set: FIFO-evict the oldest parent past the cap.
+  const nearMissPending = new Map<string, MarkerNearMiss[]>()
+  // Cap on parents holding pending near-miss diagnostics (bounded memory).
+  const maxTrackedNearMiss = 16
+  /**
+   * Bounds the pending near-miss map by evicting its oldest parents.
+   * Mirrors boundAdmittedIds; Map insertion order is the eviction order.
+   */
+  function boundNearMissPending(): void {
+    while (nearMissPending.size > maxTrackedNearMiss) {
+      const oldest = nearMissPending.keys().next().value as string
+      nearMissPending.delete(oldest)
+    }
+  }
+  /**
+   * Surfaces pending near-miss marker diagnostics once into the model context
+   * by prepending a `[turnstile] marker:` block to the first tool result with
+   * string output for a parent that has a pending entry — the same channel as
+   * `surfaceConfigWarnings`. The hits were already journaled at detection
+   * (prompt admission), so this entry is a surface audit only (surfaced/count),
+   * not a second copy. Fail-open: a throwing mutation journals
+   * `{type:"marker", event:"surfaced", surfaced:false}` and never blocks the
+   * tool; a non-string output retries on the next delivery (the pending entry
+   * stays). Child deliveries surface to their parent (same keying as the
+   * read-budget warning); an unregistered child self-keys.
+   * @param event The `execute.after` tool hook payload.
+   */
+  function surfaceNearMissDiagnostics(event: ToolHookEvent): void {
+    const sessionID = ledger.parentOf(asSessionID(event?.sessionID))
+    const hits = nearMissPending.get(sessionID)
+    if (!hits || hits.length === 0) return
+    if (!event?.result || typeof event.result.output !== "string") return
+    try {
+      event.result.output =
+        formatNearMissDiagnostics(hits, journaler.journalPath) + "\n" + event.result.output
+      nearMissPending.delete(sessionID)
+      journaler.journal({
+        type: "marker",
+        event: "surfaced",
+        sessionID,
+        surfaced: true,
+        count: hits.length,
+      })
+    } catch (e) {
+      journaler.journal({
+        type: "marker",
+        event: "surfaced",
+        sessionID,
+        surfaced: false,
+        count: hits.length,
+        error: String(e),
+      })
+    }
+  }
   const gates: Gates = createGates(config, journaler)
   // Stateless denylist for bash/shell and write/edit tools in execute.before
   // regexes compile once here; it throws the same BlockError gates
@@ -1789,6 +1852,10 @@ export function createTurnstile(
       // to the previous task scope too: a new prompt drops it, so the new
       // task starts from a pure first block again.
       pendingLandingAsk.delete(sessionID)
+      // A prompt reset also drops undelivered near-miss diagnostics: they
+      // belong to the previous task scope. The scan below re-seeds within the
+      // same admission, so a new prompt's own near misses still surface.
+      nearMissPending.delete(sessionID)
       // Waiver capture (prompt channel): the user's text following the
       // waiver marker waives both gates for the whole task. Read + capture
       // in one guarded block; a coercion that throws (a malformed prompt
@@ -1834,6 +1901,42 @@ export function createTurnstile(
       } catch (e) {
         // Fail-open: approval capture never blocks a prompt.
         journaler.journal({ type: "error", error: `approval capture: ${e}` })
+      }
+      // Near-miss marker scan (diagnostic-only): a prompt that mistypes the
+      // waiver/approval literal (case, separator, or colon variant) admits
+      // nothing — the strict `indexOf` capture above is untouched — but is
+      // journaled as a `marker`/`near-miss` entry and parked for surfacing so
+      // the model learns the exact expected string instead of guessing. Only
+      // the matched token and the configured literal are journaled, never the
+      // prompt text (redaction contract, mirrors the bash `command` note). The
+      // distinct `marker near-miss:` error key keeps the two existing
+      // fail-open tests (which filter by `waiver capture:` / `approval
+      // capture:`) green on a hostile-getter prompt. Fail-open: a coercion that
+      // throws is journaled and swallowed, never thrown at the host.
+      try {
+        const nearMissText = promptTextOf(properties)
+        const hits = findMarkerNearMisses(nearMissText, [
+          { literal: config.waiverMarker, label: "waiver" },
+          { literal: config.approvalMarker, label: "plan approval" },
+        ])
+        if (hits.length > 0) {
+          const pending = nearMissPending.get(sessionID) ?? []
+          for (const hit of hits) {
+            journaler.journal({
+              type: "marker",
+              event: "near-miss",
+              sessionID,
+              found: hit.found,
+              literal: hit.literal,
+            })
+            pending.push(hit)
+          }
+          nearMissPending.set(sessionID, pending)
+          boundNearMissPending()
+        }
+      } catch (e) {
+        // Fail-open: the near-miss scan never blocks a prompt.
+        journaler.journal({ type: "error", error: `marker near-miss: ${e}` })
       }
       // Misconfiguration telemetry: if none of the three candidate text keys
       // (`text` / `prompt` / `prompt.text`) holds a non-empty string, the prompt
@@ -2260,12 +2363,15 @@ export function createTurnstile(
             // Invariant: this runs BEFORE the injection below, so on a task
             // delivery carrying every surface the output reads
             // ORCHESTRATOR_POLICY (prepended head), then `[turnstile]
-            // config:` (once-per-plugin-load block), then the child's own
-            // output, then the appended PIPELINE: status line (last —
-            // per-delivery, so it lands even on a delivery whose policy head
-            // already landed). All fail-open; the head and config block are
-            // once-per-scope, the status tail is per-delivery.
+            // config:` (once-per-plugin-load block), then `[turnstile]
+            // marker:` (once-per-prompt near-miss diagnostics), then the
+            // child's own output, then the appended PIPELINE: status line
+            // (last — per-delivery, so it lands even on a delivery whose
+            // policy head already landed). All fail-open; the head, config
+            // block, and marker block are once-per-scope, the status tail is
+            // per-delivery.
             surfaceConfigWarnings(event)
+            surfaceNearMissDiagnostics(event)
             if (event?.tool === "task" || event?.tool === "subagent") {
               // One shape decision per delivery: marker parsing, the
               // bare-output check, and policy injection all read the
