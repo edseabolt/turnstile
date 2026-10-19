@@ -387,14 +387,18 @@ export interface GateLedger {
  * different diagnostic message. Both restore loops
  * tag the bucket with `replayGrace` — the one-prompt survival window for the
  * first post-restart prompt; both loops touch the same bucket object when a
- * session has both a gate and a plan result, so the tag is set once. A
- * restored `hasPlanVerdict` is trusted for exactly the current plans-dir state
- * (no signature is journaled, so it stamps an empty ""), which the grace
- * prompt's executor dispatch accepts once and re-stamps via reconcilePlanStamp
- * — edits _after_ restart still invalidate the restored approval. A plan
+ * session has both a gate and a plan result, so the tag is set once. A plan
  * APPROVE entry may carry the bound identity fields `plan` (file name) and
  * `planKey` (that file's content hash); when present they restore
- * `approvedPlan`/`approvedPlanKey` (absent or non-string → unbound ""). A
+ * `approvedPlan`/`approvedPlanKey` (absent or non-string → unbound ""). It
+ * may also carry `plansSig` (the plans-dir content signature stamped at
+ * approval); when present it restores `plansSignature`, so a restored
+ * unbound verdict is validated against the current dir like a live one — a
+ * plan edited while the process was down drops it (`signature-mismatch`
+ * STALE) instead of riding the accept-once window. A field-less or
+ * non-string entry restores the empty stamp, which the grace prompt's
+ * executor dispatch accepts once and re-stamps via reconcilePlanStamp —
+ * edits _after_ restart still invalidate the restored approval. A
  * restored *bound* verdict is stricter than the unbound accept-once rule: it
  * is validated against the current files immediately on the next enforcing
  * dispatch (bound plan edited or removed → stale, no accept-once window).
@@ -428,10 +432,15 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         fs.readFileSync(p, "utf8").split("\n").filter(Boolean),
       )
       const lastGateResult = new Map<string, string>()
-      // The last flipping plan entry per session: the result plus the bound
+      // The last flipping plan entry per session: the result, the bound
       // identity fields (plan/planKey) so a fielded APPROVE restores a bound
-      // approval and a field-less legacy line restores unbound.
-      const lastPlanResult = new Map<string, { result: string; plan: unknown; planKey: unknown }>()
+      // approval, and the journaled dir signature (plansSig) so a stamped
+      // APPROVE restores its stamp; a field-less legacy line restores
+      // unbound and unstamped.
+      const lastPlanResult = new Map<
+        string,
+        { result: string; plan: unknown; planKey: unknown; sig: unknown }
+      >()
       const lastReviewVerdict = new Map<string, string>()
       // The last ensemble entry per session. lastEnsemble is the restored
       // count; lastRefusedApprove records that entry's refusal state, which the
@@ -459,6 +468,7 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
             refusedApprove?: unknown
             plan?: unknown
             planKey?: unknown
+            plansSig?: unknown
           }
           if (e.type === "gate" && e.sessionID && (e.result === "PASS" || e.result === "FAIL")) {
             // Flipping-entry rule (map-fill, not the restore loop): an
@@ -478,6 +488,7 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
               result: e.result,
               plan: e.plan,
               planKey: e.planKey,
+              sig: e.plansSig,
             })
           }
           // Reviewer-APPROVE restore (landing gate): a `VERDICT:
@@ -542,6 +553,10 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
         // stricter than the unbound accept-once rule.
         s.approvedPlan = typeof entry.plan === "string" ? entry.plan : ""
         s.approvedPlanKey = typeof entry.planKey === "string" ? entry.planKey : ""
+        // A restored unbound verdict flows into the existing signature check
+        // instead of the accept-once arm; "" keeps legacy and unstampable
+        // approvals on the documented accept-once path.
+        s.plansSignature = typeof entry.sig === "string" ? entry.sig : ""
         states.set(sessionID, s)
       }
       for (const [sessionID, result] of lastReviewVerdict) {

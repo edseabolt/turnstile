@@ -986,6 +986,212 @@ test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stam
 })
 
 /**
+ * Computes the plans-dir content signature the same way a live approval
+ * stamps it, so fixtures can derive an expected stamp without hand-building
+ * the key.
+ * @param project The project directory whose plans dir is signed.
+ * @returns The dir content signature, or "" when the dir is absent/unreadable.
+ */
+function dirSignature(project: string): string {
+  const journaler = createJournaler({
+    metricsDir: tmpDir(),
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+  })
+  const gates = createGates(defaultConfig(), journaler)
+  return gates.plansSignature(project) ?? ""
+}
+
+/**
+ * An unbound APPROVE delivered on the edge child journals the stamped
+ * plans-dir signature with the plan entry (and no bound identity), so a
+ * later restart can replay the stamp and re-validate the approval against
+ * the dir.
+ */
+test("plan gate: an unbound APPROVE journals the stamped plans-dir signature", async () => {
+  const { h, metricsDir, restore, project } = await bootWithPlan()
+  try {
+    await reviewRound(h, "p1", "c1", "review the plan", APPROVE)
+    const entry = journalEntries(metricsDir).find(
+      (l) => l.type === "plan" && l.result === "APPROVE" && l.raw === "c1",
+    )
+    assert.ok(entry, "the edge delivery journaled an unbound APPROVE")
+    assert.equal(entry?.plansSig, dirSignature(project), "the journaled stamp is the dir signature")
+    assert.equal(entry?.plan, undefined, "an unbound approval journals no plan identity")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A replayed unbound approval whose journaled signature no longer matches
+ * the current plans dir — the plan was edited while the process was down —
+ * is dropped on the first enforcing dispatch: the executor is blocked
+ * naming the plan and a signature-mismatch STALE entry is journaled.
+ */
+test("plan gate: an offline plan edit invalidates the replayed approval", async () => {
+  const project = tmpDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  const planPath = path.join(plansDir, "plan.md")
+  fs.writeFileSync(planPath, "# P\n")
+  const preSig = dirSignature(project)
+  assert.notEqual(preSig, "", "the pre-edit signature is a real dir key")
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      marker: APPROVE,
+      plansSig: preSig,
+    }) + "\n",
+  )
+  // The offline edit: the plan changes while the process is down.
+  fs.writeFileSync(planPath, "# P revised\n")
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      /no plan approval for "plan\.md"/,
+    )
+    const stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
+    assert.equal(stale.length, 1, "exactly one signature-mismatch drop is journaled")
+    assert.equal(stale[0]?.reason, "signature-mismatch")
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * A replayed unbound approval whose journaled signature matches the current
+ * plans dir passes the first enforcing dispatch, re-stamps idempotently
+ * (a second dispatch still passes, no STALE entry), and the gate snapshot
+ * renders the restored stamp as known.
+ */
+test("plan gate: a matching replayed signature passes and re-stamps idempotently", async () => {
+  const project = tmpDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  fs.writeFileSync(path.join(plansDir, "plan.md"), "# P\n")
+  const sig = dirSignature(project)
+  assert.notEqual(sig, "", "the signature is a real dir key")
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      marker: APPROVE,
+      plansSig: sig,
+    }) + "\n",
+  )
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await execDispatch(h, "p1", "do the work")
+    await execDispatch(h, "p1", "do the work")
+    assert.equal(
+      journalEntries(metricsDir).filter((l) => l.result === "STALE").length,
+      0,
+      "a matching stamp re-stamps instead of dropping",
+    )
+    const system: Array<{ type: string; text?: string }> = []
+    await callSession(h, "compaction", { system, sessionID: "p1" })
+    assert.match(system[1]?.text ?? "", /- plan: APPROVED stamp=known/)
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * A replayed stamp mismatches whenever the dir's shape changes after
+ * approval: one stamped on an empty dir must not pass once a plan appears
+ * (the "empty" sentinel mismatches the populated dir), and one stamped
+ * before a plan was added is invalid by the add alone — the unbound rule is
+ * dir-scoped, so the approved file's own bytes are irrelevant.
+ */
+test("plan gate: a replayed stamp mismatches when the dir changes shape", async () => {
+  // Stamped on an empty dir; one plan exists by restart.
+  const project = tmpDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      marker: APPROVE,
+      plansSig: "empty",
+    }) + "\n",
+  )
+  fs.writeFileSync(path.join(plansDir, "plan.md"), "# P\n")
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      /no plan approval for "plan\.md"/,
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+  // Stamped on a plan.md-only dir; an added plan moves the dir key.
+  const project2 = tmpDir()
+  const plansDir2 = path.join(project2, ".opencode", "plans")
+  fs.mkdirSync(plansDir2, { recursive: true })
+  fs.writeFileSync(path.join(plansDir2, "plan.md"), "# P\n")
+  const sig = dirSignature(project2)
+  const metricsDir2 = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir2, "turnstile.jsonl"),
+    JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      marker: APPROVE,
+      plansSig: sig,
+    }) + "\n",
+  )
+  fs.writeFileSync(path.join(plansDir2, "m-extra.md"), "# M\n")
+  const h2 = makeFakeHost()
+  process.chdir(project2)
+  try {
+    const setup2 = turnstile(h2.host, {
+      env: isolatedEnv(metricsDir2),
+      config: { metricsDir: metricsDir2 },
+    })
+    const dispose2 = (await setup2(h2.host)) as () => void
+    await assert.rejects(() => execDispatch(h2, "p1", "do the work"), /no plan approval for/)
+    dispose2()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
  * a content-preserving utimes-only touch (identical
  * bytes, only atime/mtime moved) must NOT invalidate a prior approval, so the
  * next executor dispatch stays green and no extra no-plan-verdict is journaled.

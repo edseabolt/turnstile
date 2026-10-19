@@ -2214,6 +2214,69 @@ test("grace prompt carries the bound plan identity; a full reset clears it", () 
   assert.equal(afterReset.approvedPlanKey, "", "plan key cleared on full reset")
 })
 
+/** Replay restores a journaled `plansSig` verbatim on a string field; a
+ *  field-less (legacy) line and a non-string field both restore the empty
+ *  stamp, keeping the documented accept-once window. */
+test("replay restores the journaled plan signature; legacy and non-string fields restore unstamped", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  fs.writeFileSync(
+    journalPath,
+    [
+      JSON.stringify({
+        ts: "t1",
+        type: "plan",
+        sessionID: "p1",
+        result: "APPROVE",
+        plansSig: "plan.md:abc",
+      }),
+      JSON.stringify({ ts: "t2", type: "plan", sessionID: "p2", result: "APPROVE" }),
+      JSON.stringify({ ts: "t3", type: "plan", sessionID: "p3", result: "APPROVE", plansSig: 42 }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(journalPath)
+  const s1 = ledger.state("p1")
+  assert.equal(s1.hasPlanVerdict, true)
+  assert.equal(s1.plansSignature, "plan.md:abc", "a string plansSig restores the stamp verbatim")
+  const s2 = ledger.state("p2")
+  assert.equal(s2.hasPlanVerdict, true)
+  assert.equal(s2.plansSignature, "", "a field-less legacy line restores the empty stamp")
+  const s3 = ledger.state("p3")
+  assert.equal(s3.hasPlanVerdict, true)
+  assert.equal(s3.plansSignature, "", "a non-string plansSig restores the empty stamp")
+})
+
+/** The journaled plan dir signature is restart-sticky exactly like
+ *  hasPlanVerdict: the grace prompt carries it forward and a full reset
+ *  clears it. */
+test("grace prompt carries the journaled plan signature; a full reset clears it", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      plansSig: "plan.md:abc",
+    })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const s = ledger.state("p1")
+  assert.equal(s.hasPlanVerdict, true)
+  assert.equal(s.plansSignature, "plan.md:abc")
+  // Grace prompt: the stamp carries with the verdict.
+  ledger.resetState("p1")
+  const afterGrace = ledger.state("p1")
+  assert.equal(afterGrace.hasPlanVerdict, true)
+  assert.equal(afterGrace.plansSignature, "plan.md:abc", "the stamp is carried by grace")
+  // Second prompt: a full reset clears the stamp.
+  ledger.resetState("p1")
+  const afterReset = ledger.state("p1")
+  assert.equal(afterReset.hasPlanVerdict, false)
+  assert.equal(afterReset.plansSignature, "", "the stamp is cleared on full reset")
+})
+
 /** formatGateSnapshot renders the plan=<name> suffix only when a bound plan
  *  identity is present; unbound buckets render the plan line unchanged. */
 test("snapshot renders the bound plan suffix only when bound", () => {

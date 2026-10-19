@@ -137,7 +137,9 @@
  *   another checkout survives, while any plans-dir change drops the
  *   verdict loudly, journaling a replay-inert `STALE` entry
  *   (`signature-mismatch`) rather than a silent mismatch. A replayed
- *   unbound approval is accepted once and re-stamped; a replayed bound
+ *   unbound approval carries its journaled dir signature and is validated
+ *   against the current dir like a live one (a field-less legacy line is
+ *   accepted once and re-stamped); a replayed bound
  *   approval is validated against the current files immediately. The block
  *   and permission-ask preview name the resolved plan — the dispatch's
  *   named plan, then the session's bound plan, then the first sorted plan.

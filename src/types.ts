@@ -481,9 +481,12 @@ export interface GateState {
   readWarned: boolean
   seen: Set<string>
   /**
-   * Plans-dir signature the approval was issued against; "" means
-   * unknown (journal-replayed or pre-stamp) and is accepted once, then
-   * stamped, on the next enforcing dispatch. Governs unbound approvals only.
+   * Plans-dir signature the approval was issued against; "" means unstampable
+   * (absent/unreadable dir) or restored from a field-less legacy journal line,
+   * and is accepted once, then stamped, on the next enforcing dispatch. A
+   * journaled APPROVE's `plansSig` field restores it verbatim, so a replayed
+   * unbound approval validates against the current dir like a live one.
+   * Governs unbound approvals only.
    */
   plansSignature: string
   /**

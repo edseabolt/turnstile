@@ -1488,7 +1488,10 @@ export function createTurnstile(
         source: markerSource,
         // A bound approval journals its identity so replay restores it; an
         // unbound approval journals nothing extra (legacy lines unchanged).
+        // The stamped dir signature journals too, so replay can re-validate
+        // the approval against the current plans dir.
         ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
+        ...(s.plansSignature !== "" ? { plansSig: s.plansSignature } : {}),
       })
       journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
       return
@@ -1563,7 +1566,10 @@ export function createTurnstile(
         source: markerSource,
         // A bound approval journals its identity so replay restores it; an
         // unbound approval journals nothing extra (legacy lines unchanged).
+        // The stamped dir signature journals too, so replay can re-validate
+        // the approval against the current plans dir.
         ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
+        ...(s.plansSignature !== "" ? { plansSig: s.plansSignature } : {}),
       })
       journaler.traceEvent("plan-reviewer", "verdict", marker, sid)
       return
