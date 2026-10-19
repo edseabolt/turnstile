@@ -40,6 +40,21 @@ const NO_PLAN_MESSAGE =
   "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
   "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words)."
 
+/** The clause a block appends when the task's unscoped waiver was already
+ *  consumed by the first dispatch it unlocked. */
+const CONSUMED_CLAUSE =
+  " The task's unscoped user waiver was consumed by the first dispatch it unlocked; a new waiver is needed for the next dispatch."
+
+/** The clause a round-limit block appends when a scoped waiver's own
+ *  allowance of waiver-unblocked dispatches is exhausted. */
+const ALLOWANCE_CLAUSE =
+  " The scoped waiver's allowance of 2 waiver-unblocked dispatches is exhausted; obtain a new waiver or escalate to the user."
+
+/** The clause a plan-gate block appends when the live waiver is scoped to a
+ *  stage outside the plan gate's stage group (the reviewer stage here). */
+const PLAN_OUT_OF_SCOPE_REVIEWER_CLAUSE =
+  " A user waiver is live this task but is scoped to: reviewer — it does not cover this gate; name executor or plan-reviewer in a new waiver or escalate."
+
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(
   config: Record<string, any> = {},
@@ -304,9 +319,10 @@ test("waiver is task-scoped: a fresh prompt without the marker re-blocks", async
 })
 
 /**
- * The reviewer gate consumes the waiver per dispatch: the dispatch that the
- * waiver unlocks clears `userWaiver`, so a second reviewer dispatch re-blocks
- * (the task waiver is not sticky for the reviewer gate).
+ * The reviewer gate consumes an unscoped waiver on the first dispatch it
+ * unlocks, and the re-block says so: the second reviewer dispatch re-blocks
+ * with the no-gate-pass message plus the consumed-waiver clause (the task
+ * waiver is not sticky for the reviewer gate).
  */
 test("reviewer gate: the waiver is consumed per dispatch; a second reviewer dispatch re-blocks", async () => {
   const { h, metricsDir, dispose } = await boot()
@@ -319,7 +335,8 @@ test("reviewer gate: the waiver is consumed per dispatch; a second reviewer disp
   })
   const first = lastWaived(metricsDir, "gate")
   assert.ok(first)
-  // Second reviewer dispatch: waiver consumed, gate not green -> no-gate-pass block.
+  // Second reviewer dispatch: waiver consumed, gate not green -> no-gate-pass
+  // block reporting the consumed waiver.
   await assert.rejects(
     () =>
       callTool(h, "execute.before", {
@@ -327,9 +344,81 @@ test("reviewer gate: the waiver is consumed per dispatch; a second reviewer disp
         sessionID: "p1",
         input: { agent: "reviewer", prompt: "review it again" },
       }),
-    (e: Error) => e.message === NO_GATE_MESSAGE,
+    (e: Error) => e.message === NO_GATE_MESSAGE + CONSUMED_CLAUSE,
   )
   dispose()
+})
+
+/**
+ * The reviewer-scoped waiver completes the ensemble with one waiver: naming
+ * the reviewer stage in the waiver text scopes it to that stage, so two
+ * consecutive reviewer dispatches are admitted without a gate PASS (each
+ * journalling a WAIVED entry carrying the parsed scope) without counting
+ * toward the ensemble, and the third dispatch blocks on the waiver's own
+ * allowance — not the ordinary round cap.
+ */
+test("reviewer-scoped waiver admits two ensemble dispatches, then blocks at its allowance", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  await prompt(h, "p1", `${WAIVER} I approve proceeding to the reviewer agents`)
+  // Both ensemble dispatches pass without a gate PASS.
+  for (let i = 0; i < 2; i++) {
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+  }
+  const waived = journalEntries(metricsDir).filter(
+    (l) => l.type === "gate" && l.result === "WAIVED",
+  )
+  assert.equal(waived.length, 2, "each scoped-waived dispatch journals a WAIVED entry")
+  assert.ok(
+    waived.every((l) => l.scope === "reviewer" && l.channel === "prompt"),
+    "each WAIVED entry carries the parsed scope and the prompt channel",
+  )
+  assert.equal(
+    journalEntries(metricsDir).filter((l) => l.type === "ensemble").length,
+    0,
+    "waived dispatches never count toward the ensemble",
+  )
+  // The third dispatch exhausts the scoped allowance (2 waiver-unblocked
+  // dispatches) and blocks with the allowance clause.
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "reviewer", prompt: "review it again" },
+      }),
+    (e: Error) =>
+      e.message ===
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)." +
+        ALLOWANCE_CLAUSE,
+  )
+  dispose()
+})
+
+/**
+ * A waiver scoped to the reviewer stage does not open the plan gate: the
+ * executor dispatch blocks, and the block reports the live waiver's scope and
+ * names the stage group a new waiver would need to cover this gate.
+ */
+test("a reviewer-scoped waiver leaves the plan gate blocked with an out-of-scope report", async () => {
+  const { h, restore } = await bootWithPlan()
+  try {
+    await prompt(h, "p1", `${WAIVER} I approve proceeding to the reviewer agents`)
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      (e: Error) => e.message === NO_PLAN_MESSAGE + PLAN_OUT_OF_SCOPE_REVIEWER_CLAUSE,
+    )
+  } finally {
+    restore()
+  }
 })
 
 /** The waiver quote carried by a WAIVED entry. */

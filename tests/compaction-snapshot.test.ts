@@ -155,6 +155,25 @@ test("formatGateSnapshot renders a populated bucket", () => {
   assert.match(lines[7]!, /^- task: wt:main$/)
 })
 
+/** A live scoped waiver renders ACTIVE with its parsed scope, comma-joined. */
+test("formatGateSnapshot renders a live scoped waiver as ACTIVE(scope)", () => {
+  const lines = formatGateSnapshot({
+    ...newState(),
+    userWaiver: "USER WAIVER: I approve the reviewer",
+    userWaiverScope: ["reviewer"],
+  }).split("\n")
+  assert.match(lines[4]!, /^- waiver: ACTIVE\(reviewer\) human: none$/)
+})
+
+/** A consumed unscoped waiver renders none(consumed), not a bare none. */
+test("formatGateSnapshot renders a consumed waiver as none(consumed)", () => {
+  const lines = formatGateSnapshot({
+    ...newState(),
+    userWaiverConsumed: true,
+  }).split("\n")
+  assert.match(lines[4]!, /^- waiver: none\(consumed\) human: none$/)
+})
+
 /**
  * `formatGateSnapshot` on a restart-restored bucket (populated flags but empty
  * marker text, the post-replay shape) renders the flags with `last=none`.

@@ -21,6 +21,7 @@ import {
   agentFromTaskInput,
   compileMarkerRegex,
   parseGateMarkers,
+  parseWaiverScope,
   deTokenizeMarker,
   findMarkerNearMisses,
   formatNearMissDiagnostics,
@@ -1856,18 +1857,26 @@ export function createTurnstile(
       // belong to the previous task scope. The scan below re-seeds within the
       // same admission, so a new prompt's own near misses still surface.
       nearMissPending.delete(sessionID)
-      // Waiver capture (prompt channel): the user's text following the
-      // waiver marker waives both gates for the whole task. Read + capture
-      // in one guarded block; a coercion that throws (a malformed prompt
-      // value) is journaled under the historical "waiver capture" key and
-      // swallowed — fail-open.
+      // Waiver capture (prompt channel): a waiver covers every gate while
+      // unscoped, but the reviewer gate consumes an unscoped waiver on the
+      // first dispatch it unlocks; naming configured agent names in the
+      // waiver text scopes it to those stages' gates (the plan gate is
+      // covered by either its plan-reviewer or executor stage name), and a
+      // scoped waiver stays live until that stage's waiver allowance is
+      // spent — metered separately from the ordinary dispatch caps. A new
+      // user prompt drops the waiver. Read + capture in one guarded block; a
+      // coercion that throws (a malformed prompt value) is journaled under
+      // the historical "waiver capture" key and swallowed — fail-open.
       try {
         const waiverText = promptTextOf(properties)
         const at = waiverText.indexOf(config.waiverMarker)
         if (at !== -1) {
-          ledger.state(sessionID).userWaiver = config.trace
-            ? waiverText.slice(at, at + 200)
-            : "<present>"
+          const s = ledger.state(sessionID)
+          s.userWaiver = config.trace ? waiverText.slice(at, at + 200) : "<present>"
+          // Scope is parsed from the raw window before trace redaction: the
+          // stored quote may be "<present>", but the scope needs the words.
+          const scope = parseWaiverScope(waiverText.slice(at), Object.values(config.agents))
+          if (scope.length > 0) s.userWaiverScope = scope
         }
       } catch (e) {
         // Fail-open: capture never blocks a prompt.

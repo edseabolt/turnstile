@@ -113,7 +113,12 @@
  *   still live (it expires after a few seconds and is cleared by a prompt
  *   reset) and the ask carries no message of its own. The explicit
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
- *   `USER WAIVER:` literal in the user's prompt waives the gate; a
+ *   `USER WAIVER:` literal in the user's prompt waives the gate when the
+ *   waiver covers this gate — unscoped covers every gate, while naming
+ *   configured agent names in the waiver text scopes it to those stages'
+ *   gates (this gate is covered by either the plan-reviewer or executor
+ *   name), and a scoped waiver stays live until that stage's waiver
+ *   allowance is spent (a new user prompt drops the waiver); a
  *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert,
  *   closing the injection hole. The enforcing dispatch resolves the
  *   session's own directory via `session.get`, falling back to the cached
@@ -144,7 +149,12 @@
  *   it), or an explicit user waiver captured at prompt admission — a
  *   `USER WAIVER:` literal in the user's prompt through the `session` prompt
  *   hook or the correlated `session.inbox.enqueued` stream carrying the same
- *   host message id. A marker-shaped near-miss of either prompt-channel
+ *   host message id — that covers the reviewer stage: an unscoped waiver
+ *   covers every gate but this gate consumes it on the first dispatch it
+ *   unlocks, while naming the configured reviewer name scopes the waiver to
+ *   reviewer-stage gates and it stays live until that stage's waiver
+ *   allowance (max 2 waiver-unblocked dispatches, metered separately from
+ *   the ordinary dispatch caps) is spent; a new user prompt drops the waiver. A marker-shaped near-miss of either prompt-channel
  *   literal (`USER WAIVER:` / `PLAN APPROVED:` — a case, separator, or colon
  *   variant) is never admitted: the strict capture is byte-identical, the hit
  *   is journaled as a `marker`/`near-miss` entry, and it surfaces once as a
@@ -182,9 +192,11 @@
  *   `test-runner` dispatches per task plus a 16-dispatch total budget,
  *   regardless of gate state. Each dispatch leg (planner, plan-reviewer,
  *   test-runner, and the total across all legs) is a mechanical loop backstop;
- *   a prompt-channel user waiver bypasses everything without counting toward
- *   it (a dispatch prompt with the `USER WAIVER:` marker is inert); a new user
- *   prompt resets the counters. Every cap exhaustion journals a `type:"escalation"`
+ *   a prompt-channel user waiver covering a dispatched stage exempts its leg
+ *   cap and the total budget without counting toward it (an unscoped waiver
+ *   covers every stage — the legacy whole-task exemption; a dispatch prompt
+ *   with the `USER WAIVER:` marker is inert); a new user prompt resets the
+ *   counters. Every cap exhaustion journals a `type:"escalation"`
  *   entry and throws a STOP-and-escalate `BLOCKED by turnstile:` error telling
  *   the dispatcher to stop re-dispatching and escalate to the user (so a
  *   subagent stuck at its own cap is not dead-ended by a "wait for a new prompt"

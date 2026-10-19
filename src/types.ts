@@ -331,11 +331,43 @@ export interface GateState {
   hasReviewApprove: boolean
   /**
    * Latest user-authored prompt text containing the waiver marker; "" when
-   * none. Non-empty ⇒ the current task's reviewer/dispatch gates are waived.
+   * none. Non-empty ⇒ the current task's reviewer/dispatch gates are waived
+   * per the canonical waiver semantics: a waiver covers every gate while
+   * unscoped, but the reviewer gate consumes an unscoped waiver on the first
+   * dispatch it unlocks; naming configured agent names in the waiver text
+   * scopes it to those stages' gates (the plan gate is covered by either its
+   * plan-reviewer or executor stage name), and a scoped waiver stays live
+   * until that stage's waiver allowance is spent — metered separately from
+   * the ordinary dispatch caps. A new user prompt drops the waiver.
    * Task-scoped: cleared on every prompt reset and never carried through
    * `mergeAfterReplay`.
    */
   userWaiver: string
+  /**
+   * Configured agent names named by the waiver text at capture (the parsed
+   * scope); `[]` = unscoped (covers every gate). See the canonical semantics
+   * on `userWaiver`. Task-scoped: cleared on every prompt reset and never
+   * carried through `mergeAfterReplay`.
+   */
+  userWaiverScope: string[]
+  /**
+   * True once the reviewer gate consumed an unscoped waiver on the first
+   * dispatch it unlocked; reports the consumed state to block messages and
+   * the compaction snapshot. Task-scoped: cleared on every prompt reset and
+   * never carried through `mergeAfterReplay`.
+   */
+  userWaiverConsumed: boolean
+  /**
+   * Waiver-allowance slots spent by scoped-waived reviewer dispatches.
+   * Deliberately NOT shared with `reviewRounds`: that counter is
+   * journal-replayed and restart-sticky (carried through `mergeAfterReplay`),
+   * so a shared counter would mis-attribute spent slots to the waiver after a
+   * mid-task restart and would break the "waived dispatches don't count
+   * toward the cap" invariant. Lifecycle mirrors the `userWaiver` pair:
+   * task-scoped, fresh `0` on every prompt reset, never replay-restored,
+   * never carried through `mergeAfterReplay`.
+   */
+  reviewWaiverRounds: number
   /**
    * Provenance flag: true once a human (prompt marker or permission reply)
    * rather than the plan-reviewer subagent released the plan gate. Provenance

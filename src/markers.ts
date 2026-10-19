@@ -60,6 +60,51 @@ export function deTokenizeMarker(marker: string): string {
   )
 }
 
+/**
+ * Parses the configured agent names named in a waiver's raw text into its
+ * scope. The grammar is literal configured stage names only — a name is in
+ * scope iff its configured string occurs (case-insensitively) in the text —
+ * so a waiver is deterministically scoped and never guessed. `agentNames` is
+ * the resolved `config.agents` value, so a renamed install scopes by its own
+ * names.
+ *
+ * Rules: non-string and blank names are skipped (the `config.agents` value
+ * carries the `bareOutput` array, so a non-string is a real input, not a
+ * guard); the names are scanned longest-first (stable, so equal-length names
+ * keep their configured order) so a compound name (`plan-reviewer`) consumes
+ * its span before a shorter name (`reviewer`) could claim it; on a hit the
+ * name's span is masked with spaces so a shorter name cannot re-match inside
+ * it; results are deduped and returned in scan (longest-first) order.
+ * `[]` when nothing matches — deterministically unscoped.
+ *
+ * Pure: no journal, filesystem, or state.
+ * @param text The raw waiver text to scan (the marker-onward window).
+ * @param agentNames The configured agent names (the `config.agents` value);
+ *     non-string and blank entries are skipped.
+ * @returns The configured agent names named in the text, in scan order, or
+ *     `[]` when none is named.
+ */
+export function parseWaiverScope(text: string, agentNames: readonly unknown[]): string[] {
+  const found: string[] = []
+  if (text === "") return found
+  const names = agentNames
+    .filter((name): name is string => typeof name === "string" && name.trim() !== "")
+    .map((name) => ({ name, lower: name.toLowerCase() }))
+    // Longest first (stable for equal lengths) so a compound name masks its
+    // span before a shorter name can claim it.
+    .sort((a, b) => b.lower.length - a.lower.length)
+  let working = text.toLowerCase()
+  for (const { name, lower } of names) {
+    const at = working.indexOf(lower)
+    if (at === -1) continue
+    if (found.includes(name)) continue
+    found.push(name)
+    // Mask the matched span so a shorter name cannot re-match inside it.
+    working = working.slice(0, at) + " ".repeat(lower.length) + working.slice(at + lower.length)
+  }
+  return found
+}
+
 /** Agents contracted to emit GATE/VERDICT markers; marker-less output from
  * anything else is normal, not a violation. */
 export const BARE_OUTPUT_AGENTS: readonly string[] = ["test-runner", "reviewer", "plan-reviewer"]
