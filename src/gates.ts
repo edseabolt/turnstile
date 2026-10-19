@@ -13,7 +13,7 @@ import { createHash } from "node:crypto"
 import * as path from "node:path"
 
 import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./state.ts"
+import { REVIEW_ENSEMBLE_SIZE, type GateLedger } from "./state.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
 
 /**
@@ -472,14 +472,15 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     // the human's clearing entry and drop the release on restart. This branch
     // journals nothing and credits, so the credit decision is idempotent.
     if (s.hasReviewApprove) return true
-    if (config.reviewEnsemble === "advise" || s.reviewerDispatches >= 2) return true
+    if (config.reviewEnsemble === "advise" || s.reviewerDispatches >= REVIEW_ENSEMBLE_SIZE)
+      return true
     journaler.journal({
       type: "blocked",
       sessionID,
       agent: config.agents.reviewer,
       reason: "ensemble-incomplete",
       count: s.reviewerDispatches,
-      need: 2,
+      need: REVIEW_ENSEMBLE_SIZE,
     })
     // Stamp the refusal on the last ensemble entry for the session: replay
     // skips restoring hasReviewApprove when that entry carries
@@ -496,7 +497,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     journaler.traceEvent(
       config.agents.reviewer,
       "ensemble",
-      `${s.reviewerDispatches} of 2 dispatches; not credited`,
+      `${s.reviewerDispatches} of ${REVIEW_ENSEMBLE_SIZE} dispatches; not credited`,
       sessionID,
     )
     return false
