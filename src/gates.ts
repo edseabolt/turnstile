@@ -974,8 +974,11 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * non-empty stamp that differs from `scan.key` means the plan was
    * re-planned since approval, so the verdict is stale and re-review is
    * required; a green pass re-stamps the current key (idempotent, and how a
-   * replay-restored "" becomes validated). A "" stamp is unknown —
-   * journal-replayed approvals must survive restart, so it is accepted once,
+   * replay-restored "" becomes validated). A "" stamp is unknown: replayed
+   * approvals now usually carry their journaled dir signature and validate
+   * like live ones, so "" covers only field-less legacy lines, human
+   * `PLAN APPROVED:` prompt approvals (never stamped), and genuinely
+   * unstampable approvals (absent/unreadable dir) — it is accepted once,
    * mirroring the old first-scan rule. The accept-once window also covers a
    * session that approved but never ran an enforcing dispatch: its stamp is
    * still empty until the first green dispatch stamps it.

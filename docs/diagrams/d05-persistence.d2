@@ -11,7 +11,7 @@ trace: "gate-events.jsonl" {
   shape: cylinder
 }
 
-replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict,\nhasReviewApprove, ensemble counts\n→ replayGrace = one-prompt survival"
+replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignature), hasReviewApprove,\nensemble counts\n→ replayGrace = one-prompt survival"
 ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
