@@ -469,6 +469,16 @@ export interface GateState {
    */
   landingBlocks: number
   reads: number
+  /**
+   * True once this task's read-budget warning prefix has been injected into a
+   * whole-file read result. The prefix is a once-per-task nudge: the corrected
+   * `reads` counter is not monotonic (a failed read's charge is corrected
+   * back down), so equality with `readWarn` could inject the warning again on
+   * a later climb. Task-scoped: fresh `false` on every prompt reset, never
+   * carried through `mergeAfterReplay`, never replay-restored (`reads` itself
+   * restarts at 0, so a restarted session may warn once again — intended).
+   */
+  readWarned: boolean
   seen: Set<string>
   /**
    * Plans-dir signature the approval was issued against; "" means

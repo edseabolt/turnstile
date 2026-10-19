@@ -763,6 +763,61 @@ test("read horizon: an after-hook read without a before-hook never goes negative
   dispose()
 })
 
+/** The read-budget warn prefix is once per task: after a corrected
+ *  re-climb back to readWarn (a failed read's charge corrected the counter
+ *  down first), the prefix must not inject a second time — the old
+ *  counter-equality predicate re-fired it on the re-climb. */
+test("read horizon: warn prefix fires once even after a corrected re-climb", async () => {
+  const { h, dispose, metricsDir } = await boot({ readWarn: 2, readBlock: 8 })
+  const r1 = { output: "one" }
+  const r2 = { output: "two" }
+  const r3 = { output: "three" }
+  // Pair 1: below the threshold — no prefix.
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r1 })
+  // Pair 2: the readWarn-th string output — warn #1, sets the once flag.
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r2 })
+  assert.match(String(r2.output), /^\[turnstile\] Warning: 2 whole-file reads/)
+  // A failed read whose after arrives without its before's charge corrects
+  // the counter down: the re-climb below reaches readWarn again.
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: {} })
+  // Pair 3: the counter re-climbs to readWarn — the once flag suppresses the
+  // prefix (the old counter-equality predicate injected it again here).
+  await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r3 })
+  assert.doesNotMatch(String(r3.output), /^\[turnstile\]/)
+  const reads = journalEntries(metricsDir).filter((l) => l.type === "tool" && l.tool === "read")
+  assert.deepEqual(
+    reads.map((l) => l.reads),
+    [1, 2, 1, 2],
+  )
+  dispose()
+})
+
+/** A counter carried past readWarn by concurrent before-reads (no
+ *  string-output after-read yet) still receives the warn on the first string
+ *  output — counter equality would skip it forever — and the once flag
+ *  suppresses any later repeat. */
+test("read horizon: the warn fires on the first string output at or past the threshold", async () => {
+  const { h, dispose } = await boot({ readWarn: 2, readBlock: 8 })
+  // Three concurrent before-reads carry the counter to 3 before any
+  // after-read (the atomic increment pattern).
+  await Promise.all([
+    callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+    callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+    callTool(h, "execute.before", { tool: "read", sessionID: "p1" }),
+  ])
+  const r = { output: "first string output" }
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r })
+  assert.match(String(r.output), /^\[turnstile\] Warning: 2 whole-file reads/)
+  // The once flag suppresses the prefix on the next string output.
+  const r2 = { output: "second string output" }
+  await callTool(h, "execute.after", { tool: "read", sessionID: "p1", result: r2 })
+  assert.doesNotMatch(String(r2.output), /^\[turnstile\]/)
+  dispose()
+})
+
 /** Bare-output violations fire only for agents in bareOutput (test-runner here, not planner). */
 test("bare-output violation fires only for marker-contracted agents", async () => {
   const { h, dispose, metricsDir } = await boot()

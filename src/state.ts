@@ -52,6 +52,7 @@ export function newState(): GateState {
     // Restored by journal replay across a restart.
     landingBlocks: 0,
     reads: 0,
+    readWarned: false,
     seen: new Set(),
     plansSignature: "",
     // Bound plan identity: "" = unbound until a plan-reviewer dispatch names a

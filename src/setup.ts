@@ -1581,6 +1581,228 @@ export function createTurnstile(
   }
 
   /**
+   * Prologue for a `task`/`subagent` dispatch: resolves the agent name and the
+   * dispatching session, pins the session against LRU eviction, ages out the
+   * previous task's streamed delta windows, extracts the trace-gated
+   * description, records plan-reviewer round bookkeeping, and journals the
+   * empty-agent misconfiguration signal — then defers the guard-and-journal
+   * section to guardedTaskDispatch.
+   * @param event The execute.before tool event (task/subagent shape).
+   */
+  async function handleTaskDispatch(event: ToolHookEvent): Promise<void> {
+    const agent = agentFromTaskInput(event.input)
+    const sessionID = asSessionID(event?.sessionID)
+    // Sessions dispatching guarded subagents are parents by
+    // definition: mark before the guards so their
+    // state() inserts land pinned against LRU eviction.
+    ledger.markParent(sessionID)
+    // Age out streamed delta windows: the next dispatch is the task
+    // boundary, so stale fragments of the previous task's child text
+    // must not leak into the new scope (mirrors the prompt-reset
+    // pattern of evidence.clear).
+    deltaWindows.clear()
+    const prompt = String(event.input?.prompt ?? "")
+    // Prompt descriptions can carry sensitive context; record them
+    // only when the trace is enabled (redacted elsewhere — here it is
+    // the single copy passed to the dispatch-recording helper).
+    const description = config.trace ? String(event.input?.description ?? "").slice(0, 200) : ""
+
+    // Last-wins: record this parent's LATEST plan-reviewer
+    // dispatch time for the plausibility join, and the prompt's plan
+    // mentions as the round's approval-binding candidates. A prompt
+    // reset clears both (see the prompt hook), so a verdict is only
+    // plausible — and only bindable — within the parent's current
+    // task scope. Bounded by boundDispatches / boundTargets.
+    if (agent === config.agents.planReviewer) {
+      planReviewerDispatch.set(sessionID, Date.now())
+      boundDispatches()
+      planReviewTarget.set(sessionID, gates.promptPlanNames(prompt))
+      boundTargets()
+    }
+
+    // An empty agent name is the only reliable misconfiguration
+    // signal: the host input shape no longer uses
+    // subagent_type/agent/subagent, so every gate condition misses.
+    // Telemetry only — journaling cannot throw.
+    if (!agent)
+      journaler.journal({
+        type: "error",
+        sessionID,
+        error:
+          "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
+      })
+
+    return guardedTaskDispatch(sessionID, agent, prompt, description)
+  }
+
+  /**
+   * Guard-and-journal section of a task dispatch: the per-leg and
+   * total-dispatch budget guard, the plan-gate once-grant
+   * short-circuit, the reviewer evidence guard, and the executor
+   * plan/decomposition guards — then the dispatch entry, recorded at
+   * guard exit (stamped `blocked:true` only on a deliberate BlockError,
+   * which is re-thrown for the outer fail-open catch).
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param prompt The dispatch prompt.
+   * @param description The trace-gated dispatch description.
+   */
+  async function guardedTaskDispatch(
+    sessionID: string,
+    agent: string,
+    prompt: string,
+    description: string,
+  ): Promise<void> {
+    // Guards-then-journal: the dispatch entry is recorded at guard
+    // exit, so an allowed dispatch stays byte-identical while a
+    // deliberate block carries `blocked:true` (audit distinguishes a
+    // dispatched entry from a blocked-and-attempted one). The once-grant
+    // consume is an allowed dispatch. Only a BlockError — the guard's
+    // deliberate refusal — is stamped blocked and re-thrown for the
+    // outer catch to turn into the BLOCKED error; any other throw is an
+    // internal error that propagates un-stamped to the fail-open handler.
+    try {
+      // Per-leg loop caps + total-dispatch budget: every
+      // task/subagent dispatch — executor, planner, plan-reviewer,
+      // test-runner, reviewer, debugger, unknown — draws down the
+      // budget here, so the global backstop holds even against
+      // grant-released dispatches (grants release *authorization*, not
+      // *budget*). Before the once-grant short-circuit: a blocked
+      // dispatch must not consume the grant.
+      gates.guardDispatchBudget(sessionID, ledger, agent)
+
+      // Once-granted human approval (from a `permission.replied` reply)
+      // grants exactly ONE EXECUTOR dispatch past the plan gate and is
+      // cleared immediately, so a stale grant cannot outlive the single
+      // dispatch it was given for, short-circuiting the plan-gate block
+      // below. Scoped to the executor dispatch class: the grant exists
+      // solely to release the plan-gate block, so any other agent
+      // (reviewer, plan-reviewer, …) leaves it pending and still runs
+      // its own guards (guardReviewerDispatch / …). execute.before
+      // consults only hasPlanVerdict / pendingOnceGrant — never
+      // humanApproval, which is provenance only.
+      if (
+        agent === config.agents.executor &&
+        ledger.state(sessionID).pendingOnceGrant.plan !== ""
+      ) {
+        // Consume the plan-gate once grant (a `permission.replied`
+        // `once`): clears just `.plan` so a landing `.landing` grant,
+        // if any, survives for the push it was given for.
+        ledger.state(sessionID).pendingOnceGrant.plan = ""
+        recordDispatch(sessionID, agent, description, false)
+        return
+      }
+
+      if (agent === config.agents.reviewer) {
+        // Decision-time re-check: edges may have resolved since the
+        // last promotion opportunity (a session.get lookup, a
+        // stream event); re-run the correlation against the fully
+        // resolved ledger at the exact moment of enforcement, then
+        // let the guard name what it searched when it refuses.
+        promoteOnEvidence(sessionID)
+        gates.guardReviewerDispatch(sessionID, ledger, evidenceSearch(sessionID))
+      }
+
+      if (agent === config.agents.executor) {
+        const dir = await resolveProjectDir(sessionID)
+        gates.enforcePlanApproval(sessionID, dir, ledger, prompt)
+        gates.enforceDecomposition(sessionID, prompt, dir, ledger)
+      }
+      recordDispatch(sessionID, agent, description, false)
+    } catch (e) {
+      // Only a deliberate BlockError is a real block; a non-BlockError
+      // is an internal error that propagates un-stamped to the
+      // fail-open outer handler (which journals it), so the dispatch
+      // entry is never mislabeled as blocked.
+      if (e instanceof BlockError) recordDispatch(sessionID, agent, description, true)
+      throw e
+    }
+  }
+
+  /**
+   * Handles a `bash`/`shell` tool call: the denylist guard, the
+   * conventional-commit lint, and the landing telemetry, then the
+   * reviewer-gated landing gate with a landing once-grant
+   * short-circuit for push candidates. A denylist or landing block
+   * throws BlockError (re-thrown by the outer catch).
+   * @param event The execute.before tool event (bash/shell shape).
+   * @param tool The narrowed tool name (`"bash"` or `"shell"`).
+   */
+  function handleBashDispatch(event: ToolHookEvent, tool: "bash" | "shell"): void {
+    const command = event.input?.command ?? event.input?.cmd
+    const sid = asSessionID(event?.sessionID)
+    // Denylist first: `gh pr create|merge` is denied wholesale, so it
+    // wins over the landing telemetry/gate below and the two journal
+    // reasons stay disjoint.
+    toolPolicy.guardBash(tool, command, sid)
+    // Conventional-commit lint (fail-closed under enforce for
+    // uninspectable forms; audit-only under shadow; silent under off).
+    toolPolicy.guardCommitMessage(tool, command, sid)
+    // Landing telemetry (always) then the reviewer-gated landing gate.
+    const text = String(command ?? "")
+    toolPolicy.observeLanding(sid, text)
+    // The stateful ledger stays out of tool-policy: only a shaped
+    // capability is handed over. `parent` is the parent session (a
+    // subagent's bash draws on the parent's task scope) and `st` is
+    // its bucket, so a still-unattributed child self-keys its own
+    // fresh state.
+    const parent = ledger.parentOf(sid)
+    const st = ledger.state(parent)
+    // Landing once-grant (from a `permission.replied` `once` for a
+    // landing ask) releases exactly ONE push, consumed here, before
+    // the gate decides, so a stale grant cannot outlive that single
+    // dispatch. Scoped to landing candidates: a non-push bash command
+    // leaves the grant pending (burning it on `git status` would
+    // defeat the "single push" contract). Keyed per-reason
+    // (`.landing`), so it can never be consumed by a plan-gate (task)
+    // dispatch or vice versa.
+    if (st.pendingOnceGrant.landing !== "" && isPushLanding(text)) {
+      st.pendingOnceGrant.landing = ""
+      return
+    }
+    toolPolicy.guardLanding(tool, text, sid, {
+      hasApproval: () => st.hasReviewApprove,
+      priorBlocks: () => st.landingBlocks,
+      recordBlock: () => {
+        st.landingBlocks += 1
+      },
+      escalate: () => {
+        // Arm the pending-landing-ask latch: the evaluate handler
+        // forces the human ask off this latch. Called by guardLanding
+        // only under `enforce` on a repeat attempt (no approval,
+        // >= 1 prior block); fail-toward-strict — a host reject leaves
+        // approval absent, so the next attempt re-blocks and re-arms.
+        pendingLandingAsk.set(parent, Date.now())
+        boundLandingAsks()
+      },
+    })
+    return
+  }
+
+  /**
+   * Handles a `session_move` tool call: journals the dispatched move
+   * (telemetry only, never blocks) and invalidates the per-session
+   * directory cache for the session and its parent so the next
+   * enforcement re-resolves the moved location.
+   * @param event The execute.before tool event (session_move shape).
+   */
+  function handleSessionMove(event: ToolHookEvent): void {
+    // Telemetry only (never blocks): journal the dispatched move. The
+    // target directory comes from the (unconfirmed) tool payload.
+    const moveDir = (event.input as { directory?: unknown } | undefined)?.directory
+    const sid = asSessionID(event?.sessionID)
+    toolPolicy.observeSessionMove(sid, moveDir)
+    // Invalidate the per-session directory cache unconditionally,
+    // regardless of telemetry config: mechanics must not hide behind
+    // it. The next enforcement re-resolves via session.get, which
+    // reflects the completed move. A self-keyed dispatch has
+    // parentOf(sid) === sid, so the second delete is a no-op there.
+    sessionDirs.delete(sid)
+    sessionDirs.delete(ledger.parentOf(sid))
+    return
+  }
+
+  /**
    * Parses markers out of assistant text and journals first-sight events.
    * @param text The assistant text to scan.
    * @param sessionID The raw (possibly child) session ID.
@@ -2157,125 +2379,15 @@ export function createTurnstile(
         const reg = await h.tool.hook("execute.before", async (event: ToolHookEvent) => {
           try {
             if (event?.tool === "task" || event?.tool === "subagent") {
-              const agent = agentFromTaskInput(event.input)
-              const sessionID = asSessionID(event?.sessionID)
-              // Sessions dispatching guarded subagents are parents by
-              // definition: mark before the guards so their
-              // state() inserts land pinned against LRU eviction.
-              ledger.markParent(sessionID)
-              // Age out streamed delta windows: the next dispatch is the task
-              // boundary, so stale fragments of the previous task's child text
-              // must not leak into the new scope (mirrors the prompt-reset
-              // pattern of evidence.clear).
-              deltaWindows.clear()
-              const prompt = String(event.input?.prompt ?? "")
-              // Prompt descriptions can carry sensitive context; record them
-              // only when the trace is enabled (redacted elsewhere — here it is
-              // the single copy passed to the dispatch-recording helper).
-              const description = config.trace
-                ? String(event.input?.description ?? "").slice(0, 200)
-                : ""
-
-              // Last-wins: record this parent's LATEST plan-reviewer
-              // dispatch time for the plausibility join, and the prompt's plan
-              // mentions as the round's approval-binding candidates. A prompt
-              // reset clears both (see the prompt hook), so a verdict is only
-              // plausible — and only bindable — within the parent's current
-              // task scope. Bounded by boundDispatches / boundTargets.
-              if (agent === config.agents.planReviewer) {
-                planReviewerDispatch.set(sessionID, Date.now())
-                boundDispatches()
-                planReviewTarget.set(sessionID, gates.promptPlanNames(prompt))
-                boundTargets()
-              }
-
-              // An empty agent name is the only reliable misconfiguration
-              // signal: the host input shape no longer uses
-              // subagent_type/agent/subagent, so every gate condition misses.
-              // Telemetry only — journaling cannot throw.
-              if (!agent)
-                journaler.journal({
-                  type: "error",
-                  sessionID,
-                  error:
-                    "task dispatch: could not resolve the agent name; does the host input shape still use subagent_type/agent/subagent?",
-                })
-
-              // Guards-then-journal: the dispatch entry is recorded at guard
-              // exit, so an allowed dispatch stays byte-identical while a
-              // deliberate block carries `blocked:true` (audit distinguishes a
-              // dispatched entry from a blocked-and-attempted one). The once-grant
-              // consume is an allowed dispatch. Only a BlockError — the guard's
-              // deliberate refusal — is stamped blocked and re-thrown for the
-              // outer catch to turn into the BLOCKED error; any other throw is an
-              // internal error that propagates un-stamped to the fail-open handler.
-              try {
-                // Per-leg loop caps + total-dispatch budget: every
-                // task/subagent dispatch — executor, planner, plan-reviewer,
-                // test-runner, reviewer, debugger, unknown — draws down the
-                // budget here, so the global backstop holds even against
-                // grant-released dispatches (grants release *authorization*, not
-                // *budget*). Before the once-grant short-circuit: a blocked
-                // dispatch must not consume the grant.
-                gates.guardDispatchBudget(sessionID, ledger, agent)
-
-                // Once-granted human approval (from a `permission.replied` reply)
-                // grants exactly ONE EXECUTOR dispatch past the plan gate and is
-                // cleared immediately, so a stale grant cannot outlive the single
-                // dispatch it was given for, short-circuiting the plan-gate block
-                // below. Scoped to the executor dispatch class: the grant exists
-                // solely to release the plan-gate block, so any other agent
-                // (reviewer, plan-reviewer, …) leaves it pending and still runs
-                // its own guards (guardReviewerDispatch / …). execute.before
-                // consults only hasPlanVerdict / pendingOnceGrant — never
-                // humanApproval, which is provenance only.
-                if (
-                  agent === config.agents.executor &&
-                  ledger.state(sessionID).pendingOnceGrant.plan !== ""
-                ) {
-                  // Consume the plan-gate once grant (a `permission.replied`
-                  // `once`): clears just `.plan` so a landing `.landing` grant,
-                  // if any, survives for the push it was given for.
-                  ledger.state(sessionID).pendingOnceGrant.plan = ""
-                  recordDispatch(sessionID, agent, description, false)
-                  return
-                }
-
-                if (agent === config.agents.reviewer) {
-                  // Decision-time re-check: edges may have resolved since the
-                  // last promotion opportunity (a session.get lookup, a
-                  // stream event); re-run the correlation against the fully
-                  // resolved ledger at the exact moment of enforcement, then
-                  // let the guard name what it searched when it refuses.
-                  promoteOnEvidence(sessionID)
-                  gates.guardReviewerDispatch(sessionID, ledger, evidenceSearch(sessionID))
-                }
-
-                if (agent === config.agents.executor) {
-                  const dir = await resolveProjectDir(sessionID)
-                  gates.enforcePlanApproval(sessionID, dir, ledger, prompt)
-                  gates.enforceDecomposition(sessionID, prompt, dir, ledger)
-                }
-                recordDispatch(sessionID, agent, description, false)
-              } catch (e) {
-                // Only a deliberate BlockError is a real block; a non-BlockError
-                // is an internal error that propagates un-stamped to the
-                // fail-open outer handler (which journals it), so the dispatch
-                // entry is never mislabeled as blocked.
-                if (e instanceof BlockError) recordDispatch(sessionID, agent, description, true)
-                throw e
-              }
+              await handleTaskDispatch(event)
+              return
             }
-
             if (event?.tool === "read") {
               // Keyed off the parent session: a subagent's reads draw down the
               // parent's budget (AGENTS.md contract), not a per-child one.
-              // Resolve the child→parent edge first so an in-flight child keys
-              // the parent's budget, not its own; a still-unresolved child
-              // self-keys and journals a bounded signal.
               gates.guardReadLimit(await readBudgetKey(asSessionID(event?.sessionID)), ledger)
+              return
             }
-
             // Tool-call denylist: bash/shell commands and write/edit
             // target paths are matched against the configured denylist. The
             // extraction coerces the unconfirmed host payload (candidate keys
@@ -2283,53 +2395,7 @@ export function createTurnstile(
             // misconfiguration telemetry. A block throws BlockError (rethrown by
             // the catch below); shadow journals only; off is a no-op.
             if (event?.tool === "bash" || event?.tool === "shell") {
-              const command = event.input?.command ?? event.input?.cmd
-              const sid = asSessionID(event?.sessionID)
-              // Denylist first: `gh pr create|merge` is denied wholesale, so it
-              // wins over the landing telemetry/gate below and the two journal
-              // reasons stay disjoint.
-              toolPolicy.guardBash(event.tool, command, sid)
-              // Conventional-commit lint (fail-closed under enforce for
-              // uninspectable forms; audit-only under shadow; silent under off).
-              toolPolicy.guardCommitMessage(event.tool, command, sid)
-              // Landing telemetry (always) then the reviewer-gated landing gate.
-              const text = String(command ?? "")
-              toolPolicy.observeLanding(sid, text)
-              // The stateful ledger stays out of tool-policy: only a shaped
-              // capability is handed over. `parent` is the parent session (a
-              // subagent's bash draws on the parent's task scope) and `st` is
-              // its bucket, so a still-unattributed child self-keys its own
-              // fresh state.
-              const parent = ledger.parentOf(sid)
-              const st = ledger.state(parent)
-              // Landing once-grant (from a `permission.replied` `once` for a
-              // landing ask) releases exactly ONE push, consumed here, before
-              // the gate decides, so a stale grant cannot outlive that single
-              // dispatch. Scoped to landing candidates: a non-push bash command
-              // leaves the grant pending (burning it on `git status` would
-              // defeat the "single push" contract). Keyed per-reason
-              // (`.landing`), so it can never be consumed by a plan-gate (task)
-              // dispatch or vice versa.
-              if (st.pendingOnceGrant.landing !== "" && isPushLanding(text)) {
-                st.pendingOnceGrant.landing = ""
-                return
-              }
-              toolPolicy.guardLanding(event.tool, text, sid, {
-                hasApproval: () => st.hasReviewApprove,
-                priorBlocks: () => st.landingBlocks,
-                recordBlock: () => {
-                  st.landingBlocks += 1
-                },
-                escalate: () => {
-                  // Arm the pending-landing-ask latch: the evaluate handler
-                  // forces the human ask off this latch. Called by guardLanding
-                  // only under `enforce` on a repeat attempt (no approval,
-                  // >= 1 prior block); fail-toward-strict — a host reject leaves
-                  // approval absent, so the next attempt re-blocks and re-arms.
-                  pendingLandingAsk.set(parent, Date.now())
-                  boundLandingAsks()
-                },
-              })
+              handleBashDispatch(event, event.tool)
               return
             }
             if (event?.tool === "write" || event?.tool === "edit") {
@@ -2341,18 +2407,7 @@ export function createTurnstile(
               return
             }
             if (event?.tool === "session_move") {
-              // Telemetry only (never blocks): journal the dispatched move. The
-              // target directory comes from the (unconfirmed) tool payload.
-              const moveDir = (event.input as { directory?: unknown } | undefined)?.directory
-              const sid = asSessionID(event?.sessionID)
-              toolPolicy.observeSessionMove(sid, moveDir)
-              // Invalidate the per-session directory cache unconditionally,
-              // regardless of telemetry config: mechanics must not hide behind
-              // it. The next enforcement re-resolves via session.get, which
-              // reflects the completed move. A self-keyed dispatch has
-              // parentOf(sid) === sid, so the second delete is a no-op there.
-              sessionDirs.delete(sid)
-              sessionDirs.delete(ledger.parentOf(sid))
+              handleSessionMove(event)
               return
             }
           } catch (e) {
@@ -2488,14 +2543,23 @@ export function createTurnstile(
               // (floor 0).
               if (typeof event.result?.output !== "string" && s.reads > 0) s.reads--
               journaler.journal({ type: "tool", sessionID, tool: "read", reads: s.reads })
+              // The warn prefix is once per task: the corrected `reads` counter
+              // is not monotonic, so equality with readWarn could re-inject on
+              // a later climb — the task-scoped flag (fresh on every prompt
+              // reset) suppresses the repeat. `>=` rather than `==`: a burst of
+              // before-reads can carry the counter past the threshold before
+              // any string-output after-read runs, so equality could skip the
+              // warn entirely.
               if (
-                s.reads === config.readWarn &&
+                !s.readWarned &&
+                s.reads >= config.readWarn &&
                 event.result &&
                 typeof event.result.output === "string"
               ) {
                 event.result.output =
                   `[turnstile] Warning: ${config.readWarn} whole-file reads this session; prefer grep/glob. Blocks at ${config.readBlock}.\n` +
                   event.result.output
+                s.readWarned = true
               }
               return
             }
