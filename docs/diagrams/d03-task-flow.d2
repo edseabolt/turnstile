@@ -35,7 +35,7 @@ flow: {
   user -> hooks: "reply: always (verdict stands) / once (one dispatch) / reject"
 
   agents -> hooks: "executor result cites chunk-N / AC-n"
-  hooks -> agents: "ORCHESTRATOR_POLICY prepended once per task"
+  hooks -> agents: "ORCHESTRATOR_POLICY prepended once per task\n▸ PIPELINE status appended per delivery"
 
   agents -> hooks: "test-runner: GATE: PASS tests=n passed=n failed=n"
   hooks -> hooks: "gateEvidence=enforce + no exit-0 test seen:\nhasGatePass held as unverifiedPass"

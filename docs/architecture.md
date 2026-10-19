@@ -127,7 +127,10 @@ counted into the load heartbeat (`type:"setup"`).
 config-validation warnings once per load (a `[turnstile] config:` block
 prepended to the first string-output result, journaled `type:"config"`), then
 parses markers out of task deliveries, attributes plan verdicts, credits reviewer
-approval (ensemble-gated), prepends the orchestrator policy once per task,
+approval (ensemble-gated), appends the per-delivery `PIPELINE:` status tail
+(skipped when the delivery's agent is not a pipeline stage), prepends the
+orchestrator policy head once per task (the first pipeline delivery reads
+head+tail, later deliveries tail-only),
 corrects the read counter charge down when a read produced no string output
 (`execute.before` charged it on the guard), and promotes an `unverifiedPass`
 when a correlated exit-0 test execution appears — the same correlation
@@ -360,19 +363,23 @@ Turnstile does not read orchestrator policy from a file at install time — it
 makes that policy available by injecting it at runtime. When the plugin is
 loaded, `src/setup.ts` prepends the orchestrator policy paragraph from
 `src/policy.ts` to the first `task` (or `subagent`) result delivery per task,
-once per task, via the `tool.hook("execute.after")` handler — the same hook
-the plugin already uses to rewrite tool output reaching the model. Each
+once per task, and appends a per-delivery `PIPELINE:` status tail to every
+pipeline-stage delivery (see Pipeline continuation below), via the
+`tool.hook("execute.after")` handler — the same hook the plugin already uses
+to rewrite tool output reaching the model. Each
 delivery is classified once by `classifyDelivery` into its host shape — the
 v1 string shape (child-keyed event, text in `result.output`, the child
 optionally named by a string `metadata.sessionID`) or the v2 structured shape
 (parent-keyed event, structured `result.output`, the child on
 `metadata.sessionID` or the structured `output.sessionID`, the canonical
 child text in `output.output`, model-visible `content` as a string or a block
-array) — and the prepend lands on that shape's model-visible text:
+array) — and the policy head and the status tail both land on that shape's
+model-visible text through the shared shape ladder (`mutateDeliveryText`):
 `result.output` for the string shape; string or block-array `result.content`
-for the structured one (a string is prefixed in place, a block array gains
-one prepended text block, and absent or other content falls back to the
-structured output string, which the host stringifies into the transcript).
+for the structured one (a string carries both mutations in place, a block
+array gains one prepended head block and one appended tail block, and absent
+or other content falls back to the structured output string, which the host
+stringifies into the transcript).
 The classified child and text also drive marker parsing, the bare-output
 check, and the reviewer capture — always from the canonical `output.output`
 string — so a structured delivery parses and attributes to the real child
@@ -386,17 +393,50 @@ follows the plugin through updates and uninstall–reinstall cycles.
 
 - **Fail-open.** The injection is fully guarded with an inner try/catch; on
   failure it journals a `type:"policy"` entry with `injected:false` and
-  proceeds — a broken injection never blocks a tool call. The only silent
-  skips are the once-flag (the policy already landed this task) and an absent
-  result (nothing to deliver); a present-but-unclassifiable result journals
-  loudly instead — `{type:"policy", injected:false,
+  proceeds — a broken injection never blocks a tool call. The status tail has
+  its own fail-open catch: a throwing append journals
+  `{type:"error", error:"pipeline-status: …"}` without rethrowing, and the
+  independent policy head still lands (and vice versa). The only silent skips
+  are the once-flag — which gates only the policy head; the tail lands on
+  every pipeline-stage delivery — and an absent result (nothing to deliver);
+  a present-but-unclassifiable result journals loudly on EVERY such delivery
+  (the once-flag no longer gates it) — `{type:"policy", injected:false,
 reason:"unknown-shape", shape:<descriptor>}` — where the descriptor is a
   bounded, value-free summary of the unrecognized result (per-field types
   plus the sorted key names of an object `output`, capped at 8), so a broken
   shape is discoverable by grepping `type:"policy"` like every other skip.
 - **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
   each new prompt, so the block re-injects per task) means the policy is
-  prepended exactly once per task, not once per turn.
+  prepended exactly once per task, not once per turn. The `PIPELINE:` tail
+  has no such once-flag — it is per-delivery by design.
+- **Pipeline continuation.** Every pipeline-stage delivery — the delivery's
+  agent matched against the configured `config.agents` names, so a renamed
+  install names its renamed stages — gains a one-line status tail rendered
+  by `formatPipelineStatus` (`src/state.ts`) from the resolved parent's gate
+  state after the just-arrived delivery: `PIPELINE: <stage>=done
+plan=APPROVED|PENDING tests=GREEN|RED reviewer=<n>/2 next=<successor> —
+<directive>`. The successor is the stage the orchestrator dispatches next,
+  decidable from the gate flags alone: planner → plan-reviewer; plan-reviewer
+  → executor once `hasPlanVerdict` holds, else planner (a BLOCK re-plans);
+  executor → test-runner; test-runner → reviewer once `hasGatePass` holds,
+  else executor (a FAIL re-runs); reviewer → the literal `land` once
+  `hasReviewApprove` holds, else the reviewer again while `reviewerDispatches`
+  is below `REVIEW_ENSEMBLE_SIZE` (2), else the literal `escalate`. The
+  directive is "dispatch the next agent in this same turn" for a stage
+  successor, "task complete; land through the gated push" for `land`, and
+  "escalate to the user" for `escalate`. Two documented residuals: an agent
+  outside the five stages renders `""` and the append is skipped entirely
+  (non-pipeline deliveries stay byte-identical); and on a capped round — the
+  other legs carry dispatch caps too (planner 3, plan-reviewer 3,
+  test-runner 4) — the line may name a stage the dispatch gate will refuse;
+  it reports the pipeline's nominal successor, not the gate's cap check. The
+  tail rides the policy head's `mutateDeliveryText` shape ladder, and the
+  output always reads policy head → child text → `PIPELINE:` tail (the
+  once-per-load `[turnstile] config:` block sits between head and child text,
+  per the config-surface ordering). Every status word is a non-marker token,
+  so an echoed copy of the line never parses as a `GATE:`/`VERDICT:` marker,
+  and the line never enters the journal — persistence schema, replay,
+  rotation, and `opencode-turnstile status` are unchanged.
 - **Edge-first attribution.** A delivery whose child→parent edge is
   registered injects regardless of the `event.agent` name — the name
   heuristic never excludes an edge-resolved delivery. The name guard survives

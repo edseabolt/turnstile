@@ -11,8 +11,9 @@
 An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
 agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
 The pipeline policy is injected at runtime by the plugin (nothing is written
-to any instructions file at install time), the policy steers the agents, and
-turnstile **blocks the dispatches that violate it** — decided in tool and
+to any instructions file at install time), the policy steers the agents, a
+`PIPELINE:` status line on every pipeline task result names the next stage,
+and turnstile **blocks the dispatches that violate it** — decided in tool and
 task-dispatch hooks, outside the model loop.
 
 The entry point is `turnstile.ts`; behavior lives in focused modules under
