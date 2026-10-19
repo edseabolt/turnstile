@@ -355,7 +355,8 @@ test("reviewer gate: the waiver is consumed per dispatch; a second reviewer disp
  * consecutive reviewer dispatches are admitted without a gate PASS (each
  * journalling a WAIVED entry carrying the parsed scope) without counting
  * toward the ensemble, and the third dispatch blocks on the waiver's own
- * allowance — not the ordinary round cap.
+ * allowance — not the ordinary round cap — and the refused dispatch journals
+ * no WAIVED entry.
  */
 test("reviewer-scoped waiver admits two ensemble dispatches, then blocks at its allowance", async () => {
   const { h, metricsDir, dispose } = await boot()
@@ -394,6 +395,13 @@ test("reviewer-scoped waiver admits two ensemble dispatches, then blocks at its 
       e.message ===
       "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)." +
         ALLOWANCE_CLAUSE,
+  )
+  // The refused dispatch journals no WAIVED entry: the count still reflects
+  // only the two admitted dispatches.
+  assert.equal(
+    journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "WAIVED").length,
+    2,
+    "the refused dispatch journals no WAIVED entry",
   )
   dispose()
 })
