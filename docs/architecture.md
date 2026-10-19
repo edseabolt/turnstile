@@ -323,9 +323,10 @@ kind: a restored _bound_ verdict is validated against the current files
 immediately (bound plan edited or removed → `plan-edited` / `plan-missing`
 STALE, no accept-once window), while a restored unbound verdict carries its
 journaled `plansSig` stamp and is validated against the current dir (any
-plans-dir change → `signature-mismatch` STALE); only a field-less legacy line
-keeps the accept-once window (accepted once and re-stamped). Any read error is
-fail-open.
+plans-dir change → `signature-mismatch` STALE); a field-less legacy line and a
+human `PLAN APPROVED:` prompt approval (never stamped) keep the accept-once
+window (accepted once and re-stamped) — closing the prompt channel is a
+documented follow-up. Any read error is fail-open.
 
 For a read-only status view: `opencode-turnstile status [--json]` aggregates
 gate/plan/verdict/dispatch/blocked/permission entries per parent session.

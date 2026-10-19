@@ -138,7 +138,8 @@
  *   verdict loudly, journaling a replay-inert `STALE` entry
  *   (`signature-mismatch`) rather than a silent mismatch. A replayed
  *   unbound approval carries its journaled dir signature and is validated
- *   against the current dir like a live one (a field-less legacy line is
+ *   against the current dir like a live one (a field-less legacy line and a
+ *   human `PLAN APPROVED:` prompt approval, which is never stamped, are
  *   accepted once and re-stamped); a replayed bound
  *   approval is validated against the current files immediately. The block
  *   and permission-ask preview name the resolved plan — the dispatch's

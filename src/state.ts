@@ -212,8 +212,8 @@ export function formatPipelineStatus(
  * sticky fields paired with `hasPlanVerdict` — the `plansSignature` stamp and
  * the bound plan identity (`approvedPlan`/`approvedPlanKey`) — are carried
  * only while `hasPlanVerdict` itself survives. All other fields
- * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reads`, `seen`, the
- * empty `plansSignature` stamp) come fresh; the returned bucket's
+ * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reads`, `seen`) come
+ * fresh; the returned bucket's
  * `replayGrace` is consumed (false).
  * @param prior The replayed bucket being reset.
  * @returns A reset bucket with the prior flags; grace consumed.
