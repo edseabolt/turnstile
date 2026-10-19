@@ -236,3 +236,42 @@ test("config surfacing: the first delivery from an unregistered session consumes
     dispose()
   }
 })
+
+/** (19) The injected policy carries the same-turn continuation imperative
+ *  and the subset-precedence rule, positioned right after the "Pipeline
+ *  order:" line: it states the imperative to dispatch the next agent in the
+ *  same turn, the rule that a user's named dispatch list is a subset of the
+ *  pipeline (not a replacement), the terminal rule (the task ends at reviewer
+ *  approval plus the landing gate, not at implementation completion), and the
+ *  instruction to obey the appended PIPELINE: status line. */
+test("policy prose: the continuation imperative and subset-precedence rule follow the pipeline order", () => {
+  const orderIdx = ORCHESTRATOR_POLICY.indexOf("Pipeline order:")
+  const continuationIdx = ORCHESTRATOR_POLICY.indexOf("Continuation (imperative):")
+  const waiversIdx = ORCHESTRATOR_POLICY.indexOf("Waivers and approvals:")
+  assert.ok(orderIdx !== -1, "the pipeline order line is present")
+  assert.ok(continuationIdx !== -1, "the continuation imperative line is present")
+  assert.ok(
+    orderIdx < continuationIdx && continuationIdx < waiversIdx,
+    "the continuation imperative sits right after the pipeline order, before the waivers line",
+  )
+  assert.ok(
+    ORCHESTRATOR_POLICY.includes("dispatch the next agent in the order above in the same turn"),
+    "the same-turn continuation imperative is stated",
+  )
+  assert.ok(
+    ORCHESTRATOR_POLICY.includes(
+      "the user's named dispatch list is a subset of the pipeline, not a replacement for it",
+    ),
+    "the subset-precedence rule is stated",
+  )
+  assert.ok(
+    ORCHESTRATOR_POLICY.includes(
+      "the task ends at reviewer approval plus the landing gate, not at implementation completion",
+    ),
+    "the terminal rule is stated",
+  )
+  assert.ok(
+    ORCHESTRATOR_POLICY.includes("obey the PIPELINE: status line"),
+    "the policy tells the orchestrator to obey the appended PIPELINE: line",
+  )
+})

@@ -1,36 +1,57 @@
 /**
  * turnstile: runtime enforcement of the orchestrator pipeline contracts.
  *
- * - Orchestrator policy: injected into the receiving parent session per task
- *   via the `execute.after` hook — the `ORCHESTRATOR_POLICY` block from
- *   `src/policy.ts` is prepended to the first `task`/`subagent` result delivery
- *   per task, attributed to the delivery's parent through the `childToParent`
- *   edge (seeded by `session.created`, back-filled via `session.get`), with
- *   per-task idempotency via `GateState.policyInjected` keyed on that parent.
+ * - Orchestrator policy and pipeline status: injected into the receiving
+ *   parent session per task via the `execute.after` hook. On the FIRST
+ *   `task`/`subagent` result delivery per task the `ORCHESTRATOR_POLICY`
+ *   block from `src/policy.ts` is prepended as the policy head, and on EVERY
+ *   such delivery whose agent is a pipeline stage a one-line `PIPELINE:`
+ *   status tail is appended (the just-completed stage, the live plan/test
+ *   gate flags, the reviewer ensemble count, and the next stage the
+ *   orchestrator dispatches) — the first delivery reads head+tail, every
+ *   later delivery tail-only, so a follow-up delivery still names the next
+ *   stage after the head has already landed. Both are attributed to the
+ *   delivery's parent through the `childToParent` edge (seeded by
+ *   `session.created`, back-filled via `session.get`); the head is idempotent
+ *   per task via `GateState.policyInjected` keyed on that parent, and the
+ *   tail runs independently of that flag. The tail is rendered by
+ *   `formatPipelineStatus` (`src/state.ts`) from the resolved parent's gate
+ *   state and the delivery's agent, with stage names read from
+ *   `config.agents` (renamed stages route correctly); for an agent that is
+ *   not one of the five pipeline stages it renders "" and the append is
+ *   skipped entirely, leaving non-pipeline deliveries byte-identical.
  *   Each delivery is classified once (`classifyDelivery`) into its host shape:
  *   the v1 string shape (child-keyed event, text in `result.output`, a string
  *   `metadata.sessionID` naming the child when present) or the v2 structured
  *   shape (parent-keyed event, structured `result.output`, child via
  *   `metadata.sessionID` or the structured `output.sessionID`, canonical
  *   child text in `output.output`, model-visible `content` as a string or a
- *   block array). The prepend lands on the shape's model-visible text —
- *   `result.output` for the string shape; string or block-array
- *   `result.content` for the structured one (absent falls back to the
- *   structured output string, and the `output` object otherwise stays
+ *   block array). Head and tail both land on the shape's model-visible text
+ *   through the shared shape ladder (`mutateDeliveryText`: a block-array
+ *   `content` gains the head block at the front and the tail block at the
+ *   end, so the output reads policy head → child text → `PIPELINE:` tail; the
+ *   once-per-load `[turnstile] config:` block, when present, sits between the
+ *   head and the child text) — `result.output` for the string shape; string
+ *   or block-array `result.content` for the structured one (absent falls back
+ *   to the structured output string, and the `output` object otherwise stays
  *   unmutated) — and the classified child and text drive marker parsing, the
- *   bare-output check, and the reviewer capture with no re-derivation. Only two skips are silent: the
- *   once-flag and an absent result; a present-but-unclassifiable result
- *   journals loudly instead (`{type:"policy", injected:false,
+ *   bare-output check, and the reviewer capture with no re-derivation. The
+ *   silent skips are the once-flag (which now gates only the policy head —
+ *   the tail lands on every pipeline-stage delivery) and an absent result; a
+ *   present-but-unclassifiable result journals loudly on EVERY such delivery
+ *   (the once-flag no longer gates it) (`{type:"policy", injected:false,
  *   reason:"unknown-shape", shape:<descriptor>}`). The name-based exclusion
  *   is a conservative fallback for non-structured deliveries whose edge is
  *   unresolvable: a config-known subagent name with no registered edge is
  *   skipped and journaled `skipped:true` (`reason:"agent-name"`) rather than
  *   injected; structured deliveries skip the guard by construction (the host
  *   builds that result on the parent's own tool call, so it is always
- *   parent-facing). Fully guarded and fail-open (a broken injection journals
- *   `type:"policy"` and proceeds). Nothing is written to an instructions file
- *   at install time — the AGENTS.md contract block is a historical install
- *   step, removed.
+ *   parent-facing). Fully guarded and fail-open, with the two text mutations
+ *   as independent fail-open paths: a broken head journals `type:"policy"`
+ *   and proceeds (the tail still lands), and a broken tail journals
+ *   `{type:"error", error:"pipeline-status: …"}` without rethrowing (the head
+ *   still lands). Nothing is written to an instructions file at install time
+ *   — the AGENTS.md contract block is a historical install step, removed.
  *
  * - Config warnings: surfaced into the session context once per plugin load.
  *   When the resolved config produced validation warnings (a typo'd key, a

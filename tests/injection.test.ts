@@ -28,7 +28,15 @@
  * the name guard inert on structured deliveries; child attribution through
  * the `output.sessionID` fallback; fail-open on a frozen structured prepend;
  * the background-ack parity violation; and string-shape child attribution
- * via `metadata.sessionID`.
+ * via `metadata.sessionID`. The per-delivery `PIPELINE:` status tail: it
+ * lands on every pipeline-stage delivery (first delivery head+tail, later
+ * deliveries tail-only while the head stays once-per-task); it names the
+ * just-completed and successor stages by their configured (renamed) values;
+ * a non-pipeline agent gets no tail (byte-identical head-only delivery);
+ * an unclassifiable shape journals loudly on EVERY delivery (the once-flag
+ * no longer gates it); a throwing append fails open (`pipeline-status:`
+ * journal, the head still lands); and a live field that ceases to be a
+ * string between classification and mutation re-reads the classified text.
  */
 
 import * as path from "node:path"
@@ -511,12 +519,16 @@ function structured(
   }
 }
 
-/** 11. The structured (v2) shape: the policy lands in `result.content`,
- *  the `result.output` object stays object-identical, the journal keys on
- *  the resolved parent, and a repeat delivery prepends nothing. */
+/** 11. The structured (v2) shape: the policy head AND the per-delivery
+ *  status tail land in `result.content` (the tail appended after the
+ *  original block, the head prepended before it), the `result.output`
+ *  object stays object-identical, the journal keys on the resolved parent,
+ *  and a repeat delivery re-appends the tail but prepends nothing. */
 test("injection: a structured delivery injects into result.content, leaving result.output untouched", async () => {
   const { h, dispose, metricsDir } = await boot()
   try {
+    const status =
+      "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
     await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
     const outRef = { sessionID: "c1", status: "completed", output: "planner body" }
     const ev = structured("c1", "planner body", "planner")
@@ -524,18 +536,28 @@ test("injection: a structured delivery injects into result.content, leaving resu
     const blockBefore = ev.result.content[0]
     await callTool(h, "execute.after", ev)
     const content = ev.result.content
-    assert.equal(Array.isArray(content) && content.length, 2, "the content array gains one block")
-    assert.equal(content[0].type, "text", "the prepended block is a text block")
+    assert.equal(
+      Array.isArray(content) && content.length,
+      3,
+      "the content array gains the policy head and the status tail",
+    )
+    assert.equal(content[0].type, "text", "the prepended head is a text block")
     assert.equal(
       content[0].text,
       ORCHESTRATOR_POLICY + "\n",
       "the prepended block carries the policy",
     )
-    assert.equal(content[1], blockBefore, "the original block is preserved below the policy")
+    assert.equal(content[1], blockBefore, "the original block sits between head and tail")
     assert.equal(
       content[1].text,
       `<subagent sessionID="c1" state="completed">\nplanner body\n</subagent>`,
       "the wrapper text is unmutated",
+    )
+    assert.equal(content[2].type, "text", "the appended tail is a text block")
+    assert.equal(
+      content[2].text,
+      "\n" + status,
+      "the appended block carries the per-delivery status line",
     )
     assert.equal(ev.result.output, outRef, "the structured output object is object-identical")
     assert.equal(ev.result.output.output, "planner body", "its inner text is unmutated")
@@ -919,10 +941,13 @@ test("injection: a string delivery with a metadata child keys the violation on t
 
 /** 24. The structured shape with a plain-string `content`: the policy is
  *  prefixed into the string in place, the wrapper is preserved below it,
- *  and the `result.output` object stays object-identical. */
+ *  the per-delivery status tail is appended after the wrapper, and the
+ *  `result.output` object stays object-identical. */
 test("injection: a structured delivery with string content prefixes the policy into the string", async () => {
   const { h, dispose, metricsDir } = await boot()
   try {
+    const status =
+      "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
     await resolveEdgeViaCreated(h, "cS", "p1", metricsDir)
     const ev = structured("cS", "string content body", "planner", "string")
     const outRef = ev.result.output
@@ -932,9 +957,10 @@ test("injection: a structured delivery with string content prefixes the policy i
     assert.equal(typeof content, "string", "content stays a string")
     assert.ok(content.startsWith(ORCHESTRATOR_POLICY), "the string is policy-prefixed")
     assert.ok(
-      content.endsWith(String(contentBefore)),
-      "the wrapper text is preserved below the policy",
+      content.includes(String(contentBefore)),
+      "the wrapper text is preserved between head and tail",
     )
+    assert.ok(content.endsWith("\n" + status), "the per-delivery status tail is appended last")
     assert.equal(policyCountOf(content), 1, "the policy appears exactly once")
     assert.equal(ev.result.output, outRef, "the structured output object is object-identical")
     assert.equal(ev.result.output.output, "string content body", "its inner text is unmutated")
@@ -1026,6 +1052,286 @@ test("injection: a structured marker parses from the canonical output string, no
       journalEntries(metricsDir).filter((l) => l.type === "violation").length,
       0,
       "the marker in the canonical text satisfies the bare check",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 27. The status tail is per-delivery, not once-per-task: a second delivery
+ *  for the same parent re-appends the tail (naming the same successor) even
+ *  though the policy head is not re-prepended (the once-flag holds). */
+test("injection: the status tail lands on every delivery while the head is once-per-task", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    const line =
+      "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
+    const first = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: "planner body" },
+    }
+    await callTool(h, "execute.after", first)
+    assert.ok(
+      String(first.result.output).startsWith(ORCHESTRATOR_POLICY),
+      "the first delivery carries the head",
+    )
+    assert.ok(
+      String(first.result.output).endsWith("\n" + line),
+      "the first delivery carries the tail",
+    )
+    const second = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: "planner body 2" },
+    }
+    await callTool(h, "execute.after", second)
+    assert.equal(
+      countPolicy(String(second.result.output)),
+      0,
+      "the once-flag holds: no head re-prepended on the second delivery",
+    )
+    assert.ok(
+      String(second.result.output).endsWith("\n" + line),
+      "but the per-delivery tail still lands",
+    )
+    assert.equal(
+      journalEntries(metricsDir).filter((l) => l.type === "policy").length,
+      1,
+      "one policy journal entry for the once-per-task head",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 28. The status line routes successor and just-completed names through the
+ *  configured agent values: a renamed executor stage is named by its
+ *  configured value in both positions — as the successor of a red test-runner
+ *  round and as the just-completed stage. */
+test("injection: the status line names stages by their configured (renamed) values", async () => {
+  const { h, dispose } = await boot({ agents: { executor: "implementer" } })
+  try {
+    const red = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner", prompt: "test" },
+      result: { output: "GATE: FAIL tests=3 passed=1 failed=2" },
+    }
+    await callTool(h, "execute.after", red)
+    const redLine =
+      "PIPELINE: test-runner=done plan=PENDING tests=RED reviewer=0/2 next=implementer — dispatch the next agent in this same turn"
+    assert.ok(
+      String(red.result.output).endsWith("\n" + redLine),
+      "the renamed executor is the successor after a red round",
+    )
+    const build = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "implementer", prompt: "build" },
+      result: { output: "built it" },
+    }
+    await callTool(h, "execute.after", build)
+    const buildLine =
+      "PIPELINE: implementer=done plan=PENDING tests=RED reviewer=0/2 next=test-runner — dispatch the next agent in this same turn"
+    assert.ok(
+      String(build.result.output).endsWith("\n" + buildLine),
+      "the renamed executor is named when it just completed",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 29. A non-pipeline stage agent (the debugger) renders an empty status line
+ *  and gets no tail: the delivery is byte-identical to the head-only path. */
+test("injection: a non-pipeline stage agent gets no status tail (byte-identical head-only)", async () => {
+  const { h, dispose } = await boot()
+  try {
+    const ev = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "debugger", prompt: "debug" },
+      result: { output: "debugged" },
+    }
+    await callTool(h, "execute.after", ev)
+    // The byte-identical expectation (head only, no status tail) is the
+    // assertion: a tail would extend the string past the head + body.
+    assert.equal(
+      String(ev.result.output),
+      ORCHESTRATOR_POLICY + "\n" + "debugged",
+      "the head lands and no tail follows a non-pipeline agent",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 30. An unclassifiable result journals loudly on EVERY delivery, even once
+ *  the policy head has landed and set the once-flag: the unknown-shape journal
+ *  is per-delivery, not gated by the once-flag. */
+test("injection: unknown-shape deliveries journal loudly even after the once-flag is set", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    // A successful delivery lands the head and sets the once-flag for p1.
+    const ok = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: "planner body" },
+    }
+    await callTool(h, "execute.after", ok)
+    // Two following unclassifiable deliveries for the same parent each journal.
+    const unknown = () => ({
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: 42 },
+    })
+    await callTool(h, "execute.after", unknown())
+    await callTool(h, "execute.after", unknown())
+    const unknownEntries = journalEntries(metricsDir).filter(
+      (l) => l.type === "policy" && l.reason === "unknown-shape",
+    )
+    assert.equal(
+      unknownEntries.length,
+      2,
+      "each unclassifiable delivery journals, even after the once-flag is set",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 31. A throwing status-tail mutation fails open: the append journals a
+ *  pipeline-status error and never rethrows, and the independent policy-head
+ *  prepend still lands. */
+test("injection: a hostile append mutation journals a pipeline-status error and the head still lands", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    const ev = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: "planner body" },
+    }
+    let backing = "planner body"
+    Object.defineProperty(ev.result, "output", {
+      configurable: true,
+      get: () => backing,
+      set: (v: unknown) => {
+        // Throw only on the appended tail (a newline before the PIPELINE:
+        // label): the prepended head embeds the word in-prose, not on its own
+        // line, so the head still lands.
+        if (typeof v === "string" && v.includes("\nPIPELINE: ")) throw new Error("hostile tail")
+        backing = String(v)
+      },
+    })
+    await callTool(h, "execute.after", ev)
+    assert.equal(
+      String(ev.result.output),
+      ORCHESTRATOR_POLICY + "\n" + "planner body",
+      "the head landed; the hostile tail did not",
+    )
+    const statusErr = journalEntries(metricsDir).filter(
+      (l) => l.type === "error" && String(l.error).startsWith("pipeline-status:"),
+    )
+    assert.equal(statusErr.length, 1, "the append failure journaled a pipeline-status error")
+    const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
+    assert.equal(policies.length, 1, "the head still journaled exactly one policy entry")
+    assert.equal(policies[0]!.injected, true, "the policy head is recorded as landed")
+  } finally {
+    dispose()
+  }
+})
+
+/** 32. A hostile string-shape output that ceases to be a string between
+ *  classification and mutation: the mutation's re-read falls back to the text
+ *  captured at classification time, and the head and tail still compose onto
+ *  it — fail-open, no throw, no pipeline-status error. */
+test("injection: a string-shape output that ceases to be a string re-reads the classified text", async () => {
+  const { h, dispose } = await boot()
+  try {
+    const tail =
+      "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
+    const ev = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: "planner body" },
+    }
+    let reads = 0
+    let backing = "planner body"
+    Object.defineProperty(ev.result, "output", {
+      configurable: true,
+      get: () => {
+        reads++
+        // Classification reads the field twice (the typeof check, then the
+        // captured text); the append's re-read (the third) sees a non-string
+        // and takes the classified-text fallback; later reads see the
+        // mutated backing.
+        if (reads <= 2) return "planner body"
+        if (reads === 3) return 42
+        return backing
+      },
+      set: (v: unknown) => {
+        backing = v as string
+      },
+    })
+    await callTool(h, "execute.after", ev)
+    assert.equal(
+      String(ev.result.output),
+      ORCHESTRATOR_POLICY + "\n" + "planner body\n" + tail,
+      "the head and tail compose on the classified text, not the garbage re-read",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 33. A hostile structured output (absent `content`) whose canonical
+ *  `output.output` ceases to be a string between classification and mutation:
+ *  the mutation's re-read falls back to the classified text, and the head and
+ *  tail still compose onto it — fail-open, no throw, no pipeline-status error. */
+test("injection: a structured output that ceases to be a string re-reads the classified text", async () => {
+  const { h, dispose } = await boot()
+  try {
+    const tail =
+      "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
+    const ev = {
+      tool: "subagent",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: {
+        output: { sessionID: "c1", status: "completed", output: "planner body" },
+        metadata: { sessionID: "c1", status: "completed" },
+      },
+    }
+    let reads = 0
+    let backing = "planner body"
+    Object.defineProperty(ev.result.output, "output", {
+      configurable: true,
+      get: () => {
+        reads++
+        // Classification reads the field twice (the typeof check, then the
+        // captured text); the append's re-read (the third) sees a non-string
+        // and takes the classified-text fallback; later reads see the
+        // mutated backing.
+        if (reads <= 2) return "planner body"
+        if (reads === 3) return 42
+        return backing
+      },
+      set: (v: unknown) => {
+        backing = v as string
+      },
+    })
+    await callTool(h, "execute.after", ev)
+    assert.equal(
+      String(ev.result.output.output),
+      ORCHESTRATOR_POLICY + "\n" + "planner body\n" + tail,
+      "the head and tail compose on the classified text, not the garbage re-read",
     )
   } finally {
     dispose()

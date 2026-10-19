@@ -33,7 +33,7 @@ import {
   isPushLanding,
   type ToolPolicy,
 } from "./tool-policy.ts"
-import { createLedger, formatGateSnapshot, type GateLedger } from "./state.ts"
+import { createLedger, formatGateSnapshot, formatPipelineStatus, type GateLedger } from "./state.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
 import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type {
@@ -184,15 +184,61 @@ function classifyDelivery(event: ToolHookEvent): Delivery {
 }
 
 /**
+ * Applies a text transformation to a classified delivery's model-visible
+ * text across every host shape. String shape: `result.output` is rewritten
+ * in place. Structured shape: a string `result.content` is rewritten in
+ * place; a block-array `content` gains one new text block carrying
+ * `mutate("")` — the transformation applied to empty text, which is exactly
+ * the inserted head for "prepend" and the appended tail for "append" —
+ * placed at the front for "prepend" and the end for "append" (the host
+ * passes a content array through to the model unchanged); absent or other
+ * `content` falls back to the structured output string (`output.output`,
+ * which the host stringifies when `content` is absent). The structured
+ * `output` object otherwise stays unmutated.
+ *
+ * Each shape re-reads the field's current value before mutating, so more
+ * than one transformation on the same delivery (the per-delivery status
+ * append and the once-per-task policy prepend) composes in call order.
+ * Throws propagate to the caller's fail-open catch.
+ * @param event The execute.after payload whose result is mutated.
+ * @param delivery The classified delivery (string or structured only).
+ * @param mutate The text transformation to apply to the model-visible text.
+ * @param placement For a structured block-array `content`, whether the new
+ *     block goes at the front ("prepend") or the end ("append").
+ */
+function mutateDeliveryText(
+  event: ToolHookEvent,
+  delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+  mutate: (text: string) => string,
+  placement: "prepend" | "append",
+): void {
+  const result = event.result as ToolResult
+  if (delivery.kind !== "structured") {
+    const current = typeof result.output === "string" ? result.output : delivery.text
+    result.output = mutate(current)
+    return
+  }
+  const content = result.content
+  if (typeof content === "string") {
+    result.content = mutate(content)
+    return
+  }
+  if (Array.isArray(content)) {
+    const block = { type: "text", text: mutate("") }
+    result.content = placement === "prepend" ? [block, ...content] : [...content, block]
+    return
+  }
+  const structuredOutput = result.output as Record<string, unknown>
+  const current =
+    typeof structuredOutput.output === "string" ? structuredOutput.output : delivery.text
+  structuredOutput.output = mutate(current)
+}
+
+/**
  * Prepends the orchestrator policy to the classified delivery's
- * model-visible text. String shape: `result.output` (byte-identical to the
- * historical prepend). Structured shape: a string `result.content` is
- * prefixed in place; a block-array `content` gains one prepended text block
- * (the host passes a content array through to the model unchanged); absent
- * or other `content` falls back to the structured output string
- * (`output.output`, which the host stringifies when `content` is absent).
- * The structured `output` object otherwise stays unmutated. Throws
- * propagate to the caller's fail-open catch.
+ * model-visible text: a thin caller of `mutateDeliveryText` inserting the
+ * policy head at the front. Byte-identical to the historical prepend for a
+ * delivery that gains no status tail.
  * @param event The execute.after payload whose result is mutated.
  * @param delivery The classified delivery (string or structured only).
  */
@@ -200,23 +246,7 @@ function prependDeliveryText(
   event: ToolHookEvent,
   delivery: Extract<Delivery, { kind: "string" | "structured" }>,
 ): void {
-  const result = event.result as ToolResult
-  const head = ORCHESTRATOR_POLICY + "\n"
-  if (delivery.kind !== "structured") {
-    result.output = head + delivery.text
-    return
-  }
-  const content = result.content
-  if (typeof content === "string") {
-    result.content = head + content
-    return
-  }
-  if (Array.isArray(content)) {
-    result.content = [{ type: "text", text: head }, ...content]
-    return
-  }
-  const structuredOutput = result.output as Record<string, unknown>
-  structuredOutput.output = head + delivery.text
+  mutateDeliveryText(event, delivery, (text) => ORCHESTRATOR_POLICY + "\n" + text, "prepend")
 }
 
 /**
@@ -1223,48 +1253,82 @@ export function createTurnstile(
    * delivery from a child-own session one, so the self-keyed injection
    * there is a documented, accepted residual (the handler fires only on
    * `task`/`subagent` tool results, so child streaming text never reaches
-   * it). Every non-injection is journaled except two documented silent
-   * cases: the policy already landed this task (once-flag), and an absent
-   * result (nothing to deliver); a present-but-unclassifiable result
-   * journals loudly instead (`reason:"unknown-shape"` with a safe shape
-   * descriptor). Fail-open: a prepend failure journals `injected:false`
-   * and never throws.
+   * it). Every non-injection is journaled except one documented silent
+   * case: an absent result (nothing to deliver). A present-but-unclassifiable
+   * result journals loudly (`reason:"unknown-shape"` with a safe shape
+   * descriptor) on EVERY such delivery — the once-flag no longer gates that
+   * journal, so a repeated unclassifiable delivery journals again. When the
+   * delivery classifies (string or structured), the per-delivery PIPELINE:
+   * status tail is appended for a pipeline stage (independent of the
+   * once-flag), and the policy head is prepended once per task; the tail and
+   * the head are independent fail-open paths — a tail failure journals a
+   * `pipeline-status:` error and the head still lands, and a head failure
+   * journals `injected:false` and the tail still landed.
    * @param event The execute.after payload whose result is mutated.
    * @param child The delivery's child session ID (classified, per shape).
    * @param delivery The classified delivery (see `classifyDelivery`).
+   * @param agent The resolved agent name (the just-completed pipeline stage).
    */
   async function injectOrchestratorPolicy(
     event: ToolHookEvent,
     child: string,
     delivery: Delivery,
+    agent: string,
   ): Promise<void> {
     // Close the late-edge window for background dispatches before deciding:
     // idempotent (early-returns on a registered edge) and bounded by the
     // failedLookups retry cap, so the await is cheap on the common path.
     await resolveParent(child)
     if (delivery.kind !== "structured" && nameGuardSkips(event, child)) return
-    applyPolicyResult(ledger.parentOf(child), event, delivery)
+    applyPolicyResult(ledger.parentOf(child), event, delivery, agent)
   }
 
   /**
-   * Applies the injection once the name guard passes. Dispatch table: the
-   * per-task once-flag (silent), an absent result (silent), a
-   * present-but-unclassifiable result (journaled loudly as
-   * `reason:"unknown-shape"` with the shape descriptor, never throwing),
-   * then the prepend and the outcome journal. Fail-open: a prepend failure
-   * journals `injected:false` and never throws.
+   * Appends the per-delivery pipeline status tail to a classified delivery's
+   * model-visible text: runs on EVERY delivery for a pipeline stage, so a
+   * follow-up delivery still names the next stage even after the policy head
+   * already landed. The line is a pure read of the resolved parent's gate
+   * state via `formatPipelineStatus` (never throws and never journals by
+   * itself); a non-pipeline agent renders "" and the append is a no-op,
+   * leaving such deliveries byte-identical. Fail-open: a throwing mutation
+   * journals `{type:"error", error:"pipeline-status: …"}` and never rethrows,
+   * so the independent policy-prepend path below still runs.
    * @param parent The resolved parent session for the delivery.
    * @param event The execute.after payload whose result is mutated.
-   * @param delivery The classified delivery (see `classifyDelivery`).
+   * @param delivery The classified delivery (string or structured only).
+   * @param agent The resolved agent name (the just-completed pipeline stage).
    */
-  function applyPolicyResult(parent: string, event: ToolHookEvent, delivery: Delivery): void {
+  function appendPipelineStatus(
+    parent: string,
+    event: ToolHookEvent,
+    delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+    agent: string,
+  ): void {
+    const line = formatPipelineStatus(ledger.state(parent), config.agents, agent)
+    if (line === "") return
+    try {
+      mutateDeliveryText(event, delivery, (text) => text + "\n" + line, "append")
+    } catch (e) {
+      journaler.journal({ type: "error", error: `pipeline-status: ${e}` })
+    }
+  }
+
+  /**
+   * Prepends the orchestrator policy head to a classified delivery's
+   * model-visible text once per task: the silent per-task once-flag path.
+   * Fail-open: a throwing mutation journals `{type:"policy", injected:false}`
+   * and never rethrows.
+   * @param parent The resolved parent session for the delivery.
+   * @param event The execute.after payload whose result is mutated.
+   * @param delivery The classified delivery (string or structured only).
+   */
+  function prependPolicy(
+    parent: string,
+    event: ToolHookEvent,
+    delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+  ): void {
     const policyState = ledger.state(parent)
     if (policyState.policyInjected) return
-    if (delivery.kind === "absent") return
-    if (delivery.kind === "unknown") {
-      journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
-      return
-    }
     try {
       prependDeliveryText(event, delivery)
       policyState.policyInjected = true
@@ -1272,6 +1336,35 @@ export function createTurnstile(
     } catch (e) {
       journalPolicy(parent, false, { error: String(e) })
     }
+  }
+
+  /**
+   * Applies the injection once the name guard passes. Dispatch table: an
+   * absent result (silent), a present-but-unclassifiable result (journaled
+   * loudly as `reason:"unknown-shape"` with the shape descriptor on EVERY such
+   * delivery — the once-flag no longer gates it), then the per-delivery
+   * status tail (every pipeline-stage delivery, independent of the once-flag),
+   * then the once-per-task policy head. The two text mutations are independent
+   * fail-open paths: a tail failure journals a `pipeline-status:` error and the
+   * head still lands, and vice versa.
+   * @param parent The resolved parent session for the delivery.
+   * @param event The execute.after payload whose result is mutated.
+   * @param delivery The classified delivery (see `classifyDelivery`).
+   * @param agent The resolved agent name (the just-completed pipeline stage).
+   */
+  function applyPolicyResult(
+    parent: string,
+    event: ToolHookEvent,
+    delivery: Delivery,
+    agent: string,
+  ): void {
+    if (delivery.kind === "absent") return
+    if (delivery.kind === "unknown") {
+      journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
+      return
+    }
+    appendPipelineStatus(parent, event, delivery, agent)
+    prependPolicy(parent, event, delivery)
   }
 
   /**
@@ -2164,11 +2257,14 @@ export function createTurnstile(
       try {
         const reg = await h.tool.hook("execute.after", async (event: ToolHookEvent) => {
           try {
-            // Invariant: this runs BEFORE the policy injection below, so on a
-            // task delivery carrying both surfaces the policy prepend lands on
-            // top — output reads ORCHESTRATOR_POLICY, then `[turnstile]
-            // config:`, then the child's own output. Both are fail-open and
-            // once-per-scope (policy per task, config per plugin load).
+            // Invariant: this runs BEFORE the injection below, so on a task
+            // delivery carrying every surface the output reads
+            // ORCHESTRATOR_POLICY (prepended head), then `[turnstile]
+            // config:` (once-per-plugin-load block), then the child's own
+            // output, then the appended PIPELINE: status line (last —
+            // per-delivery, so it lands even on a delivery whose policy head
+            // already landed). All fail-open; the head and config block are
+            // once-per-scope, the status tail is per-delivery.
             surfaceConfigWarnings(event)
             if (event?.tool === "task" || event?.tool === "subagent") {
               // One shape decision per delivery: marker parsing, the
@@ -2260,7 +2356,7 @@ export function createTurnstile(
               // only, and its skip is journaled. Runs after the bare-output
               // phase, so the config-surface ordering invariant above (policy
               // prepend lands on top) is preserved.
-              await injectOrchestratorPolicy(event, child, delivery)
+              await injectOrchestratorPolicy(event, child, delivery, agent)
               return
             }
             if (event?.tool === "read") {
