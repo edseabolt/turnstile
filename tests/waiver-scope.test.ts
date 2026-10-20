@@ -16,7 +16,7 @@ import * as path from "node:path"
 import { BlockError, createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
-import { createLedger } from "../src/state.ts"
+import { createLedger } from "../src/ledger.ts"
 import { parseWaiverScope } from "../src/markers.ts"
 import { turnstile } from "../turnstile.ts"
 import {

@@ -9,7 +9,7 @@
  */
 
 import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./state.ts"
+import type { GateLedger } from "./ledger.ts"
 import type { TurnstileConfig } from "./types.ts"
 import { createDispatchGates } from "./gates-dispatch.ts"
 import type { EvidenceSearch } from "./gates-dispatch.ts"

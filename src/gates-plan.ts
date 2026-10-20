@@ -13,7 +13,7 @@ import { createHash } from "node:crypto"
 import * as path from "node:path"
 
 import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./state.ts"
+import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
 import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
 

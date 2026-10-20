@@ -369,7 +369,10 @@
  * the host loads, holding only the module shape and setup composition:
  * - `src/types.ts`: host wire shapes and gate-state structures.
  * - `src/journal.ts`: telemetry persistence (JSONL journal + trace).
- * - `src/state.ts`: per-session gate state, session mapping, journal replay.
+ * - `src/state.ts`: per-session gate state shape, snapshot and pipeline
+ *   rendering, replay-merge carry.
+ * - `src/ledger.ts`: LRU session maps, child verdict store, journal replay,
+ *   eviction protection.
  * - `src/fingerprint.ts`: worktree/branch identity and the GATE-SCOPED carry
  *   predicate.
  * - `src/markers.ts`: GATE/VERDICT parsing and dedup.

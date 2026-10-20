@@ -103,7 +103,7 @@ function freshSession() {
 
 /**
  * Aggregates the journal lines into per-session status. Replays the same
- * gate/plan last-wins rules as state.ts's replayGatePasses: a trailing
+ * gate/plan last-wins rules as ledger.ts's replayGatePasses: a trailing
  * `GATE: FAIL` keeps the gate red, an enforce-mode `verified:false` PASS never
  * flips, and a `type:plan` APPROVE restores plan approval. Malformed lines are
  * skipped. Parent-keyed.

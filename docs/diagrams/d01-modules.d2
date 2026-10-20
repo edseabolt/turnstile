@@ -16,7 +16,8 @@ entry: "turnstile.ts\n{ id:'turnstile', server, setup }\nthin factory — contra
 core: "src/ — one concern per boundary" {
   setup: "setup.ts\nwires everything: config load, hook registration,\nprompt admission, verdict attribution, event loop"
   config: "config.ts\n4-layer config (defaults ⊕ file ⊕ env ⊕ opts),\nvalidation, configDigest"
-  state: "state.ts — GateLedger\nper-parent GateState buckets (LRU),\nchild→parent edges, verdict store, journal replay"
+  state: "state.ts — GateState shape\nnewState, counters, snapshot + pipeline\nrendering, replay-merge"
+  ledger: "ledger.ts — GateLedger\nbuckets (LRU), child→parent edges,\nverdict store, journal replay"
   markers: "markers.ts\npure GATE:/VERDICT: parsing, dedup, suppression"
   gates: "gates.ts\ncomposition: createGates + the Gates interface"
   gatesdispatch: "gates-dispatch.ts\nreviewer gate, loop caps, read horizon,\nensemble completeness"
@@ -46,6 +47,7 @@ host.perm-hook -> entry
 entry -> core.setup
 core.setup -> core.config
 core.setup -> core.state
+core.setup -> core.ledger
 core.setup -> core.markers
 core.setup -> core.gates
 core.setup -> core.toolpolicy
@@ -53,20 +55,22 @@ core.setup -> core.evidence
 core.setup -> core.fingerprint
 core.setup -> core.journal
 core.setup -> core.policy
-core.state -> core.journal: "replay (fs)"
+core.ledger -> core.journal: "replay (fs)"
+core.ledger -> core.state: "newState, counters, merge"
 core.journal -> persist.jsonl
 core.journal -> persist.trace
 core.gates -> core.gatesdispatch
 core.gates -> core.gatesplan
-core.gates -> core.state: "type-only"
+core.gates -> core.ledger: "type-only"
 core.gates -> core.journal: "type-only"
 core.gates -> core.types: "type-only"
 core.gatesdispatch -> core.gatescommon
-core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE + type-only"
+core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE"
+core.gatesdispatch -> core.ledger: "type-only"
 core.gatesdispatch -> core.journal: "type-only"
 core.gatesdispatch -> core.types: "type-only"
 core.gatesplan -> core.gatescommon
-core.gatesplan -> core.state: "type-only"
+core.gatesplan -> core.ledger: "type-only"
 core.gatesplan -> core.journal: "type-only"
 core.gatesplan -> core.types: "type-only"
 core.gatescommon -> core.types: "type-only"

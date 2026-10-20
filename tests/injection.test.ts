@@ -46,7 +46,8 @@ import assert from "node:assert/strict"
 import { turnstile } from "../turnstile.ts"
 import { ORCHESTRATOR_POLICY } from "../src/policy.ts"
 import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers.ts"
-import { createLedger, newState } from "../src/state.ts"
+import { newState } from "../src/state.ts"
+import { createLedger } from "../src/ledger.ts"
 import {
   callSession,
   callTool,

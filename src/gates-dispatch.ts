@@ -9,7 +9,8 @@
  */
 
 import type { Journaler } from "./journal.ts"
-import { REVIEW_ENSEMBLE_SIZE, type GateLedger } from "./state.ts"
+import { REVIEW_ENSEMBLE_SIZE } from "./state.ts"
+import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
 import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
 

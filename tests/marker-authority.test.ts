@@ -18,7 +18,8 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { createLedger, newState } from "../src/state.ts"
+import { newState } from "../src/state.ts"
+import { createLedger } from "../src/ledger.ts"
 import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers.ts"
 import {
   journalEntries,

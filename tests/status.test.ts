@@ -3,7 +3,7 @@
  * driven by spawning the script the same way bin/cli.mjs does. It covers:
  *
  *  - gate/plan flag restoration parity with the real replay in
- *    src/state.ts (last PASS/FAIL wins; trailing FAIL keeps the gate red;
+ *    src/ledger.ts (last PASS/FAIL wins; trailing FAIL keeps the gate red;
  *    enforce-mode `verified:false` never flips) via `createLedger().peek()`;
  *  - the `.1` generation + current file replay window;
  *  - per-session counts (dispatch/block/permission asks+decisions);
@@ -25,7 +25,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { createLedger } from "../src/state.ts"
+import { createLedger } from "../src/ledger.ts"
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const statusScript = join(repoRoot, "scripts", "status.mjs")
@@ -203,7 +203,7 @@ const GEN0: Entry[] = [
   line(5, { type: "plan", sessionID: "sp-new", result: "APPROVE", source: "task-result" }),
 ]
 
-test("flag restoration matches state.ts replay: trailing FAIL wins and enforce unverified PASS never flips", () => {
+test("flag restoration matches ledger.ts replay: trailing FAIL wins and enforce unverified PASS never flips", () => {
   const dir = metricsDir()
   try {
     const journalPath = join(dir, "turnstile.jsonl")
