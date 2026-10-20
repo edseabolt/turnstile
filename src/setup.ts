@@ -1992,11 +1992,16 @@ export function createTurnstile(
     /**
      * Admits one user-authored prompt: resets prior task scope, then captures a
      * waiver and/or approval marker and emits the unresolvable-text telemetry.
-     * This is the single admission body, reached either through the session
-     * prompt hook or the correlated inbox stream; the caller dedupes by the
-     * shared host message id so one prompt is admitted exactly once regardless
-     * of which signal arrives first. Reads only — a transform hook mutates the
-     * host event in place host-side, so turnstile must not mutate it.
+     * The reset also releases this parent's registered children's metering
+     * counters (a child never admits a prompt, so its own counters are
+     * unreachable from any reset path otherwise); when at least one child's
+     * counters were cleared, a `child-reset` audit entry is journaled (replay-
+     * inert). This is the single admission body, reached either through the
+     * session prompt hook or the correlated inbox stream; the caller dedupes
+     * by the shared host message id so one prompt is admitted exactly once
+     * regardless of which signal arrives first. Reads only — a transform hook
+     * mutates the host event in place host-side, so turnstile must not mutate
+     * it.
      *
      * Fail-open: every read is guarded; a coercion that throws is journaled and
      * swallowed, never thrown at the host.
@@ -2050,11 +2055,13 @@ export function createTurnstile(
         // non-null assertion cannot fire; keep the predicate's contract
         // intact if it ever changes.
         if (carry) prior!.replayGrace = true
-        ledger.resetState(sessionID)
+        const freed = ledger.resetState(sessionID)
         ledger.state(sessionID).taskFingerprint = fingerprint
         if (carry) journaler.journal({ type: "continuation", sessionID })
+        if (freed > 0) journaler.journal({ type: "child-reset", sessionID, children: freed })
       } else {
-        ledger.resetState(sessionID)
+        const freed = ledger.resetState(sessionID)
+        if (freed > 0) journaler.journal({ type: "child-reset", sessionID, children: freed })
       }
       // A prompt reset invalidates all prior dispatch-scoped
       // evidence for this parent, so an unresolved-child verdict is only

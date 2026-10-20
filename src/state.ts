@@ -1,7 +1,9 @@
 /**
  * @fileoverview State boundary: per-session gate state, the child→parent
  * session mapping, and journal replay so a completed task's `GATE: PASS`
- * survives restarts. Pure bookkeeping; no enforcement decisions here.
+ * survives restarts. On a parent's prompt reset, also releases that
+ * parent's registered children's metering counters. Pure bookkeeping; no
+ * enforcement decisions here.
  */
 
 import * as fs from "node:fs"
@@ -67,6 +69,44 @@ export function newState(): GateState {
     // worktree/branch identity this carry predicate keys off.
     taskFingerprint: "",
   }
+}
+
+/**
+ * Clears the metering counters on a gate state bucket so its dispatches are
+ * re-admitted: the round and dispatch counters (`reviewRounds`,
+ * `reviewWaiverRounds`, `plannerRounds`, `planReviewerRounds`,
+ * `testRunnerRounds`, `totalDispatches`, `landingBlocks`, `reads`), the read
+ * warning flag, and any pending unverified gate-refusal claim. Earned credit
+ * (the gate/plan/review flags, the ensemble dispatch count, approvals, and
+ * waivers) is untouched — clearing a counter never withdraws credit already
+ * granted. The unverified-claim reset is the fail-open direction: it drops a
+ * stale pending refusal, never grants credit; the next unverified claim
+ * re-registers in the session's fresh window.
+ * @param s The gate state bucket whose metering counters to clear.
+ * @returns True iff any metering counter was non-fresh before clearing, so a
+ *     caller can suppress a no-op release.
+ */
+export function clearMeteringCounters(s: GateState): boolean {
+  const wasMetering =
+    s.reviewRounds !== 0 ||
+    s.reviewWaiverRounds !== 0 ||
+    s.plannerRounds !== 0 ||
+    s.planReviewerRounds !== 0 ||
+    s.testRunnerRounds !== 0 ||
+    s.totalDispatches !== 0 ||
+    s.landingBlocks !== 0 ||
+    s.reads !== 0
+  s.reviewRounds = 0
+  s.reviewWaiverRounds = 0
+  s.plannerRounds = 0
+  s.planReviewerRounds = 0
+  s.testRunnerRounds = 0
+  s.totalDispatches = 0
+  s.landingBlocks = 0
+  s.reads = 0
+  s.readWarned = false
+  s.unverifiedPass = ""
+  return wasMetering
 }
 
 /**
@@ -284,9 +324,16 @@ export interface GateLedger {
    * starts a clean cycle. `taskFingerprint` is stamped by setup after the
    * reset, so a fresh bucket starts empty and the next carry predicate keys
    * off the just-stamped identity.
+   *
+   * A new prompt also releases the session's registered children: their stored
+   * verdict evidence is dropped and their metering counters are cleared (see
+   * `clearMeteringCounters`), so a cap-exhausted child is re-dispatchable
+   * after the parent's next prompt.
    * @param sessionID The parent session ID to reset.
+   * @returns The number of registered child buckets whose metering counters
+   *     were non-fresh before clearing (0 for a no-op release).
    */
-  resetState(sessionID: string): void
+  resetState(sessionID: string): number
   /**
    * Maps a session to its parent, falling back to the session itself when
    * no parent edge is known.
@@ -711,6 +758,30 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
     return last
   }
 
+  /**
+   * Drops a parent's registered children's verdict evidence and clears their
+   * metering counters when the parent starts a new task. Scoped to the
+   * registered children of `sessionID` only, so a concurrent task on another
+   * parent keeps its own child-verdict evidence and counters intact. A child
+   * whose edge is registered but whose state bucket was never minted is
+   * skipped (the edge can precede the child's first metered dispatch). Earned
+   * credit on each child's bucket is preserved — only the counters that block
+   * re-dispatch are cleared.
+   * @param sessionID The parent session ID whose new task triggers the release.
+   * @returns The number of child buckets whose metering counters were
+   *     non-fresh before clearing (0 for a pure no-op release).
+   */
+  function releaseChildren(sessionID: string): number {
+    let freed = 0
+    for (const c of childToParent.keys()) {
+      if (childToParent.get(c) !== sessionID) continue
+      childVerdicts.delete(c)
+      const cs = states.get(c)
+      if (cs && clearMeteringCounters(cs)) freed++
+    }
+    return freed
+  }
+
   // Replay runs before capping so the restored set honors the LRU cap too.
   replayGatePasses(states, journalPath)
   cap(states, isParent)
@@ -734,25 +805,20 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
       // Pure read: no insertion, no LRU reorder.
       return states.get(sessionID)
     },
-    resetState(sessionID: string): void {
+    resetState(sessionID: string): number {
       // delete+set keeps the LRU MRU position and the cap, as a plain reset.
       const prior = states.get(sessionID)
       states.delete(sessionID)
       states.set(sessionID, prior?.replayGrace ? mergeAfterReplay(prior) : newState())
       cap(states, isParent)
-      // Cross-task staleness: child-verdict evidence is scoped
-      // to a task. A new prompt for this parent drops the previous task's
-      // child verdicts so a marker-less re-fire can never re-attribute (or
-      // clobber against) a stale streamed APPROVE. Scoped to this parent's
-      // registered children only, so a concurrent task on another parent keeps
-      // its own child-verdict evidence intact.
-      for (const c of childToParent.keys()) {
-        if (childToParent.get(c) === sessionID) childVerdicts.delete(c)
-      }
-      // Unresolved children (no registered edge) keep their verdicts across a
-      // reset by design: there is no child→parent key to drop them on. The
-      // timestamp join makes this safe — a previous
-      // task's streamed APPROVE cannot approve the next task.
+      // A new prompt also releases this parent's registered children: their
+      // verdict evidence is dropped and their metering counters cleared, so a
+      // marker-less re-fire can never re-attribute against a stale streamed
+      // APPROVE and a cap-exhausted child is re-dispatchable. Unresolved
+      // children (no registered edge) keep their verdicts by design — the
+      // timestamp join keeps a previous task's streamed APPROVE from approving
+      // the next task.
+      return releaseChildren(sessionID)
     },
     parentOf(sessionID: string | undefined): string {
       if (!sessionID) return ""

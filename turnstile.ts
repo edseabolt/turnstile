@@ -201,9 +201,14 @@
  *   with the `USER WAIVER:` marker is inert); a new user prompt resets the
  *   counters. Every cap exhaustion journals a `type:"escalation"`
  *   entry and throws a STOP-and-escalate `BLOCKED by turnstile:` error telling
- *   the dispatcher to stop re-dispatching and escalate to the user (so a
- *   subagent stuck at its own cap is not dead-ended by a "wait for a new prompt"
- *   hint).
+ *   the dispatcher to stop re-dispatching and escalate to the user. A block
+ *   raised on an edge-registered child (a subagent that never admits a user
+ *   prompt) routes the escalation through the child's delivery instead: the
+ *   message carries an end-the-turn-and-report clause rather than the
+ *   wait-for-a-new-prompt promise, the `blocked`/`escalation` entries stamp
+ *   `parent`, and the parent's next prompt releases the child's metering
+ *   counters (journaled as a `type:"child-reset"` entry) — a child stuck at
+ *   its own cap is not dead-ended by a reset only the parent can trigger.
  * - Dispatch journaling: every `task`/`subagent` dispatch is journaled once at
  *   guard exit, so an allowed dispatch stays byte-identical while a blocked
  *   attempt stamps `blocked:true` (audit distinguishes dispatched from

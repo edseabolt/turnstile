@@ -100,8 +100,10 @@ counted into the load heartbeat (`type:"setup"`).
 - **`prompt`** → `admitPrompt` (`setup.ts`): the single prompt-admission body,
   shared with the inbox stream and deduped on the host message id. Marks the
   session a live parent, performs `resetState` (with optional
-  continuation-carry via `fingerprint.ts` when the worktree is unchanged),
-  clears evidence and latches, and captures `USER WAIVER:` / `PLAN APPROVED:`
+  continuation-carry via `fingerprint.ts` when the worktree is unchanged, and
+  a release of the session's edge-registered children's metering counters —
+  journaled `type:"child-reset"` when at least one is freed), clears evidence
+  and latches, and captures `USER WAIVER:` / `PLAN APPROVED:`
   literals — a waiver capture also parses its scope, the configured agent
   names named in the waiver text (`parseWaiverScope` in `src/markers.ts`),
   into `userWaiverScope`. It also scans the text for marker-shaped near misses
@@ -220,7 +222,7 @@ continuing prompt has an unchanged worktree fingerprint.
 | Reviewer dispatch  | `guardReviewerDispatch`                          | reviewer task until `hasGatePass`; round cap 2 (a scoped waiver spends its own allowance: max 2 waiver-unblocked dispatches on `reviewWaiverRounds`, metered apart from `reviewRounds`)                                                                                     | `userWaiver` covering `reviewer` (unscoped covers every stage)                                                                                                             |
 | Plan approval      | `enforcePlanApproval`                            | executor task until `hasPlanVerdict` is current: a bound approval (dispatch-named plan) is stale only on that plan's edit/removal (`plan-edited` / `plan-missing`); unbound approvals go stale on any plans-dir change (`signature-mismatch`; a same-content move survives) | `userWaiver` covering `plan-reviewer` or `executor` (the plan-gate stage group; unscoped covers every stage), `PLAN APPROVED:`, permission `always`, one-shot `once` grant |
 | Decomposition      | `enforceDecomposition`                           | executor task without a chunk cite when the resolved plan (dispatch-named → session-bound → first sorted decomposed) carries `## Decomposition`                                                                                                                             | —                                                                                                                                                                          |
-| Loop caps / budget | `guardDispatchBudget`                            | planner>3, plan-reviewer>3, test-runner>4, total>16                                                                                                                                                                                                                         | `userWaiver` covering the dispatched stage (unscoped covers every stage)                                                                                                   |
+| Loop caps / budget | `guardDispatchBudget`                            | planner>3, plan-reviewer>3, test-runner>4, total>16 — a block on an edge-registered child carries the end-the-turn-and-report clause (it never admits a user prompt) and stamps `parent` on the entries                                                                     | `userWaiver` covering the dispatched stage (unscoped covers every stage); the parent's next prompt (releases the registered children's counters)                           |
 | Read horizon       | `guardReadLimit`                                 | whole-file read #15+ per parent (warn once at 8)                                                                                                                                                                                                                            | —                                                                                                                                                                          |
 | Reviewer ensemble  | `reviewEnsembleComplete`                         | landing credit below 2 unwaived reviewer dispatches                                                                                                                                                                                                                         | `reviewEnsemble:"advise"`                                                                                                                                                  |
 | Landing            | `guardLanding`                                   | `git push` without `hasReviewApprove`                                                                                                                                                                                                                                       | permission `always` / `once`                                                                                                                                               |
@@ -256,10 +258,11 @@ continuing prompt has an unchanged worktree fingerprint.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (19 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (20 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
-  `continuation`, `evidence`, `violation`, `tool`, `error`, `suppressed`). A `dispatch` entry is written at
+  `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
+  `suppressed`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -294,6 +297,14 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   replay-inert and status-inert: a near miss admits nothing — gate semantics
   stay strict-literal — so neither `replayGatePasses` nor the status
   aggregate reads them.
+  A `child-reset` entry records a parent prompt's `resetState` freeing the
+  metering counters of at least one edge-registered child:
+  `{type:"child-reset", sessionID, children}` where `sessionID` is the
+  prompted parent and `children` the freed count. It exists only on prompts
+  that actually free a child — a prompt that frees none journals nothing —
+  and is replay-inert (the prompt reset is the child's task boundary; nothing
+  of its gate state survives to restore) and status-inert (the aggregate's
+  entry-type chain does not count it).
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `rotateEveryEntries` appends (default 512), only under a

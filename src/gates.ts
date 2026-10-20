@@ -273,6 +273,46 @@ export interface Gates {
 }
 
 /**
+ * The recovery tail for a cap block on an edge-registered child session. A
+ * child never admits a user prompt, so it cannot "wait for new instructions"
+ * for a reset that never arrives — instead it ends its turn and reports the
+ * escalation payload in its final output, which the task-result delivery
+ * surfaces to the parent orchestrator; the parent's next user prompt then
+ * releases the child's counters.
+ * @param what The escalation payload to report in the child's final output
+ *     (the open findings / the repeated agent failures / the stuck pipeline).
+ * @returns The child recovery tail, with a leading space.
+ */
+function childRecoveryTail(what: string): string {
+  return ` now: finish your turn and put ${what} in your final output — your delivery reaches the parent orchestrator, and the parent's next user prompt releases your counters; this session never receives user prompts.`
+}
+
+/**
+ * Composes a cap block message from a site's body, the blocked session's
+ * registered edge, and the site's appendix clause. The recovery tail is the
+ * parent's wait-for-a-new-prompt clause when the session has no edge
+ * (byte-identical to the legacy message) and the child's end-the-turn-and-
+ * report clause when it does; the appendix clause (the scoped-waiver
+ * allowance or waiver-state note) always stays last. Centralizes the
+ * edge ternary so the parent/child split is defined in one place.
+ * @param body The site's base message through its escalation payload.
+ * @param edge The blocked session's registered parent (undefined when none).
+ * @param what The escalation payload named by the child recovery tail.
+ * @param parentTail The parent's wait-for-a-new-prompt clause (leading space).
+ * @param clause The site's appendix clause, always last.
+ * @returns The composed block message.
+ */
+function capBlockMessage(
+  body: string,
+  edge: string | undefined,
+  what: string,
+  parentTail: string,
+  clause: string,
+): string {
+  return body + (edge ? childRecoveryTail(what) : parentTail) + clause
+}
+
+/**
  * Binds enforcement functions to a resolved config and journaler.
  * @param config The resolved plugin configuration.
  * @param journaler The telemetry writer for gate and blocked entries.
@@ -423,25 +463,36 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
 
   /**
    * Journals the round-limit `blocked` + `escalation` entries and trace, then
-   * throws the round-limit `BlockError`: the base message plus the given
-   * clause. The clause is "" for the ordinary unwaived cap (byte-identical
-   * message) and the scoped-allowance-exhausted clause for the waiver pool.
+   * throws the round-limit `BlockError`. The message is the base body plus a
+   * recovery tail that depends on whether the blocked session is an
+   * edge-registered child (the child end-the-turn-and-report clause) or a
+   * parent (the wait-for-a-new-prompt clause), plus the given clause, which
+   * stays last on both arms. The clause is "" for the ordinary unwaived cap
+   * (byte-identical message) and the scoped-allowance-exhausted clause for the
+   * waiver pool. When the blocked session has a registered edge, both journal
+   * entries are stamped `parent` so the escalation is attributed to the
+   * actionable session.
    * @param sessionID The parent session ID.
+   * @param ledger The gate ledger, read for the blocked session's edge.
    * @param count The exhausted count to journal.
    * @param cap The exhausted cap to journal and name in the message.
    * @param clause The appended clause ("" for the legacy message).
    */
   function blockReviewRoundLimit(
     sessionID: string,
+    ledger: GateLedger,
     count: number,
     cap: number,
     clause: string,
   ): void {
+    // One edge read feeds both the message tail swap and the journal stamps.
+    const edge = ledger.childToParent.get(sessionID)
     journaler.journal({
       type: "blocked",
       sessionID,
       agent: config.agents.reviewer,
       reason: "round-limit",
+      ...(edge ? { parent: edge } : {}),
     })
     // Visible escalation: exhausting the round cap means the reviewer is
     // re-dispatched in a loop — journal an `escalation` entry and stop+
@@ -454,6 +505,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       reason: "round-limit",
       count,
       cap,
+      ...(edge ? { parent: edge } : {}),
     })
     journaler.traceEvent(
       config.agents.reviewer,
@@ -462,7 +514,13 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
       sessionID,
     )
     throw new BlockError(
-      `BLOCKED by turnstile: reviewer round limit (${cap}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).${clause}`,
+      capBlockMessage(
+        `BLOCKED by turnstile: reviewer round limit (${cap}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user`,
+        edge,
+        "the open findings",
+        " and wait for new instructions (a new user prompt resets the cap).",
+        clause,
+      ),
     )
   }
 
@@ -512,6 +570,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     if (covered && scoped && s.reviewWaiverRounds >= config.maxReviewerRounds) {
       blockReviewRoundLimit(
         sessionID,
+        ledger,
         s.reviewWaiverRounds,
         config.maxReviewerRounds,
         ` The scoped waiver's allowance of ${config.maxReviewerRounds} waiver-unblocked dispatches is exhausted; obtain a new waiver or escalate to the user.`,
@@ -520,6 +579,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     if (!covered && s.reviewRounds >= config.maxReviewerRounds) {
       blockReviewRoundLimit(
         sessionID,
+        ledger,
         s.reviewRounds,
         config.maxReviewerRounds,
         waiverStateNote(s, config.agents.reviewer),
@@ -714,6 +774,8 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
     // stage (the legacy whole-task exemption, byte-identical).
     if (waiverCovers(s, [agent])) return
 
+    // One edge read feeds both cap sites' message tail swap and journal stamps.
+    const edge = ledger.childToParent.get(sessionID)
     const leg = resolveDispatchLeg(agent)
     // Per-leg loop cap: the dispatching leg has hit its cap — the leg is
     // re-dispatching in a loop.
@@ -727,6 +789,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         leg: leg.label,
         count,
         cap: leg.cap,
+        ...(edge ? { parent: edge } : {}),
       })
       journaler.journal({
         type: "escalation",
@@ -735,11 +798,17 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         reason: "loop-cap",
         count,
         cap: leg.cap,
+        ...(edge ? { parent: edge } : {}),
       })
       journaler.traceEvent(agent, "loop-cap", "cap exhausted; escalate", sessionID)
       throw new BlockError(
-        `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).` +
+        capBlockMessage(
+          `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures`,
+          edge,
+          `the repeated ${agent} failures`,
+          ` and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
           waiverStateNote(s, `the ${agent} stage`),
+        ),
       )
     }
     // Global backstop: the task has dispatched more than maxTotalDispatches
@@ -757,6 +826,7 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         reason: "dispatch-budget",
         count,
         cap: config.maxTotalDispatches,
+        ...(edge ? { parent: edge } : {}),
       })
       journaler.journal({
         type: "escalation",
@@ -765,11 +835,17 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
         reason: "dispatch-budget",
         count,
         cap: config.maxTotalDispatches,
+        ...(edge ? { parent: edge } : {}),
       })
       journaler.traceEvent(agent, "dispatch-budget", "budget exhausted; escalate", sessionID)
       throw new BlockError(
-        `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).` +
+        capBlockMessage(
+          `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline`,
+          edge,
+          "the stuck pipeline",
+          " and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).",
           waiverStateNote(s, `the ${agent} stage`),
+        ),
       )
     }
     // Check-then-increment: the leg counter then the total budget advance. The
