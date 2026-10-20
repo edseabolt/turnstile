@@ -13,8 +13,9 @@ import * as path from "node:path"
 
 import { BlockError, createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
+import type { GateState } from "../src/types.ts"
 import { createJournaler } from "../src/journal.ts"
-import { createLedger, formatGateSnapshot, newState } from "../src/state.ts"
+import { clearMeteringCounters, createLedger, formatGateSnapshot, newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,
@@ -3299,4 +3300,174 @@ test("resetState clears childVerdicts scoped to the reset parent, preserving oth
   assert.equal(ledger.childVerdict("c2").marker, VERDICT_APPROVE)
   // p2's gate state is untouched by the p1 reset.
   assert.equal(ledger.state("p2").hasPlanVerdict, false)
+})
+
+/** The metering-counter fields of a gate state bucket: the eight numbers
+ *  `clearMeteringCounters` zeroes (and the only fields that count toward its
+ *  release return value). */
+type MeteringCounterKey =
+  | "reviewRounds"
+  | "reviewWaiverRounds"
+  | "plannerRounds"
+  | "planReviewerRounds"
+  | "testRunnerRounds"
+  | "totalDispatches"
+  | "landingBlocks"
+  | "reads"
+
+/** A freshly-built bucket with every metering counter at its fresh value, for
+ *  asserting a full clear. */
+function freshCounters(s: GateState): Record<MeteringCounterKey, number> {
+  return {
+    reviewRounds: s.reviewRounds,
+    reviewWaiverRounds: s.reviewWaiverRounds,
+    plannerRounds: s.plannerRounds,
+    planReviewerRounds: s.planReviewerRounds,
+    testRunnerRounds: s.testRunnerRounds,
+    totalDispatches: s.totalDispatches,
+    landingBlocks: s.landingBlocks,
+    reads: s.reads,
+  }
+}
+
+/** clearMeteringCounters zeroes exactly the eight metering counters and
+ *  returns true iff one was non-fresh. Table-driven: each single non-zero
+ *  position yields a release and a fully-zeroed counter set, while an
+ *  all-fresh bucket yields no release. The read-warning flag and the pending
+ *  unverified-claim are reset (fail-open) but never count toward the return,
+ *  so a bucket holding only those is a no-op release. */
+test("clearMeteringCounters returns true iff a metering counter was non-fresh", () => {
+  const counterKeys: Array<MeteringCounterKey> = [
+    "reviewRounds",
+    "reviewWaiverRounds",
+    "plannerRounds",
+    "planReviewerRounds",
+    "testRunnerRounds",
+    "totalDispatches",
+    "landingBlocks",
+    "reads",
+  ]
+  for (const key of counterKeys) {
+    const s = newState()
+    s[key] = 1
+    assert.equal(clearMeteringCounters(s), true, `${key}: a non-zero counter is a release`)
+    for (const k of counterKeys) assert.equal(s[k], 0, `${key}: ${k} zeroes`)
+    assert.equal(s.readWarned, false, `${key}: readWarned clears`)
+    assert.equal(s.unverifiedPass, "", `${key}: unverifiedPass clears`)
+  }
+  const fresh = newState()
+  assert.equal(clearMeteringCounters(fresh), false, "an all-fresh bucket is not a release")
+})
+
+/** A bucket whose only non-fresh fields are the read-warning flag and the
+ *  pending unverified-claim is still a no-op release for the return value
+ *  (those are reset, but they are not metering counters). */
+test("clearMeteringCounters ignores the read flag and unverified claim in its return", () => {
+  const s = newState()
+  s.readWarned = true
+  s.unverifiedPass = "GATE: PASS tests=1 passed=1 failed=0"
+  assert.equal(clearMeteringCounters(s), false, "flags alone are not a release")
+  assert.equal(s.readWarned, false, "readWarned still clears")
+  assert.equal(s.unverifiedPass, "", "unverifiedPass still clears")
+  assert.deepEqual(freshCounters(s), freshCounters(newState()), "counters untouched")
+})
+
+/** resetState returns the number of registered child buckets whose metering
+ *  counters it clears: one for a single non-fresh child, none for a child with
+ *  no minted bucket, none for an all-fresh child, and the per-child sum when
+ *  several are non-fresh. */
+test("resetState returns the number of child buckets it frees", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  // One non-fresh child: freed 1, counter cleared.
+  ledger.setParent("c1", "p1")
+  const c1 = ledger.state("c1")
+  c1.plannerRounds = 2
+  assert.equal(ledger.resetState("p1"), 1, "one non-fresh child is freed")
+  assert.equal(c1.plannerRounds, 0, "the child's counter is cleared")
+  // A registered child with no minted bucket is not freed.
+  ledger.setParent("c2", "p2")
+  assert.equal(ledger.resetState("p2"), 0, "a child with no bucket is not freed")
+  // A minted but all-fresh child is not freed.
+  ledger.setParent("c3", "p3")
+  ledger.state("c3")
+  assert.equal(ledger.resetState("p3"), 0, "an all-fresh child is not freed")
+  // Two non-fresh children: the freed count sums per child.
+  ledger.setParent("c4", "p4")
+  ledger.setParent("c5", "p4")
+  ledger.state("c4").plannerRounds = 1
+  ledger.state("c5").totalDispatches = 3
+  assert.equal(ledger.resetState("p4"), 2, "both non-fresh children are freed")
+})
+
+/** The child release preserves earned credit (the gate/plan/review flags and
+ *  the ensemble dispatch count) while clearing exactly the metering counters,
+ *  the read flag, and the pending unverified-claim on each released child. */
+test("child release preserves earned credit while clearing the metering counters", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  ledger.setParent("c1", "p1")
+  const c1 = ledger.state("c1")
+  c1.hasGatePass = true
+  c1.hasPlanVerdict = true
+  c1.hasReviewApprove = true
+  c1.humanApproval = true
+  c1.reviewerDispatches = 2
+  c1.reviewRounds = 1
+  c1.reviewWaiverRounds = 1
+  c1.plannerRounds = 1
+  c1.planReviewerRounds = 1
+  c1.testRunnerRounds = 1
+  c1.totalDispatches = 1
+  c1.landingBlocks = 1
+  c1.reads = 1
+  c1.readWarned = true
+  c1.unverifiedPass = "GATE: PASS tests=1 passed=1 failed=0"
+  ledger.resetState("p1")
+  assert.equal(c1.hasGatePass, true, "hasGatePass survives")
+  assert.equal(c1.hasPlanVerdict, true, "hasPlanVerdict survives")
+  assert.equal(c1.hasReviewApprove, true, "hasReviewApprove survives")
+  assert.equal(c1.humanApproval, true, "humanApproval survives")
+  assert.equal(c1.reviewerDispatches, 2, "reviewerDispatches survives")
+  assert.equal(c1.reviewRounds, 0, "reviewRounds clears")
+  assert.equal(c1.reviewWaiverRounds, 0, "reviewWaiverRounds clears")
+  assert.equal(c1.plannerRounds, 0, "plannerRounds clears")
+  assert.equal(c1.planReviewerRounds, 0, "planReviewerRounds clears")
+  assert.equal(c1.testRunnerRounds, 0, "testRunnerRounds clears")
+  assert.equal(c1.totalDispatches, 0, "totalDispatches clears")
+  assert.equal(c1.landingBlocks, 0, "landingBlocks clears")
+  assert.equal(c1.reads, 0, "reads clears")
+  assert.equal(c1.readWarned, false, "readWarned clears")
+  assert.equal(c1.unverifiedPass, "", "unverifiedPass clears")
+})
+
+/** The child release is scoped to the reset parent: a concurrent task on
+ *  another parent keeps its own children's counters and verdict evidence
+ *  intact (a scoped clear, not a global wipe). */
+test("child release is scoped to the reset parent, leaving other parents' children intact", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  ledger.setParent("c1", "p1")
+  ledger.setParent("c2", "p2")
+  ledger.state("c1").plannerRounds = 1
+  ledger.state("c2").plannerRounds = 1
+  ledger.recordChildVerdict("c2", VERDICT_APPROVE, "child-text")
+  ledger.resetState("p1")
+  assert.equal(ledger.state("c1").plannerRounds, 0, "p1's child counter clears")
+  assert.equal(ledger.childVerdict("c1").marker, "", "p1's child verdict drops")
+  assert.equal(ledger.state("c2").plannerRounds, 1, "p2's child counter is untouched")
+  assert.equal(ledger.childVerdict("c2").marker, VERDICT_APPROVE, "p2's child verdict survives")
+})
+
+/** A child-reset journal entry is replay-inert: booting a ledger over a
+ *  journal whose only line is a child-reset restores no flag, no plan
+ *  verdict, and no replay grace on any bucket. */
+test("replay ignores child-reset entries", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "child-reset", sessionID: "p1", children: 1 })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const s = ledger.state("p1")
+  assert.equal(s.hasGatePass, false, "child-reset restores no gate")
+  assert.equal(s.hasPlanVerdict, false, "child-reset restores no plan verdict")
+  assert.equal(s.replayGrace, false, "child-reset grants no replay grace")
 })
