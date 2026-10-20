@@ -386,7 +386,21 @@
  *   semantics.
  * - `src/tool-policy.ts`: stateless denylist matching for bash/shell and
  *   write/edit tools in `execute.before`.
- * - `src/setup.ts`: hook registration and the stream-event loop.
+ * - `src/delivery.ts`: host payload delivery — result-shape classification,
+ *   text mutation (policy head/tail, config/marker blocks), candidate-key
+ *   tables, ask-message prefixes.
+ * - `src/hooks-core.ts`: shared hook state and services, built once per
+ *   setup (`TurnstileContext`: config, journaler, gates, ledger, admission,
+ *   marker parsing, verdict attribution).
+ * - `src/hooks-session.ts`: session-surface hook bodies (prompt, generate,
+ *   compaction).
+ * - `src/hooks-permission.ts`: permission-surface hook body (evaluate:
+ *   plan-gate and landing-gate escalation).
+ * - `src/hooks-tool.ts`: tool-surface hook bodies (execute.before gating,
+ *   execute.after observation).
+ * - `src/hooks-events.ts`: event-surface stream (consume + supervise under
+ *   the restart budget).
+ * - `src/setup.ts`: wiring only — hook registration, heartbeat, lifecycle.
  */
 import { createTurnstile } from "./src/setup.ts"
 import type { Host, TurnstileOptions } from "./src/types.ts"

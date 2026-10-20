@@ -71,37 +71,44 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ![Module map](images/d01-modules.svg)
 
-| Module                  | Responsibility                                                                                                                                                        |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turnstile.ts`          | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                    |
-| `src/setup.ts`          | Everything wired at runtime: config resolution, hook registration, prompt admission, verdict attribution, the event stream loop, lifecycle/disposal                   |
-| `src/config.ts`         | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                     |
-| `src/state.ts`          | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                            |
-| `src/ledger.ts`         | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                          |
-| `src/markers.ts`        | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                |
-| `src/gates.ts`          | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                    |
-| `src/gates-dispatch.ts` | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                |
-| `src/gates-plan.ts`     | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                          |
-| `src/gates-common.ts`   | Shared `BlockError` and waiver coverage semantics                                                                                                                     |
-| `src/tool-policy.ts`    | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                           |
-| `src/evidence.ts`       | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics |
-| `src/fingerprint.ts`    | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                                           |
-| `src/journal.ts`        | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                              |
-| `src/policy.ts`         | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                                    |
-| `src/types.ts`          | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                      |
+| Module                    | Responsibility                                                                                                                                                        |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `turnstile.ts`            | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                    |
+| `src/setup.ts`            | Wiring only: hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                               |
+| `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)      |
+| `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                   |
+| `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                        |
+| `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)   |
+| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, bounded re-subscription                  |
+| `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                |
+| `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                     |
+| `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                            |
+| `src/ledger.ts`           | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                          |
+| `src/markers.ts`          | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                |
+| `src/gates.ts`            | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                    |
+| `src/gates-dispatch.ts`   | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                |
+| `src/gates-plan.ts`       | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                          |
+| `src/gates-common.ts`     | Shared `BlockError` and waiver coverage semantics                                                                                                                     |
+| `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                           |
+| `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics |
+| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                                           |
+| `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                              |
+| `src/policy.ts`           | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                                    |
+| `src/types.ts`            | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                      |
 
 ---
 
 ## 3. Hooks: where the plugin intercepts the host
 
 `setup(h)` registers seven interception points, each tracked for disposal and
-counted into the load heartbeat (`type:"setup"`).
+counted into the load heartbeat (`type:"setup"`). The hook bodies live in the
+per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 
 ![Hook surface](images/d02-hooks.svg)
 
-**`session.hook` ×3**
+**`session.hook` ×3** (`hooks-session.ts`)
 
-- **`prompt`** → `admitPrompt` (`setup.ts`): the single prompt-admission body,
+- **`prompt`** → `admitPrompt` (`hooks-core.ts`): the single prompt-admission body,
   shared with the inbox stream and deduped on the host message id. Marks the
   session a live parent, performs `resetState` (with optional
   continuation-carry via `fingerprint.ts` when the worktree is unchanged, and
@@ -125,7 +132,7 @@ counted into the load heartbeat (`type:"setup"`).
   marker. It hydrates the parent bucket keyed off `draft.sessionID`, falling
   back to the last-admitted parent when the payload omits `sessionID`.
 
-**`tool.hook("execute.before")`** — _all gating lives here_:
+**`tool.hook("execute.before")`** (`hooks-tool.ts`) — _all gating lives here_:
 
 - `task`/`subagent`: dispatch budget (16 total), per-leg caps
   (planner 3 / plan-reviewer 3 / test-runner 4), plan-approval gate,
@@ -136,7 +143,7 @@ counted into the load heartbeat (`type:"setup"`).
   (`git push` requires reviewer approval).
 - `write`/`edit`: path denylist.
 
-**`tool.hook("execute.after")`** — observation only, never blocks: first surfaces any
+**`tool.hook("execute.after")`** (`hooks-tool.ts`) — observation only, never blocks: first surfaces any
 config-validation warnings once per load (a `[turnstile] config:` block
 prepended to the first string-output result, journaled `type:"config"`), then
 surfaces pending near-miss marker diagnostics once per prompt batch (a
@@ -154,13 +161,13 @@ re-checks when a child→parent edge resolves late (a background dispatch, via
 `session.created` or `session.get`) and again at reviewer-dispatch time,
 bounded to the parent's current task window (stamped at prompt admission).
 
-**`permission.hook("evaluate")`** — never blocks; when the plan gate is red on
+**`permission.hook("evaluate")`** (`hooks-permission.ts`) — never blocks; when the plan gate is red on
 a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
 `ask` to the user. Replies are matched to recorded ask request-IDs only:
 `always` stands a verdict/approval, `once` releases exactly one dispatch/push,
 `reject` keeps the gate red.
 
-**`event.subscribe` loop** — child→parent edges (`session.created`), marker
+**`event.subscribe` loop** (`hooks-events.ts`) — child→parent edges (`session.created`), marker
 parsing from streamed child text (`message.part.updated`,
 `session.text.ended`, `session.text.delta`): each `GATE:`/`VERDICT:`
 observation is applied only when the emitting session's agent holds the marker
@@ -416,8 +423,9 @@ probe; a disjoint custom syntax stays silent).
 
 Turnstile does not read orchestrator policy from a file at install time — it
 makes that policy available by injecting it at runtime. When the plugin is
-loaded, `src/setup.ts` prepends the orchestrator policy paragraph from
-`src/policy.ts` to the first `task` (or `subagent`) result delivery per task,
+loaded, the `execute.after` body in `src/hooks-tool.ts` prepends the
+orchestrator policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to
+the first `task` (or `subagent`) result delivery per task,
 once per task, and appends a per-delivery `PIPELINE:` status tail to every
 pipeline-stage delivery (see Pipeline continuation below), via the
 `tool.hook("execute.after")` handler — the same hook the plugin already uses

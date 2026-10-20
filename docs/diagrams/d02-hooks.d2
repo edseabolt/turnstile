@@ -1,23 +1,23 @@
 direction: right
 
-session: "session.hook ×3" {
+session: "session.hook ×3 (hooks-session.ts)" {
   prompt: "prompt"
   generate: "generate"
   compaction: "compaction"
 }
 
-admit: "admitPrompt:\ndedupe by message id ▸ markParent ▸ resetState\n(+continuation carry) ▸ capture\nUSER WAIVER: / PLAN APPROVED:"
+admit: "admitPrompt (hooks-core.ts):\ndedupe by message id ▸ markParent ▸ resetState\n(+continuation carry) ▸ capture\nUSER WAIVER: / PLAN APPROVED:"
 
 clamp: "clamp temperature:\nreviewer/plan-reviewer → 0,\nexecutor/test-runner/debugger ≤ 0.2"
 
 preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-tokenized)"
 
-permission: "permission.hook('evaluate')\nnever blocks, forces 'ask'" {
+permission: "permission.hook('evaluate') (hooks-permission.ts)\nnever blocks, forces 'ask'" {
   plan-arm: "action == task\nand plan gate red?"
   landing-arm: "action == bash/shell\npush without reviewer approve?"
 }
 
-tool: "tool.hook" {
+tool: "tool.hook (hooks-tool.ts)" {
   before: "execute.before\n(all gating lives here)"
   after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\",\nnear-miss diagnostics → type:\"marker\")"
 }
@@ -31,7 +31,7 @@ after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
 after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
 
-eventloop: "event.subscribe stream loop (5 restarts)" {
+eventloop: "event.subscribe stream loop (hooks-events.ts, 5 restarts)" {
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
   text: "message.part.updated / .ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
