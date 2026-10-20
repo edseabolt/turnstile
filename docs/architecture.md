@@ -357,14 +357,14 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                             |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                            |
-| Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                   |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                             |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time    |
-| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`                                                                        | mode `enforce`; denylist covers worktree ops, branch switch/checkout, merge, `gh pr create\|merge` |
-| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`                                            | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                         |
+| Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                          |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                         |
+| Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                          |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time |
+| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`                                                                        | both denylists default empty; mode `enforce` still applies to configured rules                  |
+| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`                                            | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                      |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically
@@ -575,14 +575,18 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
   _rule_ (never the raw command, per the redaction contract); a dropped or
   invalid regex _source_ means the operation it guarded is now **allowed**
   (documented so a config typo weakens the policy visibly in the journal rather
-  than silently). The git rules are global-option tolerant, so `git -C dir
-checkout main` is caught as well as `git checkout main`, and the checkout guard
-  allows the file-restore form `git [global options] checkout [<ref>] -- <path>`
-  while blocking `git [global options] checkout <branch>` and `-b`/`-C`; but two
-  gaps remain by design. `git` **aliases** (e.g. `git co main`, `git cm -m x`)
-  are not matched, because a rule names `git` plus a literal subcommand only; and
-  the wider base can _over-match_ — e.g. `git commit -m "… merge …"` trips the
-  `merge` rule. `session_move` never blocks.
+  than silently). Both denylists default to empty, so none of this applies
+  unless rules are configured; when git-protective rules are configured (the
+  documented paste-back example), they are global-option tolerant, so `git -C
+dir checkout main` is caught as well as `git checkout main`, and the checkout
+  rule allows the file-restore form `git [global options] checkout [<ref>] --
+<path>` while blocking `git [global options] checkout <branch>` and `-b`/`-C`;
+  but two gaps remain by design. `git` **aliases** (e.g. `git co main`,
+  `git cm -m x`) are not matched, because a rule names `git` plus a literal
+  subcommand only; and the wider base can _over-match_ — e.g. `git commit -m "…
+merge …"` trips the `merge` rule. git/gh consent rides the host permission
+  `ask` layer by default; a host `allow` never unblocks a configured turnstile
+  deny — the layers are complementary. `session_move` never blocks.
 - MCP tools and other tool names not named in `execute.before` (`task`,
   `subagent`, `read`, `bash`, `shell`, `write`, `edit`, `session_move`) remain
   unguarded. Governing them is a follow-on, not part of this policy layer.

@@ -262,8 +262,11 @@ export interface ToolPolicy {
    * Journals `{type:"tool", tool:"bash", landing:true}` telemetry for
    * `git push` / `gh pr create|ready|merge` candidates — in every mode
    * (non-blocking). Never touches `gitGates.mode`: a landing deny comes from
-   * `guardLanding`, and `gh pr` is denied wholesale by the `bashDeny` rule
-   * before this runs. Fail-open on an internal error.
+   * `guardLanding`, and a `gh pr` deny from a configured `bashDeny` rule fires
+   * in `guardBash` before this runs (with the empty default that deny is
+   * configured-only, so `gh pr` normally reaches this telemetry; when the deny
+   * is configured, the two journal reasons stay disjoint). Fail-open on an
+   * internal error.
    * @param sessionID The session ID, recorded in the journal entry.
    * @param command The raw command value from the host payload (`unknown`).
    */
@@ -357,11 +360,12 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
       return new RegExp(`^${DEFAULT_COMMIT_FORMAT}$`, "s")
     }
   })()
-  // The landing candidate matchers (compiled once). `pushRe` gates a `git push`
-  // on a reviewer verdict (guardLanding); `ghPrRe` additionally covers `gh pr
-  // ready` for telemetry only, since `gh pr create|merge` is denied by the
-  // bashDeny rule before observeLanding ever runs. Both use the same
-  // global-option-tolerant base as bashDeny so a `git [opts] push` still matches.
+  // The landing candidate matchers. `isPushLanding` is the single source of
+  // truth for `git push` candidates (shared with guardLanding and the
+  // evaluate-handler arm); `ghPrRe` additionally covers `gh pr ready` for
+  // telemetry only, since a `gh pr create|merge` deny is a configured
+  // `bashDeny` rule that fires before observeLanding ever runs (with the empty
+  // default that deny is configured-only).
   const ghPrRe = new RegExp("\\bgh\\s+pr\\s+(create|ready|merge)\\b")
 
   /**
@@ -598,8 +602,10 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   /**
    * Journals landing telemetry (`{type:"tool", tool:"bash", landing:true}`) for
    * `git push` / `gh pr create|ready|merge` candidates — in every mode, and
-   * never blocking. `gh pr` telemetry is disjoint from the `bashDeny` deny that
-   * handles `gh pr create|merge` (that deny fires in `guardBash` before this).
+   * never blocking. `gh pr` telemetry is disjoint from a configured
+   * `bashDeny` deny of `gh pr create|merge` (with the empty default that deny
+   * fires only when configured; when it is configured, `guardBash` fires first
+   * and the two journal reasons stay disjoint).
    * @param sessionID The session ID, recorded in the journal entry.
    * @param command The raw command value from the host payload (`unknown`).
    */

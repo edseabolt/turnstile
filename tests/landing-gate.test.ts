@@ -3,9 +3,10 @@
  * `ToolPolicy.guardLanding` (off/shadow/enforce), first-block vs.
  * repeat-attempt escalation, approval release, `landingGate:false` no-op,
  * empty-command misconfiguration telemetry, `gh pr` (not this guard's target —
- * that is `observeLanding`/`guardBash` territory), the fail-open internal-error
- * path, the landing block entry stamping `gitGates.mode`, plus `isPushLanding`
- * and `observeLanding` telemetry coverage.
+ * its telemetry is `observeLanding`'s, and a `gh pr` deny, when configured, is
+ * `guardBash`'s territory), the fail-open internal-error path, the landing
+ * block entry stamping `gitGates.mode`, plus `isPushLanding` and
+ * `observeLanding` telemetry coverage.
  */
 
 import { test } from "node:test"
@@ -210,9 +211,9 @@ test("guardLanding: empty or absent command fails open", () => {
 
 /**
  * `gh pr create|merge` is not this guard's target: `guardLanding` keys off the
- * `git push` candidate set only. A `gh pr` deny comes from `guardBash` (the
- * bashDeny rule) and its telemetry from `observeLanding`; the landing gate
- * itself journals nothing for `gh pr`.
+ * `git push` candidate set only. A `gh pr` deny comes from `guardBash` (a
+ * configured `bashDeny` rule — the default list is empty) and its telemetry
+ * from `observeLanding`; the landing gate itself journals nothing for `gh pr`.
  */
 test("guardLanding: gh pr is not the landing gate's target", () => {
   const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })

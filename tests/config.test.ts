@@ -418,16 +418,13 @@ test("configDigest flips on evidence-key overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, evidencePattern: "\\brspec\\b" }))
 })
 
-/** default config ships the git-protective toolPolicy denylist. */
-test("defaultConfig ships the toolPolicy denylist defaults", () => {
+/** The default `bashDeny` and `pathDeny` are both empty: the
+ *  "unless the user explicitly asks" semantics for git/gh operations belongs
+ *  to the host permission system, not a hardcoded denylist. */
+test("defaultConfig ships an empty toolPolicy denylist (host permissions govern git/gh consent)", () => {
   const cfg = defaultConfig({})
   assert.equal(cfg.toolPolicy.mode, "enforce")
-  assert.deepEqual(cfg.toolPolicy.bashDeny, [
-    "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
-    "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
-    "\\bgit\\b[^;&|]*?\\smerge\\b",
-    "\\bgh\\s+pr\\s+(create|merge)\\b",
-  ])
+  assert.deepEqual(cfg.toolPolicy.bashDeny, [])
   assert.deepEqual(cfg.toolPolicy.pathDeny, [])
   assert.equal(cfg.toolPolicy.observeSessionMove, true)
 })

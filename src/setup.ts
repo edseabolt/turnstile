@@ -1737,9 +1737,10 @@ export function createTurnstile(
   function handleBashDispatch(event: ToolHookEvent, tool: "bash" | "shell"): void {
     const command = event.input?.command ?? event.input?.cmd
     const sid = asSessionID(event?.sessionID)
-    // Denylist first: `gh pr create|merge` is denied wholesale, so it
-    // wins over the landing telemetry/gate below and the two journal
-    // reasons stay disjoint.
+    // Denylist first: a configured `gh pr` deny wins over the landing
+    // telemetry/gate below, and the two journal reasons stay disjoint
+    // (under the empty default there is no such deny, so `gh pr` flows to
+    // the landing telemetry below).
     toolPolicy.guardBash(tool, command, sid)
     // Conventional-commit lint (fail-closed under enforce for
     // uninspectable forms; audit-only under shadow; silent under off).
