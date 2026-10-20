@@ -258,48 +258,28 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
   }
 
   /**
-   * Enforces the reviewer dispatch gate for a pending `task` dispatch.
-   * Waives the dispatch when the task's prompt-channel waiver
-   * (`s.userWaiver`, captured from the user prompt in the setup hook) covers
-   * the reviewer stage, then blocks when the dispatch cap is exhausted or
-   * the test gate has not gone green. The canonical waiver semantics: a
-   * waiver covers every gate while unscoped, but the reviewer gate consumes
-   * an unscoped waiver on the first dispatch it unlocks; naming configured
-   * agent names in the waiver text scopes it to those stages' gates (the
-   * plan gate is covered by either its plan-reviewer or executor stage name),
-   * and a scoped waiver stays live until that stage's waiver allowance is
-   * spent — metered separately from the ordinary dispatch caps. A new user
-   * prompt drops the waiver. The cap counts reviewer dispatches themselves
-   * (per the documented "max 2 reviewer dispatches per task" contract), not
-   * BLOCK verdicts: the ordinary unwaived cap is `reviewRounds`, and a
-   * scoped-waived dispatch is metered on the separate `reviewWaiverRounds`
-   * allowance instead. A covered unscoped waiver stays fully cap-exempt and
-   * is consumed by the dispatch that unlocks it. Provenance matters: the
-   * waiver is read from the task prompt, never the dispatch prompt.
-   *
-   * Size note (AGENTS.md 20–30-line cap): the body exceeds the cap because the
-   * two-round-cap + gate-evidence + three-way mutation decision flow reads
-   * top-to-bottom as one; the WAIVED journal and the round-limit escalation
-   * are extracted into `journalReviewerWaiver` / `blockReviewRoundLimit` so
-   * this body carries only the decisions.
+   * Enforces the reviewer round caps. Two independently bounded pools: the
+   * scoped-waiver allowance (reviewWaiverRounds) and the ordinary unwaived
+   * cap (reviewRounds). A covered unscoped waiver is fully cap-exempt
+   * (neither test fires). Every side effect (the edge read, the journal
+   * pair, the trace, the message) lives in `blockReviewRoundLimit`, so the
+   * call sites stay verbatim.
    * @param sessionID The parent session ID.
-   * @param ledger The gate ledger to read and mutate state from.
-   * @param search Optional attribution diagnostic for the refusal text and
-   *     the `searched` journal field.
-   * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
-   *     must not proceed.
+   * @param ledger The gate ledger, threaded to `blockReviewRoundLimit`, which
+   *     reads the blocked session's edge.
+   * @param s The caller's resolved gate state.
+   * @param covered Whether the live waiver covers the reviewer stage.
+   * @param scoped Whether the covering waiver is scoped.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when a round-cap
+   *     pool is exhausted.
    */
-  function guardReviewerDispatch(
+  function enforceReviewerRoundCaps(
     sessionID: string,
     ledger: GateLedger,
-    search?: EvidenceSearch,
+    s: GateState,
+    covered: boolean,
+    scoped: boolean,
   ): void {
-    const s = ledger.state(sessionID)
-    const covered = waiverCovers(s, [config.agents.reviewer])
-    const scoped = covered && s.userWaiverScope.length > 0
-    // Two independently bounded pools: the scoped-waiver allowance
-    // (reviewWaiverRounds) and the ordinary unwaived cap (reviewRounds). A
-    // covered unscoped waiver is fully cap-exempt (neither test fires).
     if (covered && scoped && s.reviewWaiverRounds >= config.maxReviewerRounds) {
       blockReviewRoundLimit(
         sessionID,
@@ -318,53 +298,81 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
         waiverStateNote(s, config.agents.reviewer),
       )
     }
-    // Journal the WAIVED transition only after the allowance checks admit
-    // the dispatch: a dispatch refused on the cap must not record a waived
-    // gate transition that never happened.
-    if (covered) journalReviewerWaiver(sessionID, s)
-    if (!s.hasGatePass && !covered) {
-      // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
-      // unverifiedPass set: the gate is genuinely not green, so the block names
-      // the evidence contract. The legacy no-gate-pass path stays byte-identical
-      // when no unverified claim was recorded (s.unverifiedPass === "").
-      if (s.unverifiedPass !== "") {
-        journaler.journal({
-          type: "blocked",
-          sessionID,
-          agent: config.agents.reviewer,
-          reason: "gate-unverified",
-          // Searched session IDs only (no command text — redaction contract),
-          // so the refusal is forensically reconstructable.
-          ...(search ? { searched: searchedSessionIds(sessionID, search) } : {}),
-        })
-        throw new BlockError(
-          unverifiedBlockMessage(sessionID, search) + waiverStateNote(s, config.agents.reviewer),
-        )
-      }
-      journaler.journal({
-        type: "blocked",
-        sessionID,
-        agent: config.agents.reviewer,
-        reason: "no-gate-pass",
-      })
-      throw new BlockError(
-        "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
-          `Run the ${config.agents.testRunner} subagent first; dispatch ${config.agents.reviewer} only after its first line is ` +
-          "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
-          `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).` +
-          waiverStateNote(s, config.agents.reviewer),
-      )
-    }
-    // Check-then-increment: the Nth dispatch is allowed and the (N+1)th is
-    // blocked, so exactly `maxReviewerRounds` dispatches succeed per task.
-    // Three-way final mutation: an unwaived dispatch advances the ordinary
-    // cap and the ensemble count; a scoped-waived dispatch spends one
-    // allowance slot; a covered unscoped waiver is consumed (it cannot grant
-    // a later reviewer dispatch).
+  }
+
+  /**
+   * Journals the `gate-unverified` `blocked` entry and throws the
+   * gate-unverified `BlockError`, naming the evidence contract for a
+   * dispatch that claimed a PASS without correlated test execution. The
+   * `searched` journal field carries searched session IDs only (no command
+   * text — redaction contract), so the refusal is forensically
+   * reconstructable.
+   * @param sessionID The parent session ID.
+   * @param s The caller's resolved gate state (for the waiver-state note).
+   * @param search Optional attribution diagnostic for the refusal text and
+   *     the `searched` journal field.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
+   *     must not proceed.
+   */
+  function blockUnverifiedGate(sessionID: string, s: GateState, search?: EvidenceSearch): void {
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent: config.agents.reviewer,
+      reason: "gate-unverified",
+      ...(search ? { searched: searchedSessionIds(sessionID, search) } : {}),
+    })
+    throw new BlockError(
+      unverifiedBlockMessage(sessionID, search) + waiverStateNote(s, config.agents.reviewer),
+    )
+  }
+
+  /**
+   * Journals the `no-gate-pass` `blocked` entry and throws the no-gate-pass
+   * `BlockError`: the legacy refusal for a reviewer dispatch before the test
+   * gate is green (no unverified claim was recorded when this arm runs),
+   * with the waiver-state note appended last.
+   * @param sessionID The parent session ID.
+   * @param s The caller's resolved gate state (for the waiver-state note).
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
+   *     must not proceed.
+   */
+  function blockNoGatePass(sessionID: string, s: GateState): void {
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent: config.agents.reviewer,
+      reason: "no-gate-pass",
+    })
+    throw new BlockError(
+      "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
+        `Run the ${config.agents.testRunner} subagent first; dispatch ${config.agents.reviewer} only after its first line is ` +
+        "`GATE: PASS tests=<n> passed=<n> failed=<n>`, or obtain an explicit user waiver " +
+        `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).` +
+        waiverStateNote(s, config.agents.reviewer),
+    )
+  }
+
+  /**
+   * Applies the reviewer dispatch's final state mutation: an unwaived
+   * dispatch advances the ordinary cap and the ensemble count (counted
+   * toward the landing gate's ensemble and journaled so the count is
+   * restart-sticky); a scoped-waived dispatch spends one allowance slot; a
+   * covered unscoped waiver is consumed (it cannot grant a later reviewer
+   * dispatch).
+   * @param sessionID The parent session ID.
+   * @param s The caller's resolved gate state to mutate.
+   * @param covered Whether the live waiver covers the reviewer stage.
+   * @param scoped Whether the covering waiver is scoped.
+   */
+  function applyReviewerMutation(
+    sessionID: string,
+    s: GateState,
+    covered: boolean,
+    scoped: boolean,
+  ): void {
     if (!covered) {
       s.reviewRounds++
-      // Count this unwaived reviewer dispatch toward the landing gate's
-      // ensemble; journaled so the count is restart-sticky.
       s.reviewerDispatches++
       journaler.journal({
         type: "ensemble",
@@ -379,6 +387,58 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
       s.userWaiverScope = []
       s.userWaiverConsumed = true
     }
+  }
+
+  /**
+   * Enforces the reviewer dispatch gate for a pending `task` dispatch.
+   * Waives the dispatch when the task's prompt-channel waiver
+   * (`s.userWaiver`, captured from the user prompt in the setup hook) covers
+   * the reviewer stage, then blocks when the dispatch cap is exhausted or
+   * the test gate has not gone green. The canonical waiver semantics: a
+   * waiver covers every gate while unscoped, but the reviewer gate consumes
+   * an unscoped waiver on the first dispatch it unlocks; naming configured
+   * agent names in the waiver text scopes it to those stages' gates (the
+   * plan gate is covered by either its plan-reviewer or executor stage name),
+   * and a scoped waiver stays live until that stage's waiver allowance is
+   * spent — metered separately from the ordinary dispatch caps. A new user
+   * prompt drops the waiver. The cap counts reviewer dispatches themselves
+   * (per the documented "max 2 reviewer dispatches per task" contract), not
+   * BLOCK verdicts: the ordinary unwaived cap is `reviewRounds`, and a
+   * scoped-waived dispatch is metered on the separate `reviewWaiverRounds`
+   * allowance instead. A covered unscoped waiver stays fully cap-exempt and
+   * is consumed by the dispatch that unlocks it. Provenance matters: the
+   * waiver is read from the task prompt, never the dispatch prompt.
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param search Optional attribution diagnostic for the refusal text and
+   *     the `searched` journal field.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
+   *     must not proceed.
+   */
+  function guardReviewerDispatch(
+    sessionID: string,
+    ledger: GateLedger,
+    search?: EvidenceSearch,
+  ): void {
+    const s = ledger.state(sessionID)
+    const covered = waiverCovers(s, [config.agents.reviewer])
+    const scoped = covered && s.userWaiverScope.length > 0
+    enforceReviewerRoundCaps(sessionID, ledger, s, covered, scoped)
+    // Journal the WAIVED transition only after the allowance checks admit
+    // the dispatch: a dispatch refused on the cap must not record a waived
+    // gate transition that never happened.
+    if (covered) journalReviewerWaiver(sessionID, s)
+    if (!s.hasGatePass && !covered) {
+      // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
+      // unverifiedPass set: the gate is genuinely not green, so the block names
+      // the evidence contract. The legacy no-gate-pass path stays byte-identical
+      // when no unverified claim was recorded (s.unverifiedPass === "").
+      if (s.unverifiedPass !== "") blockUnverifiedGate(sessionID, s, search)
+      else blockNoGatePass(sessionID, s)
+    }
+    // Check-then-increment: the Nth dispatch is allowed and the (N+1)th is
+    // blocked, so exactly `maxReviewerRounds` dispatches succeed per task.
+    applyReviewerMutation(sessionID, s, covered, scoped)
   }
 
   /**
