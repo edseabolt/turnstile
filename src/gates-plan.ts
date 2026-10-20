@@ -526,6 +526,28 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   }
 
   /**
+   * Journals the `plan WAIVED` entry + trace for a waiver-covered executor
+   * dispatch. No `scope` stamp: this entry's shape never carries one (the
+   * reviewer gate's WAIVED entry stamps the parsed scope when scoped).
+   * Provenance: the waiver opened the gate from the user prompt, not a
+   * dispatch prompt. The waiver quote carries raw prompt context and is
+   * already trace-gated by the prompt-hook capture (SECURITY.md redaction
+   * contract).
+   * @param sessionID The parent session ID.
+   * @param s The gate state carrying the live waiver.
+   */
+  function journalPlanWaiver(sessionID: string, s: GateState): void {
+    journaler.journal({
+      type: "plan",
+      sessionID,
+      result: "WAIVED",
+      channel: "prompt",
+      waiver: s.userWaiver,
+    })
+    journaler.traceEvent("user", "plan-waiver", s.userWaiver, sessionID)
+  }
+
+  /**
    * Enforces the plan-approval gate: when any plan file exists in the
    * configured plans directory, executor dispatches require a current
    * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A bound
@@ -560,19 +582,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   ): void {
     const s = ledger.state(sessionID)
     if (waiverCovers(s, planGateStages)) {
-      journaler.journal({
-        type: "plan",
-        sessionID,
-        result: "WAIVED",
-        // Provenance: this waiver opened the gate from the user prompt, not a
-        // dispatch prompt.
-        channel: "prompt",
-        // Waiver quotes carry raw prompt context; journal them only when
-        // the trace is enabled (SECURITY.md redaction contract). `s.userWaiver`
-        // is already trace-gated by the prompt-hook capture.
-        waiver: s.userWaiver,
-      })
-      journaler.traceEvent("user", "plan-waiver", s.userWaiver, sessionID)
+      journalPlanWaiver(sessionID, s)
       return
     }
     const status = planGateStatus(projectDir, ledger, sessionID, prompt)
