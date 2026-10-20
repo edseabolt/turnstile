@@ -258,11 +258,12 @@
  *   target paths are matched in `execute.before` against a configurable
  *   denylist (`src/tool-policy.ts`). Under `toolPolicy.mode: enforce` a match
  *   throws `BLOCKED by turnstile:`; `shadow` journals the would-block without
- *   throwing and `off` is a no-op. Default `bashDeny` blocks the git-protective
- *   operations in `src/policy.ts` (worktree, branch `switch`/`checkout`, `merge`,
- *   `gh pr create|merge`); `pathDeny` defaults empty. `session_move` is journaled
- *   as telemetry only, never blocked. A misconfigured/absent host payload fails
- *   open with a journal entry rather than blocking.
+ *   throwing and `off` is a no-op. Default `bashDeny` and `pathDeny` are empty;
+ *   the denylist blocks only what a user configures (git/gh consent rides the
+ *   host permission system, and a configured rule blocks the moment it is
+ *   added). `session_move` is journaled as telemetry only, never blocked. A
+ *   misconfigured/absent host payload fails open with a journal entry rather
+ *   than blocking.
  * - Commit-lint: `bash`/`shell` `git commit -m '<subject>'` messages are
  *   validated as conventional commits when `gitGates.commitMessages` is on
  *   (default) — a `type(scope)!: subject` shape (`type` ∈
@@ -282,9 +283,10 @@
  *   `reason:"no-landing-approval"`); `shadow` journals only, `off` is a no-op.
  *   Approval is set only when the reviewer's task-result delivery carries
  *   `VERDICT: APPROVE` (a streamed-only verdict in child text does not
- *   satisfy the gate); `gh pr create|merge` stays denied by the default
- *   `bashDeny` list (disjointly journaled), and every `git push` is journaled
- *   as landing telemetry in every mode.
+ *   satisfy the gate); `gh pr create|merge` flows as landing telemetry unless
+ *   the user configures a `bashDeny` rule that denies it first (the two
+ *   journal reasons stay disjoint either way), and every `git push` is
+ *   journaled as landing telemetry in every mode.
  * - Landing escalation: on a repeat `git push` with no approval and
  *   `gitGates.mode: enforce`, turnstile journals a permission ask
  *   (`reason:"landing"`) and lets `execute.before` pass so the

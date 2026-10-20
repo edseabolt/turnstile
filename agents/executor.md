@@ -76,7 +76,9 @@ Change budget:
 Git worktrees will be used, but it does not matter how they get created.
 Work inside the checkout and branch your session starts in — do not
 create/add/remove worktrees, switch branches, merge, or open/close a PR
-unless the user explicitly asks. On success, commit your change set with a
+unless the user explicitly asks (these operations ride the host permission
+`ask`; turnstile's default denylist is empty and a configured `bashDeny`
+rule may deny them mechanically). On success, commit your change set with a
 conventional message and stop. If a worktree is in use, assert a
 `WORKTREE:` header for logging; otherwise skip it. Committing on a shared
 default branch lands your change there — treat main/branch commits as

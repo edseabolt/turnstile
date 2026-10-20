@@ -84,9 +84,42 @@ function blockEntry(entries: any[]): any | null {
   return entries.find((e) => e.reason === "tool-policy") ?? null
 }
 
-/** The bash/git default rules block, asserted each in isolation. */
-test("default bashDeny blocks each git-protective operation", async () => {
-  const { policy } = makePolicy()
+/**
+ * The historical default `bashDeny` sources, kept in the original order
+ * (0: worktree, 1: switch/checkout, 2: merge, 3: gh pr) as a *configured*
+ * policy fixture: the default denylist is now empty, but the mechanism tests
+ * (rule indices, option-tolerant base, restore-form lookahead, first-match)
+ * keep covering the historical regex shapes when the rules are configured.
+ */
+const GIT_DENY: string[] = [
+  "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
+  "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
+  "\\bgit\\b[^;&|]*?\\smerge\\b",
+  "\\bgh\\s+pr\\s+(create|merge)\\b",
+]
+
+/**
+ * The default `bashDeny` is empty: git branch, worktree, merge, and `gh pr`
+ * commands pass unblocked and journal nothing — consent for these operations
+ * is the host permission system's, not a hardcoded denylist's.
+ */
+test("default bashDeny is empty: git branch, worktree, merge, and gh pr commands pass unblocked and journal nothing", () => {
+  const { policy, entries } = makePolicy()
+  allow(() => policy.guardBash("bash", "git worktree add ../foo", "s1"))
+  allow(() => policy.guardBash("bash", "git switch main", "s1"))
+  allow(() => policy.guardBash("bash", "git checkout next", "s1"))
+  allow(() => policy.guardBash("bash", "git merge main", "s1"))
+  allow(() => policy.guardBash("shell", "gh pr create", "s1"))
+  allow(() => policy.guardBash("shell", "gh pr merge --squash", "s1"))
+  assert.deepEqual(
+    entries.filter((e) => e.reason === "tool-policy"),
+    [],
+  )
+})
+
+/** The configured git-protective rules block, asserted each in isolation. */
+test("configured git-protective bashDeny blocks each operation", async () => {
+  const { policy } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   await blocks(() => policy.guardBash("bash", "git worktree add ../foo", "s1"))
   await blocks(() => policy.guardBash("bash", "git worktree prune", "s1"))
   await blocks(() => policy.guardBash("bash", "git switch main", "s1"))
@@ -96,9 +129,9 @@ test("default bashDeny blocks each git-protective operation", async () => {
   await blocks(() => policy.guardBash("shell", "gh pr merge --squash", "s1"))
 })
 
-/** Each default block carries the required journal fields and a trace line. */
-test("default block journals reason/tool/rule/mode and traces", async () => {
-  const { policy, entries, traces } = makePolicy()
+/** Each configured-rule block carries the required journal fields and a trace line. */
+test("configured block journals reason/tool/rule/mode and traces", async () => {
+  const { policy, entries, traces } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   await blocks(() => policy.guardBash("bash", "git worktree add ../foo", "s1"))
   const blocked = blockEntry(entries)
   assert.ok(blocked)
@@ -111,31 +144,35 @@ test("default block journals reason/tool/rule/mode and traces", async () => {
   assert.ok(traces.some((t) => t.startsWith("tool-policy | blocked | bash rule 0 | s1")))
 })
 
-/** Ordinary commands — including the git file-restore form — are allowed. */
-test("default bashDeny allows ordinary commands and git path restore", () => {
+/** Ordinary commands — including git worktree/branch operations and the git
+ *  file-restore form — are allowed under the empty default denylist. */
+test("default config allows ordinary commands and git worktree/branch operations", () => {
   const { policy } = makePolicy()
   allow(() => policy.guardBash("bash", "npm test", "s1"))
   allow(() => policy.guardBash("bash", "git status", "s1"))
   allow(() => policy.guardBash("bash", "git log --oneline", "s1"))
+  allow(() => policy.guardBash("bash", "git worktree add ../foo", "s1"))
+  allow(() => policy.guardBash("bash", "git switch main", "s1"))
   allow(() => policy.guardBash("bash", "git checkout -- file.ts", "s1"))
 })
 
-/** `git checkout -b/-C` (branch work) is blocked; `git checkout -- <path>` is not. */
+/** With the rules configured, `git checkout -b/-C` (branch work) is blocked;
+ *  `git checkout -- <path>` is not. */
 test("git checkout -b is blocked while checkout -- path is allowed", async () => {
-  const { policy } = makePolicy()
+  const { policy } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   await blocks(() => policy.guardBash("bash", "git checkout -b feature", "s1"))
   await blocks(() => policy.guardBash("bash", "git switch -c feature", "s1"))
   allow(() => policy.guardBash("bash", "git checkout -- kept.ts", "s1"))
 })
 
 /**
- * Global options interleaved between `git` and the subcommand are still caught,
- * Widen the default regexes so an option (`-C dir`,
- * `--git-dir=…`, a flag) never shields a branch/merge worktree switch, while the
- * file-restore form stays allowed.
+ * With the rules configured, global options interleaved between `git` and the
+ * subcommand are still caught: an option (`-C dir`, `--git-dir=…`, a flag)
+ * never shields a branch/merge worktree switch, while the file-restore form
+ * stays allowed.
  */
 test("git global options before the subcommand are still blocked", async () => {
-  const { policy } = makePolicy()
+  const { policy } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   // switch/checkout with a global option before the subcommand.
   await blocks(() => policy.guardBash("bash", "git -C ../other checkout main", "s1"))
   await blocks(() => policy.guardBash("bash", "git --git-dir=/tmp/repo checkout main", "s1"))
@@ -146,12 +183,13 @@ test("git global options before the subcommand are still blocked", async () => {
 })
 
 /**
- * The git file-restore form is allowed with or without an intervening global
- * option, including the `git checkout <ref> -- <path>` shape, so
- * widening the regex does not regress the restore exemption.
+ * With the rules configured, the git file-restore form is allowed with or
+ * without an intervening global option, including the
+ * `git checkout <ref> -- <path>` shape, so the option-tolerant base does not
+ * regress the restore exemption.
  */
 test("git checkout restore form is allowed, option or not", () => {
-  const { policy } = makePolicy()
+  const { policy } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   allow(() => policy.guardBash("bash", "git checkout -- src/app.ts", "s1"))
   allow(() => policy.guardBash("bash", "git checkout main -- src/app.ts", "s1"))
   allow(() => policy.guardBash("bash", "git -C /tmp/repo checkout -- src/app.ts", "s1"))
@@ -159,12 +197,13 @@ test("git checkout restore form is allowed, option or not", () => {
 })
 
 /**
- * Documented tradeoff of the wider, global-option-tolerant base: the `merge`
- * rule can over-match on the bare subcommand word elsewhere (e.g. a commit
- * message), so `git commit -m "… merge …"` blocks. See README limits.
+ * Documented tradeoff of the wider, global-option-tolerant base of the
+ * git-protective rules (when configured): the `merge` rule can over-match on
+ * the bare subcommand word elsewhere (e.g. a commit message), so
+ * `git commit -m "… merge …"` blocks. See README limits.
  */
-test("option-tolerant base over-matches the merge word in a commit message (documented tradeoff)", async () => {
-  const { policy } = makePolicy()
+test("configured option-tolerant base over-matches the merge word in a commit message (documented tradeoff)", async () => {
+  const { policy } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   await blocks(() => policy.guardBash("bash", 'git commit -m "add merge feature"', "s1"))
 })
 
@@ -231,7 +270,9 @@ test("off mode is a silent no-op", () => {
 
 /** Under `shadow` the block journals with mode:"shadow" but does not throw. */
 test("shadow mode journals the block without throwing", async () => {
-  const { policy, entries, traces } = makePolicy({ toolPolicy: { mode: "shadow" } })
+  const { policy, entries, traces } = makePolicy({
+    toolPolicy: { mode: "shadow", bashDeny: GIT_DENY },
+  })
   allow(() => policy.guardBash("bash", "git merge main", "s1"))
   const blocked = blockEntry(entries)
   assert.ok(blocked)
@@ -243,8 +284,8 @@ test("shadow mode journals the block without throwing", async () => {
 /** The same event under shadow vs enforce journals identically, only the mode
  *  field and the throw differ. */
 test("shadow and enforce journal identical entries modulo the mode field", async () => {
-  const en = makePolicy({ toolPolicy: { mode: "enforce" } })
-  const sh = makePolicy({ toolPolicy: { mode: "shadow" } })
+  const en = makePolicy({ toolPolicy: { mode: "enforce", bashDeny: GIT_DENY } })
+  const sh = makePolicy({ toolPolicy: { mode: "shadow", bashDeny: GIT_DENY } })
   await blocks(() => en.policy.guardBash("bash", "git merge main", "p1"))
   allow(() => sh.policy.guardBash("bash", "git merge main", "p1"))
   const enBlock = blockEntry(en.entries)
@@ -261,7 +302,7 @@ test("shadow and enforce journal identical entries modulo the mode field", async
 
 /** A misconfigured sessionID (child-style) still throws and journals it. */
 test("a child-style sessionID is thrown and journaled unchanged", async () => {
-  const { policy, entries } = makePolicy()
+  const { policy, entries } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   await blocks(() => policy.guardBash("shell", "git worktree add", "child-abc123"))
   const blocked = blockEntry(entries)
   assert.equal(blocked.sessionID, "child-abc123")
@@ -390,7 +431,7 @@ async function boot(
 
 /** A would-blocked bash command is rejected by the registered execute.before. */
 test("integration: execute.before blocks a denied bash command", async () => {
-  const { h, metricsDir, dispose } = await boot()
+  const { h, metricsDir, dispose } = await boot({ toolPolicy: { bashDeny: GIT_DENY } })
   try {
     await assert.rejects(
       () =>
@@ -494,7 +535,7 @@ test("integration: execute.before journals a session_move without blocking", asy
 /** Under shadow, execute.before journals the block and does not throw. */
 test("integration: execute.before shadow mode journals without throwing", async () => {
   const { h, metricsDir, dispose } = await boot({
-    toolPolicy: { mode: "shadow" },
+    toolPolicy: { mode: "shadow", bashDeny: GIT_DENY },
   })
   try {
     await callTool(h, "execute.before", {
@@ -514,8 +555,8 @@ test("integration: execute.before shadow mode journals without throwing", async 
 /** Same event under shadow vs enforce: journal identical modulo mode, only the
  *  throw differs — verified through the registered execute.before callback. */
 test("integration: shadow and enforce differ only in the throw and mode field", async () => {
-  const en = await boot({ toolPolicy: { mode: "enforce" } })
-  const sh = await boot({ toolPolicy: { mode: "shadow" } })
+  const en = await boot({ toolPolicy: { mode: "enforce", bashDeny: GIT_DENY } })
+  const sh = await boot({ toolPolicy: { mode: "shadow", bashDeny: GIT_DENY } })
   try {
     await assert.rejects(
       () =>

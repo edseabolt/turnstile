@@ -251,12 +251,14 @@ export type ToolPolicyMode = "enforce" | "shadow" | "off"
 
 /**
  * Denylist policy governing the tools that flow through `execute.before`:
- * bash/shell commands and write/edit target paths. Defaults encode the
- * git-protective prose of `src/policy.ts` verbatim in `bashDeny` and leave
- * `pathDeny` empty (ordinary editing is covered — a decision is made and, on
- * block, journaled — with no default blocks, so it never breaks until a user
- * configures `pathDeny`). Regex sources are case-insensitive, compiled once at
- * setup, and matched with `RegExp.test`.
+ * bash/shell commands and write/edit target paths. Both denylists default
+ * empty — the "unless the user explicitly asks" semantics for git/gh
+ * operations belongs to the host permission system's `ask` rules, not a
+ * hardcoded denylist — while `mode` still defaults to `enforce`, so a
+ * configured rule blocks the moment it is added (an empty list is a harmless
+ * no-op). `pathDeny` stays empty for ordinary editing (a decision is made and,
+ * on block, journaled, with no default blocks). Regex sources are
+ * case-insensitive, compiled once at setup, and matched with `RegExp.test`.
  */
 export interface TurnstileToolPolicy {
   /** Enforcement mode: `enforce` (default), `shadow`, or `off`. */
@@ -711,10 +713,10 @@ export interface TurnstileConfig {
   evidencePattern: string
   /**
    * Denylist policy for bash/shell and write/edit tools in `execute.before`.
-   * Default `mode` is `enforce`; the default `bashDeny` encodes the
-   * git-protective prose of `src/policy.ts`, `pathDeny` defaults empty, and
-   * `observeSessionMove` journals `session_move` dispatches without blocking.
-   * See `src/tool-policy.ts`.
+   * Default `mode` is `enforce`; both `bashDeny` and `pathDeny` default empty
+   * (git/gh consent is the host permission system's, and a configured rule
+   * blocks the moment it is added), and `observeSessionMove` journals
+   * `session_move` dispatches without blocking. See `src/tool-policy.ts`.
    */
   toolPolicy: TurnstileToolPolicy
   /**

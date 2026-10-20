@@ -139,7 +139,7 @@
         "bashDeny": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Case-insensitive regex sources matched against bash/shell commands."
+          "description": "Case-insensitive regex sources matched against bash/shell commands (default empty)."
         },
         "pathDeny": {
           "type": "array",

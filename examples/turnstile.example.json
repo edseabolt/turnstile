@@ -30,12 +30,7 @@
   "evidencePattern": "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b",
   "toolPolicy": {
     "mode": "enforce",
-    "bashDeny": [
-      "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
-      "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
-      "\\bgit\\b[^;&|]*?\\smerge\\b",
-      "\\bgh\\s+pr\\s+(create|merge)\\b"
-    ],
+    "bashDeny": [],
     "pathDeny": [],
     "observeSessionMove": true
   },

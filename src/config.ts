@@ -109,21 +109,14 @@ export function defaultConfig(
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
     toolPolicy: {
       mode: "enforce",
-      // Git-protective defaults, encoding src/policy.ts verbatim. Case-insensitive
-      // regex sources over bash/shell commands. Each git rule uses a global-option
-      // tolerant base (`\\bgit\\b[^;&|]*?\\s<subcommand>`), so a global option
-      // (`-C dir`, `--git-dir=…`, a `git alias`) between `git` and the subcommand
-      // still matches without terminating at a shell operator; the branch guard
-      // excludes the file-restore form so `git [opts] checkout [<ref>] -- <path>`
-      // is allowed while `git [opts] checkout <branch>` / `-b`/`-C` is blocked.
-      // Tradeoff (see README limits): the wider base can over-match on the bare
-      // subcommand word elsewhere, e.g. `git commit -m "… merge …"`.
-      bashDeny: [
-        "\\bgit\\b[^;&|]*?\\sworktree\\s+(add|remove|prune)\\b",
-        "\\bgit\\b[^;&|]*?\\s(switch|checkout)\\b(?![^;&|]*?--\\s)",
-        "\\bgit\\b[^;&|]*?\\smerge\\b",
-        "\\bgh\\s+pr\\s+(create|merge)\\b",
-      ],
+      // `bashDeny` is the tool for pattern-based shell denies the host
+      // permission system cannot express; a configured list replaces this
+      // default wholesale (the merge semantics are unchanged). Empty by
+      // default: runtime consent for an operation belongs to the host
+      // permission system's `ask` rules — a denylist cannot observe "the
+      // user explicitly asked", so a hardcoded list would hard-block the
+      // legitimate, user-requested case.
+      bashDeny: [],
       // No default path blocks: write/edit are covered (a decision is made and,
       // on block, journaled) without breaking ordinary editing.
       pathDeny: [],
