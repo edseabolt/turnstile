@@ -83,6 +83,15 @@ test("delivery.ts exposes only the delivery helpers and key tables at runtime", 
   ])
 })
 
+/**
+ * The shared hook-state module must expose exactly createHooksCore at
+ * runtime (the TurnstileContext interface is type-only and erased).
+ */
+test("hooks-core.ts exposes only createHooksCore at runtime", async () => {
+  const mod = await import("../src/hooks-core.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createHooksCore"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()
