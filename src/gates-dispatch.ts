@@ -539,6 +539,116 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
   }
 
   /**
+   * A resolved per-leg dispatch budget line: the leg's journal label, state
+   * counter, config cap key, and cap value.
+   */
+  type DispatchLeg = NonNullable<ReturnType<typeof resolveDispatchLeg>>
+
+  /**
+   * Journals the per-leg `loop-cap` `blocked` + `escalation` entries and
+   * trace, then throws the loop-cap `BlockError` naming the exhausted leg.
+   * When the blocked session has a registered edge, both journal entries are
+   * stamped `parent` so the escalation is attributed to the actionable
+   * session.
+   * @param sessionID The parent session ID.
+   * @param agent The dispatched agent name.
+   * @param leg The resolved dispatch leg carrying its cap.
+   * @param edge The blocked session's registered parent (undefined when none).
+   * @param s The caller's resolved gate state (for the waiver-state note).
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the leg cap is
+   *     exhausted.
+   */
+  function blockLoopCap(
+    sessionID: string,
+    agent: string,
+    leg: DispatchLeg,
+    edge: string | undefined,
+    s: GateState,
+  ): void {
+    const count = s[leg.countKey]
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent,
+      reason: "loop-cap",
+      leg: leg.label,
+      count,
+      cap: leg.cap,
+      ...(edge ? { parent: edge } : {}),
+    })
+    journaler.journal({
+      type: "escalation",
+      sessionID,
+      agent,
+      reason: "loop-cap",
+      count,
+      cap: leg.cap,
+      ...(edge ? { parent: edge } : {}),
+    })
+    journaler.traceEvent(agent, "loop-cap", "cap exhausted; escalate", sessionID)
+    throw new BlockError(
+      capBlockMessage(
+        `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures`,
+        edge,
+        `the repeated ${agent} failures`,
+        ` and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
+        waiverStateNote(s, `the ${agent} stage`),
+      ),
+    )
+  }
+
+  /**
+   * Journals the total-dispatch-budget `blocked` + `escalation` entries and
+   * trace, then throws the dispatch-budget `BlockError`: the task has
+   * dispatched more than maxTotalDispatches subagents across all legs, so
+   * something is stuck. When the blocked session has a registered edge, both
+   * journal entries are stamped `parent` so the escalation is attributed to
+   * the actionable session.
+   * @param sessionID The parent session ID.
+   * @param agent The dispatched agent name.
+   * @param edge The blocked session's registered parent (undefined when none).
+   * @param s The caller's resolved gate state (for the waiver-state note).
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the total
+   *     dispatch budget is exhausted.
+   */
+  function blockDispatchBudget(
+    sessionID: string,
+    agent: string,
+    edge: string | undefined,
+    s: GateState,
+  ): void {
+    const count = s.totalDispatches
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent,
+      reason: "dispatch-budget",
+      count,
+      cap: config.maxTotalDispatches,
+      ...(edge ? { parent: edge } : {}),
+    })
+    journaler.journal({
+      type: "escalation",
+      sessionID,
+      agent,
+      reason: "dispatch-budget",
+      count,
+      cap: config.maxTotalDispatches,
+      ...(edge ? { parent: edge } : {}),
+    })
+    journaler.traceEvent(agent, "dispatch-budget", "budget exhausted; escalate", sessionID)
+    throw new BlockError(
+      capBlockMessage(
+        `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline`,
+        edge,
+        "the stuck pipeline",
+        " and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).",
+        waiverStateNote(s, `the ${agent} stage`),
+      ),
+    )
+  }
+
+  /**
    * Enforces the per-leg loop caps and the per-task total-dispatch budget.
    * A waiver covering the dispatched stage exempts its leg cap and the total
    * budget without counting (an unscoped waiver covers every stage — the
@@ -572,75 +682,15 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     const leg = resolveDispatchLeg(agent)
     // Per-leg loop cap: the dispatching leg has hit its cap — the leg is
     // re-dispatching in a loop.
-    if (leg && s[leg.countKey] >= config[leg.capKey]) {
-      const count = s[leg.countKey]
-      journaler.journal({
-        type: "blocked",
-        sessionID,
-        agent,
-        reason: "loop-cap",
-        leg: leg.label,
-        count,
-        cap: leg.cap,
-        ...(edge ? { parent: edge } : {}),
-      })
-      journaler.journal({
-        type: "escalation",
-        sessionID,
-        agent,
-        reason: "loop-cap",
-        count,
-        cap: leg.cap,
-        ...(edge ? { parent: edge } : {}),
-      })
-      journaler.traceEvent(agent, "loop-cap", "cap exhausted; escalate", sessionID)
-      throw new BlockError(
-        capBlockMessage(
-          `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures`,
-          edge,
-          `the repeated ${agent} failures`,
-          ` and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
-          waiverStateNote(s, `the ${agent} stage`),
-        ),
-      )
-    }
+    if (leg && s[leg.countKey] >= config[leg.capKey]) blockLoopCap(sessionID, agent, leg, edge, s)
     // Global backstop: the task has dispatched more than maxTotalDispatches
     // subagents across all legs — something is stuck. Before the increment
     // below. Leg agents block on their leg cap first, so this reason wins
     // only when the leg cap is not also exhausted (e.g. the reviewer has no
     // leg, so when its round cap and the budget are both exhausted the
     // budget reason wins).
-    if (s.totalDispatches >= config.maxTotalDispatches) {
-      const count = s.totalDispatches
-      journaler.journal({
-        type: "blocked",
-        sessionID,
-        agent,
-        reason: "dispatch-budget",
-        count,
-        cap: config.maxTotalDispatches,
-        ...(edge ? { parent: edge } : {}),
-      })
-      journaler.journal({
-        type: "escalation",
-        sessionID,
-        agent,
-        reason: "dispatch-budget",
-        count,
-        cap: config.maxTotalDispatches,
-        ...(edge ? { parent: edge } : {}),
-      })
-      journaler.traceEvent(agent, "dispatch-budget", "budget exhausted; escalate", sessionID)
-      throw new BlockError(
-        capBlockMessage(
-          `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline`,
-          edge,
-          "the stuck pipeline",
-          " and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).",
-          waiverStateNote(s, `the ${agent} stage`),
-        ),
-      )
-    }
+    if (s.totalDispatches >= config.maxTotalDispatches)
+      blockDispatchBudget(sessionID, agent, edge, s)
     // Check-then-increment: the leg counter then the total budget advance. The
     // reviewer has no leg and is counted toward totalDispatches solely here —
     // guardReviewerDispatch never advances totalDispatches (single-count point).
