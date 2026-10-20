@@ -58,7 +58,17 @@ core.journal -> persist.jsonl
 core.journal -> persist.trace
 core.gates -> core.gatesdispatch
 core.gates -> core.gatesplan
+core.gates -> core.state: "type-only"
+core.gates -> core.journal: "type-only"
+core.gates -> core.types: "type-only"
 core.gatesdispatch -> core.gatescommon
+core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE + type-only"
+core.gatesdispatch -> core.journal: "type-only"
+core.gatesdispatch -> core.types: "type-only"
 core.gatesplan -> core.gatescommon
+core.gatesplan -> core.state: "type-only"
+core.gatesplan -> core.journal: "type-only"
+core.gatesplan -> core.types: "type-only"
+core.gatescommon -> core.types: "type-only"
 core.toolpolicy -> core.types
 core.config -> core.types

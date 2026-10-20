@@ -235,7 +235,8 @@ export interface Gates {
  * Binds enforcement functions to a resolved config and journaler.
  * @param config The resolved plugin configuration.
  * @param journaler The telemetry writer for gate and blocked entries.
- * @returns The four enforcement functions plus the plan-scan helpers.
+ * @returns The dispatch- and plan-domain enforcement functions, each bound
+ *          to one config + journaler pair.
  */
 export function createGates(config: TurnstileConfig, journaler: Journaler): Gates {
   const dispatch = createDispatchGates(config, journaler)
