@@ -18,7 +18,10 @@ core: "src/ — one concern per boundary" {
   config: "config.ts\n4-layer config (defaults ⊕ file ⊕ env ⊕ opts),\nvalidation, configDigest"
   state: "state.ts — GateLedger\nper-parent GateState buckets (LRU),\nchild→parent edges, verdict store, journal replay"
   markers: "markers.ts\npure GATE:/VERDICT: parsing, dedup, suppression"
-  gates: "gates.ts\nenforcement decisions: reviewer gate, loop caps,\nread horizon, plan gate, decomposition, ensemble"
+  gates: "gates.ts\ncomposition: createGates + the Gates interface"
+  gatesdispatch: "gates-dispatch.ts\nreviewer gate, loop caps, read horizon,\nensemble completeness"
+  gatesplan: "gates-plan.ts\nplan-approval gate, decomposition gate,\nplans-dir scan + cache"
+  gatescommon: "gates-common.ts\nBlockError + waiver coverage semantics"
   toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate"
   evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
@@ -53,6 +56,19 @@ core.setup -> core.policy
 core.state -> core.journal: "replay (fs)"
 core.journal -> persist.jsonl
 core.journal -> persist.trace
-core.gates -> core.types
+core.gates -> core.gatesdispatch
+core.gates -> core.gatesplan
+core.gates -> core.state: "type-only"
+core.gates -> core.journal: "type-only"
+core.gates -> core.types: "type-only"
+core.gatesdispatch -> core.gatescommon
+core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE + type-only"
+core.gatesdispatch -> core.journal: "type-only"
+core.gatesdispatch -> core.types: "type-only"
+core.gatesplan -> core.gatescommon
+core.gatesplan -> core.state: "type-only"
+core.gatesplan -> core.journal: "type-only"
+core.gatesplan -> core.types: "type-only"
+core.gatescommon -> core.types: "type-only"
 core.toolpolicy -> core.types
 core.config -> core.types

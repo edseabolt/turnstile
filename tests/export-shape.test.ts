@@ -29,6 +29,33 @@ test("the named factory export is a function", () => {
   assert.equal(typeof turnstile, "function")
 })
 
+/** The gates composition module must expose exactly BlockError and createGates at runtime. */
+test("gates.ts exposes only BlockError and createGates at runtime", async () => {
+  const mod = await import("../src/gates.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["BlockError", "createGates"])
+})
+
+/**
+ * The shared gates leaf must expose exactly the block error plus the two
+ * waiver-semantics helpers both gate families import.
+ */
+test("gates-common.ts exposes only BlockError and the waiver helpers at runtime", async () => {
+  const mod = await import("../src/gates-common.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["BlockError", "waiverCovers", "waiverStateNote"])
+})
+
+/** The dispatch gates module must expose exactly createDispatchGates at runtime. */
+test("gates-dispatch.ts exposes only createDispatchGates at runtime", async () => {
+  const mod = await import("../src/gates-dispatch.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGates"])
+})
+
+/** The plan gates module must expose exactly createPlanGates at runtime. */
+test("gates-plan.ts exposes only createPlanGates at runtime", async () => {
+  const mod = await import("../src/gates-plan.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPlanGates"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()
