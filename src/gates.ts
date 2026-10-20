@@ -1052,10 +1052,9 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
    * required; a green pass re-stamps the current key (idempotent, and how a
    * replay-restored "" becomes validated). A "" stamp is unknown: replayed
    * approvals now usually carry their journaled dir signature and validate
-   * like live ones, so "" covers only field-less legacy lines, human
-   * `PLAN APPROVED:` prompt approvals (never stamped), and genuinely
-   * unstampable approvals (absent/unreadable dir) — it is accepted once,
-   * mirroring the old first-scan rule. The accept-once window also covers a
+   * like live ones, so "" covers only field-less legacy lines and
+   * genuinely unstampable approvals (absent/unreadable dir) — it is
+   * accepted once, mirroring the old first-scan rule. The accept-once window also covers a
    * session that approved but never ran an enforcing dispatch: its stamp is
    * still empty until the first green dispatch stamps it.
    * @param s The session's gate state (mutated).

@@ -336,7 +336,9 @@ async function bootDefaultPlan(): Promise<{
 }
 
 /** Golden: a `PLAN APPROVED:` marker in the user prompt journals a plan
- *  APPROVE entry from the prompt channel (`source:"session-prompt"`). */
+ *  APPROVE entry from the prompt channel (`source:"session-prompt"`), stamped
+ *  with the current plans-dir signature (no bound identity — the prompt
+ *  carries no plan-name candidates). */
 test("golden: prompt-channel PLAN APPROVED plan entry shape", async () => {
   const { h, dispose, metricsDir } = await bootDefaultPlan()
   await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: looks good" })
@@ -353,6 +355,7 @@ test("golden: prompt-channel PLAN APPROVED plan entry shape", async () => {
       result: "APPROVE",
       source: "session-prompt",
       marker: "PLAN APPROVED:",
+      plansSig: "plan.md:201739384e40c584aa0167745e8332095b9f58924fabb5c95eb5fe5e4dece2fa",
     },
   )
   dispose()

@@ -1192,6 +1192,156 @@ test("plan gate: a replayed stamp mismatches when the dir changes shape", async 
 })
 
 /**
+ * A `PLAN APPROVED:` prompt under a controlled plan project journals a
+ * prompt-channel APPROVE stamped with the current plans-dir signature (and no
+ * bound identity — the prompt carries no plan-name candidates), and the
+ * subsequent executor dispatch passes (the stamp re-validates idempotently).
+ */
+test("plan gate: a human PLAN APPROVED prompt journals the stamped dir signature", async () => {
+  const { h, metricsDir, restore, project } = await bootWithPlan()
+  try {
+    await callSession(h, "prompt", {
+      sessionID: "p1",
+      text: "PLAN APPROVED: looks good",
+    })
+    const entry = journalEntries(metricsDir).find(
+      (l) => l.type === "plan" && l.result === "APPROVE" && l.source === "session-prompt",
+    )
+    assert.ok(entry, "the prompt channel journaled an APPROVE")
+    assert.equal(entry?.plansSig, dirSignature(project), "the journaled stamp is the dir signature")
+    assert.equal(entry?.plan, undefined, "a prompt approval journals no plan identity")
+    await execDispatch(h, "p1", "do the work")
+    assert.equal(
+      journalEntries(metricsDir).filter((l) => l.result === "STALE").length,
+      0,
+      "the matching stamp re-stamps idempotently, no stale drop",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A prompt-channel approval survives a restart stamped: the plan edited while
+ * the process was down no longer matches the journaled signature, so the first
+ * enforcing dispatch after the restart is blocked and a signature-mismatch
+ * STALE entry is journaled — the same staleness the reviewer channel gets.
+ */
+test("plan gate: an offline plan edit invalidates the replayed prompt approval", async () => {
+  const { h, metricsDir, project, restore } = await bootWithPlan()
+  await callSession(h, "prompt", {
+    sessionID: "p1",
+    text: "PLAN APPROVED: looks good",
+  })
+  const stamped = journalEntries(metricsDir).find(
+    (l) => l.type === "plan" && l.result === "APPROVE" && l.source === "session-prompt",
+  )
+  assert.ok(stamped?.plansSig, "the live approval journaled a stamp")
+  restore() // dispose + restore cwd
+  // The offline edit: the plan changes while the process is down.
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P revised\n")
+  const h2 = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h2.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h2.host)) as () => void
+    await assert.rejects(
+      () => execDispatch(h2, "p1", "do the work"),
+      /no plan approval for "plan\.md"/,
+    )
+    const stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
+    assert.equal(stale.length, 1, "exactly one signature-mismatch drop is journaled")
+    assert.equal(stale[0]?.reason, "signature-mismatch")
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * A legacy prompt-channel APPROVE line with no journaled signature keeps the
+ * accept-once boundary: an offline plan edit before the first post-restart
+ * dispatch does not go STALE — the approval is accepted once and re-stamped on
+ * the green dispatch (the second dispatch still passes).
+ */
+test("plan gate: a field-less replayed prompt approval stays accept-once after an offline edit", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  const planPath = path.join(project, ".opencode", "plans", "plan.md")
+  fs.writeFileSync(planPath, "# P\n")
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({
+      ts: "t",
+      type: "plan",
+      sessionID: "p1",
+      result: "APPROVE",
+      source: "session-prompt",
+      marker: "PLAN APPROVED:",
+    }) + "\n",
+  )
+  // The offline edit: the plan changes while the process is down, before the
+  // legacy approval is restored.
+  fs.writeFileSync(planPath, "# P revised\n")
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await execDispatch(h, "p1", "do the work")
+    await execDispatch(h, "p1", "do the work")
+    assert.equal(
+      journalEntries(metricsDir).filter((l) => l.result === "STALE").length,
+      0,
+      "the field-less legacy line rides the accept-once path, no stale drop",
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
+ * A `PLAN APPROVED:` prompt with no plans dir fails open: the stamp stays
+ * unknown (""), the journaled APPROVE keeps the legacy field-less shape (no
+ * signature field), and the approval rides the accept-once path.
+ */
+test("plan gate: a prompt approval with no plans dir journals the field-less shape", async () => {
+  const project = tmpDir() // no .opencode/plans
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const dispose = (await setup(h.host)) as () => void
+    await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: looks good" })
+    const entry = journalEntries(metricsDir).find(
+      (l) => l.type === "plan" && l.result === "APPROVE" && l.source === "session-prompt",
+    )
+    assert.ok(entry, "the prompt channel journaled an APPROVE")
+    assert.deepEqual(
+      { ...entry, ts: undefined },
+      {
+        ts: undefined,
+        type: "plan",
+        sessionID: "p1",
+        result: "APPROVE",
+        source: "session-prompt",
+        marker: "PLAN APPROVED:",
+      },
+      "the entry keeps the legacy field-less shape",
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+/**
  * a content-preserving utimes-only touch (identical
  * bytes, only atime/mtime moved) must NOT invalidate a prior approval, so the
  * next executor dispatch stays green and no extra no-plan-verdict is journaled.
