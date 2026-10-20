@@ -528,9 +528,11 @@ test("nested hook shape: prompt.text carries a user waiver", async () => {
 })
 
 /** The nested `prompt:{text}` hook shape journals a plan APPROVE of the exact
- *  prompt-channel shape. */
+ *  prompt-channel shape, stamped with the current plans-dir signature (the
+ *  chdir-scoped project keeps the stamp independent of the host repo's plans
+ *  dir, which may or may not exist). */
 test("nested hook shape: prompt.text journals the plan APPROVE shape", async () => {
-  const { h, metricsDir, dispose } = await boot()
+  const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", {
       sessionID: "p1",
@@ -549,9 +551,10 @@ test("nested hook shape: prompt.text journals the plan APPROVE shape", async () 
         result: "APPROVE",
         source: "session-prompt",
         marker: APPROVAL,
+        plansSig: "plan.md:38d47cf1b3682cedc0c2220af95b1f31f44163315b773ddc5e1766b34ad761e5",
       },
     )
   } finally {
-    dispose()
+    restore()
   }
 })

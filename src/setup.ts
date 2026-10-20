@@ -1149,6 +1149,26 @@ export function createTurnstile(
   }
 
   /**
+   * The optional identity/stamp fields a plan APPROVE journals so replay can
+   * re-validate it: a bound approval carries its plan name + content key; a
+   * stamped approval carries the path-free plans-dir signature. An unbound or
+   * unstampable approval journals neither field, so legacy-shaped lines are
+   * unchanged. Pure read of `s`.
+   * @param s The session's gate state (already stamped by stampPlanApproval).
+   * @returns The spreadable fields to append to a `type:"plan"` APPROVE entry.
+   */
+  function planApprovalStampFields(s: GateState): {
+    plan?: string
+    planKey?: string
+    plansSig?: string
+  } {
+    return {
+      ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
+      ...(s.plansSignature !== "" ? { plansSig: s.plansSignature } : {}),
+    }
+  }
+
+  /**
    * Splits a self-keyed delivery's attributable children into the
    * registered-edge scan (`edge`, today's scan) and every child with a stored
    * verdict that is not the delivery session itself (`unresolved`). `edge`
@@ -1486,12 +1506,11 @@ export function createTurnstile(
         result,
         marker: marker || "<none>",
         source: markerSource,
-        // A bound approval journals its identity so replay restores it; an
-        // unbound approval journals nothing extra (legacy lines unchanged).
-        // The stamped dir signature journals too, so replay can re-validate
-        // the approval against the current plans dir.
-        ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
-        ...(s.plansSignature !== "" ? { plansSig: s.plansSignature } : {}),
+        // Bound identity (so replay restores it), the stamped dir signature
+        // (so replay re-validates against the current plans dir), and
+        // nothing extra for an unbound or unstampable approval (legacy lines
+        // unchanged) — one helper for all three `plan` APPROVE journals.
+        ...planApprovalStampFields(s),
       })
       journaler.traceEvent("plan-reviewer", "verdict", marker || "<no verdict marker>", sid)
       return
@@ -1564,12 +1583,11 @@ export function createTurnstile(
         result,
         marker,
         source: markerSource,
-        // A bound approval journals its identity so replay restores it; an
-        // unbound approval journals nothing extra (legacy lines unchanged).
-        // The stamped dir signature journals too, so replay can re-validate
-        // the approval against the current plans dir.
-        ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
-        ...(s.plansSignature !== "" ? { plansSig: s.plansSignature } : {}),
+        // Bound identity (so replay restores it), the stamped dir signature
+        // (so replay re-validates against the current plans dir), and
+        // nothing extra for an unbound or unstampable approval (legacy lines
+        // unchanged) — one helper for all three `plan` APPROVE journals.
+        ...planApprovalStampFields(s),
       })
       journaler.traceEvent("plan-reviewer", "verdict", marker, sid)
       return
@@ -2122,8 +2140,10 @@ export function createTurnstile(
       // prompt releases the plan gate — the same release signal the
       // plan-reviewer verdict sets. Read + capture in one guarded block:
       // set hasPlanVerdict (execute.before reads it) and humanApproval
-      // (provenance), and journal an APPROVE entry that replays identically
-      // to a verdict (replayGatePasses accepts any type:"plan" APPROVE;
+      // (provenance), stamp the plans-dir signature (so a restart replays
+      // the approval stamped and an offline plan edit invalidates it), and
+      // journal an APPROVE entry that replays identically to a verdict
+      // (replayGatePasses accepts any type:"plan" APPROVE;
       // mergeAfterReplay carries it). A coercion that throws is journaled
       // and swallowed — fail-open.
       try {
@@ -2133,14 +2153,19 @@ export function createTurnstile(
           const s = ledger.state(sessionID)
           s.hasPlanVerdict = true
           s.humanApproval = true
+          // Stamp the human approval against the current plans dir (empty
+          // candidates → unbound), so replay re-validates it like a reviewer
+          // verdict and an offline plan edit invalidates it. Fail-open: an
+          // absent/unreadable dir stamps "" and keeps the accept-once path.
+          stampPlanApproval(s, "APPROVE", currentProjectDir(sessionID), [])
           journaler.journal({
             type: "plan",
             sessionID,
             result: "APPROVE",
-            // Provenance only: replay reads only type+result, so this
-            // restores exactly like a VERDICT: APPROVE verdict.
+            // Provenance only: replay reads only type+result+plansSig.
             source: "session-prompt",
             marker: config.approvalMarker,
+            ...planApprovalStampFields(s),
           })
         }
       } catch (e) {
