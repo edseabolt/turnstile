@@ -110,6 +110,12 @@ test("hooks-tool.ts exposes only createToolHooks at runtime", async () => {
   assert.deepEqual(Object.keys(mod).sort(), ["createToolHooks"])
 })
 
+/** The event-surface module must expose exactly its stream starter at runtime. */
+test("hooks-events.ts exposes only startEventStream at runtime", async () => {
+  const mod = await import("../src/hooks-events.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["startEventStream"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()
