@@ -92,6 +92,18 @@ test("hooks-core.ts exposes only createHooksCore at runtime", async () => {
   assert.deepEqual(Object.keys(mod).sort(), ["createHooksCore"])
 })
 
+/** The session-surface module must expose exactly its hook factory at runtime. */
+test("hooks-session.ts exposes only createSessionHooks at runtime", async () => {
+  const mod = await import("../src/hooks-session.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createSessionHooks"])
+})
+
+/** The permission-surface module must expose exactly its hook factory at runtime. */
+test("hooks-permission.ts exposes only createPermissionHooks at runtime", async () => {
+  const mod = await import("../src/hooks-permission.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPermissionHooks"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()

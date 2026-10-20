@@ -17,9 +17,9 @@ import { fileURLToPath } from "node:url"
 import { configDigest } from "./config.ts"
 import { agentFromTaskInput } from "./markers.ts"
 import { BlockError } from "./gates.ts"
-import { LANDING_REQUIREMENT } from "./tool-policy.ts"
-import { formatGateSnapshot } from "./state.ts"
 import { createHooksCore } from "./hooks-core.ts"
+import { createPermissionHooks } from "./hooks-permission.ts"
+import { createSessionHooks } from "./hooks-session.ts"
 import {
   asSessionID,
   classifyDelivery,
@@ -28,17 +28,7 @@ import {
   LANDING_ASK_MESSAGE_PREFIX,
   PLAN_ASK_MESSAGE_PREFIX,
 } from "./delivery.ts"
-import type {
-  CompactionDraft,
-  EventProperties,
-  GenerateDraft,
-  Host,
-  PermissionEvaluateEvent,
-  PromptHookProperties,
-  TaskInput,
-  ToolHookEvent,
-  TurnstileOptions,
-} from "./types.ts"
+import type { EventProperties, Host, TaskInput, ToolHookEvent, TurnstileOptions } from "./types.ts"
 
 /**
  * Tracks a hook registration handle so it can be disposed on teardown.
@@ -111,23 +101,10 @@ export function createTurnstile(
     let hooks = 0
     // Task-state reset: a new user prompt starts a new task.
     if (typeof h.session?.hook === "function") {
+      const sessionHooks = createSessionHooks(ctx)
+
       try {
-        const reg = await h.session.hook("prompt", (properties: PromptHookProperties) => {
-          // Count dispatches even when the session id is unusable; a zero
-          // count when the inbox stream admits marks this surface as hook-less
-          // (the dead-channel telemetry key).
-          ctx.bumpPromptFires()
-          const sessionID = properties?.sessionID
-          if (typeof sessionID === "string") {
-            // One prompt is admitted once across both transport paths, deduped
-            // by the shared host message id ("" when the host sent none).
-            ctx.admitPrompt(
-              sessionID,
-              properties,
-              typeof properties.messageID === "string" ? properties.messageID : "",
-            )
-          }
-        })
+        const reg = await h.session.hook("prompt", sessionHooks.prompt)
         track(reg, cleanups)
         hooks++
       } catch (e) {
@@ -136,31 +113,7 @@ export function createTurnstile(
 
       // Decoding clamps + compaction context.
       try {
-        const reg = await h.session.hook("generate", (draft: GenerateDraft) => {
-          try {
-            if (!draft) return
-            const agent = typeof draft.agent === "string" ? draft.agent : ""
-            if (agent === ctx.config.agents.reviewer || agent === ctx.config.agents.planReviewer) {
-              // Force 0 even when the host sent no options object at all:
-              // today's early return skipped the clamp in exactly that case.
-              if (!draft.options) draft.options = {}
-              draft.options.temperature = 0
-            } else if (
-              agent === ctx.config.agents.executor ||
-              agent === ctx.config.agents.testRunner ||
-              agent === ctx.config.agents.debugger
-            ) {
-              // Clamp also applies when the host sent no temperature: an
-              // unset temperature is whatever the host defaults to, which
-              // is exactly what the ≤ 0.2 contract bounds.
-              if (!draft.options) draft.options = {}
-              const t = draft.options.temperature
-              draft.options.temperature = typeof t === "number" ? Math.min(t, 0.2) : 0.2
-            }
-          } catch (e) {
-            ctx.journaler.journal({ type: "error", error: `generate hook: ${e}` })
-          }
-        })
+        const reg = await h.session.hook("generate", sessionHooks.generate)
         track(reg, cleanups)
         hooks++
       } catch (e) {
@@ -168,27 +121,7 @@ export function createTurnstile(
       }
 
       try {
-        const reg = await h.session.hook("compaction", (draft: CompactionDraft) => {
-          try {
-            if (!Array.isArray(draft?.system)) return
-            draft.system.push({
-              type: "text",
-              text: "Preserve verbatim: open findings, AC status table, last GATE/VERDICT markers, current worktree/branch paths.",
-            })
-            // Inject the concrete gate state from the live ledger alongside the
-            // instruction: key off the parent bucket (child compaction maps to
-            // its parent, matching the read-counter keying rule). The compaction
-            // payload is typed leniently, so a host that omits `sessionID` falls
-            // back to the most-recently-admitted parent; both paths that yield no
-            // bucket degrade to instruction-only (fail-open, no mint, no journal
-            // spam). The snapshot is de-tokenized, so it never re-parses.
-            const id = asSessionID(draft.sessionID)
-            const s = ctx.ledger.peek(ctx.ledger.parentOf(id) || ctx.ledger.lastParent())
-            if (s) draft.system.push({ type: "text", text: formatGateSnapshot(s) })
-          } catch (e) {
-            ctx.journaler.journal({ type: "error", error: `compaction hook: ${e}` })
-          }
-        })
+        const reg = await h.session.hook("compaction", sessionHooks.compaction)
         track(reg, cleanups)
         hooks++
       } catch (e) {
@@ -205,87 +138,10 @@ export function createTurnstile(
     // state (planGateStatus), never the dispatch target. Optional surface: an
     // absent permission.hook degrades to today's behavior exactly.
     if (typeof h.permission?.hook === "function") {
+      const permissionHooks = createPermissionHooks(ctx)
+
       try {
-        const reg = await h.permission.hook("evaluate", (event: unknown) => {
-          try {
-            const pe = event as PermissionEvaluateEvent
-            const sessionID = asSessionID(pe?.sessionID)
-            // Plan-approval arm: the task/subagent dispatch exposes
-            // `action === "task"`; the payload carries no tool input, so
-            // escalation is driven purely by the parent's plan-gate state.
-            if (pe?.action === "task") {
-              const parent = ctx.ledger.parentOf(sessionID)
-              const status = ctx.gates.planGateStatus(
-                ctx.currentProjectDir(parent),
-                ctx.ledger,
-                parent,
-              )
-              if (!status.red) return
-              // Red ⇒ summary is present by construction (planGateStatus builds
-              // it from a scan whose active-plan preview was already resolved).
-              // Escalate:
-              // force the host to ask the human, naming the plan file + head.
-              // Journal the ask so a reply can be matched (the requestID rides
-              // the permission.asked stream event).
-              const file = status.summary!.file
-              // The plan body is prompt context; journal/quote it only when the
-              // trace is enabled (SECURITY.md redaction contract), mirroring how
-              // the waiver quote is trace-gated at capture. Without it the ask
-              // still names the plan file.
-              const head = ctx.config.trace ? status.summary!.head : ""
-              pe.effect = "ask"
-              pe.message = head
-                ? `${PLAN_ASK_MESSAGE_PREFIX} — ${file}: ${head}`
-                : `${PLAN_ASK_MESSAGE_PREFIX} — ${file}`
-              // Mark this parent as awaiting its plan ask: the NEXT
-              // permission.asked stream event for this session is recorded as
-              // the plan-gate ask, so only escalated asks can ever match.
-              ctx.awaitingPlanAsk.set(parent, Date.now())
-              ctx.boundAwaitingAsks()
-              ctx.journaler.journal({
-                type: "permission",
-                sessionID: parent,
-                action: "ask",
-                // The requestID is attached to the subsequent permission.asked
-                // stream event (matched below by message prefix / latch).
-                reason: "plan-gate",
-                plan: file,
-              })
-              return
-            }
-            // Landing arm: a bash/shell permission.evaluate whose landing ask
-            // is armed (the guard set the pending-landing-ask latch under
-            // enforce on a repeat attempt). Candidate detection lives in
-            // `isPushLanding` (used by the guard); the evaluate handler
-            // consults the arm rather than re-reading the command from the
-            // (host-shape-uncertain) permission event — the guard is the single
-            // source of truth for landing-candidate detection. Approval
-            // releases the gate; a live latch means the human must decide this
-            // landing (the first block already threw, and shadow never arms).
-            // The arm is ONE-SHOT: it is consumed by the first evaluate it
-            // forces. The permission request the arm is meant to attach to is
-            // the very next one (the repeat push the guard just allowed through
-            // for escalation), so a one-shot latch cannot mislabel a later
-            // unrelated command with the push/PR ask inside the TTL window.
-            if (pe?.action === "bash" || pe?.action === "shell") {
-              const parent = ctx.ledger.parentOf(sessionID)
-              const st = ctx.ledger.state(parent)
-              if (st.hasReviewApprove) return
-              if (!ctx.hasLiveLandingAsk(parent)) return
-              ctx.pendingLandingAsk.delete(parent)
-              pe.effect = "ask"
-              pe.message = `turnstile: ${LANDING_REQUIREMENT}`
-              // No journal of the ask here: guardLanding already journaled
-              // `{type:"permission", action:"ask", reason:"landing"}` when it
-              // armed the latch, so there is a single landing-ask entry.
-              return
-            }
-            return
-          } catch (e) {
-            // Fail-open: the evaluate handler NEVER blocks the host.
-            ctx.journaler.journal({ type: "error", error: `permission evaluate: ${e}` })
-          }
-        })
+        const reg = await h.permission.hook("evaluate", permissionHooks.evaluate)
         track(reg, cleanups)
         hooks++
       } catch (e) {
