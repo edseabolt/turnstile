@@ -16,7 +16,7 @@ import { turnstile } from "../turnstile.ts"
 import { createGates, type Gates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
-import { createLedger, type GateLedger } from "../src/state.ts"
+import { createLedger, type GateLedger } from "../src/ledger.ts"
 import {
   callPermission,
   callSession,

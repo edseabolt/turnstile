@@ -76,7 +76,8 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `turnstile.ts`          | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                    |
 | `src/setup.ts`          | Everything wired at runtime: config resolution, hook registration, prompt admission, verdict attribution, the event stream loop, lifecycle/disposal                   |
 | `src/config.ts`         | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                     |
-| `src/state.ts`          | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay                                                           |
+| `src/state.ts`          | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                            |
+| `src/ledger.ts`         | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                          |
 | `src/markers.ts`        | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                |
 | `src/gates.ts`          | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                    |
 | `src/gates-dispatch.ts` | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                |
@@ -323,7 +324,7 @@ maxBytes`, plus at most `rotateEveryEntries × ~2 KB` of overshoot between
   Rotates at 5 MB, 5 generations.
 - **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
 
-On restart, `replayGatePasses` (`src/state.ts`) reads the last 2000 lines of
+On restart, `replayGatePasses` (`src/ledger.ts`) reads the last 2000 lines of
 the current + `.1` generations and restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
 (task-result source only — streamed child verdicts never restore it), and
@@ -647,7 +648,7 @@ each maps to a turnstile mechanism:
 - **A decision journal.** OpenCode logs are diagnostics, not a
   structured decision record. `src/journal.ts` appends every gate
   transition, block, waiver, and dispatch to a replayable JSONL trail
-  (`replayGatePasses`, `src/state.ts`), which is what makes gates
+  (`replayGatePasses`, `src/ledger.ts`), which is what makes gates
   reviewable after the fact and stateful across restarts.
 
 The README's "Why turnstile" section states the same three properties in
@@ -682,7 +683,7 @@ are visible in this repo's tests:
 
 - Verifiable state. `GATE:` and `VERDICT:` markers are parsed from
   child session text (`src/markers.ts`), stored per parent session
-  (`src/state.ts`), and replayed from the JSONL journal on restart, so
+  (`src/ledger.ts`), and replayed from the JSONL journal on restart, so
   replayed gate state survives a restart and the next user prompt, then
   every later prompt starts a clean gate cycle rather than living in a
   prompt.

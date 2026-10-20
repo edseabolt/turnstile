@@ -15,7 +15,8 @@ import { BlockError, createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import type { GateState } from "../src/types.ts"
 import { createJournaler } from "../src/journal.ts"
-import { clearMeteringCounters, createLedger, formatGateSnapshot, newState } from "../src/state.ts"
+import { clearMeteringCounters, formatGateSnapshot, newState } from "../src/state.ts"
+import { createLedger } from "../src/ledger.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,
