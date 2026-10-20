@@ -104,6 +104,12 @@ test("hooks-permission.ts exposes only createPermissionHooks at runtime", async 
   assert.deepEqual(Object.keys(mod).sort(), ["createPermissionHooks"])
 })
 
+/** The tool-surface module must expose exactly its hook factory at runtime. */
+test("hooks-tool.ts exposes only createToolHooks at runtime", async () => {
+  const mod = await import("../src/hooks-tool.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createToolHooks"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()
