@@ -373,8 +373,14 @@
  * - `src/fingerprint.ts`: worktree/branch identity and the GATE-SCOPED carry
  *   predicate.
  * - `src/markers.ts`: GATE/VERDICT parsing and dedup.
- * - `src/gates.ts`: enforcement decisions (plan-approval gate, reviewer
- *   gate, read horizon, decomposition).
+ * - `src/gates.ts`: composition of the per-gate enforcement modules; the
+ *   `Gates` interface is the host-facing contract.
+ * - `src/gates-dispatch.ts`: reviewer dispatch gate, loop caps, read
+ *   horizon, ensemble completeness.
+ * - `src/gates-plan.ts`: plan-approval and decomposition gates, with the
+ *   plans-dir scan and its cache.
+ * - `src/gates-common.ts`: shared `BlockError` and waiver coverage
+ *   semantics.
  * - `src/tool-policy.ts`: stateless denylist matching for bash/shell and
  *   write/edit tools in `execute.before`.
  * - `src/setup.ts`: hook registration and the stream-event loop.

@@ -71,20 +71,23 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ![Module map](images/d01-modules.svg)
 
-| Module               | Responsibility                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turnstile.ts`       | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                    |
-| `src/setup.ts`       | Everything wired at runtime: config resolution, hook registration, prompt admission, verdict attribution, the event stream loop, lifecycle/disposal                   |
-| `src/config.ts`      | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                     |
-| `src/state.ts`       | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay                                                           |
-| `src/markers.ts`     | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                |
-| `src/gates.ts`       | Enforcement decisions: reviewer dispatch gate, loop caps, read horizon, plan-approval and decomposition gates, ensemble completeness                                  |
-| `src/tool-policy.ts` | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                           |
-| `src/evidence.ts`    | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics |
-| `src/fingerprint.ts` | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                                           |
-| `src/journal.ts`     | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                              |
-| `src/policy.ts`      | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                                    |
-| `src/types.ts`       | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                      |
+| Module                  | Responsibility                                                                                                                                                        |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `turnstile.ts`          | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                    |
+| `src/setup.ts`          | Everything wired at runtime: config resolution, hook registration, prompt admission, verdict attribution, the event stream loop, lifecycle/disposal                   |
+| `src/config.ts`         | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                     |
+| `src/state.ts`          | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay                                                           |
+| `src/markers.ts`        | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                |
+| `src/gates.ts`          | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                    |
+| `src/gates-dispatch.ts` | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                |
+| `src/gates-plan.ts`     | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                          |
+| `src/gates-common.ts`   | Shared `BlockError` and waiver coverage semantics                                                                                                                     |
+| `src/tool-policy.ts`    | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                           |
+| `src/evidence.ts`       | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics |
+| `src/fingerprint.ts`    | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                                           |
+| `src/journal.ts`        | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                              |
+| `src/policy.ts`         | `ORCHESTRATOR_POLICY` prose injected into parent context once per task (placeholder digits so echoed text never parses as markers)                                    |
+| `src/types.ts`          | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                      |
 
 ---
 
