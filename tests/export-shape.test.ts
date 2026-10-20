@@ -56,6 +56,33 @@ test("gates-plan.ts exposes only createPlanGates at runtime", async () => {
   assert.deepEqual(Object.keys(mod).sort(), ["createPlanGates"])
 })
 
+/**
+ * The host-payload delivery module must expose exactly the coercion and
+ * classification helpers, the candidate-key tables, and the two ask-message
+ * prefixes at runtime.
+ */
+test("delivery.ts exposes only the delivery helpers and key tables at runtime", async () => {
+  const mod = await import("../src/delivery.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "AGENT_KEYS",
+    "DIRECTORY_KEYS",
+    "LANDING_ASK_MESSAGE_PREFIX",
+    "PARENT_KEYS",
+    "PLAN_ASK_MESSAGE_PREFIX",
+    "asSessionID",
+    "classifyDelivery",
+    "describeResultShape",
+    "isPlainRecord",
+    "metadataChildOf",
+    "mutateDeliveryText",
+    "prependDeliveryText",
+    "promptTextOf",
+    "readRecordString",
+    "shapeOf",
+    "structuredPartsOf",
+  ])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()
