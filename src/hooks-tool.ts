@@ -99,7 +99,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     try {
       // Invariant: this runs BEFORE the injection below, so on a task
       // delivery carrying every surface the output reads
-      // ORCHESTRATOR_POLICY (prepended head), then `[turnstile]
+      // policy head (built from config, prepended), then `[turnstile]
       // config:` (once-per-plugin-load block), then `[turnstile]
       // marker:` (once-per-prompt near-miss diagnostics), then the
       // child's own output, then the appended PIPELINE: status line

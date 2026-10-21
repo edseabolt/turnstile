@@ -3,8 +3,9 @@
  *
  * - Orchestrator policy and pipeline status: injected into the receiving
  *   parent session per task via the `execute.after` hook. On the FIRST
- *   `task`/`subagent` result delivery per task the `ORCHESTRATOR_POLICY`
- *   block from `src/policy.ts` is prepended as the policy head, and on EVERY
+ *   `task`/`subagent` result delivery per task the policy block built by
+ *   `orchestratorPolicyFor` from the resolved config (`src/policy.ts`) is
+ *   prepended as the policy head, and on EVERY
  *   such delivery whose agent is a pipeline stage a one-line `PIPELINE:`
  *   status tail is appended (the just-completed stage, the live plan/test
  *   gate flags, the reviewer ensemble count, and the next stage the

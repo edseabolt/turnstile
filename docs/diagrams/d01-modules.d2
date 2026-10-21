@@ -33,7 +33,7 @@ core: "src/ — one concern per boundary" {
   evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
   journal: "journal.ts\nturnstile.jsonl + trace, rotation, fail-open appends"
-  policy: "policy.ts\nORCHESTRATOR_POLICY prose (placeholder digits)"
+  policy: "policy.ts\norchestratorPolicyFor prose\nbuilt from resolved config"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
 }
 
@@ -79,7 +79,7 @@ core.hookstool -> core.markers
 core.hookstool -> core.delivery
 core.hooksevents -> core.hookscore: "type-only"
 core.hooksevents -> core.delivery
-core.delivery -> core.policy
+core.hookscore -> core.policy
 core.ledger -> core.journal: "replay (fs)"
 core.ledger -> core.state: "newState, counters, merge"
 core.journal -> persist.jsonl

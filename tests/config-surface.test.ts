@@ -22,9 +22,9 @@ const xdgTmp = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-xdg-"))
 process.env.XDG_DATA_HOME = xdgTmp
 
 import { turnstile } from "../turnstile.ts"
-import { ORCHESTRATOR_POLICY } from "../src/policy.ts"
 import {
   callTool,
+  expectedPolicy,
   isolatedEnv,
   journalEntries,
   makeFakeHost,
@@ -178,18 +178,19 @@ test("config surfacing: a hostile result whose mutation throws fails open", asyn
 })
 
 /** (17) On a task delivery carrying both surfaces, the policy prepend lands on
- *  top: the output reads ORCHESTRATOR_POLICY, then the `[turnstile] config:`
+ *  top: the output reads the injected policy, then the `[turnstile] config:`
  *  block, then the child's own output — one policy and one config journal
  *  entry each. */
 test("config surfacing: on a task delivery the policy lands above the config block", async () => {
   const { h, dispose, metricsDir } = await boot(WARNING_CONFIG)
+  const policy = expectedPolicy({ metricsDir })
   try {
     const event = { tool: "task", sessionID: "p1", result: { output: "child-body" } }
     await callTool(h, "execute.after", event)
     const out = String(event.result.output)
-    assert.ok(out.startsWith(ORCHESTRATOR_POLICY), "the policy is on top")
+    assert.ok(out.startsWith(policy), "the policy is on top")
     assert.ok(out.includes("[turnstile] config:"), "the config block is present")
-    const policyIdx = out.indexOf(ORCHESTRATOR_POLICY)
+    const policyIdx = out.indexOf(policy)
     const configIdx = out.indexOf("[turnstile] config:")
     const bodyIdx = out.indexOf("child-body")
     assert.ok(
@@ -245,9 +246,10 @@ test("config surfacing: the first delivery from an unregistered session consumes
  *  approval plus the landing gate, not at implementation completion), and the
  *  instruction to obey the appended PIPELINE: status line. */
 test("policy prose: the continuation imperative and subset-precedence rule follow the pipeline order", () => {
-  const orderIdx = ORCHESTRATOR_POLICY.indexOf("Pipeline order:")
-  const continuationIdx = ORCHESTRATOR_POLICY.indexOf("Continuation (imperative):")
-  const waiversIdx = ORCHESTRATOR_POLICY.indexOf("Waivers and approvals:")
+  const policy = expectedPolicy()
+  const orderIdx = policy.indexOf("Pipeline order:")
+  const continuationIdx = policy.indexOf("Continuation (imperative):")
+  const waiversIdx = policy.indexOf("Waivers and approvals:")
   assert.ok(orderIdx !== -1, "the pipeline order line is present")
   assert.ok(continuationIdx !== -1, "the continuation imperative line is present")
   assert.ok(
@@ -255,23 +257,23 @@ test("policy prose: the continuation imperative and subset-precedence rule follo
     "the continuation imperative sits right after the pipeline order, before the waivers line",
   )
   assert.ok(
-    ORCHESTRATOR_POLICY.includes("dispatch the next agent in the order above in the same turn"),
+    policy.includes("dispatch the next agent in the order above in the same turn"),
     "the same-turn continuation imperative is stated",
   )
   assert.ok(
-    ORCHESTRATOR_POLICY.includes(
+    policy.includes(
       "the user's named dispatch list is a subset of the pipeline, not a replacement for it",
     ),
     "the subset-precedence rule is stated",
   )
   assert.ok(
-    ORCHESTRATOR_POLICY.includes(
+    policy.includes(
       "the task ends at reviewer approval plus the landing gate, not at implementation completion",
     ),
     "the terminal rule is stated",
   )
   assert.ok(
-    ORCHESTRATOR_POLICY.includes("obey the PIPELINE: status line"),
+    policy.includes("obey the PIPELINE: status line"),
     "the policy tells the orchestrator to obey the appended PIPELINE: line",
   )
 })
