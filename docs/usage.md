@@ -340,15 +340,21 @@ used singular `agent`):
 {
   "$schema": "https://opencode.ai/config.json",
   "agents": {
-    "planner": { "model": "anthropic/claude-haiku-4-5" },
-    "plan-reviewer": { "model": "anthropic/claude-haiku-4-5" },
-    "executor": { "model": "anthropic/claude-sonnet-4-5" },
-    "test-runner": { "model": "anthropic/claude-haiku-4-5" },
-    "reviewer": { "model": "anthropic/claude-sonnet-4-5" },
-    "debugger": { "model": "anthropic/claude-sonnet-4-5" },
+    "planner": { "model": "oMLX/oQ/Qwen3.8-Flash-Next-oQ4-mtp" },
+    "plan-reviewer": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp" },
+    "executor": { "model": "oMLX/oQ/Qwen3.8-27B-oQ8-mtp" },
+    "test-runner": { "model": "oMLX/oQ/Qwen3.8-27B-oQ8-mtp" },
+    "reviewer": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp" },
+    "debugger": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp" },
   },
 }
 ```
+
+This is the author's actual local setup (a self-hosted oMLX engine serving
+Qwen and GLM models). Frontier hosted models work the same way — any
+`provider/model-id` your OpenCode install lists, e.g.
+`anthropic/claude-sonnet-4-5` — and are the right choice if your local
+models struggle with the executor or reviewer roles.
 
 Model IDs come from `opencode models` and take the form `provider/modelID`,
 with an optional `#variant`. Restarts pick the change up. Because the
@@ -392,8 +398,8 @@ first slash.
 
 ```sh
 npm run init -- --print-model-config \
-  --model planner=anthropic/claude-haiku-4-5 \
-  --model executor=oMLX/oQ/GLM-5.3-Flash-oQ4-mtp
+  --model planner=oMLX/oQ/Qwen3.8-Flash-Next-oQ4-mtp \
+  --model executor=oMLX/oQ/Qwen3.8-27B-oQ8-mtp
 ```
 
 Add `--validate` to cross-check every concrete seed against

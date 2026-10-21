@@ -42,12 +42,12 @@ so run `init` (or bring your own, see
 After restart the orchestrator dispatches the pipeline on your prompts,
 blocked work says `BLOCKED by turnstile: <reason>` instead of proceeding,
 and every decision is journaled — see it with
-`npx opencode-turnstile status`. Your escape hatch, always: put
-`USER WAIVER:` in **your own prompt** to bypass the gates for the task.
+`npx opencode-turnstile status`. To bypass the gates for a task, put
+`USER WAIVER:` in **your own prompt**.
 
 ## Using it for real work
 
-You never invoke the pipeline stages directly — you start a task the way you
+You never invoke the pipeline stages directly. Start a task the way you
 already would, and the enforcement wraps it. The one habit to build: open
 with the planner.
 
@@ -83,12 +83,12 @@ PLAN APPROVED: ship it as-is, the retry heuristic is good enough for now
 `AC-n` entries from the decomposition, so implementation traces to the plan.
 
 **4. Tests gate the reviewer.** The test-runner must emit
-`GATE: PASS tests=…` **and** a matching exit-0 test execution must exist in
-the task's history — a claimed pass without a real run never flips the gate.
+`GATE: PASS tests=…` and a matching exit-0 test execution must exist in the
+task's history.
 
 **5. The reviewer closes the loop.** Approval requires two unwaived reviewer
-dispatches (ensemble), and landing — `git push` — waits for reviewer
-approval when `gitGates.mode` is `enforce` (it ships in `shadow` mode: the
+dispatches (ensemble), and landing (`git push`) waits for reviewer approval
+when `gitGates.mode` is `enforce` (it ships in `shadow` mode: the
 would-blocks are journaled, not thrown).
 
 When something fires early, you see the block, not a silent violation:
@@ -102,14 +102,14 @@ or approve the permission ask)
 Every block, verdict, and gate flip is appended to the journal —
 `npx opencode-turnstile status` shows the state per session after the fact.
 
-A full annotated session — every dispatch, block message, waiver, and the
-journal entries behind them — is in
+A full annotated session, with every dispatch, block message, waiver, and
+the journal entries behind them, is in
 [`docs/usage.md`](docs/usage.md#a-worked-session).
 
 ## What it enforces
 
 Gates are decided in `execute.before` hooks; every gate has a human escape
-hatch. Full detail — guards, state fields, escape ladders, diagrams — lives in
+hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 [`docs/architecture.md`](docs/architecture.md) (§5 Gate state machine).
 
 | Gate                   | In one line                                                                                                                                          |
@@ -192,7 +192,7 @@ CLI install:
 3. **From a clone** — clone the repo and run `npm run init` (symlink mode)
    so installed artifacts stay live against your edits.
 
-Turnstile has **no** npm lifecycle hooks: installing the package never
+Turnstile has no npm lifecycle hooks: installing the package never
 writes to `~/.config/opencode` — that happens only when you run an explicit
 command. Modes, conflicts, the ledger, upgrades, uninstall, and per-agent
 model pins are covered in
