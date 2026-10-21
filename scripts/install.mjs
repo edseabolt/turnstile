@@ -377,13 +377,28 @@ function normalizeLedger(ledger) {
 /**
  * Loads the copy-mode ownership ledger, normalizing legacy entries on read.
  * An absent ledger is an empty record; the written form stays normalized,
- * so `saveLedger` persists the migration permanently.
+ * so `saveLedger` persists the migration permanently. An unparseable ledger
+ * fails loudly with the file path and a delete-or-repair instruction:
+ * silently falling back to an empty record would strand ledger-owned copies
+ * as untracked, which `removeEntry` then refuses to remove.
  * @param {string} file Ledger path.
  * @returns {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} Ledger keyed by destination.
+ * @throws {Error} When the ledger exists but is not valid JSON.
  */
 function loadLedger(file) {
   if (!existsSync(file)) return {}
-  return normalizeLedger(JSON.parse(readFileSync(file, "utf8")))
+  const content = readFileSync(file, "utf8")
+  let parsed
+  try {
+    parsed = JSON.parse(content)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `ledger at ${file} is not valid JSON (${reason}). Delete or repair it — the file is ${file} — then re-run.`,
+      { cause: error },
+    )
+  }
+  return normalizeLedger(parsed)
 }
 
 /**
