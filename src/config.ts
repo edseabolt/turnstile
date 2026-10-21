@@ -14,7 +14,13 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { appendLine, defaultMetricsDir } from "./journal.ts"
-import { CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER, GATE_RE, VERDICT_RE } from "./markers.ts"
+import {
+  CANONICAL_GATE_MARKER,
+  CANONICAL_VERDICT_MARKER,
+  GATE_RE,
+  VERDICT_RE,
+  formatDiagnosticBlock,
+} from "./markers.ts"
 import type {
   GateEvidenceMode,
   ReviewEnsembleMode,
@@ -666,8 +672,11 @@ export function loadConfig(
  * and side-effect free (throws nothing): a fixed header carries the count and
  * the journal path, one `- ` line per warning up to `maxLines`, and a tail
  * naming the hidden remainder past `maxLines` (the journal holds the full
- * list). An empty list renders a zero-count header with no lines; callers
- * gate on a non-empty list so the block is never injected for a clean config.
+ * list) — the header, line format, and block rendering are shared with
+ * `formatNearMissDiagnostics` through `formatDiagnosticBlock`; only the
+ * header wording, line prefix, and surfacing budget are warning-specific.
+ * An empty list renders a zero-count header with no lines; callers gate on a
+ * non-empty list so the block is never injected for a clean config.
  * @param warnings The resolved warning strings to render.
  * @param journalPath Absolute path of the JSONL journal (named in the header).
  * @param maxLines Maximum warning lines before the truncation tail (default 5).
@@ -679,10 +688,11 @@ export function formatConfigWarnings(
   maxLines: number = 5,
 ): string {
   const header = `[turnstile] config: ${warnings.length} validation warning(s) (journal: ${journalPath}):`
-  const shown = warnings.slice(0, maxLines)
-  const tail =
-    warnings.length > maxLines ? `\n(${warnings.length - maxLines} more; see the journal)` : ""
-  return [header, ...shown.map((w) => `- ${w}`)].join("\n") + tail
+  return formatDiagnosticBlock(
+    header,
+    warnings.map((w) => `- ${w}`),
+    maxLines,
+  )
 }
 
 /**

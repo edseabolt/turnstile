@@ -11,6 +11,7 @@ import { createJournaler, type Journaler } from "./journal.ts"
 import {
   agentFromTaskInput,
   compileMarkerRegex,
+  deltaWindowFloorChars,
   parseGateMarkers,
   parseWaiverScope,
   deTokenizeMarker,
@@ -49,6 +50,18 @@ import type {
   TurnstileConfig,
   TurnstileOptions,
 } from "./types.ts"
+
+/**
+ * TTL (ms) shared by both ask-latch maps (awaiting-plan-ask and
+ * pending-landing-ask): an escalation/arm whose `permission.asked` stream
+ * event never arrives stops latching after this window, so a stale latch
+ * cannot record an unrelated later ask. Fail-toward-strict: expired = not
+ * recorded = a reply to any later ask stays inert and the gate re-asks on
+ * the next dispatch — the safe direction when a stream event is lost. No
+ * config key: users rarely reason about timing defaults, and the strict
+ * expiry is never a user-visible behavior worth tuning.
+ */
+const askLatchTtlMs = 5_000
 
 /** Shared per-setup context consumed by turnstile's per-surface hook modules. */
 export interface TurnstileContext {
@@ -117,7 +130,7 @@ export interface TurnstileContext {
   maxTrackedLookups: number
   /** Cap on tracked per-session project directories. */
   maxTrackedSessionDirs: number
-  /** Max delta-window text chars. */
+  /** Max delta-window text chars (derived from the effective marker sources; floor 512). */
   maxDeltaWindowChars: number
   /** Cap on tracked delta-window entries. */
   maxTrackedDeltaWindows: number
@@ -526,9 +539,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // Latch TTL for awaiting-plan-ask markers: an escalation whose stream event
   // never arrives stops latching after this window, so a stale marker cannot
   // record an unrelated later ask (whose approval would then release the plan
-  // gate). Fail-toward-strict: expired = not recorded = reply inert = the
-  // gate re-asks on the next dispatch.
-  const awaitingPlanAskTtlMs = 5_000
+  // gate). The value is single-sourced at module scope (`askLatchTtlMs`).
+  const awaitingPlanAskTtlMs = askLatchTtlMs
   // Parents whose evaluate handler has been armed to force a landing ask (the
   // guard sets this under `gitGates.mode: enforce` on a repeat `git push`
   // attempt: no reviewer approval AND >= 1 prior landing block). Parent → arm
@@ -539,7 +551,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // cannot latch a parent indefinitely.
   const pendingLandingAsk = new Map<string, number>()
   const maxTrackedLandingAsks = 50
-  const pendingLandingAskTtlMs = 5_000
+  // The landing arm shares the awaiting-plan-ask TTL: same fail-toward-strict
+  // expiry, single-sourced at module scope (`askLatchTtlMs`).
+  const pendingLandingAskTtlMs = askLatchTtlMs
   // Landing-gate permission asks, keyed by host request id → the parent session
   // the ask was raised for + when it was recorded. Only asks by the evaluate
   // handler's landing arm (message prefixed `turnstile: push/PR …`) are
@@ -596,9 +610,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * execute.before age-out) so stale fragments of a prior task do not leak.
    */
   const deltaWindows = new Map<string, string>()
-  // Comfortably longer than any complete marker; the tail keeps a window whose
-  // head was evicted so a marker split across many small deltas still completes.
-  const maxDeltaWindowChars = 512
+  // Derived from the effective compiled marker sources with a 512-char floor
+  // (deltaWindowFloorChars): the tail keeps a window whose head was evicted so
+  // a marker split across many small deltas still completes, including one
+  // whose configured literal is longer than the historical bound.
+  const maxDeltaWindowChars = deltaWindowFloorChars(gateRe.source, verdictRe.source)
   const maxTrackedDeltaWindows = 50
 
   /**
