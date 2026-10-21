@@ -1,6 +1,8 @@
 {
   "journalMaxBytes": 5242880,
   "journalMaxGenerations": 5,
+  "journalRotateEveryEntries": 512,
+  "replayTailLines": 2000,
   "maxReviewerRounds": 2,
   "maxPlannerRounds": 3,
   "maxPlanReviewerRounds": 3,

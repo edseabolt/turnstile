@@ -117,8 +117,14 @@ function bootGates(): {
   metricsDir: string
 } {
   const metricsDir = tmpDir()
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
-  const journaler = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  const journaler = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+    rotateEveryEntries: 512,
+  })
   return { gates: createGates(defaultConfig(), journaler), ledger, metricsDir }
 }
 

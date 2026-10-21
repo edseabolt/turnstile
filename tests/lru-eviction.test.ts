@@ -90,7 +90,7 @@ const verdictCount = (metricsDir: string): number =>
  *  again. Establishes the cap's protect-predicate behavior in isolation. */
 test("T1: a registered parent bucket survives unrelated churn and un-registering restores eviction", async () => {
   // maxSessions=8 keeps the run tiny; maxTrackedParents = max(256, 8*4)=256.
-  const ledger = createLedger(path.join(tmpDir(), "unused.jsonl"), 8)
+  const ledger = createLedger(path.join(tmpDir(), "unused.jsonl"), 8, 2000)
 
   // Register p as a live parent, then mint + flag its bucket.
   ledger.markParent("p")

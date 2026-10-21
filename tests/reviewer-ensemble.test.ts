@@ -335,7 +335,7 @@ test("T5b: a human always-grant survives restart via the clearing entry", async 
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "permission" && e.decision === "always"),
     )
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     assert.equal(
       ledger.state("p1").hasReviewApprove,
       true,
@@ -402,7 +402,7 @@ test("T5c: a post-grant APPROVE delivery at a smaller count keeps the human rele
     )
     // Fresh replay: the human's clearing entry still wins, so the release
     // survives the post-grant delivery.
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     assert.equal(
       ledger.state("p1").hasReviewApprove,
       true,
@@ -424,7 +424,7 @@ test("T6: replay restores the ensemble count with grace, carried one prompt", ()
       JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 1 }),
     ].join("\n") + "\n",
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.reviewerDispatches, 1, "replay restores the ensemble count")
   assert.equal(s.replayGrace, true, "a restored flag tags grace alongside the count")
@@ -451,7 +451,7 @@ test("T7: replay skips malformed ensemble entries and honors latest-wins", () =>
       JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 2 }),
     ].join("\n") + "\n",
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.reviewerDispatches, 2, "the last valid count wins over malformed entries")
   assert.equal(s.replayGrace, true, "a restored gate still tags grace")
@@ -464,7 +464,7 @@ test("T7: an ensemble entry in the .1 generation tail replays", () => {
     path.join(metricsDir, "turnstile.jsonl.1"),
     `${JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 3 })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   assert.equal(ledger.state("p1").reviewerDispatches, 3, "the .1 generation replays the count")
 })
 
@@ -495,7 +495,7 @@ test("T7b: replay suppresses a refused APPROVE and restores a credited one", () 
         }),
       ].join("\n") + "\n",
     )
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     const s = ledger.state("p1")
     assert.equal(s.hasReviewApprove, false, "a refused APPROVE is not restored")
     assert.equal(s.reviewerDispatches, 1, "the count is still restored")
@@ -517,7 +517,7 @@ test("T7b: replay suppresses a refused APPROVE and restores a credited one", () 
         JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 2 }),
       ].join("\n") + "\n",
     )
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     assert.equal(ledger.state("p1").hasReviewApprove, true, "a count-2 APPROVE restores")
   }
   // Refused then cleared: the last entry clears, so the verdict restores.
@@ -552,7 +552,7 @@ test("T7b: replay suppresses a refused APPROVE and restores a credited one", () 
         }),
       ].join("\n") + "\n",
     )
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     assert.equal(
       ledger.state("p1").hasReviewApprove,
       true,
@@ -569,7 +569,7 @@ test("T7c: an ensemble-only entry restores the count without grace", () => {
     path.join(metricsDir, "turnstile.jsonl"),
     `${JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 1 })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.reviewerDispatches, 1, "the bare count is restored")
   assert.equal(s.replayGrace, false, "no flag restored means no grace tagged")
@@ -640,6 +640,6 @@ function ledgerState(
 ): {
   hasReviewApprove: boolean
 } {
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   return { hasReviewApprove: ledger.state(sessionID).hasReviewApprove }
 }

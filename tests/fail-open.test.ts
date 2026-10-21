@@ -112,6 +112,7 @@ test("traceEvent without a session ID omits the trailing segment", () => {
     trace: true,
     maxBytes: 1024 * 1024,
     maxGenerations: 1,
+    rotateEveryEntries: 512,
   })
   j.traceEvent("agent", "event", "detail")
   const line = fs.readFileSync(path.join(metricsDir, "gate-events.jsonl"), "utf8").trim()
@@ -176,7 +177,13 @@ test("plansSignature fails open on an unreadable plans dir", () => {
   const metricsDir = tmpDir()
   const g = createGates(
     defaultConfig(),
-    createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 }),
+    createJournaler({
+      metricsDir,
+      trace: false,
+      maxBytes: 1e6,
+      maxGenerations: 1,
+      rotateEveryEntries: 512,
+    }),
   )
   fs.chmodSync(plans, 0o000)
   try {
@@ -191,7 +198,7 @@ test("plansSignature fails open on an unreadable plans dir", () => {
 /** Journal replay fails open when the journal path is a directory. */
 test("createLedger fails open when the journal path is unreadable", () => {
   const dir = tmpDir()
-  const ledger = createLedger(dir, 64)
+  const ledger = createLedger(dir, 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.hasGatePass, false)
   assert.equal(s.reads, 0)
@@ -200,7 +207,13 @@ test("createLedger fails open when the journal path is unreadable", () => {
 /** A telemetry sink that throws on a block never breaks the guards. */
 test("tool-policy guards journal their internal failure when the sink throws", () => {
   const metricsDir = tmpDir()
-  const inner = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const inner = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+    rotateEveryEntries: 512,
+  })
   const hostile = {
     journal: (entry: Record<string, unknown>): void => {
       if (entry.reason === "tool-policy") throw new Error("sink down")
@@ -230,7 +243,13 @@ test("tool-policy guards journal their internal failure when the sink throws", (
  */
 test("git-side guards journal their internal failure when the sink throws", () => {
   const metricsDir = tmpDir()
-  const inner = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const inner = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+    rotateEveryEntries: 512,
+  })
   const hostile = {
     journal: (entry: Record<string, unknown>): void => {
       // The guard's primary journal (blocked entry / landing telemetry) throws;
@@ -260,7 +279,13 @@ test("git-side guards journal their internal failure when the sink throws", () =
 /** observeSessionMove: false disables the telemetry entirely. */
 test("observeSessionMove is a no-op when disabled and redacts under trace:false", () => {
   const metricsDir = tmpDir()
-  const j = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+    rotateEveryEntries: 512,
+  })
   const config = defaultConfig()
   config.trace = false
   config.toolPolicy = { mode: "enforce", bashDeny: [], pathDeny: [], observeSessionMove: false }
@@ -626,7 +651,7 @@ test("dispose failures are inert", async () => {
 test("ledger keeps protected parents over the session cap", () => {
   const dir = tmpDir()
   fs.writeFileSync(path.join(dir, "turnstile.jsonl"), "")
-  const ledger = createLedger(path.join(dir, "turnstile.jsonl"), 1)
+  const ledger = createLedger(path.join(dir, "turnstile.jsonl"), 1, 2000)
   ledger.markParent("a")
   ledger.markParent("b")
   ledger.state("a")
@@ -641,7 +666,7 @@ test("ledger keeps protected parents over the session cap", () => {
 
 /** parentOf maps nullish input to "" and unknown sessions to themselves. */
 test("ledger.parentOf handles nullish and unknown ids", () => {
-  const ledger = createLedger(path.join(tmpDir(), "j.jsonl"), 64)
+  const ledger = createLedger(path.join(tmpDir(), "j.jsonl"), 64, 2000)
   assert.equal(ledger.parentOf(undefined as unknown as string), "")
   assert.equal(ledger.parentOf(""), "")
   assert.equal(ledger.parentOf("solo"), "solo")
@@ -1066,13 +1091,13 @@ test("journal replay skips non-restore plan results", () => {
     JSON.stringify({ type: "plan", sessionID: "p2", result: "BLOCK" }),
   ]
   fs.writeFileSync(journal, lines.join("\n") + "\n")
-  const ledger = createLedger(journal, 64)
+  const ledger = createLedger(journal, 64, 2000)
   assert.equal(ledger.peek("p1"), undefined)
   assert.equal(ledger.peek("p2"), undefined)
 })
 
 test("ledger.markParent no-ops on an empty id", () => {
-  const ledger = createLedger(path.join(tmpDir(), "j.jsonl"), 64)
+  const ledger = createLedger(path.join(tmpDir(), "j.jsonl"), 64, 2000)
   ledger.markParent("")
   assert.equal(ledger.isParent(""), false)
 })

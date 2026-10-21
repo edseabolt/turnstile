@@ -36,7 +36,8 @@ export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turn
 /** Rotation bound (rotation-race fix): the append hot path never stats or
  * renames the file — `journal()` only appends and advances a per-file
  * counter. The rotate-then-rename sequence runs once per `rotateEveryEntries`
- * appends (default 512) and only under a created `<file>.lock` directory (an
+ * appends (cadence set by the `journalRotateEveryEntries` config key) and only
+ * under a created `<file>.lock` directory (an
  * atomic mutex: `mkdir` fails with EEXIST while another session holds it), so
  * two concurrent sessions never both rename the shared file. Disk usage stays
  * bounded at (N + 1) × maxBytes plus at most `rotateEveryEntries × ~2 KB` of
@@ -134,8 +135,8 @@ export interface Journaler {
  * @param options.maxBytes Rotation threshold per journal file.
  * @param options.maxGenerations Rotated generations kept per journal file.
  * @param options.rotateEveryEntries Hot path is append-only; the size check
- *     and rotation run once per this many appends (default 512, documented in
- *     the rotation-bound comment above). Entries between the check and the
+ *     and rotation run once per this many appends (documented in the
+ *     rotation-bound comment above). Entries between the check and the
  *     rename are the bounded overshoot.
  * @returns A Journaler writing `turnstile.jsonl` and `gate-events.jsonl`
  *     under `options.metricsDir`.
@@ -145,7 +146,7 @@ export function createJournaler(options: {
   trace: boolean
   maxBytes: number
   maxGenerations: number
-  rotateEveryEntries?: number
+  rotateEveryEntries: number
 }): Journaler {
   const journalPath = path.join(options.metricsDir, "turnstile.jsonl")
   const tracePath = path.join(options.metricsDir, "gate-events.jsonl")
@@ -165,7 +166,7 @@ export function createJournaler(options: {
    * @param counter A per-file `{ n }` counter; callers pass one bound here.
    */
   function tickRotate(file: string, counter: { n: number }): void {
-    if (++counter.n < (options.rotateEveryEntries ?? 512)) return
+    if (++counter.n < options.rotateEveryEntries) return
     counter.n = 0
     try {
       const lock = `${file}.lock`

@@ -622,7 +622,7 @@ test("injection: a structured reviewer verdict credits the landing gate through 
     assert.equal(verdicts[0]!.sessionID, "p1", "keyed under the resolved parent")
     assert.equal(verdicts[0]!.raw, "c1", "raw is the real child")
     assert.equal(verdicts[0]!.source, "task-result", "the source names the delivery")
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     assert.equal(
       ledger.state("p1").hasReviewApprove,
       true,
@@ -1054,7 +1054,7 @@ test("injection: a structured marker parses from the canonical output string, no
     assert.equal(verdicts.length, 1, "the verdict in the canonical text is journaled")
     assert.equal(verdicts[0]!.sessionID, "p1", "keyed under the resolved parent")
     assert.equal(verdicts[0]!.raw, "cM", "raw is the real child")
-    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
     assert.equal(
       ledger.state("p1").hasReviewApprove,
       true,

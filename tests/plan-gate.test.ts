@@ -308,7 +308,13 @@ test("plan gate: an absolute plansDir blocks the executor decomposition check", 
   fs.mkdirSync(absPlans, { recursive: true })
   fs.writeFileSync(path.join(absPlans, "plan.md"), "# P\n## Decomposition\n- chunk-1\n")
   const metricsDir = tmpDir()
-  const journaler = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const journaler = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+    rotateEveryEntries: 512,
+  })
   const config = defaultConfig()
   config.plansDir = absPlans
   const gates = createGates(config, journaler)
@@ -998,6 +1004,7 @@ function dirSignature(project: string): string {
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+    rotateEveryEntries: 512,
   })
   const gates = createGates(defaultConfig(), journaler)
   return gates.plansSignature(project) ?? ""
@@ -1453,9 +1460,10 @@ test("plan gate: plansSignature is a content signature (name:sha256hex)", async 
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+    rotateEveryEntries: 512,
   })
   const gates = createGates(config, journaler)
-  const ledger = createLedger(path.join(metricsDir, "state.jsonl"), 64)
+  const ledger = createLedger(path.join(metricsDir, "state.jsonl"), 64, 2000)
   // Empty dir ⇒ the path-free empty sentinel, never "": an approval stamped on
   // an empty dir must mismatch once a plan file appears. No stat/mtime term.
   assert.equal(gates.plansSignature(project), "empty")
@@ -1745,7 +1753,7 @@ test("plan gate: a content change after a move invalidates loudly with STALE", a
         reason: "signature-mismatch",
       }) + "\n",
     )
-    assert.equal(createLedger(replayJournal, 64).peek("p1"), undefined)
+    assert.equal(createLedger(replayJournal, 64, 2000).peek("p1"), undefined)
   } finally {
     restore()
   }
@@ -1778,9 +1786,10 @@ function bootUnitPlans(planFiles: Record<string, string>): {
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+    rotateEveryEntries: 512,
   })
   const gates = createGates({ ...defaultConfig(process.env), metricsDir }, journaler)
-  const ledger = createLedger(path.join(metricsDir, "state.jsonl"), 64)
+  const ledger = createLedger(path.join(metricsDir, "state.jsonl"), 64, 2000)
   return { project, plansDir, gates, ledger, metricsDir }
 }
 

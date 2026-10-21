@@ -20,6 +20,16 @@
       "minimum": 1,
       "description": "Number of rotated journal generations to keep (default 5)."
     },
+    "journalRotateEveryEntries": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Size-check/rotation cadence in appends (default 512)."
+    },
+    "replayTailLines": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Journal lines replayed per boot from the current + .1 generations (default 2000)."
+    },
     "maxReviewerRounds": {
       "type": "integer",
       "minimum": 1,

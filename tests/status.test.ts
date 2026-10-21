@@ -111,6 +111,28 @@ function line(ts: number, entry: Entry): Entry {
   return { ts: new Date(ts).toISOString(), ...entry }
 }
 
+/**
+ * Writes an eight-entry `WAIVED` gate journal for one session. Waivers are a
+ * cumulative counter — the only last-wins-invisible observable — so the replay
+ * tail bound is readable off it: a tail of N keeps exactly the last N entries.
+ * @param dir The metrics directory to write into.
+ */
+function writeTailJournal(dir: string): void {
+  writeJournal(
+    dir,
+    "turnstile.jsonl",
+    Array.from({ length: 8 }, (_, i) =>
+      line(i + 1, {
+        type: "gate",
+        sessionID: "sp-tail",
+        result: "WAIVED",
+        channel: "prompt",
+        waiver: "<present>",
+      }),
+    ),
+  )
+}
+
 const KEYS: Array<keyof StatusSession> = [
   "hasGatePass",
   "hasPlanVerdict",
@@ -132,7 +154,7 @@ const KEYS: Array<keyof StatusSession> = [
  * @param journalPath The journal path used to build the ground-truth ledger.
  */
 function assertReplayParity(obj: StatusJSON, journalPath: string): void {
-  const ledger = createLedger(journalPath)
+  const ledger = createLedger(journalPath, 64, 2000)
   for (const [id, sess] of Object.entries(obj.sessions)) {
     const peek = ledger.peek(id)
     // Ground truth: a session replayed green iff peek exposes the restored flag.
@@ -225,7 +247,7 @@ test("flag restoration matches ledger.ts replay: trailing FAIL wins and enforce 
   }
 })
 
-test("reads the .1 generation and current file, with slice(-2000) window parity", () => {
+test("reads the .1 generation and current file, with replay-tail window parity", () => {
   const dir = metricsDir()
   try {
     const journalPath = join(dir, "turnstile.jsonl")
@@ -246,6 +268,106 @@ test("reads the .1 generation and current file, with slice(-2000) window parity"
     assert.equal(oSession(obj, "sp-new").hasPlanVerdict, true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("honors a config-file replayTailLines even when the metrics-dir env is set", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    writeTailJournal(dir)
+    const cfgPath = join(cfgDir, "turnstile.json")
+    // The env wins on the metrics directory (journal read from `dir`), but the
+    // file's tail bound still applies — so only the last three entries
+    // aggregate.
+    writeFileSync(cfgPath, JSON.stringify({ replayTailLines: 3 }))
+    const res = spawnSync(process.execPath, [statusScript, "--json"], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: dir, TURNSTILE_CONFIG: cfgPath },
+      encoding: "utf8",
+    })
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    assert.equal(
+      oSession(obj, "sp-tail").waivers.length,
+      3,
+      "config-file tail honors with the metrics-dir env set",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+test("falls back to the default 2000-line tail when the env is set and no config resolves a tail", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    writeTailJournal(dir)
+    // Point TURNSTILE_CONFIG at a nonexistent path so no config file resolves;
+    // the env selects the journal and the tail stays at the default 2000, so
+    // all eight entries aggregate.
+    const res = spawnSync(process.execPath, [statusScript, "--json"], {
+      env: {
+        ...process.env,
+        TURNSTILE_METRICS_DIR: dir,
+        TURNSTILE_CONFIG: join(cfgDir, "absent.json"),
+      },
+      encoding: "utf8",
+    })
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    assert.equal(oSession(obj, "sp-tail").waivers.length, 8, "default tail reads all eight entries")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+test("honors a configured replayTailLines from the config file when the env is unset", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    writeTailJournal(dir)
+    const cfgPath = join(cfgDir, "turnstile.json")
+    // A config file with `replayTailLines: 3` resolves both metricsDir and the
+    // tail bound, so only the last three entries aggregate.
+    writeFileSync(cfgPath, JSON.stringify({ metricsDir: dir, replayTailLines: 3 }))
+    const res = spawnSync(process.execPath, [statusScript, "--json"], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: "", TURNSTILE_CONFIG: cfgPath },
+      encoding: "utf8",
+    })
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    assert.equal(
+      oSession(obj, "sp-tail").waivers.length,
+      3,
+      "tail of 3 reads only the last three entries",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+test("an invalid config replayTailLines falls back silently to the default tail", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    writeTailJournal(dir)
+    const cfgPath = join(cfgDir, "turnstile.json")
+    // Zero is not a positive integer, so it is rejected and the fallback (silent —
+    // the script journals nothing) keeps the default 2000-line tail.
+    writeFileSync(cfgPath, JSON.stringify({ metricsDir: dir, replayTailLines: 0 }))
+    const res = spawnSync(process.execPath, [statusScript, "--json"], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: "", TURNSTILE_CONFIG: cfgPath },
+      encoding: "utf8",
+    })
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    assert.equal(oSession(obj, "sp-tail").waivers.length, 8, "invalid tail falls back to default")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
   }
 })
 

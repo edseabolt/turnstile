@@ -146,9 +146,9 @@ export interface GateLedger {
 
 /**
  * Replays the journal's tail so completed `GATE: PASS` entries restore
- * gate state after a restart. Reads the last 2000 lines; skips malformed
- * lines. Only the *last flipping* gate result per session decides the
- * restored state, mirroring the runtime latest-wins rule (a trailing
+ * gate state after a restart. Reads the last `tailLines` lines; skips
+ * malformed lines. Only the *last flipping* gate result per session decides
+ * the restored state, mirroring the runtime latest-wins rule (a trailing
  * `GATE: FAIL` keeps the gate red). Fail-open.
  *
  * A replayed green is journaled audited evidence, not runtime proof: the
@@ -191,16 +191,23 @@ export interface GateLedger {
  * no grace and no one-prompt carry.
  * @param states The session→state map to populate.
  * @param journalPath Absolute path of the JSONL journal to replay; the prior
- *     generation (`${journalPath}.1`) is read first so the 2000-line tail
- *     bound holds across both files. Exactly one generation is replayed: the
- *     README documents 5 kept generations, but replaying all five would cost
- *     ~25 MB of boot I/O worst case.
+ *     generation (`${journalPath}.1`) is read first so the tail bound holds
+ *     across both files. Exactly one generation is replayed — deliberately
+ *     not following `journalMaxGenerations`, which sizes the write-side
+ *     retention: replaying every kept generation would cost up to
+ *     `journalMaxGenerations × journalMaxBytes` of boot I/O worst case.
+ * @param tailLines Maximum number of combined journal lines replayed; older
+ *     lines are dropped.
  */
-function replayGatePasses(states: Map<string, GateState>, journalPath: string): void {
+function replayGatePasses(
+  states: Map<string, GateState>,
+  journalPath: string,
+  tailLines: number,
+): void {
   try {
     // Read the rotated generation first (`.1`, older) then the current file,
-    // oldest-first, so the slice(-2000) tail bound holds across both files.
-    // Generations are time-ordered, so latest-wins still falls out naturally.
+    // oldest-first, so the tail bound holds across both files. Generations are
+    // time-ordered, so latest-wins still falls out naturally.
     const generations = [`${journalPath}.1`, journalPath].filter((p) => fs.existsSync(p))
     if (generations.length > 0) {
       const lines = generations.flatMap((p) =>
@@ -229,7 +236,7 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
       // entry had no field — an ordinary dispatch). Absent entries delete so a
       // later dispatch un-stamps a prior refusal, matching the runtime rule.
       const lastRefusedApprove = new Map<string, boolean>()
-      for (const line of lines.slice(-2000)) {
+      for (const line of lines.slice(-tailLines)) {
         try {
           const e = JSON.parse(line) as {
             type?: unknown
@@ -387,9 +394,15 @@ function replayGatePasses(states: Map<string, GateState>, journalPath: string): 
  * unchanged).
  * @param journalPath Absolute path of the JSONL journal to replay.
  * @param maxSessions LRU cap for tracked sessions (states + parent map).
+ * @param replayTailLines Replay tail window in lines for the boot replay
+ *     (see `replayGatePasses`).
  * @returns A ledger bound to a fresh in-memory session map.
  */
-export function createLedger(journalPath: string, maxSessions: number = 64): GateLedger {
+export function createLedger(
+  journalPath: string,
+  maxSessions: number,
+  replayTailLines: number,
+): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
   // Latest VERDICT marker observation per child session, LRU-capped and
@@ -511,7 +524,7 @@ export function createLedger(journalPath: string, maxSessions: number = 64): Gat
   }
 
   // Replay runs before capping so the restored set honors the LRU cap too.
-  replayGatePasses(states, journalPath)
+  replayGatePasses(states, journalPath, replayTailLines)
   cap(states, isParent)
 
   return {

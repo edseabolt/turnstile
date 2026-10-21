@@ -179,7 +179,8 @@ stated feature; devDependencies are tooling only.)
   journaled, never block tool calls. Only deliberate `BLOCKED by turnstile:`
   errors throw. Keep that distinction when editing hooks.
 - Journal replay: `GATE: PASS` entries from `~/.local/share/opencode/metrics/turnstile.jsonl`
-  restore gate state on restart (last 2000 lines), and plan-reviewer
+  restore gate state on restart (last `replayTailLines` lines, default 2000),
+  and plan-reviewer
   `VERDICT: APPROVE` entries restore the plan-approval gate the same way.
   A new user prompt resets the session's gate state.
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
