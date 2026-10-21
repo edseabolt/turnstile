@@ -56,6 +56,66 @@ test("gates-plan.ts exposes only createPlanGates at runtime", async () => {
   assert.deepEqual(Object.keys(mod).sort(), ["createPlanGates"])
 })
 
+/**
+ * The host-payload delivery module must expose exactly the coercion and
+ * classification helpers, the candidate-key tables, and the two ask-message
+ * prefixes at runtime.
+ */
+test("delivery.ts exposes only the delivery helpers and key tables at runtime", async () => {
+  const mod = await import("../src/delivery.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "AGENT_KEYS",
+    "DIRECTORY_KEYS",
+    "LANDING_ASK_MESSAGE_PREFIX",
+    "PARENT_KEYS",
+    "PLAN_ASK_MESSAGE_PREFIX",
+    "asSessionID",
+    "classifyDelivery",
+    "describeResultShape",
+    "isPlainRecord",
+    "metadataChildOf",
+    "mutateDeliveryText",
+    "prependDeliveryText",
+    "promptTextOf",
+    "readRecordString",
+    "shapeOf",
+    "structuredPartsOf",
+  ])
+})
+
+/**
+ * The shared hook-state module must expose exactly createHooksCore at
+ * runtime (the TurnstileContext interface is type-only and erased).
+ */
+test("hooks-core.ts exposes only createHooksCore at runtime", async () => {
+  const mod = await import("../src/hooks-core.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createHooksCore"])
+})
+
+/** The session-surface module must expose exactly its hook factory at runtime. */
+test("hooks-session.ts exposes only createSessionHooks at runtime", async () => {
+  const mod = await import("../src/hooks-session.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createSessionHooks"])
+})
+
+/** The permission-surface module must expose exactly its hook factory at runtime. */
+test("hooks-permission.ts exposes only createPermissionHooks at runtime", async () => {
+  const mod = await import("../src/hooks-permission.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPermissionHooks"])
+})
+
+/** The tool-surface module must expose exactly its hook factory at runtime. */
+test("hooks-tool.ts exposes only createToolHooks at runtime", async () => {
+  const mod = await import("../src/hooks-tool.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createToolHooks"])
+})
+
+/** The event-surface module must expose exactly its stream starter at runtime. */
+test("hooks-events.ts exposes only startEventStream at runtime", async () => {
+  const mod = await import("../src/hooks-events.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["startEventStream"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()

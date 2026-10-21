@@ -14,7 +14,13 @@ host: "OpenCode host\n(v2 promise-plugin API)" {
 entry: "turnstile.ts\n{ id:'turnstile', server, setup }\nthin factory — contracts in doc comment"
 
 core: "src/ — one concern per boundary" {
-  setup: "setup.ts\nwires everything: config load, hook registration,\nprompt admission, verdict attribution, event loop"
+  setup: "setup.ts\nwiring only: hook registration, heartbeat,\nlifecycle/disposal"
+  hookscore: "hooks-core.ts\nshared hook state + services:\nTurnstileContext (config, journaler, gates,\nledger, admission, marker parsing,\nverdict attribution)"
+  hookssession: "hooks-session.ts\nprompt · generate · compaction bodies"
+  hookspermission: "hooks-permission.ts\nevaluate body (plan/landing arms)"
+  hookstool: "hooks-tool.ts\nexecute.before / after bodies"
+  hooksevents: "hooks-events.ts\nevent surface: consume + supervise\n(bounded restarts)"
+  delivery: "delivery.ts\nhost payload delivery: shape ladder,\ntext mutation, key tables, ask prefixes"
   config: "config.ts\n4-layer config (defaults ⊕ file ⊕ env ⊕ opts),\nvalidation, configDigest"
   state: "state.ts — GateState shape\nnewState, counters, snapshot + pipeline\nrendering, replay-merge"
   ledger: "ledger.ts — GateLedger\nbuckets (LRU), child→parent edges,\nverdict store, journal replay"
@@ -45,16 +51,35 @@ host.tool-hook -> entry
 host.event-sub -> entry
 host.perm-hook -> entry
 entry -> core.setup
+core.setup -> core.hookscore
+core.setup -> core.hookssession
+core.setup -> core.hookspermission
+core.setup -> core.hookstool
+core.setup -> core.hooksevents
 core.setup -> core.config
-core.setup -> core.state
-core.setup -> core.ledger
-core.setup -> core.markers
 core.setup -> core.gates
-core.setup -> core.toolpolicy
-core.setup -> core.evidence
-core.setup -> core.fingerprint
-core.setup -> core.journal
-core.setup -> core.policy
+core.hookscore -> core.config
+core.hookscore -> core.journal
+core.hookscore -> core.gates
+core.hookscore -> core.evidence
+core.hookscore -> core.toolpolicy
+core.hookscore -> core.state
+core.hookscore -> core.ledger
+core.hookscore -> core.markers
+core.hookscore -> core.fingerprint
+core.hookscore -> core.delivery
+core.hookssession -> core.hookscore: "type-only"
+core.hookssession -> core.delivery
+core.hookssession -> core.state
+core.hookspermission -> core.hookscore: "type-only"
+core.hookspermission -> core.delivery
+core.hookspermission -> core.toolpolicy
+core.hookstool -> core.hookscore: "type-only"
+core.hookstool -> core.markers
+core.hookstool -> core.delivery
+core.hooksevents -> core.hookscore: "type-only"
+core.hooksevents -> core.delivery
+core.delivery -> core.policy
 core.ledger -> core.journal: "replay (fs)"
 core.ledger -> core.state: "newState, counters, merge"
 core.journal -> persist.jsonl
