@@ -5,9 +5,9 @@
 OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
 file (`types`, `config`, `policy`, `journal`, `state`, `ledger`, `markers`,
-`evidence`, `gates`, `gates-common`, `gates-dispatch`, `gates-plan`,
-`tool-policy`, `delivery`, `hooks-core`, `hooks-session`, `hooks-permission`,
-`hooks-tool`, `hooks-events`, `setup`). It
+`evidence`, `fingerprint`, `gates`, `gates-common`, `gates-dispatch`,
+`gates-plan`, `tool-policy`, `delivery`, `hooks-core`, `hooks-session`,
+`hooks-permission`, `hooks-tool`, `hooks-events`, `setup`). It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
 into the parent session at runtime by the plugin (from `src/policy.ts`

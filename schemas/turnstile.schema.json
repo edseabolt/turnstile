@@ -2,10 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/edseabolt/turnstile/schemas/turnstile.schema.json",
   "title": "OpenCode turnstile configuration",
-  "description": "Schema for ~/.config/opencode/turnstile.json. Every key is optional and falls back to the code defaults in src/config.ts; a missing key is never an error. The $schema key itself is silently ignored at load (it is the editor convention pointing at this file). Markers and regex sources (gateMarker, verdictMarker, evidencePattern, the toolPolicy/gitGates regex lists, commitFormat) are strings; their compile check happens at merge time, not here.",
+  "description": "Schema for ~/.config/opencode/turnstile.json. Every key is optional and falls back to the code defaults in src/config.ts; a missing key is never an error. The $schema key itself is silently ignored at load (it is the editor convention pointing at this file). Markers and regex sources (gateMarker, verdictMarker, evidencePattern, the toolPolicy/gitGates regex lists, commitFormat) are strings; evidencePattern, the denylists, and commitFormat are compiled and checked at merge time, gateMarker/verdictMarker compile at setup with a journaled fallback on a bad source — none are validated here.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor convention pointing at this file; silently ignored at load (not a turnstile key)."
+    },
     "metricsDir": {
       "type": "string",
       "description": "Directory for both telemetry files; must be an absolute path (not expanded). Computed at load time when omitted."
@@ -72,7 +76,7 @@
     },
     "waiverMarker": {
       "type": "string",
-      "description": "Literal marker that waives the reviewer gate when in the prompt (default USER WAIVER:)."
+      "description": "Literal marker that, appearing in the user's OWN prompt, waives gates: unscoped (no agent names in the words) it covers every gate; naming configured agent stages scopes it to those stages' gates (default USER WAIVER:)."
     },
     "approvalMarker": {
       "type": "string",

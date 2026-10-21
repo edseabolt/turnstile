@@ -184,7 +184,7 @@ test("unit: mixed-kind text applies the authorized kind and suppresses the other
 // Wiring: end-to-end through a fake host.
 // ---------------------------------------------------------------------------
 
-/** Issue repro: a reviewer child's quoted `GATE: PASS` flips nothing and is
+/** Repro: a reviewer child's quoted `GATE: PASS` flips nothing and is
  *  journaled as exactly one `type:"suppressed"`; its own verdict still applies. */
 test("wiring: a reviewer child's streamed gate is suppressed but its verdict applies", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
