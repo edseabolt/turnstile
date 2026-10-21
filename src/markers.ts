@@ -134,6 +134,25 @@ export function compileMarkerRegex(
 }
 
 /**
+ * Computes the floor bound (in chars) for the streamed-marker sliding
+ * window, from the *effective* compiled marker regex sources. A window
+ * shorter than a complete marker cannot reassemble a marker split across
+ * `session.text.delta` chunks, so the bound must cover at least the sum of
+ * both sources (either regex alone then gets ≥2× slack over its own source
+ * length); the 512 floor preserves the historical "comfortably longer"
+ * heuristic for short (default) sources, so the default-config window is
+ * unchanged. This is a floor heuristic covering the identified failure mode
+ * (a long literal prefix), not a hard guarantee: a source with quantifier
+ * expansion (e.g. `\d+`) can still match text longer than its source length.
+ * @param gateSource The effective compiled GATE marker regex source.
+ * @param verdictSource The effective compiled VERDICT marker regex source.
+ * @returns The window bound in chars (never below 512).
+ */
+export function deltaWindowFloorChars(gateSource: string, verdictSource: string): number {
+  return Math.max(512, gateSource.length + verdictSource.length)
+}
+
+/**
  * Escapes one space-separated word of a marker literal for embedding in a
  * RegExp source, neutralizing the metacharacters `[.*+?^${}()|[\]\\]` so a
  * custom literal cannot throw at compile time.
@@ -192,13 +211,33 @@ export function findMarkerNearMisses(
 }
 
 /**
+ * Renders one model-facing diagnostic block: a fixed header, one line per
+ * entry up to `maxLines`, and a tail naming the hidden remainder past
+ * `maxLines` (the journal holds the full list, so the tail always points at
+ * it). Pure and side-effect free (throws nothing); both diagnostic surfaces
+ * (`formatNearMissDiagnostics` here and `formatConfigWarnings` in
+ * `src/config.ts`) are thin wrappers over this shared renderer, keeping only
+ * their header and line format divergent.
+ * @param header The first line of the block (caller-specific wording).
+ * @param lines The entry lines to render (first-seen order).
+ * @param maxLines Maximum entry lines before the truncation tail.
+ * @returns The joined block, with the truncation tail only when `lines`
+ *     exceeds `maxLines`.
+ */
+export function formatDiagnosticBlock(header: string, lines: string[], maxLines: number): string {
+  const shown = lines.slice(0, maxLines)
+  const tail = lines.length > maxLines ? `\n(${lines.length - maxLines} more; see the journal)` : ""
+  return [header, ...shown].join("\n") + tail
+}
+
+/**
  * Renders marker near-miss hits as a compact, model-facing block for the
  * prompt-admission surfacing in `src/setup.ts`. Pure and side-effect free
- * (throws nothing), mirroring `formatConfigWarnings`: a fixed header carries
- * the count and the journal path, one `- ` line per hit up to `maxLines`, and
- * a tail naming the hidden remainder past `maxLines` (the journal holds every
- * hit). The exact configured literal is named on each line so the model can
- * retry with the byte-exact string; nothing here moves a gate.
+ * (throws nothing): a fixed header carries the count and the journal path,
+ * one `- ` line per hit up to `maxLines`, and a tail naming the hidden
+ * remainder past `maxLines` (the journal holds every hit) — all rendered by
+ * `formatDiagnosticBlock`. The exact configured literal is named on each line
+ * so the model can retry with the byte-exact string; nothing here moves a gate.
  * @param hits The near-miss hits to render (first-seen order).
  * @param journalPath Absolute path of the JSONL journal (named in the header).
  * @param maxLines Maximum hit lines before the truncation tail (default 3).
@@ -210,12 +249,10 @@ export function formatNearMissDiagnostics(
   maxLines = 3,
 ): string {
   const header = `[turnstile] marker: ${hits.length} near-miss marker(s) — the strict literal is required (journal: ${journalPath}):`
-  const shown = hits.slice(0, maxLines)
-  const tail = hits.length > maxLines ? `\n(${hits.length - maxLines} more; see the journal)` : ""
-  const lines = shown.map(
+  const lines = hits.map(
     (h) => `- found "${h.found}" — the ${h.label} marker is "${h.literal}" (exact string)`,
   )
-  return [header, ...lines].join("\n") + tail
+  return formatDiagnosticBlock(header, lines, maxLines)
 }
 
 /**
