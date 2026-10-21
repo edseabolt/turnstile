@@ -180,6 +180,8 @@ export interface TurnstileContext {
   surfaceNearMissDiagnostics(event: ToolHookEvent): void
   /** Seeds (or refreshes) a child session's emitter agent. */
   seedEmitter(sessionID: string, agent: string): void
+  /** Returns the session's resolved emitter agent, or "" when unresolved. */
+  emitterAgent(sessionID: string): string
   /** Returns a per-kind authority predicate for the session's emitter. */
   markerKindAllowed(sessionID: string): (kind: "gate" | "verdict") => boolean
   /** True when a live (unexpired) awaiting-plan-ask latch exists. */
@@ -253,6 +255,8 @@ export interface TurnstileContext {
   applyPolicyResult(parent: string, event: ToolHookEvent, delivery: Delivery, agent: string): void
   /** Attributes a plan-reviewer result to the parent's plan-approval gate. */
   attributePlanVerdict(child: string, output: string): Promise<void>
+  /** Credits a reviewer APPROVE onto the parent bucket (ensemble-gated). */
+  creditReviewApproval(child: string, markerEvents: MarkerEvent[]): void
   /** Prologue for a task/subagent dispatch. */
   handleTaskDispatch(event: ToolHookEvent): Promise<void>
   /** Guard-and-journal section of a task dispatch. */
@@ -765,6 +769,19 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Reads the emitter-authority cache for a session: the resolved agent
+   * name, or "" when the session's agent was never resolved. Pure read
+   * (no LRU promotion); the delivery layer consults it as the fallback for
+   * a delivery whose dispatch input names no agent, and the authority gate
+   * and the suppressed-credit journal read it for the same decision.
+   * @param sessionID The session ID to read.
+   * @returns The resolved agent name, or "" when unresolved.
+   */
+  function emitterAgent(sessionID: string): string {
+    return sessionAgents.get(sessionID) ?? ""
+  }
+
+  /**
    * Emits a predicate answering whether a gate/verdict kind is authoritative
    * for a session's emitter agent. A gate flips only for `test-runner`; a
    * verdict only for `reviewer`/`plan-reviewer` — each also required to be in
@@ -776,7 +793,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * @returns A per-kind authority predicate.
    */
   function markerKindAllowed(sessionID: string): (kind: "gate" | "verdict") => boolean {
-    const agent = sessionAgents.get(sessionID) ?? ""
+    const agent = emitterAgent(sessionID)
     return (kind) => {
       if (agent === "" || !config.agents.bareOutput.includes(agent)) return false
       if (kind === "gate") return agent === config.agents.testRunner
@@ -1359,6 +1376,31 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Reviewer-APPROVE credit (landing-gate release signal): sets the child's
+   * parent-bucket `hasReviewApprove` when the delivery's first-sight marker
+   * events carry a reviewer `VERDICT: APPROVE` and the parent's review
+   * ensemble is complete. The credit fires only on a first-sight APPROVE
+   * event surfaced by task-result parsing (streaming never credits: a
+   * denied or unseeded observation is suppressed and never returned), and
+   * it lands on the parent bucket via `ledger.parentOf(child)` — the caller
+   * awaits the child→parent edge for deliveries whose dispatch input names
+   * no agent, so a background dispatch credits the parent, not the
+   * unregistered child. An incomplete ensemble journals the refusal (and a
+   * `refusedApprove:true` stamp) through `reviewEnsembleComplete` and leaves
+   * the gate red. Never throws.
+   * @param child The raw child session ID that delivered the verdict.
+   * @param markerEvents The first-sight authoritative marker events parsed
+   *     from the delivery text (suppressed events are already journaled and
+   *     excluded).
+   */
+  function creditReviewApproval(child: string, markerEvents: MarkerEvent[]): void {
+    if (!markerEvents.some((e) => e.kind === "verdict" && e.marker.includes("APPROVE"))) return
+    const parent = ledger.parentOf(child)
+    if (!gates.reviewEnsembleComplete(parent, ledger)) return
+    ledger.state(parent).hasReviewApprove = true
+  }
+
+  /**
    * Attributes a plan-reviewer result to the parent's plan-approval gate,
    * ensuring the journaled `plan` entry's `raw` is always an actual child
    * session ID (never the parent `sessionID`):
@@ -1807,7 +1849,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
           type: "suppressed",
           sessionID,
           raw: sessionID,
-          agent: sessionAgents.get(sessionID) ?? "",
+          agent: emitterAgent(sessionID),
           kind: event.kind,
           marker: event.marker,
           source,
@@ -2207,6 +2249,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     recordDispatch,
     surfaceNearMissDiagnostics,
     seedEmitter,
+    emitterAgent,
     markerKindAllowed,
     hasLiveAwaitingAsk,
     hasLiveLandingAsk,
@@ -2230,6 +2273,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     prependPolicy,
     applyPolicyResult,
     attributePlanVerdict,
+    creditReviewApproval,
     handleTaskDispatch,
     guardedTaskDispatch,
     handleBashDispatch,

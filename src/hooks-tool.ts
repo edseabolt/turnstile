@@ -84,9 +84,12 @@ export function createToolHooks(ctx: TurnstileContext): {
    * classified once (marker parsing, bare-output check, and policy
    * injection all read the same classified child + text), seeds the
    * emitter-authority source, awaits the child→parent edge for
-   * plan-reviewer/test-runner deliveries, parses the markers, captures the
-   * reviewer APPROVE (landing-gate release signal, credit-gated by the
-   * ensemble) and the plan verdict, journals the bare-output violation
+   * plan-reviewer/test-runner deliveries and for deliveries whose dispatch
+   * input names no agent, parses the markers, captures the reviewer APPROVE
+   * (landing-gate release signal, credit-gated by the ensemble) and the plan
+   * verdict (both attributed on the delivery agent, resolved through the
+   * child→parent edge + host session record when the dispatch input is
+   * silent), journals the bare-output violation
    * (plan-reviewer-scoped suppression), and injects the orchestrator
    * policy; a read delivery journals the corrected parent count and injects
    * the once-per-task warn prefix; a bash/shell delivery journals the
@@ -125,14 +128,30 @@ export function createToolHooks(ctx: TurnstileContext): {
         // child's markers land authoritatively even when every streaming
         // seed failed (fail-closed at streaming, authoritative at delivery).
         ctx.seedEmitter(child, agent)
-        // Plan-reviewer and test-runner delivery paths only: await the
-        // child→parent edge before marker parsing and attribution, so a
-        // background dispatch whose edge resolves late (or only via
-        // session.get) still attributes. Every other agent keeps today's
-        // byte-identical sync ordering.
-        if (agent === ctx.config.agents.planReviewer || agent === ctx.config.agents.testRunner) {
+        // Plan-reviewer, test-runner, and empty-agent deliveries only:
+        // await the child→parent edge before marker parsing and
+        // attribution, so a background dispatch whose edge resolves late
+        // (or only via session.get) still attributes. The empty-agent arm
+        // is the v2 structured / background result that omits
+        // input.agent: without the edge + emitter resolved first, the
+        // child's verdict is denied authority and the credit would
+        // attribute to the unregistered child. Every other agent keeps
+        // today's byte-identical sync ordering.
+        if (
+          agent === ctx.config.agents.planReviewer ||
+          agent === ctx.config.agents.testRunner ||
+          agent === ""
+        ) {
           await ctx.resolveParent(child)
         }
+        // Gate-moving attribution (reviewer credit, plan verdict) resolves
+        // the delivery agent through the child→parent edge + host session
+        // record when the dispatch input names none; the raw agent stays
+        // the signal for the cosmetic status tail / policy injection and
+        // the fail-closed emitter seed above (byte-identity + documented
+        // seeding semantics), and for the bare-output check (not
+        // gate-moving: nothing releases because of it).
+        const effectiveAgent = agent || ctx.emitterAgent(child)
         // Mark the resolved parent live: covers both host
         // delivery shapes (parent-keyed and child-keyed). A genuinely
         // unresolved child delivery self-marks, protecting one extra
@@ -148,30 +167,24 @@ export function createToolHooks(ctx: TurnstileContext): {
         // task-result delivery whose first-sight verdict is APPROVE sets
         // hasReviewApprove — the landing gate's release signal. Mirrors
         // the plan-reviewer verdict lifecycle but for the landing gate.
-        // Streaming child text does NOT set it: this branch runs only on
-        // task-result delivery, keeping the stream attribution-neutral
-        // (a streamed verdict in child text can't release the landing
-        // gate).
-        if (agent === ctx.config.agents.reviewer) {
-          const approved = markerEvents.some(
-            (e) => e.kind === "verdict" && e.marker.includes("APPROVE"),
-          )
-          if (approved) {
-            // Under reviewEnsemble:enforce the review is credited only
-            // once two unwaived reviewer dispatches were counted this
-            // task; an incomplete ensemble journals the refusal (and a
-            // suppressed-credit stamp) and leaves the landing gate red.
-            const parent = ctx.ledger.parentOf(child)
-            if (ctx.gates.reviewEnsembleComplete(parent, ctx.ledger))
-              ctx.ledger.state(parent).hasReviewApprove = true
-          }
+        // The agent is the edge/emitter-resolved effectiveAgent: a v2
+        // structured or background result may omit input.agent, and the
+        // awaited resolveParent above has already seeded the child's
+        // emitter from the host session record. Streaming child text does
+        // NOT set it: this branch runs only on task-result delivery,
+        // keeping the stream attribution-neutral (a streamed verdict in
+        // child text can't release the landing gate).
+        if (effectiveAgent === ctx.config.agents.reviewer) {
+          ctx.creditReviewApproval(child, markerEvents)
         }
         // Plan-approval attribution: only a plan-reviewer result moves
-        // the plan gate. See attributePlanVerdict — `raw` is always an
-        // actual child session ID, never the parent; an unattributable,
-        // marker-less parent-keyed re-fire journals type:"error" and
-        // leaves the gate untouched (never clobbers a live approval).
-        if (agent === ctx.config.agents.planReviewer) {
+        // the plan gate (on the resolved effectiveAgent, same reason as
+        // the reviewer credit above). See attributePlanVerdict — `raw` is
+        // always an actual child session ID, never the parent; an
+        // unattributable, marker-less parent-keyed re-fire journals
+        // type:"error" and leaves the gate untouched (never clobbers a
+        // live approval).
+        if (effectiveAgent === ctx.config.agents.planReviewer) {
           await ctx.attributePlanVerdict(child, output)
         }
         // The bare-output suppression — a streamed verdict in the
