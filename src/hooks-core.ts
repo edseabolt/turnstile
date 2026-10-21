@@ -23,6 +23,7 @@ import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gate
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import { createToolPolicy, isPushLanding, type ToolPolicy } from "./tool-policy.ts"
 import { formatPipelineStatus } from "./state.ts"
+import { orchestratorPolicyFor } from "./policy.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
 import {
@@ -276,6 +277,10 @@ export interface TurnstileContext {
 export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   const env = opts.env ?? process.env
   const { config, warnings: configWarnings } = loadConfig(env, opts.config)
+  // The policy head is built once per plugin load from the resolved config so
+  // the injected prose (caps, markers, journal paths) matches the mechanical
+  // enforcement; it is constant for the load's lifetime.
+  const policyText = orchestratorPolicyFor(config)
   const journaler: Journaler = createJournaler({
     metricsDir: config.metricsDir,
     trace: config.trace,
@@ -1295,7 +1300,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     const policyState = ledger.state(parent)
     if (policyState.policyInjected) return
     try {
-      prependDeliveryText(event, delivery)
+      prependDeliveryText(event, delivery, policyText)
       policyState.policyInjected = true
       journalPolicy(parent, true)
     } catch (e) {

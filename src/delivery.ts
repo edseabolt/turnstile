@@ -8,7 +8,6 @@
  * stream surfaces share, so every reader uses one extraction rule.
  */
 
-import { ORCHESTRATOR_POLICY } from "./policy.ts"
 import type { PromptHookProperties, ToolHookEvent, ToolResult } from "./types.ts"
 
 /**
@@ -193,18 +192,21 @@ export function mutateDeliveryText(
 }
 
 /**
- * Prepends the orchestrator policy to the classified delivery's
+ * Prepends the orchestrator policy head to the classified delivery's
  * model-visible text: a thin caller of `mutateDeliveryText` inserting the
- * policy head at the front. Byte-identical to the historical prepend for a
- * delivery that gains no status tail.
+ * caller-supplied policy text at the front (the caller builds it once per
+ * plugin load from the resolved config, so the head always matches the
+ * mechanical caps).
  * @param event The execute.after payload whose result is mutated.
  * @param delivery The classified delivery (string or structured only).
+ * @param policy The policy head text to prepend.
  */
 export function prependDeliveryText(
   event: ToolHookEvent,
   delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+  policy: string,
 ): void {
-  mutateDeliveryText(event, delivery, (text) => ORCHESTRATOR_POLICY + "\n" + text, "prepend")
+  mutateDeliveryText(event, delivery, (text) => policy + "\n" + text, "prepend")
 }
 
 /**

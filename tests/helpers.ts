@@ -8,6 +8,8 @@ import * as fs from "node:fs"
 import assert from "node:assert/strict"
 import * as os from "node:os"
 import * as path from "node:path"
+import { defaultConfig, mergeConfig } from "../src/config.ts"
+import { orchestratorPolicyFor } from "../src/policy.ts"
 import type { Host } from "../src/types.ts"
 
 // Fake-host payloads are intentionally loose (typed `any`); assertions
@@ -257,4 +259,20 @@ export async function waitUntil(predicate: () => boolean, ms = 1000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.ok(predicate(), "waitUntil: condition not met within timeout")
+}
+
+/**
+ * Builds the orchestrator policy text a test can expect to be prepended for
+ * the given injected config overrides: the same builder the plugin runs at
+ * setup time (`orchestratorPolicyFor`) over the code defaults merged with
+ * the overrides through the repo's layered-resolution primitive
+ * (`mergeConfig`), so tests never re-implement config resolution or the
+ * policy text itself.
+ * @param overrides Injected config overrides, the same shape as a test
+ *     boot's `config` patch (typically includes a temp `metricsDir`).
+ * @returns The policy text the plugin would prepend for that config.
+ */
+export function expectedPolicy(overrides: Record<string, unknown> = {}): string {
+  const { config } = mergeConfig(defaultConfig({}), overrides)
+  return orchestratorPolicyFor(config)
 }

@@ -47,7 +47,7 @@ export const CANONICAL_VERDICT_MARKER = "VERDICT: APPROVE crit=0 high=0 med=0 lo
  * `VERDICT_RE` match a case-sensitive uppercase `GATE:`/`VERDICT:` token, so
  * lowercasing the token (leaving the rest of the marker verbatim) makes any
  * embedded value unparsable while keeping it legible to the orchestrator. This
- * is the same rationale the ORCHESTRATOR_POLICY placeholders encode: injected
+ * is the same rationale the orchestrator-policy placeholders encode: injected
  * context that must not be mistaken for a real marker (see `policy.ts`).
  * @param marker The raw marker text, e.g. `GATE: PASS tests=2 passed=2 failed=0`.
  * @returns The same text with `GATE:`/`VERDICT:` lowercased, or the input

@@ -5,7 +5,8 @@
  * `result.output`) or v2 structured (parent-keyed event, child via
  * `metadata.sessionID`, model-visible text in `result.content`) — attributes
  * it through the child→parent edge (`childToParent`), and prepends
- * `ORCHESTRATOR_POLICY` to the delivery's model-visible text once per task.
+ * the injected policy (built from the resolved config) to the delivery's
+ * model-visible text once per task.
  * Cases: exact-once prepend + repeat no-op + journal (`injected:true`);
  * ordinary-tool exclusion and the journaled conservative skip (config-known
  * name with no resolvable edge); per-task reset re-injection; fail-open on a
@@ -44,13 +45,13 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
-import { ORCHESTRATOR_POLICY } from "../src/policy.ts"
 import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers.ts"
 import { newState } from "../src/state.ts"
 import { createLedger } from "../src/ledger.ts"
 import {
   callSession,
   callTool,
+  expectedPolicy,
   isolatedEnv,
   journalEntries,
   makeFakeHost,
@@ -68,11 +69,12 @@ const SUBAGENT_NAMES = [
   "debugger",
 ]
 
-/** Boots the plugin over a fake host with a temp metrics dir. */
+/** Boots the plugin over a fake host with a temp metrics dir; `policy` is
+ *  the text the boot's resolved config interpolates. */
 async function boot(
   config: Record<string, any> = {},
   sessionRecords?: Map<string, any>,
-): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string }> {
+): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string; policy: string }> {
   const metricsDir = tmpDir()
   const h = makeFakeHost({ sessionRecords })
   const setup = turnstile(h.host, {
@@ -80,7 +82,7 @@ async function boot(
     config: { metricsDir, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
-  return { h, dispose, metricsDir }
+  return { h, dispose, metricsDir, policy: expectedPolicy({ metricsDir, ...config }) }
 }
 
 /**
@@ -104,28 +106,34 @@ async function resolveEdgeViaCreated(
   )
 }
 
-/** How many times the policy block appears in a (possibly prepended) string. */
-function countPolicy(text: string): number {
-  return text.split(ORCHESTRATOR_POLICY).length - 1
+/**
+ * How many times the policy block appears in a (possibly prepended) string.
+ * @param text The delivery text to count in.
+ * @param policy The injected policy text to count.
+ * @returns The number of occurrences.
+ */
+function countPolicy(text: string, policy: string): number {
+  return text.split(policy).length - 1
 }
 
 /**
  * Counts the policy block across a model-visible `content` value: the joined
  * text of a content block array, or the string itself.
  * @param content The delivery's `result.content` (string, block array, or absent).
+ * @param policy The injected policy text to count.
  * @returns The number of policy blocks.
  */
-function policyCountOf(content: unknown): number {
+function policyCountOf(content: unknown, policy: string): number {
   const text = Array.isArray(content)
     ? content.map((block: { text?: unknown }) => String(block?.text ?? "")).join("")
     : String(content)
-  return countPolicy(text)
+  return countPolicy(text, policy)
 }
 
 /** 1. Prepend happens once, a repeat within the same task adds nothing, and
  *  the event carries the policy. */
 test("injection: parent task result prepended once; repeat adds nothing; journal injected:true", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const event = {
       tool: "task",
@@ -135,11 +143,15 @@ test("injection: parent task result prepended once; repeat adds nothing; journal
     }
     await callTool(h, "execute.after", event)
     const once = String(event.result.output)
-    assert.ok(once.startsWith(ORCHESTRATOR_POLICY), "the output is policy-prefixed")
-    assert.equal(countPolicy(once), 1, "the policy appears exactly once")
+    assert.ok(once.startsWith(policy), "the output is policy-prefixed")
+    assert.equal(countPolicy(once, policy), 1, "the policy appears exactly once")
     // Repeat within the same task: the flag makes it a no-op.
     await callTool(h, "execute.after", event)
-    assert.equal(countPolicy(String(event.result.output)), 1, "a second call prepends nothing")
+    assert.equal(
+      countPolicy(String(event.result.output), policy),
+      1,
+      "a second call prepends nothing",
+    )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 1, "exactly one policy journal entry")
     assert.equal(policies[0]!.injected, true, "the entry reports injected:true")
@@ -153,7 +165,7 @@ test("injection: parent task result prepended once; repeat adds nothing; journal
  *  resolvable edge journals the conservative skip; a config-unknown name
  *  still injects (the documented self-keyed residual). */
 test("injection: ordinary tools and config-named subagents are excluded", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     // Ordinary tools with any agent value: no policy, no journal entry.
     for (const tool of ["shell", "read"]) {
@@ -196,7 +208,7 @@ test("injection: ordinary tools and config-named subagents are excluded", async 
     }
     await callTool(h, "execute.after", untracked)
     assert.ok(
-      String(untracked.result.output).startsWith(ORCHESTRATOR_POLICY),
+      String(untracked.result.output).startsWith(policy),
       "a config-unknown subagent name is treated as primary-session prose",
     )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
@@ -222,20 +234,17 @@ test("injection: ordinary tools and config-named subagents are excluded", async 
 
 /** 3. A task reset via the prompt hook re-enables injection for the next task. */
 test("injection: per-task prompt reset re-injects on the next task delivery", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const first = { tool: "task", sessionID: "p1", result: { output: "first" } }
     await callTool(h, "execute.after", first)
-    assert.ok(String(first.result.output).startsWith(ORCHESTRATOR_POLICY))
+    assert.ok(String(first.result.output).startsWith(policy))
     // A new user prompt resets the task state (flag cleared).
     await callSession(h, "prompt", { sessionID: "p1" })
     const second = { tool: "task", sessionID: "p1", result: { output: "second" } }
     await callTool(h, "execute.after", second)
-    assert.ok(
-      String(second.result.output).startsWith(ORCHESTRATOR_POLICY),
-      "re-injected after reset",
-    )
-    assert.equal(countPolicy(String(second.result.output)), 1, "re-injected exactly once")
+    assert.ok(String(second.result.output).startsWith(policy), "re-injected after reset")
+    assert.equal(countPolicy(String(second.result.output), policy), 1, "re-injected exactly once")
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 2, "one entry per task delivery")
     assert.ok(policies.every((p) => p.injected === true))
@@ -310,13 +319,14 @@ test("injection: an absent result stays silent; an unrecognized result shape jou
 /** 6. The injected policy is marker-safe: every <n>-substituted template
  *  parses under its canonical regex (mirroring check-markers.mjs), while the
  *  raw placeholder text never parses as a marker. */
-test("injection: ORCHESTRATOR_POLICY templates parse only after <n>-substitution (echo-safe)", async () => {
+test("injection: policy templates parse only after <n>-substitution (echo-safe)", async () => {
+  const policy = expectedPolicy()
   // Mirror scripts/check-markers.mjs: strip the `g` flag for stateful .test,
   // extract each backticked GATE:/VERDICT: template, substitute <n>→1, and
   // assert it parses under its canonical regex.
   const gateRe = new RegExp(GATE_RE.source)
   const verdictRe = new RegExp(VERDICT_RE.source)
-  const templates = [...ORCHESTRATOR_POLICY.matchAll(/`((?:GATE|VERDICT): [^\n`]*)`/g)]
+  const templates = [...policy.matchAll(/`((?:GATE|VERDICT): [^\n`]*)`/g)]
   assert.ok(templates.length >= 1, "the policy carries GATE/VERDICT templates")
   for (const m of templates) {
     const line = m[1]!.replaceAll("<n>", "1")
@@ -325,7 +335,7 @@ test("injection: ORCHESTRATOR_POLICY templates parse only after <n>-substitution
   }
   // Echo-safety: the raw placeholder text never parses into a marker on any
   // session text (the parse path uses the canonical regexes directly).
-  const echoed = parseGateMarkers(newState(), ORCHESTRATOR_POLICY, GATE_RE, VERDICT_RE)
+  const echoed = parseGateMarkers(newState(), policy, GATE_RE, VERDICT_RE)
   assert.equal(echoed.length, 0, "the raw placeholder text never parses into a marker")
 })
 
@@ -333,7 +343,7 @@ test("injection: ORCHESTRATOR_POLICY templates parse only after <n>-substitution
  *  registered edge and journals under the resolved parent — the
  *  name heuristic no longer excludes edge-resolved deliveries. */
 test("injection: subagent-tool delivery with a registered edge injects, journaled under the parent", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
     const event = {
@@ -344,8 +354,8 @@ test("injection: subagent-tool delivery with a registered edge injects, journale
     }
     await callTool(h, "execute.after", event)
     const out = String(event.result.output)
-    assert.ok(out.startsWith(ORCHESTRATOR_POLICY), "the parent-facing delivery is policy-prefixed")
-    assert.equal(countPolicy(out), 1, "the policy appears exactly once")
+    assert.ok(out.startsWith(policy), "the parent-facing delivery is policy-prefixed")
+    assert.equal(countPolicy(out, policy), 1, "the policy appears exactly once")
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 1, "exactly one policy journal entry")
     assert.equal(policies[0]!.injected, true, "the entry reports injected:true")
@@ -358,7 +368,7 @@ test("injection: subagent-tool delivery with a registered edge injects, journale
 /** 8. The task-tool shape with event.agent set injects once; a repeat
  *  delivery within the same task is silent (once-flag). */
 test("injection: task-tool delivery with event.agent set injects once; repeat is silent", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
     const event = {
@@ -368,12 +378,13 @@ test("injection: task-tool delivery with event.agent set injects once; repeat is
       result: { output: "plan body" },
     }
     await callTool(h, "execute.after", event)
-    assert.ok(
-      String(event.result.output).startsWith(ORCHESTRATOR_POLICY),
-      "prepended on first delivery",
-    )
+    assert.ok(String(event.result.output).startsWith(policy), "prepended on first delivery")
     await callTool(h, "execute.after", event)
-    assert.equal(countPolicy(String(event.result.output)), 1, "a second call prepends nothing")
+    assert.equal(
+      countPolicy(String(event.result.output), policy),
+      1,
+      "a second call prepends nothing",
+    )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 1, "one policy journal entry")
     assert.equal(policies[0]!.injected, true)
@@ -387,7 +398,7 @@ test("injection: task-tool delivery with event.agent set injects once; repeat is
  *  in the same task is not re-prepended, and a fresh parent prompt re-arms
  *  both children's deliveries. */
 test("injection: the once-flag keys on the resolved parent across sibling children", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
     const first = {
@@ -398,7 +409,7 @@ test("injection: the once-flag keys on the resolved parent across sibling childr
     }
     await callTool(h, "execute.after", first)
     assert.ok(
-      String(first.result.output).startsWith(ORCHESTRATOR_POLICY),
+      String(first.result.output).startsWith(policy),
       "the first child's delivery is prepended",
     )
     await resolveEdgeViaCreated(h, "c2", "p1", metricsDir)
@@ -410,7 +421,7 @@ test("injection: the once-flag keys on the resolved parent across sibling childr
     }
     await callTool(h, "execute.after", second)
     assert.equal(
-      countPolicy(String(second.result.output)),
+      countPolicy(String(second.result.output), policy),
       0,
       "the sibling child's delivery is not prepended (parent flag set)",
     )
@@ -428,7 +439,7 @@ test("injection: the once-flag keys on the resolved parent across sibling childr
     }
     await callTool(h, "execute.after", third)
     assert.ok(
-      String(third.result.output).startsWith(ORCHESTRATOR_POLICY),
+      String(third.result.output).startsWith(policy),
       "re-armed after the parent's prompt reset",
     )
     const policies2 = journalEntries(metricsDir).filter((l) => l.type === "policy")
@@ -445,7 +456,7 @@ test("injection: the once-flag keys on the resolved parent across sibling childr
  *  conservative skip. */
 test("injection: a late session.get edge injects; an unresolvable known name journals the skip", async () => {
   const records = new Map([["c9", { parentID: "p1", agent: "reviewer" }]])
-  const { h, dispose, metricsDir } = await boot({}, records)
+  const { h, dispose, metricsDir, policy } = await boot({}, records)
   try {
     const event = {
       tool: "subagent",
@@ -455,7 +466,7 @@ test("injection: a late session.get edge injects; an unresolvable known name jou
     }
     await callTool(h, "execute.after", event)
     assert.ok(
-      String(event.result.output).startsWith(ORCHESTRATOR_POLICY),
+      String(event.result.output).startsWith(policy),
       "injected once the session.get edge resolves",
     )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
@@ -526,7 +537,7 @@ function structured(
  *  object stays object-identical, the journal keys on the resolved parent,
  *  and a repeat delivery re-appends the tail but prepends nothing. */
 test("injection: a structured delivery injects into result.content, leaving result.output untouched", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const status =
       "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
@@ -543,11 +554,7 @@ test("injection: a structured delivery injects into result.content, leaving resu
       "the content array gains the policy head and the status tail",
     )
     assert.equal(content[0].type, "text", "the prepended head is a text block")
-    assert.equal(
-      content[0].text,
-      ORCHESTRATOR_POLICY + "\n",
-      "the prepended block carries the policy",
-    )
+    assert.equal(content[0].text, policy + "\n", "the prepended block carries the policy")
     assert.equal(content[1], blockBefore, "the original block sits between head and tail")
     assert.equal(
       content[1].text,
@@ -567,7 +574,7 @@ test("injection: a structured delivery injects into result.content, leaving resu
     assert.equal(policies[0]!.injected, true, "the entry reports injected:true")
     assert.equal(policies[0]!.sessionID, "p1", "keyed under the resolved parent")
     await callTool(h, "execute.after", ev)
-    assert.equal(policyCountOf(ev.result.content), 1, "a repeat delivery prepends nothing")
+    assert.equal(policyCountOf(ev.result.content, policy), 1, "a repeat delivery prepends nothing")
     assert.equal(
       journalEntries(metricsDir).filter((l) => l.type === "policy").length,
       1,
@@ -582,15 +589,15 @@ test("injection: a structured delivery injects into result.content, leaving resu
  *  delivery that injects makes a following structured delivery for a
  *  sibling child of the same parent a silent no-op. */
 test("injection: the once-flag holds across delivery shapes within one task", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
     const v1 = { tool: "task", sessionID: "p1", result: { output: "v1 body" } }
     await callTool(h, "execute.after", v1)
-    assert.ok(String(v1.result.output).startsWith(ORCHESTRATOR_POLICY), "the v1 delivery injects")
+    assert.ok(String(v1.result.output).startsWith(policy), "the v1 delivery injects")
     const ev = structured("c1", "structured body")
     await callTool(h, "execute.after", ev)
-    assert.equal(policyCountOf(ev.result.content), 0, "the structured delivery is silent")
+    assert.equal(policyCountOf(ev.result.content, policy), 0, "the structured delivery is silent")
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
     assert.equal(policies.length, 1, "still exactly one policy entry")
     assert.equal(policies[0]!.injected, true)
@@ -810,12 +817,12 @@ test("injection: the unknown-shape descriptor covers every result branch", async
  *  result on the parent's own tool call, so event.agent is the parent's
  *  name), with no agent-name skip journaled. */
 test("injection: the name guard is inert on a structured delivery with an unresolvable edge", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const ev = structured("cX", "body", "planner")
     await callTool(h, "execute.after", ev)
     assert.ok(
-      ev.result.content[0].text.startsWith(ORCHESTRATOR_POLICY),
+      ev.result.content[0].text.startsWith(policy),
       "injected despite the config-known name",
     )
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
@@ -945,7 +952,7 @@ test("injection: a string delivery with a metadata child keys the violation on t
  *  the per-delivery status tail is appended after the wrapper, and the
  *  `result.output` object stays object-identical. */
 test("injection: a structured delivery with string content prefixes the policy into the string", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const status =
       "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
@@ -956,13 +963,13 @@ test("injection: a structured delivery with string content prefixes the policy i
     await callTool(h, "execute.after", ev)
     const content = ev.result.content
     assert.equal(typeof content, "string", "content stays a string")
-    assert.ok(content.startsWith(ORCHESTRATOR_POLICY), "the string is policy-prefixed")
+    assert.ok(content.startsWith(policy), "the string is policy-prefixed")
     assert.ok(
       content.includes(String(contentBefore)),
       "the wrapper text is preserved between head and tail",
     )
     assert.ok(content.endsWith("\n" + status), "the per-delivery status tail is appended last")
-    assert.equal(policyCountOf(content), 1, "the policy appears exactly once")
+    assert.equal(policyCountOf(content, policy), 1, "the policy appears exactly once")
     assert.equal(ev.result.output, outRef, "the structured output object is object-identical")
     assert.equal(ev.result.output.output, "string content body", "its inner text is unmutated")
     const policies = journalEntries(metricsDir).filter((l) => l.type === "policy")
@@ -980,7 +987,7 @@ test("injection: a structured delivery with string content prefixes the policy i
  *  `content` is absent, so the mutation there is model-visible; the policy
  *  still lands exactly once per delivery. */
 test("injection: a structured delivery without block content mutates the output string instead", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     // Absent content: the policy lands on the structured output string.
     const ev = structured("cA", "absent content body")
@@ -988,20 +995,24 @@ test("injection: a structured delivery without block content mutates the output 
     await callTool(h, "execute.after", ev)
     assert.equal(
       ev.result.output.output,
-      ORCHESTRATOR_POLICY + "\nabsent content body",
+      policy + "\nabsent content body",
       "the output string is policy-prefixed",
     )
     assert.equal(ev.result.content, undefined, "content stays absent")
     // Repeat: the once-flag holds, so the fallback prepends exactly once.
     await callTool(h, "execute.after", ev)
-    assert.equal(policyCountOf(ev.result.output.output), 1, "the fallback prepends exactly once")
+    assert.equal(
+      policyCountOf(ev.result.output.output, policy),
+      1,
+      "the fallback prepends exactly once",
+    )
     // Present-but-odd content: the same fallback, content left untouched.
     const ev2 = structured("cB", "odd content body")
     ev2.result.content = 42
     await callTool(h, "execute.after", ev2)
     assert.equal(
       ev2.result.output.output,
-      ORCHESTRATOR_POLICY + "\nodd content body",
+      policy + "\nodd content body",
       "a non-block content falls back to the output string",
     )
     assert.equal(ev2.result.content, 42, "the odd content is left untouched")
@@ -1063,7 +1074,7 @@ test("injection: a structured marker parses from the canonical output string, no
  *  for the same parent re-appends the tail (naming the same successor) even
  *  though the policy head is not re-prepended (the once-flag holds). */
 test("injection: the status tail lands on every delivery while the head is once-per-task", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const line =
       "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
@@ -1074,10 +1085,7 @@ test("injection: the status tail lands on every delivery while the head is once-
       result: { output: "planner body" },
     }
     await callTool(h, "execute.after", first)
-    assert.ok(
-      String(first.result.output).startsWith(ORCHESTRATOR_POLICY),
-      "the first delivery carries the head",
-    )
+    assert.ok(String(first.result.output).startsWith(policy), "the first delivery carries the head")
     assert.ok(
       String(first.result.output).endsWith("\n" + line),
       "the first delivery carries the tail",
@@ -1090,7 +1098,7 @@ test("injection: the status tail lands on every delivery while the head is once-
     }
     await callTool(h, "execute.after", second)
     assert.equal(
-      countPolicy(String(second.result.output)),
+      countPolicy(String(second.result.output), policy),
       0,
       "the once-flag holds: no head re-prepended on the second delivery",
     )
@@ -1149,7 +1157,7 @@ test("injection: the status line names stages by their configured (renamed) valu
 /** 29. A non-pipeline stage agent (the debugger) renders an empty status line
  *  and gets no tail: the delivery is byte-identical to the head-only path. */
 test("injection: a non-pipeline stage agent gets no status tail (byte-identical head-only)", async () => {
-  const { h, dispose } = await boot()
+  const { h, dispose, policy } = await boot()
   try {
     const ev = {
       tool: "task",
@@ -1162,7 +1170,7 @@ test("injection: a non-pipeline stage agent gets no status tail (byte-identical 
     // assertion: a tail would extend the string past the head + body.
     assert.equal(
       String(ev.result.output),
-      ORCHESTRATOR_POLICY + "\n" + "debugged",
+      policy + "\n" + "debugged",
       "the head lands and no tail follows a non-pipeline agent",
     )
   } finally {
@@ -1210,7 +1218,7 @@ test("injection: unknown-shape deliveries journal loudly even after the once-fla
  *  pipeline-status error and never rethrows, and the independent policy-head
  *  prepend still lands. */
 test("injection: a hostile append mutation journals a pipeline-status error and the head still lands", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir, policy } = await boot()
   try {
     const ev = {
       tool: "task",
@@ -1233,7 +1241,7 @@ test("injection: a hostile append mutation journals a pipeline-status error and 
     await callTool(h, "execute.after", ev)
     assert.equal(
       String(ev.result.output),
-      ORCHESTRATOR_POLICY + "\n" + "planner body",
+      policy + "\n" + "planner body",
       "the head landed; the hostile tail did not",
     )
     const statusErr = journalEntries(metricsDir).filter(
@@ -1253,7 +1261,7 @@ test("injection: a hostile append mutation journals a pipeline-status error and 
  *  captured at classification time, and the head and tail still compose onto
  *  it — fail-open, no throw, no pipeline-status error. */
 test("injection: a string-shape output that ceases to be a string re-reads the classified text", async () => {
-  const { h, dispose } = await boot()
+  const { h, dispose, policy } = await boot()
   try {
     const tail =
       "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
@@ -1284,7 +1292,7 @@ test("injection: a string-shape output that ceases to be a string re-reads the c
     await callTool(h, "execute.after", ev)
     assert.equal(
       String(ev.result.output),
-      ORCHESTRATOR_POLICY + "\n" + "planner body\n" + tail,
+      policy + "\n" + "planner body\n" + tail,
       "the head and tail compose on the classified text, not the garbage re-read",
     )
   } finally {
@@ -1297,7 +1305,7 @@ test("injection: a string-shape output that ceases to be a string re-reads the c
  *  the mutation's re-read falls back to the classified text, and the head and
  *  tail still compose onto it — fail-open, no throw, no pipeline-status error. */
 test("injection: a structured output that ceases to be a string re-reads the classified text", async () => {
-  const { h, dispose } = await boot()
+  const { h, dispose, policy } = await boot()
   try {
     const tail =
       "PIPELINE: planner=done plan=PENDING tests=RED reviewer=0/2 next=plan-reviewer — dispatch the next agent in this same turn"
@@ -1331,8 +1339,35 @@ test("injection: a structured output that ceases to be a string re-reads the cla
     await callTool(h, "execute.after", ev)
     assert.equal(
       String(ev.result.output.output),
-      ORCHESTRATOR_POLICY + "\n" + "planner body\n" + tail,
+      policy + "\n" + "planner body\n" + tail,
       "the head and tail compose on the classified text, not the garbage re-read",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** 34. The integration seam: booting with a non-default dispatch budget makes
+ *  the delivered head carry the policy built from that same resolved config —
+ *  the injected prose matches the mechanical enforcement values. */
+test("injection: the delivered head is the policy built from the same resolved config", async () => {
+  const { h, dispose, policy } = await boot({ maxTotalDispatches: 40 })
+  try {
+    const event = {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "planner", prompt: "run" },
+      result: { output: "planner body" },
+    }
+    await callTool(h, "execute.after", event)
+    const head = String(event.result.output)
+    assert.ok(
+      policy.includes("total dispatch budget (40)"),
+      "the policy names the configured budget",
+    )
+    assert.ok(
+      head.startsWith(policy),
+      "the delivered head is the policy built from the same resolved config",
     )
   } finally {
     dispose()
