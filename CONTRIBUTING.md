@@ -21,8 +21,10 @@ tests/*.test.ts`, with 100% line/branch/function coverage enforced over
   a diagnostic, never a work queue. `bin/` and `scripts/` sit outside the gate.
 
 The test suite requires Node ≥ 22.8 (`--experimental-test-isolation` shipped in v22.8.0;
-`--experimental-strip-types` predates it); the plugin runtime itself is Node
-≥ 18.
+`--experimental-strip-types` predates it); the package declares
+`engines: { "node": ">=22.8" }`, so the runtime floor matches the test-suite
+floor even though `src/`, `bin/`, and `scripts/` use no API newer than
+Node 18.
 
 ## Repo rules
 
@@ -36,7 +38,8 @@ The test suite requires Node ≥ 22.8 (`--experimental-test-isolation` shipped i
    (no enums, namespaces, or parameter properties): the test harness runs
    the real source through `node --experimental-strip-types`.
 3. **Verified host shape:** the plugin targets the OpenCode v2
-   promise-plugin shape (`{ tool.hook, session.hook, event.subscribe }`),
+   promise-plugin shape (`{ tool.hook, session.hook, permission.hook,
+event.subscribe }` — permission registered when the host exposes it),
    verified against opencode v2.0.22. Do not assume hooks, events, or
    payload fields not already handled in `src/types.ts` without verifying
    them against a real host.

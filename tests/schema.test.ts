@@ -2,7 +2,8 @@
  * @fileoverview Schema drift defenses: `schemas/turnstile.schema.json` is a
  * hand-written editor artifact outside the coverage gate, so these tests pin
  * it to the runtime source of truth — the draft URI, the exact key sets of
- * `defaultConfig()` (top-level and nested), the per-key JSON types against
+ * `defaultConfig()` (top-level, minus the editor-convention `$schema` key,
+ * and nested), the per-key JSON types against
  * `typeof` the runtime defaults (recursively), the enum unions, and a
  * structural subset check that every example-config key has a schema property.
  * A future key-add is a one-line schema fix, surfaced by the failure message.
@@ -45,6 +46,7 @@ function assertTypesMatch(name: string, props: Record<string, SchemaNode>, runti
   )
   const rec = runtime as Record<string, unknown>
   for (const [key, node] of Object.entries(props)) {
+    if (key === "$schema") continue // editor convention, not a runtime key
     assert.ok(key in rec, `${name}.${key} exists at runtime`)
     assert.equal(
       jsType(node.type),
@@ -65,11 +67,8 @@ test("schema is draft 2020-12 with additionalProperties disabled", () => {
  *  key sets (sorted compare). */
 test("schema property names match the defaultConfig key sets exactly", () => {
   const cfg = defaultConfig({})
-  assert.deepEqual(
-    Object.keys(schema.properties).sort(),
-    Object.keys(cfg).sort(),
-    "top-level key set",
-  )
+  const schemaKeys = Object.keys(schema.properties).filter((k) => k !== "$schema")
+  assert.deepEqual(schemaKeys.sort(), Object.keys(cfg).sort(), "top-level key set")
   assert.deepEqual(
     Object.keys(schema.properties.agents!.properties!).sort(),
     Object.keys(cfg.agents).sort(),

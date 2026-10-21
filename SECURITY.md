@@ -7,8 +7,12 @@ enforces process discipline over cooperative agents; it cannot constrain a
 determined or hostile agent:
 
 - Gate markers (`GATE: PASS tests=…`, `VERDICT: …`) are parsed from plain
-  text. Any text matching the pattern flips gate state, including forged or
-  hallucinated markers.
+  text. A marker emitted by a genuine contracted agent is trusted as to
+  veracity — a hallucinated `GATE: PASS` from the real test-runner flips gate
+  state (under the default `gateEvidence:enforce` a PASS additionally needs a
+  correlating exit-0 test execution). Text from other sources — quoted,
+  echoed, streamed by the wrong agent, or from an unattributed session —
+  never flips state; it is journaled `suppressed`.
 - The waiver and approval markers (`USER WAIVER:`, `PLAN APPROVED:`) are read
   only from the user's own prompt at admission — a marker inside an
   agent-composed dispatch prompt unlocks nothing, and a prompt-channel
@@ -35,7 +39,9 @@ The plugin writes telemetry outside the repo at
 Both files default to world-readable permissions implied by the directory
 (0755/0644). Bash commands and dispatch descriptions can contain secrets,
 hostnames, and paths. Retention is bounded at ~30 MB per journal
-(1 current + 5 rotated generations × 5 MB), ~60 MB worst case.
+(1 current + 5 rotated generations × 5 MB), ~60 MB worst case across the
+two files — plus one more rotating file's worth when `trace: true` (the
+default), since `gate-events.jsonl` rotates on the same bounds.
 
 Setting `trace: false` (or `TURNSTILE_TRACE=0`) suppresses the
 human-readable trace file entirely and redacts bash command text

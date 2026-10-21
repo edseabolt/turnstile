@@ -13,17 +13,20 @@
 //                  Missing value, or a `--`-prefixed next token, exits 2 here
 //                  ("requires a path") rather than crashing downstream.
 //   --check        Verify all targets without writing; exit 1 on drift. With
-//                  --repair, reportable drift is printed as `would repair`
-//                  (write-free dry run) instead of failing.
+//                  --repair, repairable drift is printed as `would repair`
+//                  (write-free dry run); unrepairable drift still fails.
 //   --force        Convert conflicting targets after backing them up
 //   --uninstall    Reverse the manifest: remove repo-owned links / ledger-owned
 //                  copies for every entry (then retire leftovers); exit 1 only
-//                  when something could not be removed (conflict/unowned).
+//                  when a manifest entry could not be removed (conflict/unowned)
+//                  — an unowned retired leftover is reported but exits 0.
 //   --repair       Apply-mode: relink/copy each repairable entry (`missing`/`stale`
 //                  link-mode; `missing`/ledger-`stale` copy-mode) via the same
 //                  path as install, print `install: repair <dest> (<code>)`,
 //                  exit 1 only if something unrepairable remains. `conflict`
-//                  stays gated behind --force (no unprompted backup).
+//                  stays gated behind --force (no unprompted backup). Retired
+//                  entries are not swept on this path (apply and check handle
+//                  them).
 //   --link/--copy  Override the mode. Resolution: CLI flag > manifest "mode"
 //                  field > auto-detect (.git present => link, else copy)
 //
@@ -40,7 +43,8 @@
 //
 // Ownership model: symlink targets are repo-owned iff the link resolves
 // inside this checkout; copied files are repo-owned iff the ledger records
-// them. Unowned files are never read, modified, or removed. Conflicts
+// them. Unowned files are never modified or removed (their contents may be
+// read when classifying drift). Conflicts
 // (real files differing from the repo, or user-edited copies) fail with a
 // summary unless --force converts them, backing up to <name>.bak.<ts>.
 
@@ -75,8 +79,10 @@ const defaultLedger = "~/.config/opencode/.turnstile-install.json"
 // Single read of the package version at startup; recorded in every copy-mode
 // ledger entry so `check` can report an outdated install. Guarded:
 // a missing or malformed package.json must not crash the module at import
-// time (fail-open contract); version records as null and `check` treats
-// null as "no version info" rather than an outdated install.
+// time (fail-open contract); version records as null and `check` suppresses
+// the outdated warning only for a ledger record whose version is null — a
+// null package version next to a recorded version still prints the
+// outdated line.
 let pkgVersion = null
 try {
   pkgVersion = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version ?? null
@@ -87,7 +93,7 @@ try {
 /**
  * Parses command-line arguments.
  * @param {string[]} argv Raw argv (process.argv).
- * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null, model: string[], printModelConfig: boolean, validate: boolean, modelSpecs: Record<string,string>, repair: boolean}} Parsed arguments. A `--model`/`--validate` without `--print-model-config` is an error and exits 2 (checked before any parsing or I/O). Model specs are validated here only when the printer flag is set; a malformed or unknown-name spec prints an actionable message and exits 2 (matching the unknown-arg contract), and the parsed map is stashed as `modelSpecs` for `main`. A missing or flag-shaped value for `--manifest` or `--model` also exits 2 at the assignment site, naming the offending flag (so neither path reaches a late fs parse-crash).
+ * @returns {{manifest: string, check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null, model: string[], printModelConfig: boolean, validate: boolean, modelSpecs: Record<string,string>, repair: boolean}} Parsed arguments. A `--model`/`--validate` without `--print-model-config` is an error and exits 2 (checked after the token loop, before any I/O). Model specs are validated here only when the printer flag is set; a malformed or unknown-name spec prints an actionable message and exits 2 (matching the unknown-arg contract), and the parsed map is stashed as `modelSpecs` for `main`. A missing or flag-shaped value for `--manifest` or `--model` also exits 2 at the assignment site, naming the offending flag (so neither path reaches a late fs parse-crash).
  */
 function parseArgs(argv) {
   const args = {
@@ -133,7 +139,7 @@ function parseArgs(argv) {
   // --model/--validate only mean something for the printer: given without
   // --print-model-config they have no effect, so reject them loudly (exit 2,
   // like an unknown argument) instead of silently falling through to a real
-  // install. Checked first, before any parsing or manifest I/O below.
+  // install. Checked after the token loop, before any manifest I/O below.
   if (!args.printModelConfig && (args.model.length > 0 || args.validate)) {
     console.error("install: --validate/--model require --print-model-config")
     process.exit(2)
@@ -170,13 +176,14 @@ const MODEL_PLACEHOLDER = "<provider>/<model-id>"
 const SPEC_GRAMMAR = "[name=]provider/model[#variant] (model ids may be multi-segment)"
 
 /**
- * Grammar for one model spec: an optional `<name>=` built from AGENT_NAMES
- * (a single source of truth), then provider (segment 1) and a model id (the
- * remainder, slashes included) so real multi-segment ids parse, then an
- * optional `#variant` bound to the tail. Split on the FIRST `/`.
+ * Grammar for one model spec body — after `parseModelSpecs` splits off the
+ * optional `<name>=` prefix on the first `=`, only the body reaches this
+ * regex (so the regex carries no name group): provider (first segment), a
+ * slash, then a model id — the remainder, slashes included so real
+ * multi-segment ids parse, but never a leading `/` — with an optional
+ * `#variant` bound to the tail.
  */
-const NAME_ALT = AGENT_NAMES.join("|")
-const SPEC_RE = new RegExp(`^(?:(${NAME_ALT})=)?([\\w.-]+)/([\\w.:/-]+)(?:#([\\w.-]+))?$`)
+const SPEC_RE = /^([\w.-]+)\/(?!\/)([\w.:/-]+)(?:#([\w.-]+))?$/
 
 /**
  * Parses model specs into an agent→spec map, in canonical order. A bare spec

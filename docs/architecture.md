@@ -129,8 +129,10 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   gate-state snapshot (`formatGateSnapshot`) from the ledger — concrete state,
   not just a demand. The snapshot's `GATE:`/`VERDICT:` tokens are de-tokenized
   (leading token lowercased) so it can never re-parse as an authoritative
-  marker. It hydrates the parent bucket keyed off `draft.sessionID`, falling
-  back to the last-admitted parent when the payload omits `sessionID`.
+  marker. It reads — never mints — the parent bucket via `ledger.peek`,
+  keyed off `draft.sessionID` and falling back to the last-admitted parent
+  whenever parent resolution yields no bucket; both paths degrade to
+  instruction-only (fail-open, no mint, no journal spam).
 
 **`tool.hook("execute.before")`** (`hooks-tool.ts`) — _all gating lives here_:
 
@@ -174,8 +176,10 @@ observation is applied only when the emitting session's agent holds the marker
 contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
 `reviewer` / `plan-reviewer`), and a denied observation is journaled
 `suppressed` rather than flipping state, permission ask/reply bookkeeping,
-prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29, for hosts
-where the prompt hook does not fire), and error telemetry. Streamed child text
+prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29 — an
+additive channel the host publishes immediately after the prompt hook fires,
+deduped against the hook path on the shared host message id), and error
+telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
 across `session.text.delta` chunks is reassembled and re-parsed so a completed
 marker is first-sighted once (dedup-suppressing the re-parse), then the window
@@ -372,15 +376,15 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                          |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                             | 5 MB / 5 / 512 / 2000                                                                           |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                         |
-| Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                          |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time |
-| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`                                                                        | both denylists default empty; mode `enforce` still applies to configured rules                  |
-| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`                                            | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                      |
+| Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                                                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                             | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
+| Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                                                                                                      |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                                                                                                                |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time                                                                                       |
+| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                       | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
+| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`                                            | mode `shadow` — audit-only adoption path; flip to `enforce` when confident                                                                                                            |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically
@@ -593,12 +597,7 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
   invalid regex _source_ means the operation it guarded is now **allowed**
   (documented so a config typo weakens the policy visibly in the journal rather
   than silently). Both denylists default to empty, so none of this applies
-  unless rules are configured; when git-protective rules are configured (the
-  documented paste-back example), they are global-option tolerant, so `git -C
-dir checkout main` is caught as well as `git checkout main`, and the checkout
-  rule allows the file-restore form `git [global options] checkout [<ref>] --
-<path>` while blocking `git [global options] checkout <branch>` and `-b`/`-C`;
-  but two gaps remain by design. `git` **aliases** (e.g. `git co main`,
+  unless rules are configured; but gaps remain by design. `git` **aliases** (e.g. `git co main`,
   `git cm -m x`) are not matched, because a rule names `git` plus a literal
   subcommand only; and the wider base can _over-match_ — e.g. `git commit -m "…
 merge …"` trips the `merge` rule. git/gh consent rides the host permission
@@ -665,9 +664,9 @@ each maps to a turnstile mechanism:
   (`replayGatePasses`, `src/ledger.ts`), which is what makes gates
   reviewable after the fact and stateful across restarts.
 
-The README's "Why turnstile" section states the same three properties in
-one screen for arriving readers; this section is where a developer can
-see the mechanisms behind them.
+The README's pitch states the same three properties in one screen for
+arriving readers; this section is where a developer can see the mechanisms
+behind them.
 
 Most other agent-structure projects on OpenCode are orchestration
 suites: an orchestrator plans work, dispatches specialists, and
@@ -712,7 +711,7 @@ are visible in this repo's tests:
   what makes the gates reviewable after the fact.
 
 The tradeoff is scope: turnstile is host-coupled to the OpenCode v2
-plugin API, verified against v2.0.22, and enforces exactly the
+plugin API and enforces exactly the
 pipeline above. Multi-harness suites reach further; turnstile goes
 deeper on one host and one pipeline.
 
