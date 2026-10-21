@@ -90,8 +90,8 @@ export function createTurnstile(
     // already fire post-setup).
     ctx.bindHost(h.session)
     const cleanups: Array<() => void> = []
-    // Count of successfully registered hooks (3 session + 2 tool + 1 event
-    // subscriber = 6 on a full host); feeds the load heartbeat below.
+    // Count of successfully registered hooks (3 session + 1 permission + 2 tool
+    // + 1 event subscriber = 7 on a full host); feeds the load heartbeat below.
     let hooks = 0
     // Task-state reset: a new user prompt starts a new task.
     if (typeof h.session?.hook === "function") {
