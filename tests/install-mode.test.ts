@@ -4,32 +4,34 @@
  * side-effect-free helpers exported by scripts/install.mjs
  * (detectMode, resolveMode, normalizeLedger) and exercises them directly, with
  * no CLI spawn. The `--repair` section spawns the installer script directly
- * under a temp `HOME` so every link/copy/ledger write is confined
- * and no real home is touched.
+ * under a temp `HOME` (via the shared harness in install-harness.ts) so every
+ * link/copy/ledger write is confined and no real home is touched.
  */
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { spawnSync } from "node:child_process"
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+
+import {
+  freshScratch,
+  homePath,
+  repoRoot,
+  spawnInstaller,
+  spawnNode,
+  writeManifest,
+} from "./install-harness.ts"
 
 // @ts-expect-error TS7016: scripts/install.mjs is untyped JS; tests import its
 // pure exports directly rather than spawning the CLI.
 import { detectMode, resolveMode, normalizeLedger } from "../scripts/install.mjs"
-
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 
 /** Auto-detect keys off .git presence next to the module: link in a checkout, copy in a package. */
 test("detectMode keys off .git presence", () => {
@@ -124,156 +126,116 @@ test("normalizeLedger: keeps only src/hash/version/mode and drops extras", () =>
 // Every spawned-script test is confined to a temp HOME: install.mjs resolves
 // its dests and ledger from homedir(), so a temp HOME makes every write
 // observable and keeps a real ~/.config/opencode untouched.
-function freshHome(): string {
-  return mkdtempSync(join(tmpdir(), "install-repair-home-"))
-}
-
-/** env object with HOME pinned to a temp dir; spawn inherits the rest. */
-function envForHome(home: string) {
-  return { ...process.env, HOME: home }
-}
-
-// A single-entry link-mode manifest whose src is repo-relative (readManifest
-// joins it onto repoRoot) and whose dest uses ~ (expanded under the temp HOME).
-function writeLinkManifest(src: string, dest: string): string {
-  const file = join(tmpdir(), `install-repair-${Math.random().toString(36).slice(2)}.json`)
-  writeFileSync(file, JSON.stringify({ mode: "link", links: [{ src, dest }] }))
-  return file
-}
-
-/** Spawn install.mjs with a temp HOME; the manifest path is passed verbatim. */
-function runInstall(args: string[], home: string) {
-  return spawnSync(process.execPath, [join(repoRoot, "scripts/install.mjs"), ...args], {
-    encoding: "utf8",
-    env: envForHome(home),
-  })
-}
 
 /** A link elsewhere in the checkout, relative to the temp HOME's dest. */
 const STALE_TARGET = join(repoRoot, "scripts/install.mjs")
 
 /** Bare --repair relinks a missing link-mode entry and exits 0. */
-test("repair: relinks a missing link-mode entry and exits 0", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
-  try {
-    const res = runInstall(["--manifest", manifest, "--repair"], home)
-    assert.equal(res.status, 0, res.stderr)
-    assert.match(res.stdout, /install: repair .*agents\/x \(missing\)/)
-    const dest = join(home, ".config/opencode/agents/x")
-    assert.ok(existsSync(dest), "the repaired symlink should now exist")
-    assert.equal(realpathSync(dest), join(repoRoot, "bin/cli.mjs"))
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+test("repair: relinks a missing link-mode entry and exits 0", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+  })
+  const res = spawnInstaller(["--manifest", manifest, "--repair"], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /install: repair .*agents\/x \(missing\)/)
+  const dest = homePath(home, ".config/opencode/agents/x")
+  assert.ok(existsSync(dest), "the repaired symlink should now exist")
+  assert.equal(realpathSync(dest), join(repoRoot, "bin/cli.mjs"))
 })
 
 /** --repair relinks a stale link-mode entry and exits 0. */
-test("repair: relinks a stale link-mode entry and exits 0", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
-  const dest = join(home, ".config/opencode/agents/x")
+test("repair: relinks a stale link-mode entry and exits 0", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+  })
+  const dest = homePath(home, ".config/opencode/agents/x")
   mkdirSync(dirname(dest), { recursive: true })
   symlinkSync(STALE_TARGET, dest) // points into the repo, but at the wrong file
-  try {
-    const res = runInstall(["--manifest", manifest, "--repair"], home)
-    assert.equal(res.status, 0, res.stderr)
-    assert.match(res.stdout, /install: repair .*agents\/x \(stale\)/)
-    assert.equal(realpathSync(dest), join(repoRoot, "bin/cli.mjs"))
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+  const res = spawnInstaller(["--manifest", manifest, "--repair"], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /install: repair .*agents\/x \(stale\)/)
+  assert.equal(realpathSync(dest), join(repoRoot, "bin/cli.mjs"))
 })
 
 /** --check --repair is a write-free dry run: prints `would repair`, exits 0. */
-test("--check --repair: dry run writes nothing and prints would repair", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
-  try {
-    const res = runInstall(["--manifest", manifest, "--check", "--repair"], home)
-    assert.equal(res.status, 0, res.stderr)
-    assert.match(res.stdout, /install: would repair .*agents\/x \(missing\)/)
-    assert.ok(
-      !existsSync(join(home, ".config/opencode/agents/x")),
-      "a dry run must not create the target",
-    )
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+test("--check --repair: dry run writes nothing and prints would repair", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+  })
+  const res = spawnInstaller(["--manifest", manifest, "--check", "--repair"], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /install: would repair .*agents\/x \(missing\)/)
+  assert.ok(
+    !existsSync(homePath(home, ".config/opencode/agents/x")),
+    "a dry run must not create the target",
+  )
 })
 
 /** A conflict is never backed up by --repair without --force; it stays untouched. */
-test("repair: conflict is left untouched without --force and exits non-zero", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
-  const dest = join(home, ".config/opencode/agents/x")
+test("repair: conflict is left untouched without --force and exits non-zero", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+  })
+  const dest = homePath(home, ".config/opencode/agents/x")
   mkdirSync(dirname(dest), { recursive: true })
   const before = "USER EDITED"
   writeFileSync(dest, before)
-  try {
-    const res = runInstall(["--manifest", manifest, "--repair"], home)
-    assert.notEqual(res.status, 0, "unrepairable conflict must fail")
-    assert.match(res.stderr, /conflict/)
-    assert.equal(readFileSync(dest, "utf8"), before, "the conflict file must be untouched")
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+  const res = spawnInstaller(["--manifest", manifest, "--repair"], { home })
+  assert.notEqual(res.status, 0, "unrepairable conflict must fail")
+  assert.match(res.stderr, /conflict/)
+  assert.equal(readFileSync(dest, "utf8"), before, "the conflict file must be untouched")
 })
 
 /** --check --repair exits non-zero when a conflict is unrepairable. */
-test("--check --repair: exits non-zero when a conflict is unrepairable", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
-  const dest = join(home, ".config/opencode/agents/x")
+test("--check --repair: exits non-zero when a conflict is unrepairable", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+  })
+  const dest = homePath(home, ".config/opencode/agents/x")
   mkdirSync(dirname(dest), { recursive: true })
   writeFileSync(dest, "USER EDITED")
-  try {
-    const res = runInstall(["--manifest", manifest, "--check", "--repair"], home)
-    assert.notEqual(res.status, 0, "unrepairable conflict must fail the dry run")
-    assert.match(res.stderr, /check: conflict/)
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+  const res = spawnInstaller(["--manifest", manifest, "--check", "--repair"], { home })
+  assert.notEqual(res.status, 0, "unrepairable conflict must fail the dry run")
+  assert.match(res.stderr, /check: conflict/)
 })
 
 /** `check` alone stays byte-for-byte unchanged: a missing entry is still an error. */
-test("check alone (unchanged): a missing entry is still reported and exits 1", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/x")
-  try {
-    const res = runInstall(["--manifest", manifest, "--check"], home)
-    assert.equal(res.status, 1)
-    assert.match(res.stderr, /check: missing/)
-    assert.doesNotMatch(res.stdout, /would repair/)
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+test("check alone (unchanged): a missing entry is still reported and exits 1", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+  })
+  const res = spawnInstaller(["--manifest", manifest, "--check"], { home })
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /check: missing/)
+  assert.doesNotMatch(res.stdout, /would repair/)
 })
 
 /** The router passes `check --repair` through as `install.mjs --check --repair`. */
-test("router check --repair: routes to install.mjs --check --repair", () => {
-  const home = freshHome()
-  const manifest = writeLinkManifest("bin/cli.mjs", "~/.config/opencode/agents/router-x")
-  try {
-    const res = spawnSync(
-      process.execPath,
-      [join(repoRoot, "bin/cli.mjs"), "check", "--repair", "--manifest", manifest],
-      { encoding: "utf8", env: envForHome(home) },
-    )
-    assert.equal(res.status, 0, res.stderr)
-    assert.match(res.stdout, /install: would repair .*agents\/router-x \(missing\)/)
-    assert.ok(
-      !existsSync(join(home, ".config/opencode/agents/router-x")),
-      "the routed dry run must not write",
-    )
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(manifest, { force: true })
-  }
+test("router check --repair: routes to install.mjs --check --repair", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/router-x" }],
+  })
+  const res = spawnNode("bin/cli.mjs", ["check", "--repair", "--manifest", manifest], {
+    home,
+  })
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /install: would repair .*agents\/router-x \(missing\)/)
+  assert.ok(
+    !existsSync(homePath(home, ".config/opencode/agents/router-x")),
+    "the routed dry run must not write",
+  )
 })
