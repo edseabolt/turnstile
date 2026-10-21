@@ -25,8 +25,12 @@ import { dirname, join } from "node:path"
 import type { TestContext } from "node:test"
 
 import {
+  DEST,
+  SRC,
+  destOf,
   freshScratch,
   homePath,
+  ledgerOf,
   readLedger,
   repoRoot,
   singleEntryManifest,
@@ -34,25 +38,9 @@ import {
   writeManifest,
 } from "./install-harness.ts"
 
-/** The shared synthetic destination used by most apply tests. */
-const DEST = "~/.config/opencode/agents/x"
-
-/** The repo source most synthetic manifests install. */
-const SRC = "bin/cli.mjs"
-
 /** sha256 hex of a file's content, mirroring the installer's hashContent. */
 function sha256(file: string): string {
   return createHash("sha256").update(readFileSync(file, "utf8")).digest("hex")
-}
-
-/** The absolute path of the shared synthetic destination under a temp HOME. */
-function destOf(home: string): string {
-  return homePath(home, ".config/opencode/agents/x")
-}
-
-/** The absolute path of the scratch ledger pinned by singleEntryManifest. */
-function ledgerOf(home: string): string {
-  return homePath(home, "ledger.json")
 }
 
 /**
@@ -313,7 +301,7 @@ test("real manifest smoke: install/check/uninstall/check exit 0/0/0/1 under a te
   const install = spawnInstaller([], { home })
   assert.equal(install.status, 0, install.stderr)
   for (const line of install.stdout.split("\n")) {
-    const m = line.match(/^install: link (.+)$/)
+    const m = line.match(/^install: (?:link|copy) (.+)$/)
     if (!m) continue
     assert.ok(m[1]?.startsWith(home), `dest escaped the temp HOME: ${m[1]}`)
   }

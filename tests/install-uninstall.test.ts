@@ -19,30 +19,18 @@ import {
 import { dirname, join } from "node:path"
 
 import {
+  DEST,
+  SRC,
+  destOf,
   freshScratch,
   homePath,
+  ledgerOf,
   readLedger,
   repoRoot,
   singleEntryManifest,
   spawnInstaller,
   writeManifest,
 } from "./install-harness.ts"
-
-/** The shared synthetic destination used by most uninstall tests. */
-const DEST = "~/.config/opencode/agents/x"
-
-/** The repo source most synthetic manifests install. */
-const SRC = "bin/cli.mjs"
-
-/** The absolute path of the shared synthetic destination under a temp HOME. */
-function destOf(home: string): string {
-  return homePath(home, ".config/opencode/agents/x")
-}
-
-/** The absolute path of the scratch ledger pinned by singleEntryManifest. */
-function ledgerOf(home: string): string {
-  return homePath(home, "ledger.json")
-}
 
 /** Uninstall after a link install removes the repo-owned symlink and exits 0. */
 test("uninstall: removes repo-owned symlinks from a link install and exits 0", (t) => {

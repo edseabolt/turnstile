@@ -20,6 +20,12 @@ import type { TestContext } from "node:test"
 /** The repo root, derived from this file's location like install.mjs does. */
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
+/** The synthetic ~-destination most synthetic manifests install to. */
+export const DEST = "~/.config/opencode/agents/x"
+
+/** The repo-relative source most synthetic manifests install. */
+export const SRC = "bin/cli.mjs"
+
 /** One copy-mode ledger record, keyed by the expanded destination path. */
 export interface LedgerRecord {
   src: string
@@ -79,8 +85,26 @@ export function singleEntryManifest(
 }
 
 /**
- * Spawns scripts/install.mjs with the given args and the child's HOME pinned
- * to a temp dir. The parent process env is never mutated.
+ * Spawns a node script from the repo with the given args and the child's
+ * HOME pinned to a temp dir. The parent process env is never mutated.
+ * @param {string} script Repo-relative path of the script to spawn.
+ * @param {string[]} args CLI args for the script.
+ * @param {{ home: string }} options The temp HOME to pin in the child env.
+ * @returns {SpawnSyncReturns<string>} The spawn result with utf8 stdout/stderr.
+ */
+export function spawnNode(
+  script: string,
+  args: string[],
+  { home }: { home: string },
+): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [join(repoRoot, script), ...args], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home },
+  })
+}
+
+/**
+ * Spawns scripts/install.mjs with the given args under a temp HOME.
  * @param {string[]} args CLI args for the installer (e.g. ["--manifest", path, "--check"]).
  * @param {{ home: string }} options The temp HOME to pin in the child env.
  * @returns {SpawnSyncReturns<string>} The spawn result with utf8 stdout/stderr.
@@ -89,10 +113,7 @@ export function spawnInstaller(
   args: string[],
   { home }: { home: string },
 ): SpawnSyncReturns<string> {
-  return spawnSync(process.execPath, [join(repoRoot, "scripts/install.mjs"), ...args], {
-    encoding: "utf8",
-    env: { ...process.env, HOME: home },
-  })
+  return spawnNode("scripts/install.mjs", args, { home })
 }
 
 /**
@@ -114,4 +135,22 @@ export function homePath(home: string, ...segs: string[]): string {
 export function readLedger(file: string): Ledger | null {
   if (!existsSync(file)) return null
   return JSON.parse(readFileSync(file, "utf8")) as Ledger
+}
+
+/**
+ * The absolute path of the synthetic destination under a temp HOME.
+ * @param {string} home The temp HOME dir.
+ * @returns {string} Absolute path of the synthetic destination.
+ */
+export function destOf(home: string): string {
+  return homePath(home, ".config/opencode/agents/x")
+}
+
+/**
+ * The absolute path of the scratch ledger pinned by singleEntryManifest.
+ * @param {string} home The temp HOME dir.
+ * @returns {string} Absolute path of the scratch ledger.
+ */
+export function ledgerOf(home: string): string {
+  return homePath(home, "ledger.json")
 }

@@ -10,7 +10,6 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { spawnSync } from "node:child_process"
 import {
   existsSync,
   mkdirSync,
@@ -26,6 +25,7 @@ import {
   homePath,
   repoRoot,
   spawnInstaller,
+  spawnNode,
   writeManifest,
 } from "./install-harness.ts"
 
@@ -229,11 +229,9 @@ test("router check --repair: routes to install.mjs --check --repair", (t) => {
     mode: "link",
     links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/router-x" }],
   })
-  const res = spawnSync(
-    process.execPath,
-    [join(repoRoot, "bin/cli.mjs"), "check", "--repair", "--manifest", manifest],
-    { encoding: "utf8", env: { ...process.env, HOME: home } },
-  )
+  const res = spawnNode("bin/cli.mjs", ["check", "--repair", "--manifest", manifest], {
+    home,
+  })
   assert.equal(res.status, 0, res.stderr)
   assert.match(res.stdout, /install: would repair .*agents\/router-x \(missing\)/)
   assert.ok(
