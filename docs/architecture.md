@@ -152,7 +152,9 @@ surfaces pending near-miss marker diagnostics once per prompt batch (a
 `[turnstile] marker:` block prepended to the first string-output result of a
 parent with a parked hit, journaled `type:"marker"` / `surfaced`), then
 parses markers out of task deliveries, attributes plan verdicts, credits reviewer
-approval (ensemble-gated), appends the per-delivery `PIPELINE:` status tail
+approval (ensemble-gated) — both on the delivery's agent, resolved through the
+child→parent edge + host session record when the dispatch input names none —
+appends the per-delivery `PIPELINE:` status tail
 (skipped when the delivery's agent is not a pipeline stage), prepends the
 orchestrator policy head once per task (the first pipeline delivery reads
 head+tail, later deliveries tail-only),

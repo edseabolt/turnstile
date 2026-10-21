@@ -5,8 +5,11 @@
  * landing gate only at count >= 2 (otherwise it journals `blocked
  * /ensemble-incomplete` plus a `refusedApprove:true` stamp and leaves the gate
  * red); the count and a human-grant clear survive journal replay and one grace
- * prompt; advise mode tracks without gating. All via a fake host with injected
- * config.
+ * prompt; advise mode tracks without gating; a reviewer APPROVE delivered
+ * without a dispatch-input agent (a v2 structured or background result)
+ * resolves through the child→parent edge + host session record and credits
+ * the parent, while an unresolvable child's verdict is suppressed, uncredited,
+ * and error-free. All via a fake host with injected config.
  */
 
 import { test } from "node:test"
@@ -30,13 +33,23 @@ import {
 } from "./helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
 
-/** Boots the plugin over a fake host with a temp metrics dir and config. */
+/** Gives the async event loop a tick to drain queued stream events. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
+
+/**
+ * Boots the plugin over a fake host with a temp metrics dir and config.
+ * @param config Config overrides merged over the injected `metricsDir`.
+ * @param hostOpts Optional fake-host behavior (e.g. `sessionRecords` backing
+ *     the `session.get` API), forwarded to `makeFakeHost`.
+ */
 async function boot(
   config: Record<string, any> = {},
+  hostOpts?: Parameters<typeof makeFakeHost>[0],
 ): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string }> {
   const metricsDir = tmpDir()
-  const h = makeFakeHost()
+  const h = makeFakeHost(hostOpts)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
     config: { metricsDir, ...config },
@@ -629,6 +642,381 @@ test("T8: an incomplete ensemble arms the landing ask like an unreviewed task", 
     )
   } finally {
     dispose()
+  }
+})
+
+/**
+ * T9–T15 preamble (delivery-agent resolution): these cases cover a reviewer
+ * or plan-reviewer result delivered without a dispatch-input agent — the v2
+ * structured / background shape — which must resolve the delivery agent
+ * through the child→parent edge + host session record and credit the parent.
+ * T1–T8 above keep their own configs unchanged; every case below shares
+ * DELIVER_ENFORCE — gitGates enforce (the real landing gate) and flag-mode
+ * evidence (greenGate flips on a plain PASS) — so enforce assertions never
+ * depend on the shadow default, and the ensemble default (enforce) is stated
+ * for legibility.
+ */
+const DELIVER_ENFORCE: Record<string, any> = {
+  gateEvidence: "flag",
+  gitGates: { mode: "enforce" },
+  reviewEnsemble: "enforce",
+}
+
+/** Dispatches the two unwaived reviewer dispatches that complete the ensemble. */
+async function dispatchReviewers(h: FakeHost, sessionID: string): Promise<void> {
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID,
+    input: { agent: "reviewer", prompt: "first review" },
+  })
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID,
+    input: { agent: "reviewer", prompt: "second review" },
+  })
+}
+
+/**
+ * Delivers a structured task result naming the child; `input` is present only
+ * when the case dispatches with an agent (the no-agent shape omits it).
+ */
+async function deliverStructured(
+  h: FakeHost,
+  sessionID: string,
+  child: string,
+  text: string,
+  input?: Record<string, any>,
+): Promise<void> {
+  await callTool(h, "execute.after", {
+    tool: "task",
+    sessionID,
+    ...(input ? { input } : {}),
+    result: { output: { sessionID: child, output: text } },
+  })
+}
+
+/**
+ * T9: a structured reviewer APPROVE with no dispatch-input agent credits the
+ * parent through the session.created edge — the child's verdict stays
+ * authoritative, the credit lands on the parent bucket (replay-restored), and
+ * the landing gate releases.
+ */
+test("T9: a no-input structured APPROVE credits through the created edge", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
+  try {
+    await greenGate(h, "p1")
+    await dispatchReviewers(h, "p1")
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+    })
+    await settle()
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    const entries = journalEntries(metricsDir)
+    const verdict = entries.find((e) => e.type === "verdict")
+    assert.ok(verdict, "the first-sight verdict is journaled")
+    assert.equal(verdict.sessionID, "p1", "the verdict keys on the resolved parent")
+    assert.equal(verdict.raw, "c1", "the verdict keeps the raw child ID")
+    assert.equal(verdict.source, "task-result")
+    assert.ok(
+      !entries.some((e) => e.type === "blocked" && e.reason === "ensemble-incomplete"),
+      "a complete ensemble credits without a refusal",
+    )
+    assert.equal(
+      ledgerState(metricsDir, "p1").hasReviewApprove,
+      true,
+      "replay restores the edge-resolved credit",
+    )
+    // The released landing gate allows a push.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T10: with no session.created event, the host session record is the only
+ * edge route — the delivery's awaited session.get resolves parent and agent,
+ * the credit lands on the record's parent (never the unregistered child), and
+ * nothing is suppressed (the record's agent is authoritative).
+ */
+test("T10: a no-input structured APPROVE credits through the host session record", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE, {
+    sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
+  })
+  try {
+    await greenGate(h, "p1")
+    await dispatchReviewers(h, "p1")
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    assert.equal(
+      ledgerState(metricsDir, "p1").hasReviewApprove,
+      true,
+      "the credit lands on the record-resolved parent",
+    )
+    assert.equal(
+      ledgerState(metricsDir, "c1").hasReviewApprove,
+      false,
+      "the unregistered child is never credited",
+    )
+    assert.ok(
+      !journalEntries(metricsDir).some((e) => e.type === "suppressed"),
+      "the record's agent is authoritative: no verdict is suppressed",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T11: the no-input shape is still ensemble-gated — a count-1 delivery is
+ * refused (blocked + refusedApprove stamp, gate red), and the identical
+ * re-delivery after the second dispatch first-sights again (fresh
+ * task-deliverySeq dedup scope) and credits.
+ */
+test("T11: a no-input APPROVE is refused at count 1 and credits at count 2", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE, {
+    sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
+  })
+  try {
+    await greenGate(h, "p1")
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    assert.equal(
+      ledgerState(metricsDir, "p1").hasReviewApprove,
+      false,
+      "count 1 is below the ensemble threshold",
+    )
+    const blocked = journalEntries(metricsDir).find(
+      (e) => e.type === "blocked" && e.reason === "ensemble-incomplete",
+    )
+    assert.ok(blocked && blocked.count === 1 && blocked.need === 2)
+    assert.ok(
+      ensembleEntries(metricsDir).some((e) => e.refusedApprove === true && e.count === 1),
+      "the refused credit is stamped",
+    )
+    // The second dispatch completes the ensemble; the identical re-delivery
+    // (fresh dedup scope) first-sights the APPROVE again and credits.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it again" },
+    })
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    assert.equal(
+      ledgerState(metricsDir, "p1").hasReviewApprove,
+      true,
+      "the re-delivered APPROVE credits at count 2",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T12: a no-input delivery credit survives a journal replay and exactly one
+ * grace prompt (the restored flag is restart-sticky, like the human grant),
+ * then clears on a full reset.
+ */
+test("T12: a no-input delivery credit survives replay and one grace prompt", async () => {
+  const { h, metricsDir, dispose } = await boot(DELIVER_ENFORCE, {
+    sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
+  })
+  try {
+    await greenGate(h, "p1")
+    await dispatchReviewers(h, "p1")
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+    assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restores the credit")
+    // Grace prompt: the restored flag carries exactly one reset.
+    ledger.resetState("p1")
+    assert.equal(ledger.state("p1").hasReviewApprove, true, "grace carries the credit once")
+    // Second prompt: a full reset clears the flag.
+    ledger.resetState("p1")
+    assert.equal(ledger.state("p1").hasReviewApprove, false, "the flag clears on a full reset")
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T13: the credit is delivery-attributed, not prompt-mediated: no user prompt
+ * is admitted at any point, so the journal carries no prompt-admission
+ * artifacts (child-reset / continuation) and the release is purely the
+ * delivered verdict.
+ */
+test("T13: a no-input delivery credit journals no prompt-admission entries", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
+  try {
+    await greenGate(h, "p1")
+    await dispatchReviewers(h, "p1")
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
+    })
+    await settle()
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    assert.equal(ledgerState(metricsDir, "p1").hasReviewApprove, true)
+    // The released landing gate allows a push.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    const entries = journalEntries(metricsDir)
+    assert.ok(
+      !entries.some((e) => e.type === "child-reset"),
+      "no prompt was admitted: no child-reset audit",
+    )
+    assert.ok(
+      !entries.some((e) => e.type === "continuation"),
+      "no prompt was admitted: no continuation carry",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T14: when the dispatch input names the reviewer, it outranks the agent the
+ * created edge recorded for the child (a test-runner seed never clobbers the
+ * delivery's own attribution).
+ */
+test("T14: a dispatch-input agent outranks the created edge's agent", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
+  try {
+    await greenGate(h, "p1")
+    await dispatchReviewers(h, "p1")
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+    })
+    await settle()
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`, { agent: "reviewer" })
+    assert.equal(
+      ledgerState(metricsDir, "p1").hasReviewApprove,
+      true,
+      "the dispatch input names the reviewer; the edge's agent does not override it",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T14: a reviewer delivery carrying only a BLOCK exits the credit guard
+ * before the ensemble check — no credit, no refusal stamp, no block entry;
+ * the landing gate stays red.
+ */
+test("T14: a reviewer BLOCK delivery stamps no refusal and credits nothing", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
+  try {
+    // Self-keyed v1 string delivery: the delivery seed makes the session's own
+    // text authoritative, so the BLOCK is journaled as a verdict — but it
+    // carries no APPROVE to credit.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer" },
+      result: { output: `${BLOCK}\n` },
+    })
+    const entries = journalEntries(metricsDir)
+    assert.ok(
+      !entries.some((e) => e.type === "verdict" && e.marker.includes("APPROVE")),
+      "a BLOCK never journals an APPROVE verdict",
+    )
+    assert.ok(
+      !entries.some((e) => e.type === "ensemble" && e.refusedApprove === true),
+      "no refusal is stamped: the credit guard exits before the ensemble check",
+    )
+    assert.ok(
+      !entries.some((e) => e.type === "blocked" && e.reason === "ensemble-incomplete"),
+      "no ensemble-incomplete block is journaled",
+    )
+    assert.equal(ledgerState(metricsDir, "p1").hasReviewApprove, false)
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T14: a child with no edge route at all (absent session record) resolves no
+ * agent: its APPROVE is denied authority and journaled as a suppressed audit
+ * entry with the empty emitter, never credited, and the absent record is not
+ * an error.
+ */
+test("T14: an unresolvable child's APPROVE is suppressed, uncredited, and error-free", async () => {
+  const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE, {
+    sessionRecords: new Map<string, any>(),
+  })
+  try {
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    const entries = journalEntries(metricsDir)
+    assert.ok(
+      !entries.some((e) => e.type === "verdict"),
+      "an unseeded child's verdict is denied authority: nothing is journaled as a verdict",
+    )
+    const suppressed = entries.find((e) => e.type === "suppressed")
+    assert.ok(suppressed, "the denial is journaled as a suppressed audit entry")
+    assert.equal(suppressed.agent, "", "the suppression audit names the unresolved (empty) emitter")
+    assert.ok(!entries.some((e) => e.type === "error"), "an absent record is not an error")
+    assert.equal(ledgerState(metricsDir, "c1").hasReviewApprove, false)
+    assert.equal(ledgerState(metricsDir, "p1").hasReviewApprove, false)
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T15: the plan-verdict attribution is symmetric — a no-input plan-reviewer
+ * APPROVE resolves through the host session record, attributes the plan entry
+ * through the child (raw = child, never the parent), and the approval
+ * survives a journal replay.
+ */
+test("T15: a no-input plan-reviewer APPROVE attributes through the session record", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const h = makeFakeHost({
+    sessionRecords: new Map([["c1", { parentID: "p1", agent: "plan-reviewer" }]]),
+  })
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, ...DELIVER_ENFORCE },
+    })
+    const dispose = (await setup(h.host)) as () => void
+    await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
+    const plan = journalEntries(metricsDir)
+      .filter((e) => e.type === "plan")
+      .find((e) => e.raw === "c1")
+    assert.ok(plan, "the plan entry attributes through the child")
+    assert.equal(plan.sessionID, "p1", "the plan entry keys on the resolved parent")
+    assert.equal(plan.result, "APPROVE")
+    assert.equal(plan.source, "task-result")
+    const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+    assert.equal(
+      ledger.state("p1").hasPlanVerdict,
+      true,
+      "replay restores the record-attributed approval",
+    )
+    dispose()
+  } finally {
+    process.chdir(prev)
   }
 })
 

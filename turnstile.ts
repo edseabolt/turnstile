@@ -13,7 +13,10 @@
  *   later delivery tail-only, so a follow-up delivery still names the next
  *   stage after the head has already landed. Both are attributed to the
  *   delivery's parent through the `childToParent` edge (seeded by
- *   `session.created`, back-filled via `session.get`); the head is idempotent
+ *   `session.created`, back-filled via `session.get`) — the same edge + host
+ *   session record that resolves the delivery's agent for the reviewer credit
+ *   and the plan-verdict attribution when the dispatch input names none; the
+ *   head is idempotent
  *   per task via `GateState.policyInjected` keyed on that parent, and the
  *   tail runs independently of that flag. The tail is rendered by
  *   `formatPipelineStatus` (`src/state.ts`) from the resolved parent's gate
@@ -37,6 +40,11 @@
  *   to the structured output string, and the `output` object otherwise stays
  *   unmutated) — and the classified child and text drive marker parsing, the
  *   bare-output check, and the reviewer capture with no re-derivation. The
+ *   reviewer credit and the plan-verdict attribution resolve the delivery's
+ *   agent through the child→parent edge + host session record when the
+ *   dispatch input names none (the edge is awaited before parsing); the raw
+ *   dispatch-input agent stays the signal for the cosmetic status tail, the
+ *   policy injection, the bare-output check, and the emitter seed. The
  *   silent skips are the once-flag (which now gates only the policy head —
  *   the tail lands on every pipeline-stage delivery) and an absent result; a
  *   present-but-unclassifiable result journals loudly on EVERY such delivery
