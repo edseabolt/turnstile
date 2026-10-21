@@ -116,14 +116,17 @@ landing gate — the orchestrator dispatches the reviewer a second time
 A reviewer running on a waived dispatch never counts toward the ensemble:
 a fully waived review leaves the landing gate red regardless of the verdict.
 
-**Landing.** With reviewer approval held, `git push` is released — when
-`gitGates.mode:enforce`. On the default `shadow` mode the push would have
-gone through with a journaled would-block
-(`"reason":"no-landing-approval"`); flip the mode when you trust the flow.
-Commit subjects are linted as conventional commits either way
-(`gitGates.commitMessages: true`) — under `shadow` the invalid-subject
-journal entry is the whole consequence; under `enforce` the commit is
-blocked. A repeat push without approval escalates to the human ask.
+**Landing.** With a credited reviewer approval held, the landing gate
+releases `git push` and it goes through. A push without approval is
+refused (`"reason":"no-landing-approval"`) and, on a repeat, escalates to
+the human permission ask. Commit subjects are linted as conventional
+commits (`gitGates.commitMessages: true`); under `enforce` an invalid
+subject blocks the commit outright. This is `gitGates.mode: enforce`, the
+recommended configuration and what this repo runs. The shipped default is
+still `shadow` — the adoption path: the same checks journal would-blocks
+(`"reason":"no-landing-approval"` / `"invalid-commit-message"`) without
+throwing, so you can grep the journal and tune the rules before flipping
+the mode (config is read once at setup).
 
 **Prompt 2 — a new task.** Your next prompt resets the session's gate state
 (a restart-restored flag survives exactly the resume prompt, then reverts —
@@ -555,7 +558,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `toolPolicy.bashDeny`                                                                                                      | `[]` (empty)                                                                                                                                                                 | case-insensitive regex sources matched against `bash`/`shell` commands; an invalid source is dropped and journaled                                                                                                                     |
 | `toolPolicy.pathDeny`                                                                                                      | `[]` (empty)                                                                                                                                                                 | case-insensitive regex sources matched against `write`/`edit` target paths; a dropped source is journaled                                                                                                                              |
 | `toolPolicy.observeSessionMove`                                                                                            | `true`                                                                                                                                                                       | journal `session_move` dispatches as telemetry (never blocks)                                                                                                                                                                          |
-| `gitGates.mode`                                                                                                            | `shadow`                                                                                                                                                                     | `shadow` would-block without throwing; `enforce` blocks invalid commits and unapproved pushes (opt-in), `off` is a silent no-op                                                                                                        |
+| `gitGates.mode`                                                                                                            | `shadow`                                                                                                                                                                     | `enforce` blocks invalid commits and unapproved pushes (recommended; this repo runs it); `shadow` would-blocks without throwing (adoption path); `off` is a silent no-op                                                               |
 | `gitGates.commitMessages`                                                                                                  | `true`                                                                                                                                                                       | validate `git commit -m` subjects as conventional commits; `shadow` journals, `enforce` blocks, `off` is a no-op                                                                                                                       |
 | `gitGates.commitFormat`                                                                                                    | a conventional-commits regex source                                                                                                                                          | conventional-commits regex source (compiled `^...$`) matched against each subject; a bad source is dropped and journaled                                                                                                               |
 | `gitGates.landingGate`                                                                                                     | `true`                                                                                                                                                                       | gate `git push` on this task reviewer `VERDICT: APPROVE`; `shadow` journals, `enforce` blocks then escalates, `off` is a no-op                                                                                                         |
@@ -645,6 +648,15 @@ enforcement doubles as a field test. In the first week of that (Oct 8–15,
 on this repo. Most of those blocks are the read-horizon cap doing its
 unglamorous job; about 65 caught real pipeline violations: executor
 dispatches without an approved plan, unverified `GATE: PASS` claims, invalid
-commit subjects, and unapproved pushes that never landed. Don't take this
-section at face value: run `npx opencode-turnstile status` and read the
-journal yourself.
+commit subjects, and unapproved pushes that never landed.
+
+This repo now lands under `gitGates.mode: enforce`: an unapproved push is
+refused, not journaled. The flip was motivated by 54
+`no-landing-approval` would-blocks across 38 sessions — pushes the
+approved ensemble had actually earned but `shadow` only recorded. Issue
+#129 fixed the underlying credit bug (a reviewer `VERDICT: APPROVE`
+delivered without `input.agent` never credited the gate), so the enforced
+gate now releases on approvals it used to miss.
+
+Don't take this section at face value: run `npx opencode-turnstile status`
+and read the journal yourself.
