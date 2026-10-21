@@ -10,7 +10,8 @@
 // Journal resolution precedence (mirrors config.ts's env → file → default):
 //   TURNSTILE_METRICS_DIR  →  TURNSTILE_CONFIG's metricsDir  →  ~ default
 // The journal file is `turnstile.jsonl`; its rotated generation
-// `${journal}.1` is read first so the 2000-line replay tail holds across both.
+// `${journal}.1` is read first so the `replayTailLines` replay tail (default
+// 2000) holds across both.
 //
 //   opencode-turnstile status            Human-readable table.
 //   opencode-turnstile status --json     Machine-readable JSON.
@@ -45,39 +46,76 @@ function defaultMetricsDir(env) {
 }
 
 /**
- * Resolves the metrics directory that holds the journal, honoring the same
- * precedence the config layer uses: the TURNSTILE_METRICS_DIR env beats a
- * configured metricsDir in the TURNSTILE_CONFIG file, which beats the default.
- * @param {NodeJS.ProcessEnv} env The process environment.
- * @returns {string} The resolved metrics directory.
+ * The default replay tail bound (lines). This mirrors the runtime config
+ * default so the standalone script needs no TS source; a configured
+ * `replayTailLines` in the config file overrides it.
  */
-function resolveMetricsDir(env) {
-  if (typeof env.TURNSTILE_METRICS_DIR === "string" && env.TURNSTILE_METRICS_DIR) {
-    return env.TURNSTILE_METRICS_DIR
-  }
+const DEFAULT_REPLAY_TAIL_LINES = 2000
+
+/**
+ * Reads and parses the config file the config layer uses, silently tolerating
+ * a missing or malformed file (fail-open). Returns `null` when nothing usable
+ * is present.
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {Record<string, unknown> | null} The parsed config object, or null.
+ */
+function loadConfigFile(env) {
   const configPath =
     env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
   try {
     const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
-    if (cfg && typeof cfg.metricsDir === "string" && cfg.metricsDir) return cfg.metricsDir
+    return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null
   } catch {
-    // missing/unreadable/malformed config: fall through to the default.
+    return null // missing/unreadable/malformed config: fall through to the default.
   }
-  return defaultMetricsDir(env)
+}
+
+/**
+ * Validates a configured `replayTailLines`. Only a finite positive integer is
+ * accepted; anything else falls back to the default so the script can never
+ * slice past the start of the line array (mirrors the runtime config's junk
+ * rejection — except this script journals nothing, so the fallback is silent).
+ * @param {unknown} value The raw `replayTailLines` from the config file.
+ * @returns {number} The validated tail bound.
+ */
+function resolveReplayTailLines(value) {
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_REPLAY_TAIL_LINES
+}
+
+/**
+ * Resolves both the metrics directory and the replay tail bound the status
+ * surface uses. The config file is parsed once (silently-failing, fail-open)
+ * and always supplies the replay tail bound; the TURNSTILE_METRICS_DIR env
+ * overrides only the metrics directory (precedence env → file → default).
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {{ metricsDir: string, replayTailLines: number }} The resolved values.
+ */
+function resolveConfig(env) {
+  const config = loadConfigFile(env)
+  const envDir =
+    typeof env.TURNSTILE_METRICS_DIR === "string" && env.TURNSTILE_METRICS_DIR
+      ? env.TURNSTILE_METRICS_DIR
+      : ""
+  const fileDir =
+    config && typeof config.metricsDir === "string" && config.metricsDir ? config.metricsDir : ""
+  const metricsDir = envDir || fileDir || defaultMetricsDir(env)
+  return { metricsDir, replayTailLines: resolveReplayTailLines(config?.replayTailLines) }
 }
 
 /**
  * Reads the journal file and its `.1` generation as a single oldest-first line
- * stream, applying the same 2000-line tail bound the runtime replay uses so the
- * status flags stay replay-parity. Silently tolerates a missing generation.
+ * stream, applying the same `replayTailLines` tail bound (default 2000) the
+ * runtime replay uses so the status flags stay replay-parity. Silently
+ * tolerates a missing generation.
  * @param {string} journalPath Absolute path of `turnstile.jsonl`.
+ * @param {number} tailLines The replay tail bound in lines to keep.
  * @returns {{ files: string[], lines: string[] }} The files read and their lines.
  */
-function readJournal(journalPath) {
+function readJournal(journalPath, tailLines) {
   const generations = [`${journalPath}.1`, journalPath].filter((p) => fs.existsSync(p))
   if (generations.length === 0) return { files: [], lines: [] }
   const lines = generations.flatMap((p) => fs.readFileSync(p, "utf8").split("\n").filter(Boolean))
-  return { files: generations.map((p) => path.basename(p)), lines: lines.slice(-2000) }
+  return { files: generations.map((p) => path.basename(p)), lines: lines.slice(-tailLines) }
 }
 
 /**
@@ -299,9 +337,9 @@ async function main(argv) {
     return 0
   }
 
-  const metricsDir = resolveMetricsDir(process.env)
+  const { metricsDir, replayTailLines } = resolveConfig(process.env)
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
-  const { files, lines } = readJournal(journalPath)
+  const { files, lines } = readJournal(journalPath, replayTailLines)
 
   const base = {
     journal: journalPath,

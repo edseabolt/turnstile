@@ -569,6 +569,8 @@ journal (fail-open); a malformed config file never breaks the host.
 | `metricsDir`                                                                                                               | `$XDG_DATA_HOME/opencode/metrics`, fallback `~/.local/share/opencode/metrics`                                                                                                | directory for both telemetry files                                                                                                                                                                                                     |
 | `journalMaxBytes`                                                                                                          | 5242880                                                                                                                                                                      | rotate a journal file past this size                                                                                                                                                                                                   |
 | `journalMaxGenerations`                                                                                                    | 5                                                                                                                                                                            | rotated generations kept per journal                                                                                                                                                                                                   |
+| `journalRotateEveryEntries`                                                                                                | 512                                                                                                                                                                          | rotation cadence in appends; the rotate-then-rename runs once this many appends apart                                                                                                                                                  |
+| `replayTailLines`                                                                                                          | 2000                                                                                                                                                                         | lines of the current + `.1` generations replayed per boot to restore gate/plan state — one generation, not all `journalMaxGenerations`                                                                                                 |
 | `maxReviewerRounds`                                                                                                        | 2                                                                                                                                                                            | reviewer dispatches per task, regardless of gate state (waived dispatches exempt)                                                                                                                                                      |
 | `maxPlannerRounds`                                                                                                         | 3                                                                                                                                                                            | planner dispatches per task (waived dispatches exempt)                                                                                                                                                                                 |
 | `maxPlanReviewerRounds`                                                                                                    | 3                                                                                                                                                                            | plan-reviewer dispatches per task (waived dispatches exempt)                                                                                                                                                                           |
@@ -606,8 +608,9 @@ Environment variables (override the file):
 
 - Journals live outside the repo in `~/.local/share/opencode/metrics/`:
   - `turnstile.jsonl`: full JSONL trace; hot path is append-only and
-    rotates once per 512 writes under a lock-guarded rename, keeps 5
-    generations; a lock left behind by a crash between create and remove of
+    rotates once per `journalRotateEveryEntries` (default 512) writes under a
+    lock-guarded rename, keeps `journalMaxGenerations` (default 5) generations;
+    a lock left behind by a crash between create and remove of
     `<file>.lock` is skipped (that file stops rotating) until the directory
     is removed, and journaling keeps appending through it
   - `gate-events.jsonl`: human-readable
@@ -617,8 +620,8 @@ Environment variables (override the file):
     suppressed entirely by `trace: false`
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
   ~30 MB per journal, worst case ~60 MB total. Rotate overshoot is another
-  ~512 entries × ~2 KB per journal, taken between the size check and the
-  rename on the lock tick.
+  `journalRotateEveryEntries` (default 512) entries × ~2 KB per journal, taken
+  between the size check and the rename on the lock tick.
 - `.opencode/plans/*.md` containing `## Decomposition` are load-bearing:
   their presence activates the executor chunk-citation gate.
 - The journal also carries `{type:"ensemble", sessionID, agent, count}` entries:
@@ -627,8 +630,9 @@ Environment variables (override the file):
   `refusedApprove:true` stamp to the last `ensemble` entry and a
   `blocked` entry (`reason:"ensemble-incomplete"`, carrying `count` and
   `need: 2`). A human `always` release journals `refusedApprove:false` to clear
-  the stamp. Each type is replayed at boot and contributes to the 2000-line
-  tail: the last `ensemble` entry per session sets `reviewerDispatches`, and
+  the stamp. Each type is replayed at boot and contributes to the
+  `replayTailLines` tail (default 2000): the last `ensemble` entry per session
+  sets `reviewerDispatches`, and
   when it is stamped `refusedApprove:true` replay does not re-credit that
   APPROVE's `hasReviewApprove` on restart. When the landing gate is already
   released, a later APPROVE delivery is credited without a stamp: the release

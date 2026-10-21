@@ -628,6 +628,18 @@ export interface TurnstileConfig {
   /** Number of rotated journal generations to keep. */
   journalMaxGenerations: number
   /**
+   * Size-check/rotation cadence: the journal append hot path only stats and
+   * rotates once per this many appends; entries between the check and the
+   * rename are the bounded overshoot.
+   */
+  journalRotateEveryEntries: number
+  /**
+   * Replay tail window in lines: the most recent this-many journal lines
+   * (current file plus the previous generation, combined) are replayed at
+   * boot; older lines are dropped.
+   */
+  replayTailLines: number
+  /**
    * Max reviewer dispatches per task; the cap counts dispatches, applies
    * regardless of gate state, and is bypassed by an explicit waiver.
    */

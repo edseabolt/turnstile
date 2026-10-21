@@ -57,6 +57,8 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.trace, true)
   assert.equal(cfg.journalMaxBytes, 5 * 1024 * 1024)
   assert.equal(cfg.journalMaxGenerations, 5)
+  assert.equal(cfg.journalRotateEveryEntries, 512)
+  assert.equal(cfg.replayTailLines, 2000)
   assert.equal(cfg.gateEvidence, "enforce")
   assert.equal(cfg.reviewEnsemble, "enforce")
   assert.equal(cfg.evidencePattern, DEFAULT_EVIDENCE_PATTERN)
@@ -132,6 +134,40 @@ test("mergeConfig validates the loop-cap numeric keys", () => {
   assert.equal(ok.config.maxTestRunnerRounds, 9)
   assert.equal(ok.config.maxTotalDispatches, 40)
   assert.equal(ok.warnings.length, 0)
+})
+
+/** The journal rotation cadence runs the shared numeric scalar path: 0, a
+ *  negative, and a non-number are each rejected with a keeping-default
+ *  warning, and a valid override flips the digest. */
+test("mergeConfig validates journalRotateEveryEntries and the digest flips on override", () => {
+  const base = defaultConfig({})
+  for (const value of [0, -3, "x" as unknown]) {
+    const { config, warnings } = mergeConfig(base, { journalRotateEveryEntries: value })
+    assert.equal(config.journalRotateEveryEntries, 512)
+    assert.deepEqual(warnings, [
+      'config: invalid value for "journalRotateEveryEntries"; keeping default',
+    ])
+  }
+  const ok = mergeConfig(base, { journalRotateEveryEntries: 256 })
+  assert.equal(ok.config.journalRotateEveryEntries, 256)
+  assert.equal(ok.warnings.length, 0)
+  assert.notEqual(configDigest(base), configDigest(ok.config))
+})
+
+/** The replay tail window runs the shared numeric scalar path: 0, a
+ *  negative, and a non-number are each rejected with a keeping-default
+ *  warning, and a valid override flips the digest. */
+test("mergeConfig validates replayTailLines and the digest flips on override", () => {
+  const base = defaultConfig({})
+  for (const value of [0, -3, "x" as unknown]) {
+    const { config, warnings } = mergeConfig(base, { replayTailLines: value })
+    assert.equal(config.replayTailLines, 2000)
+    assert.deepEqual(warnings, ['config: invalid value for "replayTailLines"; keeping default'])
+  }
+  const ok = mergeConfig(base, { replayTailLines: 50 })
+  assert.equal(ok.config.replayTailLines, 50)
+  assert.equal(ok.warnings.length, 0)
+  assert.notEqual(configDigest(base), configDigest(ok.config))
 })
 
 /** approvalMarker is a valid string key: a non-empty string merges, an

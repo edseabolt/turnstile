@@ -432,7 +432,7 @@ test("inertness: replay over suppressed-only journal restores nothing", () => {
       source: "child-text",
     }) + "\n",
   )
-  const ledger = createLedger(journalPath, 8)
+  const ledger = createLedger(journalPath, 8, 2000)
   const s = ledger.state("p1")
   assert.equal(s.hasGatePass, false, "a suppressed-only journal restores no gate")
 })

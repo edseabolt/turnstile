@@ -73,6 +73,8 @@ export function defaultConfig(
     metricsDir: defaultMetricsDir(env),
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
+    journalRotateEveryEntries: 512,
+    replayTailLines: 2000,
     maxReviewerRounds: 2,
     // Per-leg loop caps: a healthy task is ≤1 planner + ≤3
     // plan-reviewer + N executor chunks + ≤4 test-runner + ≤2 reviewer; 16
@@ -176,6 +178,8 @@ type NumericConfigKey = Extract<
   keyof TurnstileConfig,
   | "journalMaxBytes"
   | "journalMaxGenerations"
+  | "journalRotateEveryEntries"
+  | "replayTailLines"
   | "maxReviewerRounds"
   | "maxPlannerRounds"
   | "maxPlanReviewerRounds"

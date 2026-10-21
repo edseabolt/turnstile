@@ -286,6 +286,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     trace: config.trace,
     maxBytes: config.journalMaxBytes,
     maxGenerations: config.journalMaxGenerations,
+    rotateEveryEntries: config.journalRotateEveryEntries,
   })
   // Config warnings are journaled exactly once, by config.ts (the pre-journaler
   // sink); they are now also *surfaced* once into the model context by the
@@ -377,7 +378,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     })
     journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
   }
-  const ledger: GateLedger = createLedger(journaler.journalPath, config.maxSessions)
+  const ledger: GateLedger = createLedger(
+    journaler.journalPath,
+    config.maxSessions,
+    config.replayTailLines,
+  )
   // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
   // Hits are detected and journaled at prompt admission (see admitPrompt) and
   // parked here; the session's next string-output tool delivery surfaces them

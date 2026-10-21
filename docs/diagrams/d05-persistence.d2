@@ -18,7 +18,7 @@ cli: "opencode-turnstile status\n(read-only aggregation)"
 
 writers.hooks -> jsonl: "every decision,\n20 entry types"
 writers.hooks -> trace: "trace:true only"
-jsonl -> replay: "at ledger creation:\nlast 2000 lines of current + .1"
+jsonl -> replay: "at ledger creation:\nlast replayTailLines (2000)\nof current + .1 — one\ngeneration, not all\njournalMaxGenerations"
 replay -> ledger
 ledger -> enforce
 jsonl -> cli

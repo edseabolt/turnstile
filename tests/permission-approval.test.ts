@@ -105,8 +105,9 @@ function makeGates(metricsDir: string): {
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 5,
+    rotateEveryEntries: 512,
   })
-  const ledger = createLedger(journaler.journalPath)
+  const ledger = createLedger(journaler.journalPath, 64, 2000)
   return { gates: createGates(defaultConfig(), journaler), ledger }
 }
 

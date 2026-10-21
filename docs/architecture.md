@@ -318,21 +318,26 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   entry-type chain does not count it).
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
-  runs once per `rotateEveryEntries` appends (default 512), only under a
+  runs once per `journalRotateEveryEntries` appends (default 512), only
+  under a
   created `<file>.lock` atomic-mkdir mutex, so two concurrent sessions never
   both rename the shared file. Disk usage stays bounded at `(N + 1) ×
-maxBytes`, plus at most `rotateEveryEntries × ~2 KB` of overshoot between
-  the size check and the rename; a contended lock or any rotation error is
+maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
+  between the size check and the rename; a contended lock or any rotation error is
   swallowed (fail-open); a leftover `<file>.lock` from a crash between create
   and remove is skipped, so that file stops rotating until the directory is
   removed while journaling keeps appending. A residual bounded race remains:
-  a writer that opens the path across the rename may land an entry in a `.1`
-  generation replay never reads, but the window is small and clock-free.
+  a writer that opens the path across the rename may land an entry in a
+  generation past the current + `.1` pair replay reads, but the window is
+  small and clock-free.
   Rotates at 5 MB, 5 generations.
 - **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
 
-On restart, `replayGatePasses` (`src/ledger.ts`) reads the last 2000 lines of
-the current + `.1` generations and restores per session, last-wins:
+On restart, `replayGatePasses` (`src/ledger.ts`) reads the last
+`replayTailLines` lines (default 2000) of the current + `.1` generations —
+exactly one rotation generation, deliberately not all `journalMaxGenerations`,
+which would cost `journalMaxGenerations × journalMaxBytes` of boot I/O worst
+case — and restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
 (task-result source only — streamed child verdicts never restore it), and
 ensemble counts. A plan APPROVE entry may carry the bound identity fields
@@ -369,6 +374,7 @@ warned. Highlights:
 
 | Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                          |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                             | 5 MB / 5 / 512 / 2000                                                                           |
 | Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                         |
 | Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                |
 | Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                          |

@@ -1362,6 +1362,30 @@ test("trace file rotates with the same bound as the journal", async () => {
   dispose()
 })
 
+/** The journalRotateEveryEntries config key reaches the journaler through
+ *  setup: a tiny size bound plus a two-append cadence rotates the journal
+ *  within a handful of dispatches (the default 512 cadence never would). */
+test("journalRotateEveryEntries from config drives the rotation tick", async () => {
+  const { h, dispose, metricsDir } = await boot({
+    journalMaxBytes: 100,
+    journalMaxGenerations: 2,
+    journalRotateEveryEntries: 2,
+  })
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  for (let i = 0; i < 3; i++) {
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner", prompt: `run tests ${i}` },
+    }).catch(() => {})
+  }
+  assert.ok(
+    fs.existsSync(`${journalPath}.1`),
+    "a two-append cadence under a 100-byte bound rotates within three dispatches",
+  )
+  dispose()
+})
+
 /** Setup journals exactly one load heartbeat with version, digest, and hook count. */
 test("setup journals one load heartbeat with version, digest, and hook count", async () => {
   const { dispose, metricsDir } = await boot()
@@ -1963,7 +1987,7 @@ test("a reviewer task-result verdict restores hasReviewApprove across a restart"
   assert.ok(verdict, "the verdict was journaled")
   assert.equal(verdict.source, "task-result")
   // The next boot restores the landing-gate approval from that verdict.
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
   dispose()
 })
@@ -1977,7 +2001,7 @@ test("a reviewer task-result verdict BLOCK does not restore hasReviewApprove", a
     input: { agent: "reviewer", prompt: "review it" },
     result: { output: "VERDICT: BLOCK crit=0 high=0 med=0 low=0\n" },
   })
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   assert.equal(ledger.state("p1").hasReviewApprove, false, "a BLOCK verdict sets nothing")
   dispose()
 })
@@ -2003,7 +2027,7 @@ test("a streamed verdict does not restore hasReviewApprove", async () => {
   const verdict = journalEntries(metricsDir).find((l) => l.type === "verdict")
   assert.ok(verdict)
   assert.notEqual(verdict.source, "task-result", "the streamed verdict is not a task-result")
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   assert.equal(
     ledger.state("p1").hasReviewApprove,
     false,
@@ -2027,7 +2051,7 @@ test("replay restores hasReviewApprove and the grace prompt carries it once, the
       source: "task-result",
     })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
   // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward once.
   ledger.resetState("p1")
@@ -2056,7 +2080,7 @@ test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
       JSON.stringify({ ts: "t1", type: "gate", sessionID: "p1", raw: "c1", result: "FAIL" }),
     ].join("\n") + "\n",
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   assert.equal(ledger.state("p1").hasReviewApprove, true, "GATE: FAIL never clears the approval")
 })
 
@@ -2064,7 +2088,7 @@ test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
  *  allowance counter), the per-reason once-grants, and resets humanApproval to
  *  false on an ordinary (non-grace) prompt reset. */
 test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => {
-  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   s.userWaiver = "USER WAIVER: proceed"
   s.userWaiverScope = ["reviewer"]
@@ -2098,7 +2122,7 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
     path.join(metricsDir, "turnstile.jsonl"),
     `${JSON.stringify({ ts: "t", type: "plan", sessionID: "p1", result: "APPROVE" })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   // Seed the journal-restored provenance value: the journal owns the
   // source; mergeAfterReplay must carry it across the grace prompt.
   const s = ledger.state("p1")
@@ -2168,7 +2192,7 @@ test("replay restores bound plan identity; legacy lines restore unbound; BLOCK r
       JSON.stringify({ ts: "t4", type: "plan", sessionID: "p3", result: "BLOCK" }),
     ].join("\n") + "\n",
   )
-  const ledger = createLedger(journalPath)
+  const ledger = createLedger(journalPath, 64, 2000)
   const s1 = ledger.state("p1")
   assert.equal(s1.hasPlanVerdict, true)
   assert.equal(s1.approvedPlan, "z-work.md", "replay restores the bound plan name")
@@ -2198,7 +2222,7 @@ test("grace prompt carries the bound plan identity; a full reset clears it", () 
       planKey: "abc123",
     })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.hasPlanVerdict, true)
   assert.equal(s.approvedPlan, "z-work.md")
@@ -2236,7 +2260,7 @@ test("replay restores the journaled plan signature; legacy and non-string fields
       JSON.stringify({ ts: "t3", type: "plan", sessionID: "p3", result: "APPROVE", plansSig: 42 }),
     ].join("\n") + "\n",
   )
-  const ledger = createLedger(journalPath)
+  const ledger = createLedger(journalPath, 64, 2000)
   const s1 = ledger.state("p1")
   assert.equal(s1.hasPlanVerdict, true)
   assert.equal(s1.plansSignature, "plan.md:abc", "a string plansSig restores the stamp verbatim")
@@ -2263,7 +2287,7 @@ test("grace prompt carries the journaled plan signature; a full reset clears it"
       plansSig: "plan.md:abc",
     })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.hasPlanVerdict, true)
   assert.equal(s.plansSignature, "plan.md:abc")
@@ -2603,6 +2627,62 @@ test("journal replay tail is bounded at 2000 lines across both generations", asy
   dispose()
 })
 
+/** Replay truncates the combined generation tail at the configured
+ *  replayTailLines, last-wins within the surviving window: a session whose
+ *  only entry sits before a one-line tail is not restored, a PASS-then-FAIL
+ *  session stays red at the one-line tail, and a wider tail restores the
+ *  dropped session while keeping last-wins. */
+test("replay honors the configured replayTailLines (truncation + last-wins)", () => {
+  const metricsDir = tmpDir()
+  const journal = path.join(metricsDir, "turnstile.jsonl")
+  fs.writeFileSync(
+    journal,
+    [
+      JSON.stringify({ ts: "t1", type: "gate", sessionID: "pDropped", raw: "c1", result: "PASS" }),
+      JSON.stringify({ ts: "t2", type: "gate", sessionID: "pFlip", raw: "c2", result: "PASS" }),
+      JSON.stringify({ ts: "t3", type: "gate", sessionID: "pFlip", raw: "c3", result: "FAIL" }),
+    ].join("\n") + "\n",
+  )
+  const tight = createLedger(journal, 64, 1)
+  assert.equal(tight.state("pFlip").hasGatePass, false, "a one-line tail keeps only the FAIL")
+  assert.equal(tight.state("pDropped").hasGatePass, false, "the earlier PASS is truncated away")
+  const wide = createLedger(journal, 64, 2000)
+  assert.equal(wide.state("pDropped").hasGatePass, true, "the full tail restores the earlier PASS")
+  assert.equal(wide.state("pFlip").hasGatePass, false, "last-wins is unchanged for the wider tail")
+})
+
+/** The replayTailLines config key reaches the ledger through setup: a
+ *  one-line tail truncates the pre-written journal, so a session whose only
+ *  PASS sits before the tail does not restore its gate across a restart. */
+test("replayTailLines from config truncates the boot replay", async () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({ ts: "t1", type: "gate", sessionID: "pOld", raw: "c1", result: "PASS" }),
+      JSON.stringify({ ts: "t2", type: "gate", sessionID: "pNew", raw: "c2", result: "FAIL" }),
+    ].join("\n") + "\n",
+  )
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, replayTailLines: 1 },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  // pOld's only entry is truncated by the one-line tail, so its reviewer
+  // dispatch is still blocked after the restart.
+  await assert.rejects(
+    () =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "pOld",
+        input: { agent: "reviewer", prompt: "review it" },
+      }),
+    (e: Error) => e.message === NO_GATE_MESSAGE,
+  )
+  dispose()
+})
+
 // ---------------------------------------------------------------------------
 // Evidence correlation (verified verdicts, gate-unverified gating)
 // ---------------------------------------------------------------------------
@@ -2648,8 +2728,14 @@ function bootGates(): {
   metricsDir: string
 } {
   const metricsDir = tmpDir()
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
-  const journaler = createJournaler({ metricsDir, trace: false, maxBytes: 1e6, maxGenerations: 1 })
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  const journaler = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1e6,
+    maxGenerations: 1,
+    rotateEveryEntries: 512,
+  })
   return { gates: createGates(defaultConfig(), journaler), ledger, metricsDir }
 }
 
@@ -3263,7 +3349,7 @@ const VERDICT_BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
  *  marker/source changes true (the setup layer journals a streamed verdict iff
  *  so) and identical re-records false (a per-(child, marker, source) hit). */
 test("recordChildVerdict flags first-record and marker/source change true, identical re-record false", () => {
-  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
   // First record: empty → (marker, source) changes, so true.
   assert.equal(ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text"), true)
   const v = ledger.childVerdict("c1")
@@ -3289,7 +3375,7 @@ test("recordChildVerdict flags first-record and marker/source change true, ident
  *  streamed APPROVE, but leaves a concurrent task on another parent's child
  *  evidence intact (scoped clear, not a global wipe). */
 test("resetState clears childVerdicts scoped to the reset parent, preserving other parents' children", () => {
-  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
   // Two concurrent tasks: c1→p1 and c2→p2, each with a streamed verdict.
   ledger.setParent("c1", "p1")
   ledger.recordChildVerdict("c1", VERDICT_APPROVE, "child-text")
@@ -3378,7 +3464,7 @@ test("clearMeteringCounters ignores the read flag and unverified claim in its re
  *  no minted bucket, none for an all-fresh child, and the per-child sum when
  *  several are non-fresh. */
 test("resetState returns the number of child buckets it frees", () => {
-  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
   // One non-fresh child: freed 1, counter cleared.
   ledger.setParent("c1", "p1")
   const c1 = ledger.state("c1")
@@ -3404,7 +3490,7 @@ test("resetState returns the number of child buckets it frees", () => {
  *  the ensemble dispatch count) while clearing exactly the metering counters,
  *  the read flag, and the pending unverified-claim on each released child. */
 test("child release preserves earned credit while clearing the metering counters", () => {
-  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
   ledger.setParent("c1", "p1")
   const c1 = ledger.state("c1")
   c1.hasGatePass = true
@@ -3444,7 +3530,7 @@ test("child release preserves earned credit while clearing the metering counters
  *  another parent keeps its own children's counters and verdict evidence
  *  intact (a scoped clear, not a global wipe). */
 test("child release is scoped to the reset parent, leaving other parents' children intact", () => {
-  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"))
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
   ledger.setParent("c1", "p1")
   ledger.setParent("c2", "p2")
   ledger.state("c1").plannerRounds = 1
@@ -3466,7 +3552,7 @@ test("replay ignores child-reset entries", () => {
     path.join(metricsDir, "turnstile.jsonl"),
     `${JSON.stringify({ ts: "t", type: "child-reset", sessionID: "p1", children: 1 })}\n`,
   )
-  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"))
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
   const s = ledger.state("p1")
   assert.equal(s.hasGatePass, false, "child-reset restores no gate")
   assert.equal(s.hasPlanVerdict, false, "child-reset restores no plan verdict")
