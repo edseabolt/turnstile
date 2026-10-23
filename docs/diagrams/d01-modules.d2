@@ -19,7 +19,7 @@ core: "src/ — one concern per boundary" {
   hookssession: "hooks-session.ts\nprompt · generate · compaction bodies"
   hookspermission: "hooks-permission.ts\nevaluate body (plan/landing arms)"
   hookstool: "hooks-tool.ts\nexecute.before / after bodies"
-  hooksevents: "hooks-events.ts\nevent surface: consume + supervise\n(bounded restarts)"
+  hooksevents: "hooks-events.ts\nevent surface: consume + supervise\n(throw-only restart budget)"
   delivery: "delivery.ts\nhost payload delivery: shape ladder,\ntext mutation, key tables, ask prefixes"
   config: "config.ts\n4-layer config (defaults ⊕ file ⊕ env ⊕ opts),\nvalidation, configDigest"
   state: "state.ts — GateState shape\nnewState, counters, snapshot + pipeline\nrendering, replay-merge"
