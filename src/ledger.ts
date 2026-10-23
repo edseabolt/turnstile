@@ -10,7 +10,8 @@
 import * as fs from "node:fs"
 
 import type { ChildVerdict, GateState } from "./types.ts"
-import { clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
+import { appendLine, now } from "./journal.ts"
+import { REVIEW_ENSEMBLE_SIZE, clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
 
 /** Live gate bookkeeping shared by the gate, marker, and wiring layers. */
 export interface GateLedger {
@@ -145,11 +146,474 @@ export interface GateLedger {
 }
 
 /**
+ * Host session-ID alphabet, length-capped: the only shapes replay accepts
+ * as bucket keys. Anything else is hostile bytes, not a session.
+ */
+const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
+/** Upper bound on a replayed VERDICT marker string (a real marker fits
+ *  well under this; anything longer is hostile padding). */
+const MAX_REPLAY_MARKER_LEN = 512
+/** Upper bound on a replayed plan file name (a path-free file name). */
+const MAX_REPLAY_NAME_LEN = 128
+/** Upper bound on a replayed plans-dir signature string. */
+const MAX_REPLAY_SIG_LEN = 4096
+/** sha256 hex: the shape of a journaled per-plan content key. */
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/
+/** Alphabet of a path-free plan file name (length bounded separately by
+ *  `MAX_REPLAY_NAME_LEN`). */
+const PLAN_NAME_RE = /^[A-Za-z0-9._-]+$/
+/** Cap on per-dropped-line telemetry entries per boot; the overflow is
+ *  journaled as one summary entry instead (bounded writes, like
+ *  maxTrackedNearMiss elsewhere in the codebase). */
+const MAX_REPLAY_TELEMETRY = 16
+
+/**
+ * One replay line rejected by validation, awaiting its telemetry entry.
+ * `sessionID` is present only when the value already passed the shape check
+ * (hostile bytes are never echoed back into the journal).
+ */
+interface ReplayDrop {
+  reason: "malformed" | "session-id" | "entry-shape" | "count-invalid"
+  sessionID?: string
+}
+
+/** The five last-wins replay maps, one store per replayed entry kind. */
+interface ReplayMaps {
+  lastGateResult: Map<string, string>
+  lastPlanResult: Map<string, { result: string; plan: unknown; planKey: unknown; sig: unknown }>
+  lastReviewVerdict: Map<string, string>
+  lastEnsemble: Map<string, number>
+  lastRefusedApprove: Map<string, boolean>
+}
+
+/**
+ * Fresh empty replay maps (the last-wins stores the boot replay fills).
+ * @returns The empty map set.
+ */
+function newReplayMaps(): ReplayMaps {
+  return {
+    lastGateResult: new Map(),
+    lastPlanResult: new Map(),
+    lastReviewVerdict: new Map(),
+    lastEnsemble: new Map(),
+    lastRefusedApprove: new Map(),
+  }
+}
+
+/**
+ * Reads the retained journal lines covering the replay window, oldest-first.
+ * Walks generations newest-first (`journalPath`, then `${journalPath}.1`,
+ * `.2`, …, stopping at the first missing generation — a missing current file
+ * is the post-rotation state, so the walk starts at `.1`) and stops as soon
+ * as the collected lines alone satisfy the tail bound. Generations are
+ * time-ordered, so latest-wins still falls out of the oldest-first result.
+ * @param journalPath Absolute path of the current journal file.
+ * @param tailLines The tail bound in lines (non-positive reads nothing).
+ * @returns The tail-window lines, oldest-first (empty when nothing is read).
+ */
+function readReplayLines(journalPath: string, tailLines: number): string[] {
+  if (tailLines <= 0) return []
+  const blocks: string[][] = []
+  let generation = fs.existsSync(journalPath) ? 0 : 1
+  for (;;) {
+    const file = generation === 0 ? journalPath : `${journalPath}.${generation}`
+    if (!fs.existsSync(file)) break
+    blocks.unshift(fs.readFileSync(file, "utf8").split("\n").filter(Boolean))
+    if (blocks.reduce((total, block) => total + block.length, 0) >= tailLines) break
+    generation++
+  }
+  return blocks.flat().slice(-tailLines)
+}
+
+/**
+ * Parses one journal line for the boot replay.
+ * @param line The raw journal line.
+ * @returns The parsed record when `line` is a JSON object of a replay-typed
+ *     kind (`gate`, `plan`, `verdict`, `ensemble`); `"malformed"` when the
+ *     line does not parse to an object record (a JSON error, a non-object,
+ *     or an array); and `null` for every other, replay-inert line (any other
+ *     entry type) — inert lines stay inert without telemetry, exactly as
+ *     before.
+ */
+function parseReplayLine(line: string): Record<string, unknown> | "malformed" | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return "malformed"
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "malformed"
+  const entry = parsed as Record<string, unknown>
+  if (
+    entry.type !== "gate" &&
+    entry.type !== "plan" &&
+    entry.type !== "verdict" &&
+    entry.type !== "ensemble"
+  ) {
+    return null
+  }
+  return entry
+}
+
+/**
+ * Folds a `gate` entry into the last-wins result map. Only `PASS`/`FAIL`
+ * replay (a `WAIVED` or other sub-kind stays inert). The flipping-entry rule:
+ * an enforce-mode unverified PASS never flipped (nor did it at runtime), so
+ * it is not recorded as the deciding last result; a flag-mode unverified PASS
+ * DID flip at runtime and restores green; a field-less legacy PASS restores
+ * (fail-open, documented).
+ * @param entry The parsed `gate` entry.
+ * @param lastGateResult The last-wins gate-result map to fill.
+ * @param sessionID The validated session ID.
+ */
+function foldGate(
+  entry: Record<string, unknown>,
+  lastGateResult: Map<string, string>,
+  sessionID: string,
+): void {
+  const result = entry.result
+  if (result === "PASS") {
+    if (entry.verified === false && entry.mode !== "flag") return
+    lastGateResult.set(sessionID, result)
+    return
+  }
+  if (result === "FAIL") lastGateResult.set(sessionID, result)
+}
+
+/**
+ * Folds a `plan` entry into the last-wins result map. Only `APPROVE`/`BLOCK`
+ * replay (a `WAIVED`/`STALE` or other sub-kind stays inert). The identity
+ * fields (plan/planKey/plansSig) are stored raw — the restore loop
+ * sanitizes them.
+ * @param entry The parsed `plan` entry.
+ * @param lastPlanResult The last-wins plan-result map to fill.
+ * @param sessionID The validated session ID.
+ */
+function foldPlan(
+  entry: Record<string, unknown>,
+  lastPlanResult: ReplayMaps["lastPlanResult"],
+  sessionID: string,
+): void {
+  const result = entry.result
+  if (result !== "APPROVE" && result !== "BLOCK") return
+  lastPlanResult.set(sessionID, {
+    result,
+    plan: entry.plan,
+    planKey: entry.planKey,
+    sig: entry.plansSig,
+  })
+}
+
+/**
+ * Folds a `verdict` entry into the last-wins verdict map. Only
+ * `task-result` sources are credited — the landing gate releases only on a
+ * delivery-attributed reviewer verdict, so a verdict streamed in child text
+ * never restores the flag (this is how the invariant holds across a restart
+ * too) — and a trailing `VERDICT: BLOCK` leaves the flag off (the recency
+ * boundary is the last verdict, not task reset). The marker must be a string
+ * within the marker bound; a shape violation is a drop, never a silent skip
+ * (a hostile marker never folded at runtime either).
+ * @param entry The parsed `verdict` entry.
+ * @param lastReviewVerdict The last-wins verdict map to fill.
+ * @param sessionID The validated session ID.
+ * @returns A shape drop for an invalid marker, or `null` when folded or inert.
+ */
+function foldVerdict(
+  entry: Record<string, unknown>,
+  lastReviewVerdict: Map<string, string>,
+  sessionID: string,
+): ReplayDrop | null {
+  if (entry.source !== "task-result") return null
+  const marker = entry.marker
+  if (typeof marker !== "string" || marker.length > MAX_REPLAY_MARKER_LEN) {
+    return { reason: "entry-shape", sessionID }
+  }
+  lastReviewVerdict.set(sessionID, marker.includes("APPROVE") ? "APPROVE" : "BLOCK")
+  return null
+}
+
+/**
+ * Folds an `ensemble` entry into the last-wins count map. The count must be
+ * a non-negative integer; a count above the ensemble size clamps to it
+ * (enforcement only tests `>= REVIEW_ENSEMBLE_SIZE`, so the clamped restore
+ * is enforcement-equivalent), and a non-integer or negative count is a drop.
+ * The entry's explicit `refusedApprove` stamp follows the last valid entry:
+ * an explicit refusal, an explicit human-grant clear, or an absent field
+ * (which un-stamps a prior refusal, matching the runtime rule).
+ * @param entry The parsed `ensemble` entry.
+ * @param lastEnsemble The last-wins count map to fill.
+ * @param lastRefusedApprove The last-wins refusal-stamp map to fill.
+ * @param sessionID The validated session ID.
+ * @returns A count drop for an invalid count, or `null` when folded.
+ */
+function foldEnsemble(
+  entry: Record<string, unknown>,
+  lastEnsemble: Map<string, number>,
+  lastRefusedApprove: Map<string, boolean>,
+  sessionID: string,
+): ReplayDrop | null {
+  const count = entry.count
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
+    return { reason: "count-invalid", sessionID }
+  }
+  lastEnsemble.set(sessionID, Math.min(count, REVIEW_ENSEMBLE_SIZE))
+  if (entry.refusedApprove === true) lastRefusedApprove.set(sessionID, true)
+  else if (entry.refusedApprove === false) lastRefusedApprove.set(sessionID, false)
+  else lastRefusedApprove.delete(sessionID)
+  return null
+}
+
+/**
+ * Dispatches a replay-typed entry to its per-kind fold.
+ * @param entry The parsed replay-typed entry.
+ * @param maps The last-wins maps to fill.
+ * @param sessionID The validated session ID.
+ * @returns The kind's drop record, or `null` when the entry folded (or is an
+ *     inert sub-kind, which folds nothing and drops nothing).
+ */
+function foldReplayLine(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  const type = entry.type
+  if (type === "gate") {
+    foldGate(entry, maps.lastGateResult, sessionID)
+    return null
+  }
+  if (type === "plan") {
+    foldPlan(entry, maps.lastPlanResult, sessionID)
+    return null
+  }
+  if (type === "verdict") {
+    return foldVerdict(entry, maps.lastReviewVerdict, sessionID)
+  }
+  return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
+}
+
+/**
+ * Journals one `suppressed`-style telemetry entry per dropped replay line,
+ * capped at `MAX_REPLAY_TELEMETRY` per-line entries plus a single summary
+ * entry naming the suppressed remainder when the cap is exceeded (bounded
+ * writes: a hostile journal cannot force unbounded appends per boot). The
+ * entries are replay-inert and status-inert by construction — neither the
+ * boot replay nor the status chain reads a `kind:"replay"` line.
+ * `appendLine` is fail-open by contract; this never throws.
+ * @param journalPath Absolute path of the journal to append to.
+ * @param drops The dropped lines, oldest-first.
+ */
+function journalReplayDrops(journalPath: string, drops: ReplayDrop[]): void {
+  if (drops.length === 0) return
+  const ts = now()
+  for (const drop of drops.slice(0, MAX_REPLAY_TELEMETRY)) {
+    const entry: Record<string, unknown> = {
+      ts,
+      type: "suppressed",
+      kind: "replay",
+      reason: drop.reason,
+    }
+    if (drop.sessionID !== undefined) entry.sessionID = drop.sessionID
+    appendLine(journalPath, JSON.stringify(entry))
+  }
+  if (drops.length > MAX_REPLAY_TELEMETRY) {
+    appendLine(
+      journalPath,
+      JSON.stringify({
+        ts,
+        type: "suppressed",
+        kind: "replay",
+        event: "summary",
+        dropped: drops.length,
+      }),
+    )
+  }
+}
+
+/**
+ * Returns the session's bucket (minting a fresh one when absent) and tags it
+ * with replay grace — the one-prompt survival window for the first
+ * post-restart prompt. Both restore loops touch the same bucket object when
+ * a session has both a gate and a plan result, so the tag is set idempotently.
+ * @param states The session→state map to populate.
+ * @param sessionID The session whose bucket is restored.
+ * @returns The bucket, tagged and stored.
+ */
+function graceBucket(states: Map<string, GateState>, sessionID: string): GateState {
+  const s = states.get(sessionID) ?? newState()
+  s.replayGrace = true
+  states.set(sessionID, s)
+  return s
+}
+
+/**
+ * Restores the last flipping `GATE: PASS` per session (a trailing
+ * `GATE: FAIL` keeps the gate red), tagging each bucket with replay grace.
+ * @param states The session→state map to populate.
+ * @param lastGateResult The replayed last-wins gate results.
+ */
+function restoreGatePasses(
+  states: Map<string, GateState>,
+  lastGateResult: Map<string, string>,
+): void {
+  for (const [sessionID, result] of lastGateResult) {
+    if (result !== "PASS") continue
+    graceBucket(states, sessionID).hasGatePass = true
+  }
+}
+
+/**
+ * Restores the last plan `APPROVE` per session with its sanitized bound
+ * identity (a field-less, over-length, or malformed-shape field degrades to
+ * the unbound/unstamped value — legacy lines replay unchanged). A restored
+ * bound verdict is validated against the current plans dir immediately on
+ * the next enforcing dispatch — stricter than the unbound accept-once rule.
+ * @param states The session→state map to populate.
+ * @param lastPlanResult The replayed last-wins plan results.
+ */
+function restorePlanVerdicts(
+  states: Map<string, GateState>,
+  lastPlanResult: ReplayMaps["lastPlanResult"],
+): void {
+  for (const [sessionID, entry] of lastPlanResult) {
+    if (entry.result !== "APPROVE") continue
+    const s = graceBucket(states, sessionID)
+    s.hasPlanVerdict = true
+    s.approvedPlan = sanitizePlanName(entry.plan)
+    s.approvedPlanKey = sanitizePlanKey(entry.planKey)
+    s.plansSignature = sanitizePlansSig(entry.sig)
+  }
+}
+
+/**
+ * Restores the last `task-result` `VERDICT: APPROVE` per session,
+ * refusal-suppressed: a session whose last counted ensemble entry stamped
+ * `refusedApprove:true` (the runtime refused to credit that APPROVE because
+ * fewer than two dispatches were counted) is not re-credited on restart; an
+ * explicit clear (`refusedApprove:false`) or an absent field both let the
+ * verdict through — only an explicit refusal suppresses it.
+ * @param states The session→state map to populate.
+ * @param lastReviewVerdict The replayed last-wins reviewer verdicts.
+ * @param lastRefusedApprove The replayed last-wins refusal stamps.
+ */
+function restoreReviewApprovals(
+  states: Map<string, GateState>,
+  lastReviewVerdict: Map<string, string>,
+  lastRefusedApprove: Map<string, boolean>,
+): void {
+  for (const [sessionID, result] of lastReviewVerdict) {
+    if (result !== "APPROVE") continue
+    if (lastRefusedApprove.get(sessionID) === true) continue
+    graceBucket(states, sessionID).hasReviewApprove = true
+  }
+}
+
+/**
+ * A human always-grant releases the landing gate by stamping the last
+ * ensemble entry `refusedApprove:false` (a clear). Restores the flag so a
+ * human release survives restart — independent of any verdict, since a human
+ * release outranks the mechanical ensemble. A still-refused session (last
+ * entry `refusedApprove:true`) falls through and is not re-credited.
+ * @param states The session→state map to populate.
+ * @param lastRefusedApprove The replayed last-wins refusal stamps.
+ */
+function restoreHumanGrants(
+  states: Map<string, GateState>,
+  lastRefusedApprove: Map<string, boolean>,
+): void {
+  for (const [sessionID, refused] of lastRefusedApprove) {
+    if (refused !== false) continue
+    graceBucket(states, sessionID).hasReviewApprove = true
+  }
+}
+
+/**
+ * Restores the last ensemble count per session (already clamped to the
+ * ensemble size at fold time). A session that also had a flag restored
+ * carries replay grace from the loops above, so it survives the grace prompt
+ * together with its count; an ensemble-only line restores the bare count
+ * with no grace and no one-prompt carry.
+ * @param states The session→state map to populate.
+ * @param lastEnsemble The replayed last-wins ensemble counts.
+ */
+function restoreEnsembleCounts(
+  states: Map<string, GateState>,
+  lastEnsemble: Map<string, number>,
+): void {
+  for (const [sessionID, count] of lastEnsemble) {
+    const s = states.get(sessionID) ?? newState()
+    s.reviewerDispatches = count
+    states.set(sessionID, s)
+  }
+}
+
+/**
+ * Runs the five restore loops in order (gate, plan, verdict, human-grant,
+ * ensemble) over the replayed last-wins maps.
+ * @param states The session→state map to populate.
+ * @param maps The filled replay maps.
+ */
+function restoreBuckets(states: Map<string, GateState>, maps: ReplayMaps): void {
+  restoreGatePasses(states, maps.lastGateResult)
+  restorePlanVerdicts(states, maps.lastPlanResult)
+  restoreReviewApprovals(states, maps.lastReviewVerdict, maps.lastRefusedApprove)
+  restoreHumanGrants(states, maps.lastRefusedApprove)
+  restoreEnsembleCounts(states, maps.lastEnsemble)
+}
+
+/**
+ * Sanitizes a replayed bound plan file name: a path-free name within the
+ * length bound. Anything else — a path separator, hostile bytes, an
+ * over-length value, or a non-string — degrades to the unbound empty name.
+ * @param plan The raw `plan` field of a replayed plan entry.
+ * @returns The bound name, or `""` when unbound.
+ */
+function sanitizePlanName(plan: unknown): string {
+  if (typeof plan !== "string" || plan.length < 1 || plan.length > MAX_REPLAY_NAME_LEN) return ""
+  return PLAN_NAME_RE.test(plan) ? plan : ""
+}
+
+/**
+ * Sanitizes a replayed bound plan content key: a sha256 hex digest (the
+ * journaled key is always a content hash). Anything else degrades to the
+ * unbound empty key.
+ * @param planKey The raw `planKey` field of a replayed plan entry.
+ * @returns The bound key, or `""` when unbound.
+ */
+function sanitizePlanKey(planKey: unknown): string {
+  if (typeof planKey !== "string" || !SHA256_HEX_RE.test(planKey)) return ""
+  return planKey
+}
+
+/**
+ * Sanitizes a replayed plans-dir signature: a string within the length bound
+ * (its `name:sha256hex,…` shape is revalidated against the live dir scan at
+ * dispatch). Anything else degrades to the empty stamp, which keeps the
+ * approval on the documented accept-once path.
+ * @param sig The raw `plansSig` field of a replayed plan entry.
+ * @returns The stamp, or `""` when unstamped.
+ */
+function sanitizePlansSig(sig: unknown): string {
+  if (typeof sig !== "string" || sig.length > MAX_REPLAY_SIG_LEN) return ""
+  return sig
+}
+
+/**
  * Replays the journal's tail so completed `GATE: PASS` entries restore
- * gate state after a restart. Reads the last `tailLines` lines; skips
- * malformed lines. Only the *last flipping* gate result per session decides
- * the restored state, mirroring the runtime latest-wins rule (a trailing
- * `GATE: FAIL` keeps the gate red). Fail-open.
+ * gate state after a restart. Reads the last `tailLines` lines across all
+ * retained generations; drops malformed lines. Only the *last flipping*
+ * gate result per session decides the restored state, mirroring the runtime
+ * latest-wins rule (a trailing `GATE: FAIL` keeps the gate red). Fail-open.
+ *
+ * Replay treats the journal as untrusted input: a sessionID must match the
+ * host shape or its line is dropped (never echoed back into the journal), a
+ * non-`task-result` verdict is inert, an oversized verdict marker is a shape
+ * drop, an ensemble count above the ensemble size clamps to it (a
+ * non-integer or negative count is a drop), and a bound plan identity
+ * degrades to the unbound value when it fails its shape (a name with path
+ * separators or over-length, a non-sha256 key, an over-length signature).
+ * Each dropped line journals one replay-inert `suppressed` telemetry entry
+ * (capped per boot, with a summary entry for the overflow) so truncation and
+ * forgery are observable.
  *
  * A replayed green is journaled audited evidence, not runtime proof: the
  * flipping-entry filter skips enforce-mode `verified:false` PASSes (they
@@ -164,14 +628,17 @@ export interface GateLedger {
  * first post-restart prompt; both loops touch the same bucket object when a
  * session has both a gate and a plan result, so the tag is set once. A plan
  * APPROVE entry may carry the bound identity fields `plan` (file name) and
- * `planKey` (that file's content hash); when present they restore
- * `approvedPlan`/`approvedPlanKey` (absent or non-string → unbound ""). It
+ * `planKey` (that file's content hash); when present and well-shaped they
+ * restore `approvedPlan`/`approvedPlanKey` (absent, non-string, or
+ * malformed-shape → unbound ""). It
  * may also carry `plansSig` (the plans-dir content signature stamped at
- * approval); when present it restores `plansSignature`, so a restored
+ * approval); when present and within the length bound it restores
+ * `plansSignature`, so a restored
  * unbound verdict is validated against the current dir like a live one — a
  * plan edited while the process was down drops it (`signature-mismatch`
- * STALE) instead of riding the accept-once window. A field-less or
- * non-string entry restores the empty stamp, which the grace prompt's
+ * STALE) instead of riding the accept-once window. A field-less,
+ * over-length, or malformed-shape entry restores the empty stamp, which the
+ * grace prompt's
  * executor dispatch accepts once and re-stamps via reconcilePlanStamp —
  * edits _after_ restart still invalidate the restored approval. A
  * restored *bound* verdict is stricter than the unbound accept-once rule: it
@@ -190,12 +657,15 @@ export interface GateLedger {
  * `replayGrace`, while an ensemble-only count line restores the bare count with
  * no grace and no one-prompt carry.
  * @param states The session→state map to populate.
- * @param journalPath Absolute path of the JSONL journal to replay; the prior
- *     generation (`${journalPath}.1`) is read first so the tail bound holds
- *     across both files. Exactly one generation is replayed — deliberately
- *     not following `journalMaxGenerations`, which sizes the write-side
- *     retention: replaying every kept generation would cost up to
- *     `journalMaxGenerations × journalMaxBytes` of boot I/O worst case.
+ * @param journalPath Absolute path of the JSONL journal to replay. The scan
+ *     walks the retained generations newest-first (`journalPath`, then
+ *     `${journalPath}.1`, `.2`, …, stopping at the first missing generation —
+ *     a missing current file is the post-rotation state, so the walk starts
+ *     at `.1`), and stops as soon as the collected lines alone satisfy the
+ *     tail bound: the walk stops within the newest generation that alone
+ *     satisfies the tail bound; worst case bounded by retained-generation
+ *     sizes, never the full `journalMaxGenerations × journalMaxBytes`
+ *     envelope.
  * @param tailLines Maximum number of combined journal lines replayed; older
  *     lines are dropped.
  */
@@ -205,176 +675,25 @@ function replayGatePasses(
   tailLines: number,
 ): void {
   try {
-    // Read the rotated generation first (`.1`, older) then the current file,
-    // oldest-first, so the tail bound holds across both files. Generations are
-    // time-ordered, so latest-wins still falls out naturally.
-    const generations = [`${journalPath}.1`, journalPath].filter((p) => fs.existsSync(p))
-    if (generations.length > 0) {
-      const lines = generations.flatMap((p) =>
-        fs.readFileSync(p, "utf8").split("\n").filter(Boolean),
-      )
-      const lastGateResult = new Map<string, string>()
-      // The last flipping plan entry per session: the result, the bound
-      // identity fields (plan/planKey) so a fielded APPROVE restores a bound
-      // approval, and the journaled dir signature (plansSig) so a stamped
-      // APPROVE restores its stamp; a field-less legacy line restores
-      // unbound and unstamped.
-      const lastPlanResult = new Map<
-        string,
-        { result: string; plan: unknown; planKey: unknown; sig: unknown }
-      >()
-      const lastReviewVerdict = new Map<string, string>()
-      // The last ensemble entry per session. lastEnsemble is the restored
-      // count; lastRefusedApprove records that entry's refusal state, which the
-      // verdict loop consults to skip a refused APPROVE's restore and the
-      // clearing loop consults to restore a human grant. All three maps are
-      // last-wins over valid entries only.
-      const lastEnsemble = new Map<string, number>()
-      // Last explicit refusal state of the final ensemble entry for a session:
-      // true (stamped refusedApprove:true), false (cleared by a human grant),
-      // or absent from the map (no explicit stamp recorded, or the last valid
-      // entry had no field — an ordinary dispatch). Absent entries delete so a
-      // later dispatch un-stamps a prior refusal, matching the runtime rule.
-      const lastRefusedApprove = new Map<string, boolean>()
-      for (const line of lines.slice(-tailLines)) {
-        try {
-          const e = JSON.parse(line) as {
-            type?: unknown
-            sessionID?: unknown
-            result?: unknown
-            marker?: unknown
-            source?: unknown
-            verified?: unknown
-            mode?: unknown
-            count?: unknown
-            refusedApprove?: unknown
-            plan?: unknown
-            planKey?: unknown
-            plansSig?: unknown
-          }
-          if (e.type === "gate" && e.sessionID && (e.result === "PASS" || e.result === "FAIL")) {
-            // Flipping-entry rule (map-fill, not the restore loop): an
-            // enforce-mode unverified PASS never flips (nor did it at runtime),
-            // so it is not recorded as the deciding last result. A flag-mode
-            // verified:false PASS DID flip at runtime and restores green; a
-            // legacy field-less PASS restores (fail-open, documented).
-            if (e.result === "PASS" && e.verified === false && e.mode !== "flag") continue
-            lastGateResult.set(e.sessionID as string, e.result)
-          }
-          if (
-            e.type === "plan" &&
-            e.sessionID &&
-            (e.result === "APPROVE" || e.result === "BLOCK")
-          ) {
-            lastPlanResult.set(e.sessionID as string, {
-              result: e.result,
-              plan: e.plan,
-              planKey: e.planKey,
-              sig: e.plansSig,
-            })
-          }
-          // Reviewer-APPROVE restore (landing gate): a `VERDICT:
-          // APPROVE` verdict delivered on a task-result restores
-          // hasReviewApprove with the same latest-flipping rule hasPlanVerdict
-          // uses. Only `source:"task-result"` verdicts are credited — the
-          // landing gate releases only on a delivery-attributed reviewer
-          // verdict, so a verdict streamed in child text (`source:"child-*"`)
-          // never restores the flag (this is how the invariant holds across a
-          // restart too). A trailing `VERDICT: BLOCK` leaves the flag off (the recency
-          // boundary is the last verdict, not task reset — a GATE: FAIL never
-          // clears it).
-          if (
-            e.type === "verdict" &&
-            e.sessionID &&
-            typeof e.marker === "string" &&
-            e.source === "task-result"
-          ) {
-            lastReviewVerdict.set(
-              e.sessionID as string,
-              e.marker.includes("APPROVE") ? "APPROVE" : "BLOCK",
-            )
-          }
-          // The last counted ensemble entry per session: a non-negative integer
-          // count on a known session, last-wins like the other three maps. The
-          // same entry stamps lastRefusedApprove: an explicit refusal stamp, an
-          // explicit human-grant clear, or (absent) a last-wins un-stamp, so the
-          // verdict loop can skip a refused APPROVE's restore and the clearing
-          // loop can restore a human grant.
-          if (
-            e.type === "ensemble" &&
-            e.sessionID &&
-            Number.isInteger(e.count) &&
-            (e.count as number) >= 0
-          ) {
-            lastEnsemble.set(e.sessionID as string, e.count as number)
-            if (e.refusedApprove === true) lastRefusedApprove.set(e.sessionID as string, true)
-            else if (e.refusedApprove === false)
-              lastRefusedApprove.set(e.sessionID as string, false)
-            else lastRefusedApprove.delete(e.sessionID as string)
-          }
-        } catch {
-          // skip malformed lines
-        }
+    const maps = newReplayMaps()
+    const drops: ReplayDrop[] = []
+    for (const line of readReplayLines(journalPath, tailLines)) {
+      const entry = parseReplayLine(line)
+      if (entry === null) continue
+      if (entry === "malformed") {
+        drops.push({ reason: "malformed" })
+        continue
       }
-      for (const [sessionID, result] of lastGateResult) {
-        if (result !== "PASS") continue
-        const s = states.get(sessionID) ?? newState()
-        s.hasGatePass = true
-        s.replayGrace = true
-        states.set(sessionID, s)
+      const sessionID = entry.sessionID
+      if (typeof sessionID !== "string" || !REPLAY_SESSION_RE.test(sessionID)) {
+        drops.push({ reason: "session-id" })
+        continue
       }
-      for (const [sessionID, entry] of lastPlanResult) {
-        if (entry.result !== "APPROVE") continue
-        const s = states.get(sessionID) ?? newState()
-        s.hasPlanVerdict = true
-        s.replayGrace = true
-        // Bound identity restores verbatim: a string field binds, anything
-        // absent or non-string degrades to unbound "" (legacy lines replay
-        // unchanged). A restored bound verdict is validated against the
-        // current plans dir immediately on the next enforcing dispatch —
-        // stricter than the unbound accept-once rule.
-        s.approvedPlan = typeof entry.plan === "string" ? entry.plan : ""
-        s.approvedPlanKey = typeof entry.planKey === "string" ? entry.planKey : ""
-        // A restored unbound verdict flows into the existing signature check
-        // instead of the accept-once arm; "" keeps legacy and unstampable
-        // approvals on the documented accept-once path.
-        s.plansSignature = typeof entry.sig === "string" ? entry.sig : ""
-        states.set(sessionID, s)
-      }
-      for (const [sessionID, result] of lastReviewVerdict) {
-        if (result !== "APPROVE") continue
-        // A refused credit is stamped on the last ensemble entry for the
-        // session; do not let replay re-credit that APPROVE on restart. An
-        // explicit clear (refusedApprove:false) or an absent field both let the
-        // verdict through — only an explicit refusal suppresses it.
-        if (lastRefusedApprove.get(sessionID) === true) continue
-        const s = states.get(sessionID) ?? newState()
-        s.hasReviewApprove = true
-        s.replayGrace = true
-        states.set(sessionID, s)
-      }
-      // A human always-grant releases the landing gate by stamping the last
-      // ensemble entry refusedApprove:false (a clear). Restore the flag so the
-      // human release survives restart — independent of any verdict, since a
-      // human release outranks the mechanical ensemble. A still-refused session
-      // (last entry refusedApprove:true) falls through and is not re-credited.
-      for (const [sessionID, refused] of lastRefusedApprove) {
-        if (refused !== false) continue
-        const s = states.get(sessionID) ?? newState()
-        s.hasReviewApprove = true
-        s.replayGrace = true
-        states.set(sessionID, s)
-      }
-      // Restore the ensemble count. A session that also had a flag restored
-      // already carries replayGrace from the loops above, so it survives the
-      // grace prompt together with its count; an ensemble-only line restores
-      // the bare count with no grace and no grace carry.
-      for (const [sessionID, count] of lastEnsemble) {
-        const s = states.get(sessionID) ?? newState()
-        s.reviewerDispatches = count
-        states.set(sessionID, s)
-      }
+      const drop = foldReplayLine(entry, maps, sessionID)
+      if (drop) drops.push(drop)
     }
+    restoreBuckets(states, maps)
+    journalReplayDrops(journalPath, drops)
   } catch {
     // fail-open
   }

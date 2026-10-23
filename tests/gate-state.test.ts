@@ -2178,7 +2178,7 @@ test("replay restores bound plan identity; legacy lines restore unbound; BLOCK r
         sessionID: "p1",
         result: "APPROVE",
         plan: "z-work.md",
-        planKey: "abc123",
+        planKey: "8ca9e20c4ddaf0c04dacd88a658c355434a2a575fc47adcfb636aa221cbda256",
       }),
       JSON.stringify({ ts: "t2", type: "plan", sessionID: "p2", result: "APPROVE" }),
       JSON.stringify({
@@ -2187,7 +2187,7 @@ test("replay restores bound plan identity; legacy lines restore unbound; BLOCK r
         sessionID: "p3",
         result: "APPROVE",
         plan: "other.md",
-        planKey: "def456",
+        planKey: "b0e446f13dad8ceb001f46d2a445fedc1475c1f461d9cf3e59e88358209963c8",
       }),
       JSON.stringify({ ts: "t4", type: "plan", sessionID: "p3", result: "BLOCK" }),
     ].join("\n") + "\n",
@@ -2196,7 +2196,11 @@ test("replay restores bound plan identity; legacy lines restore unbound; BLOCK r
   const s1 = ledger.state("p1")
   assert.equal(s1.hasPlanVerdict, true)
   assert.equal(s1.approvedPlan, "z-work.md", "replay restores the bound plan name")
-  assert.equal(s1.approvedPlanKey, "abc123", "replay restores the bound plan key")
+  assert.equal(
+    s1.approvedPlanKey,
+    "8ca9e20c4ddaf0c04dacd88a658c355434a2a575fc47adcfb636aa221cbda256",
+    "replay restores the bound plan key",
+  )
   const s2 = ledger.state("p2")
   assert.equal(s2.hasPlanVerdict, true)
   assert.equal(s2.approvedPlan, "", "legacy field-less APPROVE restores unbound")
@@ -2219,7 +2223,7 @@ test("grace prompt carries the bound plan identity; a full reset clears it", () 
       sessionID: "p1",
       result: "APPROVE",
       plan: "z-work.md",
-      planKey: "abc123",
+      planKey: "8ca9e20c4ddaf0c04dacd88a658c355434a2a575fc47adcfb636aa221cbda256",
     })}\n`,
   )
   const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
@@ -2231,7 +2235,11 @@ test("grace prompt carries the bound plan identity; a full reset clears it", () 
   const afterGrace = ledger.state("p1")
   assert.equal(afterGrace.hasPlanVerdict, true)
   assert.equal(afterGrace.approvedPlan, "z-work.md", "plan name carried by grace")
-  assert.equal(afterGrace.approvedPlanKey, "abc123", "plan key carried by grace")
+  assert.equal(
+    afterGrace.approvedPlanKey,
+    "8ca9e20c4ddaf0c04dacd88a658c355434a2a575fc47adcfb636aa221cbda256",
+    "plan key carried by grace",
+  )
   // Second prompt: a full reset clears both fields.
   ledger.resetState("p1")
   const afterReset = ledger.state("p1")

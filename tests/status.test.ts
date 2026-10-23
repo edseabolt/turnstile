@@ -5,7 +5,8 @@
  *  - gate/plan flag restoration parity with the real replay in
  *    src/ledger.ts (last PASS/FAIL wins; trailing FAIL keeps the gate red;
  *    enforce-mode `verified:false` never flips) via `createLedger().peek()`;
- *  - the `.1` generation + current file replay window;
+ *  - the replay window across all retained journal generations (a newest-first
+ *    walk that stops once the tail bound is met);
  *  - per-session counts (dispatch/block/permission asks+decisions);
  *  - last markers (text + timestamp);
  *  - waiver events (with channel) and prompt-channel plan approvals;
@@ -101,7 +102,7 @@ function oSession(obj: StatusJSON, id: string): StatusSession {
   return s
 }
 
-/** Writes a journal file (current or a `.1` generation) from JSONL lines. */
+/** Writes a journal file (current or a rotated generation) from JSONL lines. */
 function writeJournal(dir: string, file: string, lines: Entry[]): void {
   writeFileSync(join(dir, file), lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
 }
@@ -266,6 +267,46 @@ test("reads the .1 generation and current file, with replay-tail window parity",
     assert.equal(oSession(obj, "sp-split").hasPlanVerdict, true, "plan APPROVE from .1 restores")
     assert.equal(oSession(obj, "sp-new").hasGatePass, true)
     assert.equal(oSession(obj, "sp-new").hasPlanVerdict, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("walks back through all retained generations, oldest-first, until the tail bound is met", () => {
+  const dir = metricsDir()
+  try {
+    const journalPath = join(dir, "turnstile.jsonl")
+    // sp-deep only goes green in the .2 generation; .1 and the current file
+    // carry filler for a different session, so surfacing sp-deep proves the
+    // walk went back past .1, not just current + .1.
+    writeJournal(dir, "turnstile.jsonl.2", [
+      line(1, {
+        type: "gate",
+        sessionID: "sp-deep",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    writeJournal(dir, "turnstile.jsonl.1", [
+      line(2, { type: "dispatch", sessionID: "sp-fill", agent: "executor" }),
+    ])
+    writeJournal(dir, "turnstile.jsonl", [
+      line(3, { type: "dispatch", sessionID: "sp-fill", agent: "executor" }),
+    ])
+    const res = runStatus(dir, ["--json"])
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    // The journal files are reported oldest-first, spanning three generations.
+    assert.deepEqual(obj.files, ["turnstile.jsonl.2", "turnstile.jsonl.1", "turnstile.jsonl"])
+    assertReplayParity(obj, journalPath)
+    assert.equal(oSession(obj, "sp-deep").hasGatePass, true, "PASS from .2 surfaces")
+    assert.equal(
+      oSession(obj, "sp-fill").dispatches,
+      2,
+      "filler dispatches count across .1 and current",
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -684,6 +725,10 @@ test("malformed journal lines are skipped, valid sessions still aggregate", () =
         mode: "enforce",
         marker: "GATE: PASS tests=1 passed=1 failed=0",
       }),
+      // Valid JSON whose sessionID fails the replay session-ID shape check
+      // (newline, then 65 chars): skipped before any fold, no phantom session.
+      line(2, { type: "gate", sessionID: "sp\nmal", result: "PASS" }),
+      line(3, { type: "gate", sessionID: "a".repeat(65), result: "PASS" }),
     ])
     // Append raw garbage right onto the current file (bypasses writeJournal).
     const garbage = [

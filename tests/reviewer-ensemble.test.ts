@@ -470,15 +470,20 @@ test("T7: replay skips malformed ensemble entries and honors latest-wins", () =>
   assert.equal(s.replayGrace, true, "a restored gate still tags grace")
 })
 
-/** T7 (gen): an ensemble line in the rotated `.1` generation replays. */
-test("T7: an ensemble entry in the .1 generation tail replays", () => {
+/** T7 (gen): an ensemble line in the rotated `.1` generation replays, and a
+ *  count above the ensemble size clamps to it on restore. */
+test("T7: an ensemble entry in the .1 generation tail replays, clamped to the ensemble size", () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl.1"),
     `${JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 3 })}\n`,
   )
   const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
-  assert.equal(ledger.state("p1").reviewerDispatches, 3, "the .1 generation replays the count")
+  assert.equal(
+    ledger.state("p1").reviewerDispatches,
+    2,
+    "the .1 generation replays the count, clamped to the ensemble size",
+  )
 })
 
 /** T7b: a refused credit is not re-credited on restart; a count-2 APPROVE

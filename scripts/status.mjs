@@ -9,9 +9,10 @@
 //
 // Journal resolution precedence (mirrors config.ts's env → file → default):
 //   TURNSTILE_METRICS_DIR  →  TURNSTILE_CONFIG's metricsDir  →  ~ default
-// The journal file is `turnstile.jsonl`; its rotated generation
-// `${journal}.1` is read first so the `replayTailLines` replay tail (default
-// 2000) holds across both.
+// The journal file is `turnstile.jsonl`; its rotated generations
+// (`${journal}.1`, `.2`, …) are walked newest-first with an early stop, so the
+// `replayTailLines` replay tail (default 2000) holds across all retained
+// generations — replay parity with src/ledger.ts.
 //
 //   opencode-turnstile status            Human-readable table.
 //   opencode-turnstile status --json     Machine-readable JSON.
@@ -51,6 +52,21 @@ function defaultMetricsDir(env) {
  * `replayTailLines` in the config file overrides it.
  */
 const DEFAULT_REPLAY_TAIL_LINES = 2000
+
+/**
+ * Host session-ID alphabet, length-capped. Mirrors the canonical constant in
+ * src/ledger.ts (this standalone script cannot import TS source): a session
+ * whose ID fails the shape is not a session — replay parity, so a hostile
+ * journal line mints no status row.
+ */
+const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
+
+/**
+ * Upper bound on a journaled VERDICT marker string. Mirrors the canonical
+ * bound in src/ledger.ts: an oversized marker is treated like an absent one
+ * (the existing empty-marker handling), never as a live verdict.
+ */
+const MAX_REPLAY_MARKER_LEN = 512
 
 /**
  * Reads and parses the config file the config layer uses, silently tolerating
@@ -103,19 +119,36 @@ function resolveConfig(env) {
 }
 
 /**
- * Reads the journal file and its `.1` generation as a single oldest-first line
- * stream, applying the same `replayTailLines` tail bound (default 2000) the
- * runtime replay uses so the status flags stay replay-parity. Silently
- * tolerates a missing generation.
+ * Reads the journal's retained generations as a single oldest-first line
+ * stream: a newest-first walk over `turnstile.jsonl`, then `.1`, `.2`, …
+ * (stopping at the first missing generation — a missing current file is the
+ * post-rotation state, so the walk starts at `.1`), stopping as soon as the
+ * collected lines satisfy the `replayTailLines` tail bound (default 2000) the
+ * runtime replay uses, so the status flags stay replay-parity. Silently
+ * tolerates missing generations.
  * @param {string} journalPath Absolute path of `turnstile.jsonl`.
  * @param {number} tailLines The replay tail bound in lines to keep.
- * @returns {{ files: string[], lines: string[] }} The files read and their lines.
+ * @returns {{ files: string[], lines: string[] }} The files read (oldest-first
+ *     basenames) and their tail-bounded lines, oldest-first.
  */
 function readJournal(journalPath, tailLines) {
-  const generations = [`${journalPath}.1`, journalPath].filter((p) => fs.existsSync(p))
-  if (generations.length === 0) return { files: [], lines: [] }
-  const lines = generations.flatMap((p) => fs.readFileSync(p, "utf8").split("\n").filter(Boolean))
-  return { files: generations.map((p) => path.basename(p)), lines: lines.slice(-tailLines) }
+  if (tailLines <= 0) return { files: [], lines: [] }
+  const blocks = []
+  let generation = fs.existsSync(journalPath) ? 0 : 1
+  for (;;) {
+    const file = generation === 0 ? journalPath : `${journalPath}.${generation}`
+    if (!fs.existsSync(file)) break
+    blocks.unshift({
+      name: path.basename(file),
+      lines: fs.readFileSync(file, "utf8").split("\n").filter(Boolean),
+    })
+    if (blocks.reduce((total, b) => total + b.lines.length, 0) >= tailLines) break
+    generation++
+  }
+  return {
+    files: blocks.map((b) => b.name),
+    lines: blocks.flatMap((b) => b.lines).slice(-tailLines),
+  }
 }
 
 /**
@@ -144,7 +177,11 @@ function freshSession() {
  * gate/plan last-wins rules as ledger.ts's replayGatePasses: a trailing
  * `GATE: FAIL` keeps the gate red, an enforce-mode `verified:false` PASS never
  * flips, and a `type:plan` APPROVE restores plan approval. Malformed lines are
- * skipped. Parent-keyed.
+ * skipped, and lines whose sessionID fails the replay session-ID shape check
+ * are skipped before any fold, for parity with replayGatePasses (status is
+ * observation-only, so a dropped line is silent here rather than journaled).
+ * Verdict markers over the replay marker bound degrade to "" (they then flow
+ * into the empty-marker BLOCK fallback below). Parent-keyed.
  * @param {string[]} lines Journal lines, oldest-first.
  * @returns {Map<string, Record<string, unknown>>} sessionID → accumulator.
  */
@@ -167,8 +204,8 @@ function aggregate(lines) {
       continue // malformed line: skip, replay-parity.
     }
     if (!e || typeof e !== "object" || Array.isArray(e)) continue
-    const sid = typeof e.sessionID === "string" && e.sessionID ? e.sessionID : ""
-    if (!sid) continue
+    const sid = e.sessionID
+    if (typeof sid !== "string" || !REPLAY_SESSION_RE.test(sid)) continue
     const a = forSession(sid)
     const type = e.type
     const result = e.result
@@ -211,7 +248,8 @@ function aggregate(lines) {
       }
     } else if (type === "verdict") {
       // VERDICT: APPROVE/BLOCK observations (plan-reviewer verdict markers).
-      const marker = typeof e.marker === "string" && e.marker ? e.marker : ""
+      const marker =
+        typeof e.marker === "string" && e.marker.length <= MAX_REPLAY_MARKER_LEN ? e.marker : ""
       if (marker) {
         a.lastVerdict.marker = marker
         a.lastVerdict.ts = typeof e.ts === "string" ? e.ts : ""
