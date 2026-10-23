@@ -127,7 +127,10 @@
  *   configured agent names in the waiver text scopes it to those stages'
  *   gates (this gate is covered by either the plan-reviewer or executor
  *   name), and a scoped waiver stays live until that stage's waiver
- *   allowance is spent (a new user prompt drops the waiver); a
+ *   allowance is spent (an ordinary new user prompt drops the waiver; the
+ *   one-prompt replay grace of a restart resume or a `continuationCarry`
+ *   re-admission carries the waiver family — quote, scope, consumed flag,
+ *   spent allowance — one prompt); a
  *   `USER WAIVER:` literal in an agent-composed dispatch prompt is inert,
  *   closing the injection hole. The enforcing dispatch resolves the
  *   session's own directory via `session.get`, falling back to the cached
@@ -165,7 +168,11 @@
  *   unlocks, while naming the configured reviewer name scopes the waiver to
  *   reviewer-stage gates and it stays live until that stage's waiver
  *   allowance (max 2 waiver-unblocked dispatches, metered separately from
- *   the ordinary dispatch caps) is spent; a new user prompt drops the waiver. A marker-shaped near-miss of either prompt-channel
+ *   the ordinary dispatch caps) is spent; an ordinary new user prompt
+ *   drops the waiver, while the one-prompt replay grace of a restart
+ *   resume or a `continuationCarry` re-admission carries the waiver
+ *   family — quote, scope, consumed flag, spent allowance — one prompt.
+ *   A marker-shaped near-miss of either prompt-channel
  *   literal (`USER WAIVER:` / `PLAN APPROVED:` — a case, separator, or colon
  *   variant) is never admitted: the strict capture is byte-identical, the hit
  *   is journaled as a `marker`/`near-miss` entry, and it surfaces once as a
@@ -193,8 +200,9 @@
  *   (the resume prompt) and then every later prompt starts a clean cycle.
  *   When `continuationCarry` is on (default off), a prompt re-admitted in an
  *   unchanged worktree/branch carries that restart-sticky bundle across the
- *   reset via the same one-prompt replay grace the resume uses; the fingerprint
- *   (git worktree/branch, else the project directory) is the only
+ *   reset via the same one-prompt replay grace the resume uses, including
+ *   the waiver family (quote, scope, consumed flag, spent allowance); the
+ *   fingerprint (git worktree/branch, else the project directory) is the only
  *   continuation-vs-new-task signal, so a new task on the same branch carries
  *   too — that is the reason it is opt-in. The carry is gate-scoped: it needs a
  *   prior `GATE: PASS` (a continuation before one still resets fully), and it

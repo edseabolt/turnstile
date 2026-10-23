@@ -2092,7 +2092,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         // Scope is parsed from the raw window before trace redaction: the
         // stored quote may be "<present>", but the scope needs the words.
         const scope = parseWaiverScope(waiverText.slice(at), Object.values(config.agents))
-        if (scope.length > 0) s.userWaiverScope = scope
+        s.userWaiverScope = scope
       }
     } catch (e) {
       // Fail-open: capture never blocks a prompt.

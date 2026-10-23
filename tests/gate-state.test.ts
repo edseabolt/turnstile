@@ -2113,9 +2113,11 @@ test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => 
 /** humanApproval is restart-sticky exactly like hasPlanVerdict: a
  *  journal-restored flag survives the first post-restart (grace) prompt via
  *  mergeAfterReplay, then clears on the next full reset. The whole waiver
- *  family (quote, scope, consumed flag, allowance counter) and the once-grant
- *  strings stay task-scoped and never carry through the merge. */
-test("grace prompt carries restored humanApproval forward then clears it", () => {
+ *  family (quote, scope, consumed flag, allowance counter) carries one prompt
+ *  through the merge exactly like the restart-sticky flags, so a continuation
+ *  or grace prompt keeps the state a block message reads; the once-grant
+ *  strings stay task-scoped and never carry. */
+test("grace prompt carries restored humanApproval and the waiver family forward, then clears them", () => {
   const metricsDir = tmpDir()
   // A journaled plan APPROVE restores hasPlanVerdict + the one-prompt grace.
   fs.writeFileSync(
@@ -2133,21 +2135,21 @@ test("grace prompt carries restored humanApproval forward then clears it", () =>
   s.userWaiverConsumed = true
   s.reviewWaiverRounds = 1
   s.pendingOnceGrant = { plan: "req-keep", landing: "" }
-  // Grace prompt: mergeAfterReplay carries the restart-sticky flag forward,
-  // never wipes it; the task-scoped waiver family and once-grants drop as
-  // usual.
+  // Grace prompt: mergeAfterReplay carries the restart-sticky flag and the
+  // waiver family forward, never wipes them; the once-grants drop.
   ledger.resetState("p1")
   const afterGrace = ledger.state("p1")
   assert.equal(afterGrace.hasPlanVerdict, true, "hasPlanVerdict carried by grace")
   assert.equal(afterGrace.humanApproval, true, "humanApproval carried by grace")
-  assert.equal(afterGrace.userWaiver, "", "userWaiver never carried through merge")
-  assert.deepEqual(afterGrace.userWaiverScope, [], "userWaiverScope never carried through merge")
-  assert.equal(
-    afterGrace.userWaiverConsumed,
-    false,
-    "userWaiverConsumed never carried through merge",
+  assert.equal(afterGrace.userWaiver, "USER WAIVER: keep", "userWaiver carried by grace")
+  assert.deepEqual(afterGrace.userWaiverScope, ["reviewer"], "userWaiverScope carried by grace")
+  assert.notEqual(
+    afterGrace.userWaiverScope,
+    s.userWaiverScope,
+    "userWaiverScope carried as a fresh array, not an alias",
   )
-  assert.equal(afterGrace.reviewWaiverRounds, 0, "reviewWaiverRounds never carried through merge")
+  assert.equal(afterGrace.userWaiverConsumed, true, "userWaiverConsumed carried by grace")
+  assert.equal(afterGrace.reviewWaiverRounds, 1, "reviewWaiverRounds carried by grace")
   assert.deepEqual(
     afterGrace.pendingOnceGrant,
     { plan: "", landing: "" },
