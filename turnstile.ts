@@ -358,11 +358,13 @@
  *   unchanged, so an unattributable parent-keyed delivery stays a single
  *   `/unattributable/` error on fail-open paths.
  * - Event stream: `event.subscribe` feeds marker parsing from streamed child
- *   text; a subscription that throws or a stream that completes without abort
- *   is journaled and re-subscribed up to a cumulative budget of 5 restarts,
- *   after which the terminal disablement journals and `session.text.*`
- *   ingestion stops (a throw while aborted/disposed stays silent, matching
- *   the pre-existing `.catch` semantics).
+ *   text; a subscription that throws is journaled per death and
+ *   re-subscribed under a cumulative budget of 5 restarts, after which the
+ *   disablement journals once and `session.text.*` ingestion stops; a clean
+ *   host recycle (a stream that completes without abort) re-subscribes for
+ *   free and never spends the budget, and the stream-ended telemetry for a
+ *   run of clean closes journals once per stop, not once per close (an
+ *   abort/dispose exit stays silent).
  * - Trace: JSONL journal of dispatches, gate transitions, verdicts, blocked
  *   calls, bash commands, errors, and the load heartbeat
  *   (a "setup" entry: plugin version, config digest, hook count). Errors also

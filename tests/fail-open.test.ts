@@ -29,6 +29,7 @@ import {
   journalEntries,
   makeFakeHost,
   tmpDir,
+  waitUntil,
   type FakeHost,
 } from "./helpers.ts"
 
@@ -544,6 +545,72 @@ test("event subscription failure journals each death then disables after the bud
 })
 
 /**
+ * A host that cleanly recycles the event stream between tasks (each of
+ * several subscriptions completes without an abort and without delivering
+ * events) must not burn the restart budget: after MORE clean closes than
+ * the budget allows, ingestion is still alive and a marker flows through
+ * the live re-subscription; the stream-ended reason is surfaced exactly
+ * once across the whole storm of closes (once per stop, not once per
+ * close); and a final dispose stays silent (no disablement entry).
+ */
+test("clean stream closes re-subscribe for free and never disable ingestion", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const real = (h.host as { event: { subscribe: any } }).event.subscribe
+  // A 0-event stream that completes immediately on every next() call.
+  const dead: AsyncIterable<any> = {
+    [Symbol.asyncIterator](): AsyncIterator<any> {
+      return {
+        next: async (): Promise<IteratorResult<any>> => ({ done: true, value: undefined }),
+      }
+    },
+  }
+  let closes = 0
+  ;(h.host as { event?: unknown }).event = {
+    subscribe: (options?: { signal?: AbortSignal }) => {
+      // The first 7 (more than the restart budget of 5) subscriptions end
+      // cleanly WITHOUT an abort and WITHOUT delivering events; later ones
+      // are the live bus.
+      if (++closes <= 7) return dead
+      return real(options)
+    },
+  }
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, gateEvidence: "flag" },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  await waitUntil(() => closes >= 7)
+  const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
+  assert.ok(
+    !errors.some((e) => String(e.error).includes("restart budget exhausted")),
+    "clean closes must not exhaust the restart budget",
+  )
+  assert.equal(
+    errors.filter((e) => e.error === "event stream ended").length,
+    1,
+    "a recycle storm journals the stream-ended reason once, not once per close",
+  )
+  // Ingestion is still alive after the recycles: a marker flows through.
+  h.pushEvent({
+    type: "session.created",
+    data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+  })
+  h.pushEvent({ type: "session.error", data: { sessionID: "c1", error: "warmup" } })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "warmup"),
+  )
+  h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: "c1", text: "GATE: PASS tests=1 passed=1 failed=1" },
+  })
+  await waitUntil(() =>
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+  )
+  dispose()
+})
+
+/**
  * A subscription that surfaces dispose as a throw is silent: the abort (from
  * the disposer) makes both the per-death journal and the terminal disablement
  * journal nothing — a detached stream is not a death, matching the pre-existing
@@ -560,11 +627,14 @@ test("a subscribe that throws after dispose stays silent", async () => {
           [Symbol.asyncIterator](): AsyncIterator<any> {
             return {
               next: async (): Promise<IteratorResult<any>> => {
-                // Hang until dispose aborts; a host that turns the abort into a
-                // throw must be treated as a silent detach, never a death.
+                // Block until dispose aborts, then surface the abort as a
+                // throw: a host that turns the abort into a throw must be
+                // treated as a silent detach, never a death.
                 if (signal?.aborted) throw new Error("aborted boom")
-                await new Promise<void>(() => {})
-                return { done: true, value: undefined }
+                await new Promise<void>((resolve) =>
+                  signal?.addEventListener("abort", () => resolve(), { once: true }),
+                )
+                throw new Error("aborted boom")
               },
             }
           },
