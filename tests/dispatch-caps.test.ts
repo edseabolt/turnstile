@@ -101,7 +101,9 @@ function firstIndex(entries: Array<Record<string, any>>, type: string): number {
 
 /** With maxPlannerRounds: 2 the first two planner dispatches
  *  pass; the third is blocked with the exact planner loop-cap message and
- *  journals a paired `loop-cap` blocked + `escalation` entry. */
+ *  journals a paired `loop-cap` blocked + `escalation` entry. A blocked
+ *  attempt draws down nothing: a fourth attempt blocks on the same pinned
+ *  count — the leg counter moves only when a dispatch is admitted. */
 test("planner leg cap: third planner dispatch is blocked and escalates", async () => {
   const { h, dispose, metricsDir } = await boot({ maxPlannerRounds: 2 })
   await dispatch(h, "p1", "planner")
@@ -110,22 +112,23 @@ test("planner leg cap: third planner dispatch is blocked and escalates", async (
     () => dispatch(h, "p1", "planner", "loop again"),
     (e: Error) => e instanceof BlockError && e.message === PLANNER_LOOP_CAP_MESSAGE,
   )
-  const entries = journalEntries(metricsDir)
-  assert.ok(
-    entries.some(
-      (l) =>
-        l.type === "blocked" &&
-        l.reason === "loop-cap" &&
-        l.leg === "planner" &&
-        l.agent === "planner" &&
-        l.count === 2 &&
-        l.cap === 2,
-    ),
+  await assert.rejects(
+    () => dispatch(h, "p1", "planner", "and again"),
+    (e: Error) => e instanceof BlockError && e.message === PLANNER_LOOP_CAP_MESSAGE,
   )
+  const entries = journalEntries(metricsDir)
+  const legBlocks = entries.filter((l) => l.type === "blocked" && l.reason === "loop-cap")
+  assert.equal(legBlocks.length, 2, "each blocked attempt journaled a loop-cap block")
   assert.ok(
-    entries.some(
-      (l) => l.type === "escalation" && l.reason === "loop-cap" && l.count === 2 && l.cap === 2,
+    legBlocks.every(
+      (l) => l.leg === "planner" && l.agent === "planner" && l.count === 2 && l.cap === 2,
     ),
+    "every loop-cap block pins the count at 2 — a refusal never advances it",
+  )
+  const legEscalations = entries.filter((l) => l.type === "escalation" && l.reason === "loop-cap")
+  assert.ok(
+    legEscalations.every((l) => l.count === 2 && l.cap === 2),
+    "every loop-cap escalation pins the count at 2",
   )
   dispose()
 })
@@ -273,7 +276,7 @@ test("executor/debugger/unknown draw down only the budget, then block", async ()
 })
 
 /** The reviewer is counted toward the total budget exactly once
- *  (in guardDispatchBudget, never in guardReviewerDispatch). With
+ *  (in countDispatch, never in guardReviewerDispatch). With
  *  maxTotalDispatches: 2 and a high reviewer round cap, the third reviewer
  *  dispatch is blocked by the budget, not by the reviewer round cap. */
 test("reviewer counts toward the budget once; budget blocks before the round cap", async () => {
@@ -321,6 +324,44 @@ test("both caps exhausted: budget reason wins over the round cap", async () => {
   const entries = journalEntries(metricsDir)
   assert.ok(entries.some((l) => l.type === "blocked" && l.reason === "dispatch-budget"))
   assert.ok(!entries.some((l) => l.type === "blocked" && l.reason === "round-limit"))
+  dispose()
+})
+
+/** With the reviewer round cap at 2 and the total budget at 4, the two
+ *  admitted reviewer dispatches fill the round cap and every later attempt
+ *  blocks on the round limit — five in a row — and a blocked attempt draws
+ *  down nothing: each refusal still names the round cap (never the budget),
+ *  the journal carries exactly five paired round-limit blocks and
+ *  escalations, and the planner dispatch that follows still passes with the
+ *  budget (2) under its ceiling (4). */
+test("blocked reviewer rounds draw down no budget: the escalation keeps naming the round cap", async () => {
+  const { h, dispose, metricsDir } = await boot({
+    maxReviewerRounds: 2,
+    maxTotalDispatches: 4,
+    gateEvidence: "flag",
+  })
+  await greenGate(h, "p1")
+  await dispatch(h, "p1", "reviewer")
+  await dispatch(h, "p1", "reviewer")
+  for (let i = 0; i < 5; i++) {
+    await assert.rejects(
+      () => dispatch(h, "p1", "reviewer", "round limit again"),
+      (e: Error) => e instanceof BlockError && e.message === ROUND_LIMIT_MESSAGE,
+    )
+  }
+  const entries = journalEntries(metricsDir)
+  const roundBlocks = entries.filter((l) => l.type === "blocked" && l.reason === "round-limit")
+  assert.equal(roundBlocks.length, 5, "each blocked round journaled a round-limit block")
+  const roundEscalations = entries.filter(
+    (l) => l.type === "escalation" && l.reason === "round-limit",
+  )
+  assert.equal(roundEscalations.length, 5, "each blocked round journaled its escalation")
+  assert.ok(
+    !entries.some((l) => l.reason === "dispatch-budget"),
+    "no budget entry: the blocked rounds drew down nothing",
+  )
+  // The budget (2) stayed under its ceiling (4): the planner dispatch passes.
+  await dispatch(h, "p1", "planner")
   dispose()
 })
 

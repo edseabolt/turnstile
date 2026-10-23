@@ -39,6 +39,7 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 async function bootWithPlan(
   planBody = "# P\n",
   planName = "plan.md",
+  extra: Record<string, any> = {},
 ): Promise<{
   h: FakeHost
   dispose: () => void
@@ -55,7 +56,7 @@ async function bootWithPlan(
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, ...extra },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -2378,6 +2379,58 @@ test("multi-plan: a self-keyed round APPROVE binds the plan identity from the di
       () => execDispatch(h, "p1", "do the work"),
       /plan "z-work\.md" has a ## Decomposition block/,
     )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A plan-gate-blocked executor dispatch draws down no budget: three blocked
+ * attempts under a budget of 2 keep the budget at zero, so every refusal
+ * names the missing plan approval (never the exhausted budget) and journals
+ * its dispatch entry stamped blocked. The once-grant release is a real
+ * admission: it passes the budget guard, is metered there like any other
+ * dispatch, and leaves a fourth dispatch entry.
+ */
+test("plan-gate-blocked executor dispatches draw down no budget; the grant-released dispatch still passes", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
+    maxTotalDispatches: 2,
+  })
+  try {
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(
+        () => execDispatch(h, "p1", "do the work"),
+        /no plan approval for "plan\.md"/,
+      )
+    }
+    const execs = journalEntries(metricsDir).filter(
+      (l) => l.type === "dispatch" && l.agent === "executor",
+    )
+    assert.equal(execs.length, 3, "each blocked attempt journaled its dispatch entry")
+    assert.ok(
+      execs.every((l) => l.blocked === true),
+      "every blocked attempt carries the blocked stamp",
+    )
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.reason === "dispatch-budget"),
+      "no budget entry: the blocked attempts drew down nothing",
+    )
+    // Escalate, then answer the ask with a single-dispatch grant.
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-1" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // The grant-released dispatch is admitted — and metered — like any other.
+    await execDispatch(h, "p1", "do the work")
+    const after = journalEntries(metricsDir).filter(
+      (l) => l.type === "dispatch" && l.agent === "executor",
+    )
+    assert.equal(after.length, 4, "the grant-released dispatch journaled its entry")
   } finally {
     restore()
   }

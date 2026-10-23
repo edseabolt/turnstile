@@ -1609,12 +1609,28 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
-   * Guard-and-journal section of a task dispatch: the per-leg and
-   * total-dispatch budget guard, the plan-gate once-grant
+   * The single admitted-dispatch exit: advance the loop counters (the
+   * check half ran at guard entry; a refusal never reaches this line, so
+   * blocked attempts draw down nothing), then journal the dispatch at
+   * guard exit. Both halves stay paired here so the metering can never
+   * run without its journal entry nor the other way around.
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param description The trace-gated dispatch description.
+   */
+  function allowDispatch(sessionID: string, agent: string, description: string): void {
+    gates.countDispatch(sessionID, ledger, agent)
+    recordDispatch(sessionID, agent, description, false)
+  }
+
+  /**
+   * Guard-and-meter-and-journal section of a task dispatch: the per-leg
+   * and total-dispatch budget guard, the plan-gate once-grant
    * short-circuit, the reviewer evidence guard, and the executor
-   * plan/decomposition guards — then the dispatch entry, recorded at
-   * guard exit (stamped `blocked:true` only on a deliberate BlockError,
-   * which is re-thrown for the outer fail-open catch).
+   * plan/decomposition guards — then the counters advance and the
+   * dispatch entry is recorded at the admitted exit (a blocked attempt
+   * draws down nothing; stamped `blocked:true` only on a deliberate
+   * BlockError, which is re-thrown for the outer fail-open catch).
    * @param sessionID The dispatching session ID.
    * @param agent The resolved agent name.
    * @param prompt The dispatch prompt.
@@ -1635,13 +1651,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // outer catch to turn into the BLOCKED error; any other throw is an
     // internal error that propagates un-stamped to the fail-open handler.
     try {
-      // Per-leg loop caps + total-dispatch budget: every
-      // task/subagent dispatch — executor, planner, plan-reviewer,
-      // test-runner, reviewer, debugger, unknown — draws down the
-      // budget here, so the global backstop holds even against
-      // grant-released dispatches (grants release *authorization*, not
-      // *budget*). Before the once-grant short-circuit: a blocked
-      // dispatch must not consume the grant.
+      // Per-leg loop caps + total-dispatch budget: checked first so a
+      // block names its own cause (leg cap, round cap, budget). The
+      // counters advance only at the admitted exit (allowDispatch): a
+      // blocked attempt draws down nothing, and a grant-released
+      // dispatch is admitted — and metered — there, like any other.
+      // Before the once-grant short-circuit: a blocked dispatch must not
+      // consume the grant.
       gates.guardDispatchBudget(sessionID, ledger, agent)
 
       // Once-granted human approval (from a `permission.replied` reply)
@@ -1662,7 +1678,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         // `once`): clears just `.plan` so a landing `.landing` grant,
         // if any, survives for the push it was given for.
         ledger.state(sessionID).pendingOnceGrant.plan = ""
-        recordDispatch(sessionID, agent, description, false)
+        allowDispatch(sessionID, agent, description)
         return
       }
 
@@ -1681,7 +1697,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         gates.enforcePlanApproval(sessionID, dir, ledger, prompt)
         gates.enforceDecomposition(sessionID, prompt, dir, ledger)
       }
-      recordDispatch(sessionID, agent, description, false)
+      allowDispatch(sessionID, agent, description)
     } catch (e) {
       // Only a deliberate BlockError is a real block; a non-BlockError
       // is an internal error that propagates un-stamped to the
