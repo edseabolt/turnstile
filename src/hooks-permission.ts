@@ -102,9 +102,18 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         ctx.pendingLandingAsk.delete(parent)
         pe.effect = "ask"
         pe.message = `turnstile: ${LANDING_REQUIREMENT}`
-        // No journal of the ask here: guardLanding already journaled
-        // `{type:"permission", action:"ask", reason:"landing"}` when it
-        // armed the latch, so there is a single landing-ask entry.
+        // Stamp the consume, not the ask: the guard already journaled the
+        // `{action:"ask", reason:"landing"}` entry (the single PERM-ask record
+        // status.mjs counts), so this row deliberately omits action and carries
+        // event:"forced" — the consume is diagnosed by event, not by a
+        // duplicated ask. Replay-inert (the ledger never replays permission
+        // rows) and status-inert (no action/decision).
+        ctx.journaler.journal({
+          type: "permission",
+          sessionID: parent,
+          reason: "landing",
+          event: "forced",
+        })
         return
       }
       return
