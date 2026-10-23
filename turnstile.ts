@@ -272,18 +272,22 @@
  *   added). `session_move` is journaled as telemetry only, never blocked. A
  *   misconfigured/absent host payload fails open with a journal entry rather
  *   than blocking.
- * - Commit-lint: `bash`/`shell` `git commit -m '<subject>'` messages are
- *   validated as conventional commits when `gitGates.commitMessages` is on
- *   (default) — a `type(scope)!: subject` shape (`type` ∈
+ * - Commit-lint: `bash`/`shell` `git commit` messages are validated as
+ *   conventional commits when `gitGates.commitMessages` is on (default) —
+ *   a `type(scope)!: subject` shape (`type` ∈
  *   `{feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert}`, `!`
- *   optional, subject ≤ 72 chars). A non-conventional message is
- *   `BLOCKED by turnstile: commit message '<subject>' is not a conventional
- *   commit — expected type(scope)!: subject` under `gitGates.mode: enforce`
- *   (journaled `reason:"invalid-commit-message"`); `shadow` journals only,
- *   `off` is a no-op. An uninspectable form (`-F`/`-t`/`--edit`/interactive;
- *   `--amend -m` is inspectable) is treated as non-conventional and blocked
- *   under `enforce` (`reason:"commit-message-uninspectable"`): pass the subject
- *   with `git commit -m <subject>`, not an editor or file.
+ *   optional, subject ≤ 72 chars). The subcommand is resolved positionally
+ *   (git global options such as `-C dir` are skipped), so a bare `commit`
+ *   word in another subcommand's args is never matched. A non-conventional
+ *   message is `BLOCKED by turnstile: commit message '<subject>' is not a
+ *   conventional commit — expected type(scope)!: subject` under
+ *   `gitGates.mode: enforce` (journaled `reason:"invalid-commit-message"`);
+ *   `shadow` journals only, `off` is a no-op. An uninspectable form
+ *   (`-F`/`-t`/`--edit`/interactive; `--amend -m` and bundled short-flag
+ *   clusters carrying `-m` (e.g. `-am`) are inspectable) is treated as
+ *   non-conventional and blocked under `enforce`
+ *   (`reason:"commit-message-uninspectable"`): pass the subject with
+ *   `git commit -m <subject>`, not an editor or file.
  * - Landing gate: `git push` with no delivery-attributed reviewer
  *   `VERDICT: APPROVE` for the current task is `BLOCKED by turnstile:
  *   push/PR requires a reviewer VERDICT: APPROVE before landing — wait for the
