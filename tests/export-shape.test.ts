@@ -36,12 +36,18 @@ test("gates.ts exposes only BlockError and createGates at runtime", async () => 
 })
 
 /**
- * The shared gates leaf must expose exactly the block error plus the two
- * waiver-semantics helpers both gate families import.
+ * The shared gates leaf must expose the block error, the two waiver-semantics
+ * helpers both gate families import, and the two pure journal-entry composers.
  */
-test("gates-common.ts exposes only BlockError and the waiver helpers at runtime", async () => {
+test("gates-common.ts exposes the block error, waiver helpers, and composers", async () => {
   const mod = await import("../src/gates-common.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["BlockError", "waiverCovers", "waiverStateNote"])
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "BlockError",
+    "decisionEntry",
+    "reviewerEnsembleEntry",
+    "waiverCovers",
+    "waiverStateNote",
+  ])
 })
 
 /** The dispatch gates module must expose exactly createDispatchGates at runtime. */

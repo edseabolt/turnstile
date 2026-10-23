@@ -32,6 +32,7 @@ core: "src/ — one concern per boundary" {
   toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate"
   evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
+  bounded: "bounded.ts\nbounded-map FIFO eviction"
   journal: "journal.ts\nturnstile.jsonl + trace, rotation, fail-open appends"
   policy: "policy.ts\norchestratorPolicyFor prose\nbuilt from resolved config"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
@@ -61,6 +62,7 @@ core.setup -> core.gates
 core.hookscore -> core.config
 core.hookscore -> core.journal
 core.hookscore -> core.gates
+core.hookscore -> core.gatescommon
 core.hookscore -> core.evidence
 core.hookscore -> core.toolpolicy
 core.hookscore -> core.state
@@ -68,6 +70,7 @@ core.hookscore -> core.ledger
 core.hookscore -> core.markers
 core.hookscore -> core.fingerprint
 core.hookscore -> core.delivery
+core.hookscore -> core.bounded
 core.hookssession -> core.hookscore: "type-only"
 core.hookssession -> core.delivery
 core.hookssession -> core.state
@@ -82,6 +85,8 @@ core.hooksevents -> core.delivery
 core.hookscore -> core.policy
 core.ledger -> core.journal: "replay (fs)"
 core.ledger -> core.state: "newState, counters, merge"
+core.ledger -> core.bounded
+core.evidence -> core.bounded
 core.journal -> persist.jsonl
 core.journal -> persist.trace
 core.gates -> core.gatesdispatch
