@@ -1613,13 +1613,23 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * check half ran at guard entry; a refusal never reaches this line, so
    * blocked attempts draw down nothing), then journal the dispatch at
    * guard exit. Both halves stay paired here so the metering can never
-   * run without its journal entry nor the other way around.
+   * run without its journal entry nor the other way around. The waiver
+   * verdict is threaded in from the budget guard's admission-time
+   * snapshot — the commit never re-reads the waiver, because a later
+   * guard (the reviewer gate) may have consumed it in between.
    * @param sessionID The dispatching session ID.
    * @param agent The resolved agent name.
    * @param description The trace-gated dispatch description.
+   * @param waived The budget guard's admission-time waiver-exemption
+   *     verdict (true exempts the dispatch from the counters).
    */
-  function allowDispatch(sessionID: string, agent: string, description: string): void {
-    gates.countDispatch(sessionID, ledger, agent)
+  function allowDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    waived: boolean,
+  ): void {
+    gates.countDispatch(sessionID, ledger, agent, waived)
     recordDispatch(sessionID, agent, description, false)
   }
 
@@ -1655,10 +1665,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       // block names its own cause (leg cap, round cap, budget). The
       // counters advance only at the admitted exit (allowDispatch): a
       // blocked attempt draws down nothing, and a grant-released
-      // dispatch is admitted — and metered — there, like any other.
-      // Before the once-grant short-circuit: a blocked dispatch must not
-      // consume the grant.
-      gates.guardDispatchBudget(sessionID, ledger, agent)
+      // dispatch is admitted — and metered — there, like any other. The
+      // waiver-exemption verdict the guard returns is captured at its
+      // check and threaded to the commit: a later guard (the reviewer
+      // gate) may consume a covered unscoped waiver in between, so the
+      // meter must not re-read it. Before the once-grant short-circuit:
+      // a blocked dispatch must not consume the grant.
+      const waived = gates.guardDispatchBudget(sessionID, ledger, agent)
 
       // Once-granted human approval (from a `permission.replied` reply)
       // grants exactly ONE EXECUTOR dispatch past the plan gate and is
@@ -1678,7 +1691,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         // `once`): clears just `.plan` so a landing `.landing` grant,
         // if any, survives for the push it was given for.
         ledger.state(sessionID).pendingOnceGrant.plan = ""
-        allowDispatch(sessionID, agent, description)
+        allowDispatch(sessionID, agent, description, waived)
         return
       }
 
@@ -1697,7 +1710,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         gates.enforcePlanApproval(sessionID, dir, ledger, prompt)
         gates.enforceDecomposition(sessionID, prompt, dir, ledger)
       }
-      allowDispatch(sessionID, agent, description)
+      allowDispatch(sessionID, agent, description, waived)
     } catch (e) {
       // Only a deliberate BlockError is a real block; a non-BlockError
       // is an internal error that propagates un-stamped to the

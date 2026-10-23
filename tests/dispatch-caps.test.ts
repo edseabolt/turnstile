@@ -394,6 +394,31 @@ test("waived reviewer dispatch journals a gate WAIVED, not a block", async () =>
   dispose()
 })
 
+/** A waived reviewer dispatch is exempt without counting: the budget
+ *  counter still reads zero after the dispatch (the compaction snapshot
+ *  renders the live counter), and the next reviewer dispatch still passes
+ *  at a one-dispatch total budget — the waiver the first dispatch consumed
+ *  drew down nothing, so the second, unwaived dispatch finds full headroom. */
+test("a waived reviewer dispatch draws down no budget: the next dispatch still passes", async () => {
+  const { h, dispose } = await boot({ maxTotalDispatches: 1, gateEvidence: "flag" })
+  await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: ship it" })
+  await greenGate(h, "p1")
+  await dispatch(h, "p1", "reviewer")
+  const system: Array<{ type: string; text?: string }> = []
+  await callSession(h, "compaction", { system, sessionID: "p1" })
+  const snapshot = system.length > 1 ? (system[1]?.text ?? "") : ""
+  assert.match(
+    snapshot,
+    /- rounds: planner=0 plan-reviewer=0 test-runner=0 reviewer=0 total=0/,
+    "the waived dispatch drew down no budget",
+  )
+  // The unscoped waiver was consumed by the first dispatch it unlocked, so
+  // this second dispatch is not waived — it passes only because the budget
+  // was never drawn down.
+  await dispatch(h, "p1", "reviewer")
+  dispose()
+})
+
 /** Exhausting a leg cap resets on a new prompt: the next planner
  *  dispatch of the fresh task passes. */
 test("prompt resets the leg counters", async () => {
