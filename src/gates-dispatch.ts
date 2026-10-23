@@ -12,7 +12,7 @@ import type { Journaler } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE } from "./state.ts"
 import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
-import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
+import { BlockError, reviewerEnsembleEntry, waiverCovers, waiverStateNote } from "./gates-common.ts"
 
 /**
  * Attribution diagnostic for a gate-unverified refusal: which journaled test
@@ -197,6 +197,61 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
   }
 
   /**
+   * Shared cap-exhaustion exit: journals the `blocked` entry (site-specific
+   * extra fields after `reason`) and the `escalation` entry (uniform
+   * `count`/`cap`), both stamped `parent` when the blocked session has a
+   * registered edge; journals the trace; then throws the composed `BlockError`.
+   * Every escalating cap site delegates here so the journal/trace/throw pair
+   * and the entry field order live in one place.
+   * @param sessionID The blocked session ID.
+   * @param agent The agent being blocked.
+   * @param reason The cap-reason token (`"round-limit"`, `"loop-cap"`, or
+   *     `"dispatch-budget"`).
+   * @param count The exhausted count to journal.
+   * @param cap The exhausted cap to journal.
+   * @param edge The blocked session's registered parent (undefined when none);
+   *     when set, both entries are stamped `parent`.
+   * @param blockedExtras Site-specific fields emitted after `reason` in the
+   *     `blocked` entry (none for the round limit; the leg label for a loop
+   *     cap; count/cap for the dispatch budget).
+   * @param traceMessage The trace detail (`"cap exhausted; escalate"` for the
+   *     round/loop caps, `"budget exhausted; escalate"` for the dispatch
+   *     budget).
+   * @param message The composed `BLOCKED by turnstile:` message to throw.
+   */
+  function blockWithEscalation(
+    sessionID: string,
+    agent: string,
+    reason: string,
+    count: number,
+    cap: number,
+    edge: string | undefined,
+    blockedExtras: Record<string, unknown>,
+    traceMessage: string,
+    message: string,
+  ): void {
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent,
+      reason,
+      ...blockedExtras,
+      ...(edge ? { parent: edge } : {}),
+    })
+    journaler.journal({
+      type: "escalation",
+      sessionID,
+      agent,
+      reason,
+      count,
+      cap,
+      ...(edge ? { parent: edge } : {}),
+    })
+    journaler.traceEvent(agent, reason, traceMessage, sessionID)
+    throw new BlockError(message)
+  }
+
+  /**
    * Journals the round-limit `blocked` + `escalation` entries and trace, then
    * throws the round-limit `BlockError`. The message is the base body plus a
    * recovery tail that depends on whether the blocked session is an
@@ -222,33 +277,18 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
   ): void {
     // One edge read feeds both the message tail swap and the journal stamps.
     const edge = ledger.childToParent.get(sessionID)
-    journaler.journal({
-      type: "blocked",
+    // Exhausting the round cap means the reviewer is re-dispatched in a loop —
+    // escalate and stop (a subagent never receives a fresh user prompt to
+    // reset the cap, so "wait for a new prompt" would dead-end).
+    blockWithEscalation(
       sessionID,
-      agent: config.agents.reviewer,
-      reason: "round-limit",
-      ...(edge ? { parent: edge } : {}),
-    })
-    // Visible escalation: exhausting the round cap means the reviewer is
-    // re-dispatched in a loop — journal an `escalation` entry and stop+
-    // escalate (a subagent never receives a fresh user prompt to reset the
-    // cap, so "wait for a new prompt" would dead-end).
-    journaler.journal({
-      type: "escalation",
-      sessionID,
-      agent: config.agents.reviewer,
-      reason: "round-limit",
-      count,
-      cap,
-      ...(edge ? { parent: edge } : {}),
-    })
-    journaler.traceEvent(
       config.agents.reviewer,
       "round-limit",
+      count,
+      cap,
+      edge,
+      {},
       "cap exhausted; escalate",
-      sessionID,
-    )
-    throw new BlockError(
       capBlockMessage(
         `BLOCKED by turnstile: reviewer round limit (${cap}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user`,
         edge,
@@ -376,12 +416,9 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     if (!covered) {
       s.reviewRounds++
       s.reviewerDispatches++
-      journaler.journal({
-        type: "ensemble",
-        sessionID,
-        agent: config.agents.reviewer,
-        count: s.reviewerDispatches,
-      })
+      journaler.journal(
+        reviewerEnsembleEntry(sessionID, config.agents.reviewer, s.reviewerDispatches),
+      )
     } else if (scoped) {
       s.reviewWaiverRounds++
     } else {
@@ -485,13 +522,9 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     // refusedApprove:true, so a refused APPROVE cannot re-credit itself on a
     // later boot. A later count-2 dispatch (or a human grant) writes a
     // clearing refusedApprove:false entry that wins last-wins.
-    journaler.journal({
-      type: "ensemble",
-      sessionID,
-      agent: config.agents.reviewer,
-      count: s.reviewerDispatches,
-      refusedApprove: true,
-    })
+    journaler.journal(
+      reviewerEnsembleEntry(sessionID, config.agents.reviewer, s.reviewerDispatches, true),
+    )
     journaler.traceEvent(
       config.agents.reviewer,
       "ensemble",
@@ -568,27 +601,15 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     s: GateState,
   ): void {
     const count = s[leg.countKey]
-    journaler.journal({
-      type: "blocked",
+    blockWithEscalation(
       sessionID,
       agent,
-      reason: "loop-cap",
-      leg: leg.label,
+      "loop-cap",
       count,
-      cap: leg.cap,
-      ...(edge ? { parent: edge } : {}),
-    })
-    journaler.journal({
-      type: "escalation",
-      sessionID,
-      agent,
-      reason: "loop-cap",
-      count,
-      cap: leg.cap,
-      ...(edge ? { parent: edge } : {}),
-    })
-    journaler.traceEvent(agent, "loop-cap", "cap exhausted; escalate", sessionID)
-    throw new BlockError(
+      leg.cap,
+      edge,
+      { leg: leg.label, count, cap: leg.cap },
+      "cap exhausted; escalate",
       capBlockMessage(
         `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures`,
         edge,
@@ -620,26 +641,15 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     s: GateState,
   ): void {
     const count = s.totalDispatches
-    journaler.journal({
-      type: "blocked",
+    blockWithEscalation(
       sessionID,
       agent,
-      reason: "dispatch-budget",
+      "dispatch-budget",
       count,
-      cap: config.maxTotalDispatches,
-      ...(edge ? { parent: edge } : {}),
-    })
-    journaler.journal({
-      type: "escalation",
-      sessionID,
-      agent,
-      reason: "dispatch-budget",
-      count,
-      cap: config.maxTotalDispatches,
-      ...(edge ? { parent: edge } : {}),
-    })
-    journaler.traceEvent(agent, "dispatch-budget", "budget exhausted; escalate", sessionID)
-    throw new BlockError(
+      config.maxTotalDispatches,
+      edge,
+      { count, cap: config.maxTotalDispatches },
+      "budget exhausted; escalate",
       capBlockMessage(
         `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline`,
         edge,

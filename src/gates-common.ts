@@ -60,3 +60,43 @@ export function waiverStateNote(s: GateState, stagePhrase: string): string {
     return " The task's unscoped user waiver was consumed by the first dispatch it unlocked; a new waiver is needed for the next dispatch."
   return ""
 }
+
+/**
+ * Builds the reviewer-ensemble journal entry recorded for a session. The
+ * plain count entry (no `refusedApprove`) keeps the ensemble count
+ * restart-sticky on every unwaived reviewer dispatch; a `refusedApprove` of
+ * `true` stamps a refused APPROVE (replay skips restoring the credit for that
+ * entry) and `false` clears it (a standing human release outranks an earlier
+ * refusal). Pure: returns the entry, journals nothing.
+ * @param sessionID The session the ensemble belongs to.
+ * @param agent The reviewer agent name.
+ * @param count The reviewer dispatch count at the moment of the stamp.
+ * @param refusedApprove Optional refusal stamp: true stamps a refusal, false
+ *     clears one; when omitted the entry is the plain count entry.
+ * @returns The `ensemble` journal entry.
+ */
+export function reviewerEnsembleEntry(
+  sessionID: string,
+  agent: string,
+  count: number,
+  refusedApprove?: boolean,
+): Record<string, unknown> {
+  return {
+    type: "ensemble",
+    sessionID,
+    agent,
+    count,
+    ...(refusedApprove === undefined ? {} : { refusedApprove }),
+  }
+}
+
+/**
+ * Builds a permission-decision journal entry recording a human gate reply.
+ * Pure: returns the entry, journals nothing.
+ * @param sessionID The session that raised the gate ask.
+ * @param decision The resolved reply (`"always"`, `"once"`, or `"reject"`).
+ * @returns The `permission` journal entry.
+ */
+export function decisionEntry(sessionID: string, decision: string): Record<string, unknown> {
+  return { type: "permission", sessionID, decision }
+}

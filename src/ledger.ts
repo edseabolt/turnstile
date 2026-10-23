@@ -9,6 +9,7 @@
 
 import * as fs from "node:fs"
 
+import { evictTo } from "./bounded.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE, clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
@@ -785,11 +786,7 @@ export function createLedger(
     if (!sessionID) return
     promote(parents, sessionID)
     parents.set(sessionID, true)
-    while (parents.size > maxTrackedParents) {
-      // The loop condition guarantees a first entry exists.
-      const oldest = parents.keys().next().value as string
-      parents.delete(oldest)
-    }
+    evictTo(parents, maxTrackedParents)
   }
 
   /**

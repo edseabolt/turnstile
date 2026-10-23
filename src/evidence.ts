@@ -11,6 +11,7 @@
  * rather than re-proving it. Pure w.r.t. journal/fs by design.
  */
 
+import { evictTo } from "./bounded.ts"
 import { DEFAULT_EVIDENCE_PATTERN } from "./config.ts"
 import type { Journaler } from "./journal.ts"
 import type { TurnstileConfig } from "./types.ts"
@@ -132,11 +133,7 @@ export function createEvidenceTracker(
    * @param map The map to trim.
    */
   function cap(map: Map<string, number[]>): void {
-    while (map.size > config.maxSessions) {
-      // The loop condition guarantees a first entry exists.
-      const oldest = map.keys().next().value as string
-      map.delete(oldest)
-    }
+    evictTo(map, config.maxSessions)
   }
 
   function observe(raw: string, command: unknown, exit: unknown): boolean {

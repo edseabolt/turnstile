@@ -21,6 +21,7 @@ import {
   LANDING_ASK_MESSAGE_PREFIX,
   PLAN_ASK_MESSAGE_PREFIX,
 } from "./delivery.ts"
+import { decisionEntry, reviewerEnsembleEntry } from "./gates-common.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import type { EventProperties, StreamEvent } from "./types.ts"
 
@@ -28,6 +29,8 @@ import type { EventProperties, StreamEvent } from "./types.ts"
 type StreamExit = "aborted" | "clean"
 /** Why the supervision loop stopped: a dispose abort, or a spent restart budget. */
 type StopReason = "aborted" | "budget"
+/** A per-event handler in consume()'s dispatch table, keyed by event type. */
+type EventHandler = (properties: EventProperties) => void | Promise<void>
 
 /**
  * Starts the event stream for one setup: subscribes to the host stream
@@ -53,12 +56,359 @@ export function startEventStream(
 ): Promise<StopReason> {
   let cleanEndNoted = false
   /**
-   * Consumes the host event stream until aborted, dispatching each
-   * event type to its handler. Per-event failures are journaled, never
-   * fatal to the stream. Fragmented `session.text.delta` markers are
-   * recovered by the per-session sliding window (see the delta case).
-   * Resolves the exit reason: "aborted" when the abort signal ends the
-   * stream, "clean" when the host closed it normally.
+   * Folds a text delta into the session's tail-bounded sliding window and
+   * returns the folded window. Reassembles a possibly-split marker: the
+   * shared-empty dedup scope suppresses every re-fire, so only a newly
+   * completed marker across chunks is first-sighted.
+   * @param sid The child session the delta belongs to.
+   * @param delta The newly arrived delta text.
+   * @returns The window after appending the delta and tail-bounding it.
+   */
+  const foldDeltaWindow = (sid: string, delta: string): string => {
+    const window = ((ctx.deltaWindows.get(sid) ?? "") + delta).slice(-ctx.maxDeltaWindowChars)
+    ctx.deltaWindows.set(sid, window)
+    ctx.boundDeltaWindows()
+    return window
+  }
+  /**
+   * Handles a session.created event: records the child→parent edge (and
+   * back-fills evidence for a late edge), or marks a root session as a live
+   * parent and seeds its directory; then seeds the emitter-authority cache
+   * from the event's agent with or without the edge.
+   * @param properties The resolved event properties.
+   */
+  const handleSessionCreated = (properties: EventProperties): void => {
+    const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+    if (sid) {
+      const agent = typeof properties.agent === "string" ? properties.agent : ""
+      if (typeof properties.parentID === "string") {
+        ctx.ledger.setParent(sid, properties.parentID)
+        // Back-fill: a background child's edge often lands after
+        // its evidence and claim were recorded.
+        ctx.promoteOnEvidence(properties.parentID)
+      } else {
+        // Root sessions are live parents; the edge branch above is
+        // covered by setParent marking the parent.
+        ctx.ledger.markParent(sid)
+        // Root sessions only: the edge branch's parent is already
+        // keyed by its own created event, and a directory a child
+        // event carries belongs to the parent's context, so only
+        // parent-less events seed the per-session cache.
+        const dir = readRecordString(properties, DIRECTORY_KEYS)
+        if (dir !== "") {
+          ctx.sessionDirs.set(sid, dir)
+          ctx.boundSessionDirs()
+        }
+      }
+      // Redundant emitter seed from the created event's agent: this
+      // fires with or without the edge, so a child that streams a
+      // marker before its edge lands (or an unresolved child) still
+      // seeds the authority cache; a genuine delivery remains the
+      // always-firing seed (see seedEmitter).
+      ctx.seedEmitter(sid, agent)
+    }
+  }
+  /**
+   * Handles a message.part.updated event: a text part carries possibly
+   * complete markers, parsed from the part's session once its parent is
+   * resolved.
+   * @param properties The resolved event properties.
+   */
+  const handleTextUpdated = async (properties: EventProperties): Promise<void> => {
+    const part = properties.part ?? properties
+    const partSession = asSessionID(properties.sessionID ?? part?.sessionID)
+    if (part?.type === "text" && typeof part.text === "string" && partSession) {
+      await ctx.resolveParent(partSession)
+      ctx.parseMarkers(part.text, partSession, "child-message")
+    }
+  }
+  /**
+   * Handles a session.text.ended event: the finished text carries possibly
+   * complete markers, parsed once the session's parent is resolved.
+   * @param properties The resolved event properties.
+   */
+  const handleTextEnded = async (properties: EventProperties): Promise<void> => {
+    const sid = properties.sessionID
+    const text = properties.text
+    if (typeof sid === "string" && typeof text === "string") {
+      await ctx.resolveParent(sid)
+      ctx.parseMarkers(text, sid, "child-text")
+    }
+  }
+  /**
+   * Handles a session.text.delta event: folds the delta into the session's
+   * sliding window, resolves the parent, then re-parses the window.
+   * @param properties The resolved event properties.
+   */
+  const handleTextDelta = async (properties: EventProperties): Promise<void> => {
+    const sid = properties.sessionID
+    const delta = properties.delta
+    if (typeof sid === "string" && typeof delta === "string") {
+      const window = foldDeltaWindow(sid, delta)
+      await ctx.resolveParent(sid)
+      // Parse from the map, not the local fold: a task dispatch that
+      // interleaves during the await clears the window (the task
+      // boundary), and a stale local string would complete a marker
+      // that the clear was meant to drop.
+      const pending = ctx.deltaWindows.get(sid)
+      if (pending === window) ctx.parseMarkers(window, sid, "child-text-delta")
+    }
+  }
+  /**
+   * Handles a session.error event: journals the error (bounded to 500
+   * chars) so a child failure stays visible without killing the stream.
+   * @param properties The resolved event properties.
+   */
+  const handleSessionError = (properties: EventProperties): void => {
+    ctx.journaler.journal({
+      type: "error",
+      sessionID: properties.sessionID,
+      error: String(properties.error ?? "").slice(0, 500),
+    })
+  }
+  /**
+   * Records a landing-gate ask under the host request id, keyed to the
+   * ask's parent session so replies apply per-session and concurrent
+   * sessions cannot cross-apply; bounds the ask table.
+   * @param id The host request id of the ask.
+   * @param parent The parent session the ask belongs to.
+   */
+  const recordAskedLanding = (id: string, parent: string): void => {
+    ctx.landingGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+    ctx.boundLandingGateAsks()
+  }
+  /**
+   * Records a plan-gate ask: when the message carries the plan-ask prefix
+   * (the evaluate echo) or when the session is live-latched and the ask
+   * carries no message of its own (the escalated echo). A non-empty
+   * message WITHOUT either prefix is an unrelated ask (bash, write, …)
+   * even under a latched escalation — the evaluate handler always composes
+   * a prefix into its message, so a prefixed-or-empty message is the
+   * expected echo and anything else must never be recorded (a human's
+   * approval of an unrelated ask cannot release the plan or landing
+   * gate). An empty-message ask under a live landing latch (the plan
+   * latch not live) is a landing escalate echo: recorded for the landing
+   * gate only.
+   * @param id The host request id of the ask.
+   * @param sid The session the ask was raised in.
+   * @param message The ask's echoed message ("" when absent).
+   */
+  const recordAskedPlan = (id: string, sid: string, message: string): void => {
+    const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
+    // The empty-message consume of a live plan latch is the
+    // steal-able window: an unrelated ask wins the latch over the
+    // escalate echo. A prefixed ask (the normal echo) never does.
+    const stolen = !prefixed && message === "" && ctx.hasLiveAwaitingAsk(sid)
+    if (prefixed || stolen) {
+      const parent = ctx.ledger.parentOf(sid)
+      if (stolen) {
+        // Journal the steal for ladder diagnosability; it carries
+        // no action/decision, so the human PERM table (status.mjs
+        // counts only e.action === "ask") is untouched and it is
+        // replay-inert (the ledger never replays permission rows).
+        ctx.journaler.journal({
+          type: "permission",
+          sessionID: parent,
+          event: "latch-steal",
+          reason: "plan-gate",
+        })
+      }
+      ctx.awaitingPlanAsk.delete(sid)
+      ctx.planGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+      ctx.boundPlanAsks()
+    } else if (message === "" && ctx.hasLiveLandingAsk(sid)) {
+      // Empty-message landing escalate echo: record for the
+      // landing gate only. Reached only when the plan latch is
+      // NOT live — a coincident double-escalation (both latches
+      // live, one empty-message echo) resolves to the plan gate
+      // by branch order, a documented edge: the human still
+      // sees one ask, and the other latch survives for its own
+      // prefixed echo.
+      recordAskedLanding(id, ctx.ledger.parentOf(sid))
+    }
+  }
+  /**
+   * Handles a permission.asked event: records plan-gate and landing-gate
+   * asks (disjoint by message prefix). A missing/non-string id is inert
+   * (nothing is recorded). Fail-open — the outer loop journals any throw.
+   * @param properties The resolved event properties.
+   */
+  const handlePermissionAsked = (properties: EventProperties): void => {
+    const id = properties.id ?? properties.requestID
+    if (typeof id === "string" && id !== "") {
+      const sid = asSessionID(properties.sessionID)
+      const message = typeof properties.message === "string" ? properties.message : ""
+      // Landing-gate ask: message carries the landing-ask prefix
+      // (the evaluate handler's echo). A landing ask is disjoint from
+      // a plan ask (different prefix), so an approval of one never
+      // releases the other.
+      if (message.startsWith(LANDING_ASK_MESSAGE_PREFIX)) {
+        recordAskedLanding(id, ctx.ledger.parentOf(sid))
+      } else {
+        recordAskedPlan(id, sid, message)
+      }
+    }
+  }
+  /**
+   * Applies a human reply to a RECORDED plan-gate ask (the dispatcher's
+   * falsy-record guard guarantees the record exists): "always" releases
+   * the plan gate for the rest of the task and records provenance; "once"
+   * stamps a single-dispatch grant; any other reply leaves the gate red.
+   * The record is consumed (deleted) on every path.
+   * @param rid The host request id matching the recorded ask.
+   * @param reply The human reply ("once" / "always" / "reject").
+   */
+  const applyPlanGrant = (rid: string, reply: unknown): void => {
+    const planRecord = ctx.planGateAsks.get(rid)!
+    ctx.planGateAsks.delete(rid)
+    const parent = planRecord.sessionID
+    const s = ctx.ledger.state(parent)
+    if (reply === "always") {
+      // A standing human approval releases the plan gate for the
+      // rest of the task and records provenance.
+      s.humanApproval = true
+      s.hasPlanVerdict = true
+      ctx.journaler.journal(decisionEntry(parent, "always"))
+    } else if (reply === "once") {
+      // A plan-gate single-dispatch grant: consumed by exactly one
+      // executor dispatch in execute.before (the .plan
+      // short-circuit), so a stale grant cannot outlive that
+      // single dispatch.
+      s.pendingOnceGrant.plan = rid
+      ctx.journaler.journal(decisionEntry(parent, "once"))
+    } else {
+      // reject (or any non-allow reply) leaves the gate red: the
+      // next execute.before dispatch re-blocks.
+      ctx.journaler.journal(decisionEntry(parent, "reject"))
+    }
+  }
+  /**
+   * Applies a human reply to a RECORDED landing-gate ask (the dispatcher's
+   * falsy-record guard guarantees the record exists): "always" releases
+   * the landing gate for the rest of the task; "once" stamps a
+   * single-dispatch push grant; any other reply leaves the gate red. The
+   * record is consumed (deleted) on every path.
+   * @param rid The host request id matching the recorded ask.
+   * @param reply The human reply ("once" / "always" / "reject").
+   */
+  const applyLandingGrant = (rid: string, reply: unknown): void => {
+    const landingRecord = ctx.landingGateAsks.get(rid)!
+    ctx.landingGateAsks.delete(rid)
+    const parent = landingRecord.sessionID
+    const s = ctx.ledger.state(parent)
+    if (reply === "always") {
+      // A standing human approval releases the landing gate for
+      // the rest of the task (the bash guard sees hasReviewApprove
+      // and allows every push). A human release outranks the
+      // ensemble, so clear any refusal stamp on the last ensemble
+      // entry: replay restores the human release (refusedApprove
+      // absent/false) rather than an earlier refused APPROVE.
+      s.hasReviewApprove = true
+      ctx.journaler.journal(
+        reviewerEnsembleEntry(parent, ctx.config.agents.reviewer, s.reviewerDispatches, false),
+      )
+      ctx.journaler.journal(decisionEntry(parent, "always"))
+    } else if (reply === "once") {
+      // A landing-gate single-dispatch push grant: consumed by
+      // exactly one bash dispatch in execute.before (the
+      // .landing short-circuit), so a stale grant cannot outlive
+      // that single push.
+      s.pendingOnceGrant.landing = rid
+      ctx.journaler.journal(decisionEntry(parent, "once"))
+    } else {
+      // reject (or any non-allow reply) leaves the gate red: the
+      // next execute.before push re-blocks and re-arms the ask.
+      ctx.journaler.journal(decisionEntry(parent, "reject"))
+    }
+  }
+  /**
+   * Journals a permission reply whose non-empty requestID matches no
+   * recorded ask: the inert no-op is diagnosable, and the entry carries
+   * no action/decision (the human PERM table is untouched and it is
+   * replay-inert). A requestID-less reply is a distinct,
+   * already-understood broken-host case and stays silent.
+   * @param rid The unmatched host request id.
+   * @param sessionID The session the reply arrived in.
+   */
+  const noteUnrecordedReply = (rid: string, sessionID: string): void => {
+    ctx.journaler.journal({
+      type: "permission",
+      sessionID,
+      event: "unrecorded-reply",
+      requestID: rid,
+    })
+  }
+  /**
+   * Handles a permission.replied event: matches the reply against
+   * RECORDED asks only — a plan-gate ask (keyed by requestID, consumed
+   * once, releases/holds the plan gate) or a landing-gate ask (consumed
+   * once, grants/holds a push). A requestID absent from both maps was
+   * never an ask we raised, so the reply is inert — an approval of an
+   * unrelated permission ask cannot release either gate. Fail-open — the
+   * outer loop journals any throw.
+   * @param properties The resolved event properties.
+   */
+  const handlePermissionReplied = (properties: EventProperties): void => {
+    const rid = String(properties.requestID ?? "")
+    const reply = properties.reply
+    const planRecord = ctx.planGateAsks.get(rid)
+    if (planRecord) {
+      applyPlanGrant(rid, reply)
+    } else if (ctx.landingGateAsks.get(rid)) {
+      applyLandingGrant(rid, reply)
+    } else if (rid !== "") {
+      noteUnrecordedReply(rid, asSessionID(properties.sessionID))
+    }
+  }
+  /**
+   * Handles a session.inbox.enqueued event: prompt admission via the
+   * inbox stream — the transport adopted because its publication is exact
+   * host-admission parity: the host publishes it inside its own admit
+   * region, immediately after the prompt hook fires. A user-authored
+   * prompt (type "user") carrying non-empty text is admitted;
+   * agent/composition arrivals (synthetic / compaction / move) never
+   * carry a user prompt, so they stay inert (provenance invariant). The
+   * inbox id dedupes against the hook path on the shared host message id.
+   * `delivered`/`cancelled` are intentionally unhandled — the captured
+   * admission point is the host's own publish, and a later drain or cancel
+   * cannot retroactively un-admit it. Fail-open — the outer loop journals
+   * any throw.
+   * @param properties The resolved event properties.
+   */
+  const handleInboxEnqueued = (properties: EventProperties): void => {
+    const sid = properties.sessionID
+    const inboxID = properties.inboxID
+    const item = properties.item
+    const text = item?.payload?.text
+    if (
+      typeof sid === "string" &&
+      typeof inboxID === "string" &&
+      item?.type === "user" &&
+      typeof text === "string" &&
+      text !== ""
+    ) {
+      ctx.admitPrompt(sid, { sessionID: sid, text }, inboxID)
+    }
+  }
+  /** The event-type → handler dispatch table, in stream source order. */
+  const handlers: Record<string, EventHandler> = {
+    "session.created": handleSessionCreated,
+    "message.part.updated": handleTextUpdated,
+    "session.text.ended": handleTextEnded,
+    "session.text.delta": handleTextDelta,
+    "session.error": handleSessionError,
+    "permission.asked": handlePermissionAsked,
+    "permission.replied": handlePermissionReplied,
+    "session.inbox.enqueued": handleInboxEnqueued,
+  }
+  /**
+   * Consumes the host event stream until aborted, dispatching each event
+   * type to its handler through the dispatch table. Per-event failures
+   * are journaled, never fatal to the stream. Fragmented
+   * `session.text.delta` markers are recovered by the per-session sliding
+   * window (see the text-delta handler). Resolves the exit reason:
+   * "aborted" when the abort signal ends the stream, "clean" when the
+   * host closed it normally.
    */
   const consume = async (): Promise<StreamExit> => {
     for await (const event of subscribe({ signal })) {
@@ -67,300 +417,7 @@ export function startEventStream(
         // actually delivered work may re-note a later genuine stop.
         cleanEndNoted = false
         const properties: EventProperties = event.data ?? event.properties ?? {}
-        switch (event.type) {
-          case "session.created": {
-            const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
-            if (sid) {
-              const agent = typeof properties.agent === "string" ? properties.agent : ""
-              if (typeof properties.parentID === "string") {
-                ctx.ledger.setParent(sid, properties.parentID)
-                // Back-fill: a background child's edge often lands after
-                // its evidence and claim were recorded.
-                ctx.promoteOnEvidence(properties.parentID)
-              } else {
-                // Root sessions are live parents; the edge branch above is
-                // covered by setParent marking the parent.
-                ctx.ledger.markParent(sid)
-                // Root sessions only: the edge branch's parent is already
-                // keyed by its own created event, and a directory a child
-                // event carries belongs to the parent's context, so only
-                // parent-less events seed the per-session cache.
-                const dir = readRecordString(properties, DIRECTORY_KEYS)
-                if (dir !== "") {
-                  ctx.sessionDirs.set(sid, dir)
-                  ctx.boundSessionDirs()
-                }
-              }
-              // Redundant emitter seed from the created event's agent: this
-              // fires with or without the edge, so a child that streams a
-              // marker before its edge lands (or an unresolved child) still
-              // seeds the authority cache; a genuine delivery remains the
-              // always-firing seed (see seedEmitter).
-              ctx.seedEmitter(sid, agent)
-            }
-            break
-          }
-          case "message.part.updated": {
-            const part = properties.part ?? properties
-            const partSession = asSessionID(properties.sessionID ?? part?.sessionID)
-            if (part?.type === "text" && typeof part.text === "string" && partSession) {
-              await ctx.resolveParent(partSession)
-              ctx.parseMarkers(part.text, partSession, "child-message")
-            }
-            break
-          }
-          case "session.text.ended": {
-            const sid = properties.sessionID
-            const text = properties.text
-            if (typeof sid === "string" && typeof text === "string") {
-              await ctx.resolveParent(sid)
-              ctx.parseMarkers(text, sid, "child-text")
-            }
-            break
-          }
-          case "session.text.delta": {
-            const sid = properties.sessionID
-            const delta = properties.delta
-            if (typeof sid === "string" && typeof delta === "string") {
-              // Reassemble a possibly-split marker: fold this delta into the
-              // session's sliding window (tail-bounded) and re-parse it. The
-              // shared-empty dedup scope suppresses every re-fire, so only a
-              // newly completed marker across chunks is first-sighted.
-              const window = ((ctx.deltaWindows.get(sid) ?? "") + delta).slice(
-                -ctx.maxDeltaWindowChars,
-              )
-              ctx.deltaWindows.set(sid, window)
-              ctx.boundDeltaWindows()
-              await ctx.resolveParent(sid)
-              // Parse from the map, not the local fold: a task dispatch that
-              // interleaves during the await clears the window (the task
-              // boundary), and a stale local string would complete a marker
-              // that the clear was meant to drop.
-              const pending = ctx.deltaWindows.get(sid)
-              if (pending === window) ctx.parseMarkers(window, sid, "child-text-delta")
-            }
-            break
-          }
-          case "session.error": {
-            ctx.journaler.journal({
-              type: "error",
-              sessionID: properties.sessionID,
-              error: String(properties.error ?? "").slice(0, 500),
-            })
-            break
-          }
-          case "permission.asked": {
-            // Record plan-gate AND landing-gate asks (disjoint by message
-            // prefix). The value carries the ask's parent session so
-            // replies apply per-session and concurrent sessions cannot
-            // cross-apply. Fail-open — the outer loop journals any throw —
-            // and a missing/non-string id is inert (nothing is recorded).
-            const id = properties.id ?? properties.requestID
-            if (typeof id === "string" && id !== "") {
-              const sid = asSessionID(properties.sessionID)
-              const message = typeof properties.message === "string" ? properties.message : ""
-              // Landing-gate ask: message carries the landing-ask prefix
-              // (the evaluate handler's echo). A landing ask is disjoint from
-              // a plan ask (different prefix), so an approval of one never
-              // releases the other.
-              if (message.startsWith(LANDING_ASK_MESSAGE_PREFIX)) {
-                ctx.landingGateAsks.set(id, {
-                  sessionID: ctx.ledger.parentOf(sid),
-                  recordedAt: Date.now(),
-                })
-                ctx.boundLandingGateAsks()
-              } else {
-                // Plan-gate ask: record when the message carries the
-                // plan-ask prefix (the evaluate echo) or when the session
-                // is live-latched and the ask carries no message of its own
-                // (the escalated echo). A non-empty message WITHOUT either
-                // prefix is an unrelated ask (bash, write, …) even under a
-                // latched escalation — the evaluate handler always composes
-                // a prefix into its message, so a prefixed-or-empty message
-                // is the expected echo and anything else must never be
-                // recorded (a human's approval of an unrelated ask cannot
-                // release the plan or landing gate).
-                const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
-                // The empty-message consume of a live plan latch is the
-                // steal-able window: an unrelated ask wins the latch over the
-                // escalate echo. A prefixed ask (the normal echo) never does.
-                const stolen = !prefixed && message === "" && ctx.hasLiveAwaitingAsk(sid)
-                if (prefixed || stolen) {
-                  const parent = ctx.ledger.parentOf(sid)
-                  if (stolen) {
-                    // Journal the steal for ladder diagnosability; it carries
-                    // no action/decision, so the human PERM table (status.mjs
-                    // counts only e.action === "ask") is untouched and it is
-                    // replay-inert (the ledger never replays permission rows).
-                    ctx.journaler.journal({
-                      type: "permission",
-                      sessionID: parent,
-                      event: "latch-steal",
-                      reason: "plan-gate",
-                    })
-                  }
-                  ctx.awaitingPlanAsk.delete(sid)
-                  ctx.planGateAsks.set(id, {
-                    sessionID: parent,
-                    recordedAt: Date.now(),
-                  })
-                  ctx.boundPlanAsks()
-                } else if (message === "" && ctx.hasLiveLandingAsk(sid)) {
-                  // Empty-message landing escalate echo: record for the
-                  // landing gate only. Reached only when the plan latch is
-                  // NOT live — a coincident double-escalation (both latches
-                  // live, one empty-message echo) resolves to the plan gate
-                  // by branch order, a documented edge: the human still
-                  // sees one ask, and the other latch survives for its own
-                  // prefixed echo.
-                  ctx.landingGateAsks.set(id, {
-                    sessionID: ctx.ledger.parentOf(sid),
-                    recordedAt: Date.now(),
-                  })
-                  ctx.boundLandingGateAsks()
-                }
-              }
-            }
-            break
-          }
-          case "permission.replied": {
-            // Match the reply against RECORDED plan-gate asks only: a
-            // Match the reply against RECORDED asks: plan-gate ask (keyed
-            // by requestID, consumed once, releases/holds the plan gate)
-            // OR landing-gate ask (consumed once, grants/holds a push). A
-            // requestID absent from both maps was never an ask we raised, so
-            // the reply is inert — an approval of an unrelated permission
-            // ask cannot release either gate. Fail-open: the outer loop
-            // journals any throw.
-            const rid = String(properties.requestID ?? "")
-            const reply = properties.reply
-            const planRecord = ctx.planGateAsks.get(rid)
-            if (planRecord) {
-              ctx.planGateAsks.delete(rid)
-              const parent = planRecord.sessionID
-              const s = ctx.ledger.state(parent)
-              if (reply === "always") {
-                // A standing human approval releases the plan gate for the
-                // rest of the task and records provenance.
-                s.humanApproval = true
-                s.hasPlanVerdict = true
-                ctx.journaler.journal({
-                  type: "permission",
-                  sessionID: parent,
-                  decision: "always",
-                })
-              } else if (reply === "once") {
-                // A plan-gate single-dispatch grant: consumed by exactly one
-                // executor dispatch in execute.before (the .plan
-                // short-circuit), so a stale grant cannot outlive that
-                // single dispatch.
-                s.pendingOnceGrant.plan = rid
-                ctx.journaler.journal({
-                  type: "permission",
-                  sessionID: parent,
-                  decision: "once",
-                })
-              } else {
-                // reject (or any non-allow reply) leaves the gate red: the
-                // next execute.before dispatch re-blocks.
-                ctx.journaler.journal({
-                  type: "permission",
-                  sessionID: parent,
-                  decision: "reject",
-                })
-              }
-            } else if (ctx.landingGateAsks.get(rid)) {
-              const landingRecord = ctx.landingGateAsks.get(rid)
-              ctx.landingGateAsks.delete(rid)
-              const parent = landingRecord!.sessionID
-              const s = ctx.ledger.state(parent)
-              if (reply === "always") {
-                // A standing human approval releases the landing gate for
-                // the rest of the task (the bash guard sees hasReviewApprove
-                // and allows every push). A human release outranks the
-                // ensemble, so clear any refusal stamp on the last ensemble
-                // entry: replay restores the human release (refusedApprove
-                // absent/false) rather than an earlier refused APPROVE.
-                s.hasReviewApprove = true
-                ctx.journaler.journal({
-                  type: "ensemble",
-                  sessionID: parent,
-                  agent: ctx.config.agents.reviewer,
-                  count: s.reviewerDispatches,
-                  refusedApprove: false,
-                })
-                ctx.journaler.journal({
-                  type: "permission",
-                  sessionID: parent,
-                  decision: "always",
-                })
-              } else if (reply === "once") {
-                // A landing-gate single-dispatch push grant: consumed by
-                // exactly one bash dispatch in execute.before (the
-                // .landing short-circuit), so a stale grant cannot outlive
-                // that single push.
-                s.pendingOnceGrant.landing = rid
-                ctx.journaler.journal({
-                  type: "permission",
-                  sessionID: parent,
-                  decision: "once",
-                })
-              } else {
-                // reject (or any non-allow reply) leaves the gate red: the
-                // next execute.before push re-blocks and re-arms the ask.
-                ctx.journaler.journal({
-                  type: "permission",
-                  sessionID: parent,
-                  decision: "reject",
-                })
-              }
-            } else if (rid !== "") {
-              // A non-empty requestID that matches neither recorded ask was
-              // never an ask we raised: journal it as an unrecorded reply so
-              // the inert no-op is diagnosable. It carries no action/decision
-              // (human PERM table untouched, replay-inert). A requestID-less
-              // reply (rid === "") is a distinct, already-understood
-              // broken-host case and stays silent.
-              ctx.journaler.journal({
-                type: "permission",
-                sessionID: asSessionID(properties.sessionID),
-                event: "unrecorded-reply",
-                requestID: rid,
-              })
-            }
-            break
-          }
-          case "session.inbox.enqueued": {
-            // Prompt admission via the inbox stream — the transport adopted
-            // because its publication is exact host-admission parity: the
-            // host publishes it inside its own admit region, immediately after
-            // the prompt hook fires. A user-authored prompt (type "user")
-            // carrying non-empty text is admitted; agent/composition arrivals
-            // (synthetic / compaction / move) never carry a user prompt, so
-            // they stay inert (provenance invariant). The inbox id dedupes
-            // against the hook path on the shared host message id. Fail-open:
-            // the outer loop journals any throw. `delivered`/`cancelled` are
-            // intentionally unhandled — the captured admission point is the
-            // host's own publish, and a later drain or cancel cannot
-            // retroactively un-admit it.
-            const sid = properties.sessionID
-            const inboxID = properties.inboxID
-            const item = properties.item
-            const text = item?.payload?.text
-            if (
-              typeof sid === "string" &&
-              typeof inboxID === "string" &&
-              item?.type === "user" &&
-              typeof text === "string" &&
-              text !== ""
-            ) {
-              ctx.admitPrompt(sid, { sessionID: sid, text }, inboxID)
-            }
-            break
-          }
-          default:
-            break
-        }
+        await handlers[event.type]?.(properties)
       } catch (e) {
         ctx.journaler.journal({ type: "error", error: `event ${event.type}: ${e}` })
       }
