@@ -79,7 +79,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                          |
 | `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                               |
 | `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                          |
-| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, bounded re-subscription                                                         |
+| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, re-subscription under a throw-only restart budget                               |
 | `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                       |
 | `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                            |
 | `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                   |
@@ -185,11 +185,13 @@ telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
 across `session.text.delta` chunks is reassembled and re-parsed so a completed
 marker is first-sighted once (dedup-suppressing the re-parse), then the window
-ages out on the next task dispatch. A subscription that throws or a stream that
-completes without abort is journaled and the consumer re-subscribes up to a
-cumulative budget of 5 restarts; the terminal disablement journals and
-`session.text.*` ingestion stops once the budget is spent (a throw while
-aborted stays silent).
+ages out on the next task dispatch. A subscription that throws is
+journaled per death and the consumer re-subscribes under a cumulative
+budget of 5 restarts; the disablement journals once, then
+`session.text.*` ingestion stops. A clean host recycle (a stream that
+completes without abort) re-subscribes for free and never spends the
+budget, its stream-ended telemetry journaling once per stop rather than
+once per close (an aborted exit stays silent).
 
 ---
 

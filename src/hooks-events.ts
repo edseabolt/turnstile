@@ -3,11 +3,15 @@
  * child→parent resolution and marker parsing from child sessions (the
  * primary path when task results are summarized), permission ask/reply
  * bookkeeping (plan-gate and landing-gate latches), inbox prompt
- * admission, and session errors — under a bounded re-subscription budget.
- * Per-event failures are journaled, never fatal to the stream; a normal
- * (closed) stream completion journals one telemetry entry. The abort
- * controller and its cleanup stay in src/setup.ts; the signal is
- * injected.
+ * admission, and session errors. Only a THROWN subscription/iterator
+ * death burns the restart budget (one `event subscription:` journal per
+ * death); a clean host recycle re-subscribes for free, so a healthy host
+ * never spends the budget. Stream-ended telemetry journals once per stop,
+ * not once per close. The supervision loop never rejects and resolves
+ * with its stop reason; src/setup.ts journals the spent-budget
+ * disablement from that resolution. Per-event failures are journaled,
+ * never fatal to the stream. The abort controller and its cleanup stay
+ * in src/setup.ts; the signal is injected.
  */
 
 import {
@@ -20,31 +24,48 @@ import {
 import type { TurnstileContext } from "./hooks-core.ts"
 import type { EventProperties, StreamEvent } from "./types.ts"
 
+/** A consume() exit: the stream was torn down by an abort, or it completed cleanly. */
+type StreamExit = "aborted" | "clean"
+/** Why the supervision loop stopped: a dispose abort, or a spent restart budget. */
+type StopReason = "aborted" | "budget"
+
 /**
  * Starts the event stream for one setup: subscribes to the host stream
- * and supervises re-subscription under the restart budget. The returned
- * promise is the supervision loop (it never rejects — every throw is
- * caught and journaled); setup.ts keeps a reference for the disposer.
+ * and supervises re-subscription. Only a thrown subscription/iterator
+ * death burns the restart budget (one `event subscription:` journal per
+ * death); a clean host recycle re-subscribes for free, so a healthy host
+ * never spends the budget, and the stream-ended telemetry for a run of
+ * clean closes journals once per stop, not once per close. The returned
+ * promise is the supervision loop: it never rejects — every throw is
+ * caught and journaled — and resolves with the stop reason so setup.ts
+ * surfaces the spent-budget disablement exactly once.
  * @param ctx The shared per-setup context (journaler, ledger, marker
  *     services, ask latches, delta windows, admission state).
  * @param subscribe The host event.subscribe function.
  * @param signal The abort signal that stops the stream on dispose.
- * @returns The supervision loop promise.
+ * @returns The supervision loop promise, resolving "aborted" on dispose
+ *     or "budget" once the restart budget is spent.
  */
 export function startEventStream(
   ctx: TurnstileContext,
   subscribe: (options?: { signal?: AbortSignal }) => AsyncIterable<StreamEvent>,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<StopReason> {
+  let cleanEndNoted = false
   /**
    * Consumes the host event stream until aborted, dispatching each
    * event type to its handler. Per-event failures are journaled, never
    * fatal to the stream. Fragmented `session.text.delta` markers are
    * recovered by the per-session sliding window (see the delta case).
+   * Resolves the exit reason: "aborted" when the abort signal ends the
+   * stream, "clean" when the host closed it normally.
    */
-  const consume = async (): Promise<void> => {
+  const consume = async (): Promise<StreamExit> => {
     for await (const event of subscribe({ signal })) {
       try {
+        // A delivered event re-arms the stream-ended note: a recycle that
+        // actually delivered work may re-note a later genuine stop.
+        cleanEndNoted = false
         const properties: EventProperties = event.data ?? event.properties ?? {}
         switch (event.type) {
           case "session.created": {
@@ -315,36 +336,50 @@ export function startEventStream(
       }
     }
     // A normal completion (closed stream) is a silent death mode; an
-    // abort/detach exit stays silent. Telemetry only.
-    if (!signal.aborted) ctx.journaler.journal({ type: "error", error: "event stream ended" })
+    // abort/detach exit stays silent. The stream-ended telemetry journals
+    // once per stop, not once per close: a run of clean recycles without
+    // delivered work notes it only on the first close, and a delivered
+    // event re-arms the note for a later genuine stop.
+    if (!signal.aborted && !cleanEndNoted) {
+      cleanEndNoted = true
+      ctx.journaler.journal({ type: "error", error: "event stream ended" })
+    }
+    return signal.aborted ? "aborted" : "clean"
   }
   /**
-   * Bounds consume() re-subscriptions on any non-abort exit so a broken
-   * event stream disables (rather than silently exits) marker ingestion
-   * after a small cumulative budget. A thrown subscription journals one
-   * `event subscription:` entry per death; after the budget is spent the
-   * terminal disablement journals and the loop stops re-subscribing (no
-   * more session.text.* ingestion). A throw while aborted (dispose) stays
-   * silent, matching the pre-existing .catch semantics.
+   * Re-subscribes forever until the restart budget or an abort ends
+   * supervision. Only a thrown subscription/iterator death burns the
+   * restart budget: each such death journals one `event subscription:`
+   * entry, and once the budget is spent the loop resolves "budget" (the
+   * spent-budget disablement is surfaced by setup.ts from that
+   * resolution, so it journals exactly once per stop). A clean host
+   * recycle or an abort is not a death: a clean exit re-subscribes for
+   * free, and an abort (dispose) resolves "aborted" silently, matching
+   * the pre-existing abort-silent semantics.
    */
   const maxStreamRestarts = 5
   let streamRestarts = 0
-  const supervise = async (): Promise<void> => {
+  const supervise = async (): Promise<StopReason> => {
     for (;;) {
+      let exit: StreamExit
       try {
-        await consume()
+        exit = await consume()
       } catch (e) {
-        if (!signal.aborted)
-          ctx.journaler.journal({ type: "error", error: `event subscription: ${e}` })
+        // A thrown death is the only exit that burns the restart budget;
+        // a throw while aborted (dispose) is a silent detach.
+        if (signal.aborted) return "aborted"
+        ctx.journaler.journal({ type: "error", error: `event subscription: ${e}` })
+        streamRestarts++
+        if (streamRestarts <= maxStreamRestarts) continue
+        return "budget"
       }
-      if (signal.aborted) return
-      streamRestarts++
-      if (streamRestarts <= maxStreamRestarts) continue
-      ctx.journaler.journal({
-        type: "error",
-        error: "event stream restart budget exhausted; session.text.* marker ingestion is disabled",
-      })
-      return
+      // A clean host recycle is not a death: re-subscribe for free so a
+      // healthy host never spends the restart budget. Yield one event-loop
+      // tick before re-subscribing: a host that clean-closes instantly
+      // would otherwise re-subscribe unboundedly on the microtask queue
+      // and starve the loop (dispose can never run to stop it).
+      if (exit === "aborted") return "aborted"
+      await new Promise<void>((resolve) => setImmediate(resolve))
     }
   }
   return supervise()

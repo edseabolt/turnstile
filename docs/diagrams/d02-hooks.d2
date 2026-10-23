@@ -31,7 +31,7 @@ after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
 after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
 
-eventloop: "event.subscribe stream loop (hooks-events.ts, 5 restarts)" {
+eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart budget)" {
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
   text: "message.part.updated / .ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"

@@ -182,12 +182,28 @@ export function createTurnstile(
 
     // Event mirror: child→parent resolution, marker parsing from child
     // sessions (primary path if task results are summarized), errors.
+    // Thrown deaths burn a cumulative restart budget; a clean host
+    // recycle re-subscribes for free.
     if (typeof h.event?.subscribe === "function") {
       const controller = new AbortController()
       const consuming = startEventStream(ctx, h.event.subscribe, controller.signal)
+      // Surface *why* marker ingestion stopped, exactly once, the moment
+      // the supervisor stops — so a spent budget is never silent and a
+      // clean host recycle never reaches this line. A dispose/abort
+      // resolves "aborted" (silent), matching the abort-silent contract.
+      // Surfacing is event-driven, not dispose-driven: the disposer stays
+      // synchronous and never awaits the stream.
+      void consuming.then((reason) => {
+        if (reason === "aborted") return
+        ctx.journaler.journal({
+          type: "error",
+          error:
+            "event stream restart budget exhausted; session.text.* marker ingestion is disabled",
+        })
+      })
+      // No .catch: the supervision promise never rejects, so a catch would be an untestable dead branch.
       cleanups.push(() => {
         controller.abort()
-        void consuming
       })
       hooks++
     }
