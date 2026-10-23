@@ -285,14 +285,23 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
-  A `suppressed` entry is the audit trail for a `GATE:`/`VERDICT:` marker first
-  observed from an unauthoritative emitter — an agent without the marker
-  contract for that kind (`GATE:`↔`test-runner`, `VERDICT:`↔`reviewer` /
-  `plan-reviewer`), or one whose agent could not be resolved. It is
-  audit-only and replay-inert (nothing replays against a denial), its marker
-  string carries the digits for forensics, and a re-delivery of identical text
-  adds none (dedup stays registered). Both journal replay and the status
-  aggregate treat it as inert.
+  A `suppressed` entry is the audit trail for a marker the pipeline
+  deliberately did not honor, in two flavors discriminated by `kind`.
+  `kind:"gate"` / `kind:"verdict"` is the first-observed-from-an-unauthoritative-emitter
+  record — an agent without the marker contract for that kind
+  (`GATE:`↔`test-runner`, `VERDICT:`↔`reviewer` / `plan-reviewer`), or one
+  whose agent could not be resolved; its marker string carries the digits for
+  forensics, and a re-delivery of identical text adds none (dedup stays
+  registered). `kind:"replay"` is the replay-drop audit: one entry per
+  journal line the boot replay dropped for failing a shape check —
+  `{ts, type:"suppressed", kind:"replay", reason}` with `reason` one of
+  `malformed`, `session-id`, `entry-shape`, `count-invalid`, plus `sessionID`
+  only when it already passed the replay ID-shape check (hostile bytes are
+  never echoed into the journal); a boot that drops more than 16 lines
+  journals one final `{ts, type:"suppressed", kind:"replay",
+event:"summary", dropped:<total>}` in place of the overflow. Every flavor
+  is audit-only, replay-inert (nothing replays against a denial or a drop),
+  and the status aggregate treats it as inert.
   A `config` entry is the surface audit for the once-per-load `[turnstile]
  config:` block: `{type:"config", sessionID, surfaced:true, count}` on a
   successful prepend, or `{..., surfaced:false, error}` when the prepend threw
@@ -336,22 +345,35 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   and remove is skipped, so that file stops rotating until the directory is
   removed while journaling keeps appending. A residual bounded race remains:
   a writer that opens the path across the rename may land an entry in a
-  generation past the current + `.1` pair replay reads, but the window is
-  small and clock-free.
+  generation past the current file, but the replay scan walks all retained
+  generations, so such an entry simply joins the tail window when it is
+  read back (the window is small and clock-free).
   Rotates at 5 MB, 5 generations.
 - **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
 
-On restart, `replayGatePasses` (`src/ledger.ts`) reads the last
-`replayTailLines` lines (default 2000) of the current + `.1` generations —
-exactly one rotation generation, deliberately not all `journalMaxGenerations`,
-which would cost `journalMaxGenerations × journalMaxBytes` of boot I/O worst
-case — and restores per session, last-wins:
+On restart, `replayGatePasses` (`src/ledger.ts`) walks the journal
+generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file
+exists) and collects the last `replayTailLines` lines (default 2000) from all
+retained generations, with an early stop: the walk ends inside the newest
+generation that alone satisfies the tail bound, so boot I/O stays bounded by
+the retained-generation sizes, never the full
+`journalMaxGenerations × journalMaxBytes` envelope. The journal is treated as
+untrusted data on the read side: a line folds into the last-wins maps only if
+its `sessionID` passes the replay ID-shape check (alphanumeric plus `.`, `_`,
+`-`, length 1–64) and its kind fields pass their shape guards — verdict
+marker ≤ 512 chars, ensemble count an integer in
+`[0, REVIEW_ENSEMBLE_SIZE]` (higher integers clamp, others drop) — and each
+dropped line journals one replay-drop `suppressed` entry (above). It then
+restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
 (task-result source only — streamed child verdicts never restore it), and
 ensemble counts. A plan APPROVE entry may carry the bound identity fields
-`plan` (file name) and `planKey` (that file's content hash); when present they
-restore `approvedPlan`/`approvedPlanKey` (absent or non-string → unbound, so
-legacy lines replay unchanged). Restored buckets get `replayGrace`, surviving
+`plan` (file name) and `planKey` (that file's content hash); a field restores
+it only in legal shape (path-free file name ≤ 128 chars; `planKey` a
+64-char lowercase sha256 hex; `plansSig` ≤ 4096 chars) — absent, non-string,
+or malformed-shape → unbound, so legacy lines replay unchanged and hostile
+bytes degrade to the existing unbound validation paths. Restored buckets get
+`replayGrace`, surviving
 exactly the resume prompt. Values, not provenance, are carried: a live
 `GATE: FAIL` after replay stays false. Staleness then applies per approval
 kind: a restored _bound_ verdict is validated against the current files
@@ -363,7 +385,10 @@ keeps the accept-once window (accepted once and re-stamped). Any read error
 is fail-open.
 
 For a read-only status view: `opencode-turnstile status [--json]` aggregates
-gate/plan/verdict/dispatch/blocked/permission entries per parent session.
+gate/plan/verdict/dispatch/blocked/permission entries per parent session,
+walking the same all-generation tail window with the same session-ID and
+marker shape checks (observation-only, so a dropped line is silent there
+rather than journaled).
 
 ---
 

@@ -53,6 +53,16 @@ If the journal contents are sensitive in your environment, protect the
 metrics directory (e.g. user-only permissions) or point `metricsDir` at an
 encrypted location.
 
+The read side treats the journal as untrusted data, not a trust root: boot
+replay shape-validates every line before applying it — session IDs failing
+the ID-shape check are dropped and never become state keys, out-of-range
+ensemble counts clamp, and plan identity fields that fail shape degrade to
+unbound so the existing staleness validation applies. Each dropped line is
+journaled as a replay-inert `suppressed` audit entry, so a hostile append is
+observable. A single appended line can no longer mint a session bucket or
+flip a restored gate. Protecting the metrics directory above remains the
+actual boundary against a local writer.
+
 ## Reporting a vulnerability
 
 Open a private GitHub security advisory on this repository. Do not open a
