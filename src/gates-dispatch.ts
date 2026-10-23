@@ -53,7 +53,8 @@ export interface EvidenceSearch {
 interface DispatchGates {
   guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
   reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
-  guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
+  guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): boolean
+  countDispatch(sessionID: string, ledger: GateLedger, agent: string, waived: boolean): void
   guardReadLimit(sessionID: string, ledger: GateLedger): void
 }
 
@@ -661,22 +662,30 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
    * returns before either check, so when a block fires a live waiver is
    * necessarily out of scope or already consumed — each block appends
    * `waiverStateNote` so the message reports that state ("" otherwise).
-   * Increments the dispatched leg's counter and
-   * `totalDispatches`; the reviewer has no leg and is counted toward the budget
-   * solely here (single-count point — never in guardReviewerDispatch).
+   * Pure check: the counters advance in `countDispatch` (single-count point)
+   * once every guard has admitted the dispatch — a blocked attempt draws down
+   * nothing. The returned verdict is the waiver-exemption state snapshotted
+   * at this check: the metering commit consumes it as given, because a later
+   * guard in the same dispatch (the reviewer gate's consumption of a covered
+   * unscoped waiver) may clear the waiver between this check and the commit.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
    * @param agent The dispatched agent name (resolved by the setup hook).
+   * @returns True when the live waiver covered the dispatched stage (the
+   *     admission-time exemption verdict), false when the dispatch passed the
+   *     caps and the budget.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
    *     must not proceed.
    */
-  function guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void {
+  function guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): boolean {
     const s = ledger.state(sessionID)
     // A waiver covering the dispatched stage exempts its leg cap and the
     // total budget without counting: a loop the user explicitly waived is
     // bounded by the user, not the plugin. An unscoped waiver covers every
-    // stage (the legacy whole-task exemption, byte-identical).
-    if (waiverCovers(s, [agent])) return
+    // stage (the legacy whole-task exemption, byte-identical). The verdict is
+    // returned for the metering commit, which must not re-read the waiver:
+    // a later guard may consume it before the commit runs.
+    if (waiverCovers(s, [agent])) return true
 
     // One edge read feeds both cap sites' message tail swap and journal stamps.
     const edge = ledger.childToParent.get(sessionID)
@@ -685,16 +694,44 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     // re-dispatching in a loop.
     if (leg && s[leg.countKey] >= config[leg.capKey]) blockLoopCap(sessionID, agent, leg, edge, s)
     // Global backstop: the task has dispatched more than maxTotalDispatches
-    // subagents across all legs — something is stuck. Before the increment
-    // below. Leg agents block on their leg cap first, so this reason wins
-    // only when the leg cap is not also exhausted (e.g. the reviewer has no
-    // leg, so when its round cap and the budget are both exhausted the
-    // budget reason wins).
+    // subagents across all legs — something is stuck. Leg agents block on
+    // their leg cap first, so this reason wins only when the leg cap is not
+    // also exhausted (e.g. the reviewer has no leg, so when its round cap and
+    // the budget are both exhausted the budget reason wins).
     if (s.totalDispatches >= config.maxTotalDispatches)
       blockDispatchBudget(sessionID, agent, edge, s)
-    // Check-then-increment: the leg counter then the total budget advance. The
-    // reviewer has no leg and is counted toward totalDispatches solely here —
-    // guardReviewerDispatch never advances totalDispatches (single-count point).
+    return false
+  }
+
+  /**
+   * Advances the dispatched leg's counter and the per-task total-dispatch
+   * budget. Sole advance of both counters: the check half
+   * (`guardDispatchBudget`) runs at guard entry and never touches them; a
+   * refusal never reaches this call, so a blocked dispatch draws down
+   * nothing. The waiver-exemption verdict is threaded in from the guard's
+   * admission-time snapshot rather than re-read here: a later guard in the
+   * same dispatch (the reviewer gate's consumption of a covered unscoped
+   * waiver) may clear the waiver between the budget check and this commit,
+   * and a re-read would count a dispatch the guard exempted. A true verdict
+   * exempts without counting, mirroring the guard's waiver short-circuit.
+   * Must be paired with `guardDispatchBudget` at every admitted dispatch —
+   * the wiring layer invokes it only once every guard has admitted the
+   * dispatch, with the verdict that guard returned.
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param agent The dispatched agent name (resolved by the setup hook).
+   * @param waived The admission-time waiver-exemption verdict returned by
+   *     `guardDispatchBudget` (true exempts this dispatch from the counters).
+   */
+  function countDispatch(
+    sessionID: string,
+    ledger: GateLedger,
+    agent: string,
+    waived: boolean,
+  ): void {
+    const s = ledger.state(sessionID)
+    if (waived) return
+    const leg = resolveDispatchLeg(agent)
     if (leg) s[leg.countKey]++
     s.totalDispatches++
   }
@@ -728,6 +765,7 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     guardReviewerDispatch,
     reviewEnsembleComplete,
     guardDispatchBudget,
+    countDispatch,
     guardReadLimit,
   }
 }

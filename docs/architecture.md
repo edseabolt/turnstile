@@ -139,7 +139,7 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 - `task`/`subagent`: dispatch budget (16 total), per-leg caps
   (planner 3 / plan-reviewer 3 / test-runner 4), plan-approval gate,
   decomposition gate, reviewer gate (green tests + round cap 2), one-shot
-  grants.
+  grants; the counters advance at guard exit, only for admitted dispatches.
 - `read`: parent-keyed read horizon — warn at 8 whole-file reads (once per task), block at 15.
 - `bash`/`shell`: bash denylist → commit-message lint → landing gate
   (`git push` requires reviewer approval).
@@ -285,6 +285,8 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
+  That same guard exit is where the admitted dispatch is metered against the
+  loop counters, so a blocked attempt leaves every counter untouched.
   A `suppressed` entry is the audit trail for a marker the pipeline
   deliberately did not honor, in two flavors discriminated by `kind`.
   `kind:"gate"` / `kind:"verdict"` is the first-observed-from-an-unauthoritative-emitter

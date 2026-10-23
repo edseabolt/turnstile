@@ -201,8 +201,12 @@
  *   carries flags only, never the cleared evidence/dispatch-scope maps.
  * - Loop caps: max 2 `reviewer` / 3 `planner` / 3 `plan-reviewer` / 4
  *   `test-runner` dispatches per task plus a 16-dispatch total budget,
- *   regardless of gate state. Each dispatch leg (planner, plan-reviewer,
- *   test-runner, and the total across all legs) is a mechanical loop backstop;
+ *   regardless of gate state. The counters advance only once every guard has
+ *   admitted the dispatch — a blocked attempt draws down no budget, so the
+ *   escalation names the gate that actually blocked (loop-cap, round-limit,
+ *   plan-gate) rather than the budget. Each dispatch leg (planner,
+ *   plan-reviewer, test-runner, and the total across all legs) is a
+ *   mechanical loop backstop;
  *   a prompt-channel user waiver covering a dispatched stage exempts its leg
  *   cap and the total budget without counting toward it (an unscoped waiver
  *   covers every stage — the legacy whole-task exemption; a dispatch prompt
@@ -217,12 +221,12 @@
  *   `parent`, and the parent's next prompt releases the child's metering
  *   counters (journaled as a `type:"child-reset"` entry) — a child stuck at
  *   its own cap is not dead-ended by a reset only the parent can trigger.
- * - Dispatch journaling: every `task`/`subagent` dispatch is journaled once at
- *   guard exit, so an allowed dispatch stays byte-identical while a blocked
- *   attempt stamps `blocked:true` (audit distinguishes dispatched from
- *   blocked-and-attempted; `turnstile status` omits that stamp from its
- *   dispatches counter, the block already being counted by the guard's
- *   `blocked` entry).
+ * - Dispatch journaling: every `task`/`subagent` dispatch is metered and
+ *   journaled once at guard exit, so an allowed dispatch stays byte-identical
+ *   while a blocked attempt stamps `blocked:true` (audit distinguishes
+ *   dispatched from blocked-and-attempted; `turnstile status` omits that
+ *   stamp from its dispatches counter, the block already being counted by the
+ *   guard's `blocked` entry).
  * - Reviewer ensemble: every unwaived `task -> reviewer` dispatch is counted
  *   per task and journaled as `{type:"ensemble", sessionID, agent, count}`;
  *   under `reviewEnsemble: enforce` (default) a reviewer `VERDICT: APPROVE`

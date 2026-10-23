@@ -77,16 +77,43 @@ export interface Gates {
    * `{type:"escalation"}` entry, and tells the dispatcher to STOP and escalate;
    * when the budget is exceeded it refuses every further dispatch. Either way
    * the dispatcher is looping, so the message is STOP-and-escalate from any
-   * session. Increments the dispatched leg's counter and `totalDispatches`
-   * (single-count point: the reviewer's budget consumption lives here —
-   * `guardReviewerDispatch` only advances its own `reviewRounds`).
+   * session. The counters advance in `countDispatch` (single-count point) once
+   * every guard has admitted the dispatch — a blocked attempt draws down
+   * nothing. The returned verdict is the waiver-exemption state snapshotted
+   * at this check: the metering commit consumes it as given, because a later
+   * guard in the same dispatch (the reviewer gate's consumption of a covered
+   * unscoped waiver) may clear the waiver between this check and the commit.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
    * @param agent The dispatched agent name (resolved by the setup hook).
+   * @returns True when the live waiver covered the dispatched stage (the
+   *     admission-time exemption verdict), false when the dispatch passed the
+   *     caps and the budget.
    * @throws Error with a `BLOCKED by turnstile:` prefix when the dispatch
    *     must not proceed.
    */
-  guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
+  guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): boolean
+  /**
+   * Advances the dispatched leg's counter and the per-task total-dispatch
+   * budget. Sole advance of both counters: the check half
+   * (`guardDispatchBudget`) runs at guard entry and never touches them; a
+   * refusal never reaches this call, so a blocked dispatch draws down
+   * nothing. The waiver-exemption verdict is threaded in from the guard's
+   * admission-time snapshot rather than re-read here: a later guard in the
+   * same dispatch (the reviewer gate's consumption of a covered unscoped
+   * waiver) may clear the waiver between the budget check and this commit,
+   * and a re-read would count a dispatch the guard exempted. A true verdict
+   * exempts without counting, mirroring the guard's waiver short-circuit.
+   * Must be paired with `guardDispatchBudget` at every admitted dispatch —
+   * the wiring layer invokes it only once every guard has admitted the
+   * dispatch, with the verdict that guard returned.
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param agent The dispatched agent name (resolved by the setup hook).
+   * @param waived The admission-time waiver-exemption verdict returned by
+   *     `guardDispatchBudget` (true exempts this dispatch from the counters).
+   */
+  countDispatch(sessionID: string, ledger: GateLedger, agent: string, waived: boolean): void
   /**
    * Enforces the whole-file read horizon for a session with an atomic
    * check-then-increment: the read is allowed when the count is below

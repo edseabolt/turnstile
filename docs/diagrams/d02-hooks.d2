@@ -22,7 +22,7 @@ tool: "tool.hook (hooks-tool.ts)" {
   after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\",\nnear-miss diagnostics → type:\"marker\")"
 }
 
-before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸\none-grants ▸ dispatch journaled at guard exit"
+before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸\none-grants ▸ dispatch counted + journaled at guard exit"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
 before-write: "write/edit: path denylist"
