@@ -22,9 +22,11 @@ export function newState(): GateState {
     lastVerdictMarker: "",
     hasPlanVerdict: false,
     hasReviewApprove: false,
-    // Waiver trio: task-scoped like userWaiver, cleared on every prompt reset
-    // and never carried through mergeAfterReplay. Scope is [] (unscoped);
-    // consumed is false; the scoped-waiver allowance counter starts at 0.
+    // Waiver family: task-scoped — cleared on an ordinary prompt reset, but
+    // carried one prompt through mergeAfterReplay (like the restart-sticky
+    // flags) so a grace prompt keeps the waiver self-consistent for the block
+    // messages that read it. Fresh here: scope [] (unscoped), consumed false,
+    // the scoped-waiver allowance counter 0.
     userWaiver: "",
     userWaiverScope: [],
     userWaiverConsumed: false,
@@ -244,16 +246,35 @@ export function formatPipelineStatus(
 }
 
 /**
- * Builds the gate state for the first post-restart prompt (the grace prompt):
- * carries the replayed bucket's current flag _values_ forward — not provenance
- * — so a live `GATE: FAIL` after replay is never resurrected. The restart-
- * sticky fields paired with `hasPlanVerdict` — the `plansSignature` stamp and
- * the bound plan identity (`approvedPlan`/`approvedPlanKey`) — are carried
- * only while `hasPlanVerdict` itself survives. All other fields
- * (`seenFrom`, `suppressedPending`, `reviewRounds`, `reads`, `seen`) come
- * fresh; the returned bucket's
- * `replayGrace` is consumed (false).
- * @param prior The replayed bucket being reset.
+ * Builds the gate state for the grace prompt — the first prompt after a
+ * journal replay or a same-worktree continuation re-admission: carries the
+ * prior bucket's current flag _values_ forward — not provenance — so a live
+ * `GATE: FAIL` after replay is never resurrected. The carry set is the
+ * restart-sticky bundle: `hasGatePass`, `hasPlanVerdict`, `humanApproval`,
+ * `hasReviewApprove`, `reviewerDispatches`, and the fields paired with
+ * `hasPlanVerdict` — the `plansSignature` stamp and the bound plan identity
+ * (`approvedPlan`/`approvedPlanKey`) — carried only while `hasPlanVerdict`
+ * itself survives. The waiver family (`userWaiver`, `userWaiverScope`,
+ * `userWaiverConsumed`, `reviewWaiverRounds`) travels as a unit: replay never
+ * restores it, so on a journal-replay bucket the prior waiver is "" and the
+ * carry is a no-op; it is the continuation-carry bucket that may arrive with
+ * a live waiver, and the family must stay self-consistent because the
+ * block-message readers pair its fields (`waiverCovers` reads the quote +
+ * scope, `waiverStateNote` adds the consumed flag, and the reviewer round-cap
+ * allowance clause reads the scope + spent slots) — dropping any one would
+ * misreport the others at the next block site. Everything else is
+ * deliberately dropped: `unverifiedPass` and the raw marker text are
+ * display/diagnostic state whose flags are already replay-restored,
+ * `pendingOnceGrant` must not outlive its single dispatch, `policyInjected`
+ * is per-task policy re-supply, the loop-cap counters (`reviewRounds`,
+ * `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`,
+ * `totalDispatches`, `landingBlocks`) intentionally re-arm on every fresh
+ * prompt cycle, and the dedup/telemetry/fingerprint fields
+ * (`seenFrom`, `suppressedPending`, `reads`, `readWarned`, `seen`,
+ * `replayGrace`, `taskFingerprint`) are intrinsic to this bucket —
+ * `replayGrace` is consumed by design and `taskFingerprint` is re-stamped
+ * by the caller. The returned bucket's `replayGrace` is consumed (false).
+ * @param prior The replayed or continuation-carry bucket being reset.
  * @returns A reset bucket with the prior flags; grace consumed.
  */
 export function mergeAfterReplay(prior: GateState): GateState {
@@ -262,9 +283,6 @@ export function mergeAfterReplay(prior: GateState): GateState {
   s.hasPlanVerdict = prior.hasPlanVerdict
   // Restart-sticky like hasPlanVerdict: a restored human approval survives the
   // first post-restart prompt (restart-sticky provenance, never task-scoped).
-  // userWaiver and its trio (userWaiverScope, userWaiverConsumed,
-  // reviewWaiverRounds) and pendingOnceGrant stay fresh here: they are
-  // task-scoped and never carried through the replay-merge path.
   s.humanApproval = prior.humanApproval
   // hasReviewApprove is the landing gate's release signal, restart-sticky like
   // hasPlanVerdict: a reviewer APPROVE restored by replay survives the first
@@ -279,5 +297,14 @@ export function mergeAfterReplay(prior: GateState): GateState {
   // signature: a wiped (or absent) verdict carries no identity.
   s.approvedPlan = prior.hasPlanVerdict ? prior.approvedPlan : ""
   s.approvedPlanKey = prior.hasPlanVerdict ? prior.approvedPlanKey : ""
+  // The waiver family travels together so the carried bucket stays
+  // self-consistent: the block-message readers pair its fields, so dropping
+  // any one would misreport the others at the next block site. Prior waiver
+  // is "" on journal-replay buckets (replay never restores it), so the only
+  // bucket that may arrive with a live waiver is the continuation-carry one.
+  s.userWaiver = prior.userWaiver
+  s.userWaiverScope = [...prior.userWaiverScope]
+  s.userWaiverConsumed = prior.userWaiverConsumed
+  s.reviewWaiverRounds = prior.reviewWaiverRounds
   return s
 }

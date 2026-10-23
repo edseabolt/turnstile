@@ -340,23 +340,30 @@ export interface GateState {
    * scopes it to those stages' gates (the plan gate is covered by either its
    * plan-reviewer or executor stage name), and a scoped waiver stays live
    * until that stage's waiver allowance is spent — metered separately from
-   * the ordinary dispatch caps. A new user prompt drops the waiver.
-   * Task-scoped: cleared on every prompt reset and never carried through
-   * `mergeAfterReplay`.
+   * the ordinary dispatch caps. An ordinary new user prompt drops the
+   * waiver. Task-scoped: cleared on an ordinary prompt reset, but carried
+   * one prompt through `mergeAfterReplay` exactly like the restart-sticky
+   * gate flags, so a continuation-carry or replay grace prompt keeps the
+   * waiver and its scope, consumed flag, and spent allowance the block
+   * messages will read.
    */
   userWaiver: string
   /**
    * Configured agent names named by the waiver text at capture (the parsed
    * scope); `[]` = unscoped (covers every gate). See the canonical semantics
-   * on `userWaiver`. Task-scoped: cleared on every prompt reset and never
-   * carried through `mergeAfterReplay`.
+   * on `userWaiver`. Task-scoped: cleared on an ordinary prompt reset, but
+   * carried one prompt through `mergeAfterReplay` exactly like the
+   * restart-sticky gate flags, so a continuation-carry or replay grace
+   * prompt keeps the waiver's scope the block messages will read.
    */
   userWaiverScope: string[]
   /**
    * True once the reviewer gate consumed an unscoped waiver on the first
    * dispatch it unlocked; reports the consumed state to block messages and
-   * the compaction snapshot. Task-scoped: cleared on every prompt reset and
-   * never carried through `mergeAfterReplay`.
+   * the compaction snapshot. Task-scoped: cleared on an ordinary prompt
+   * reset, but carried one prompt through `mergeAfterReplay` exactly like
+   * the restart-sticky gate flags, so a continuation-carry or replay grace
+   * prompt keeps the consumed flag the block messages will read.
    */
   userWaiverConsumed: boolean
   /**
@@ -366,8 +373,12 @@ export interface GateState {
    * so a shared counter would mis-attribute spent slots to the waiver after a
    * mid-task restart and would break the "waived dispatches don't count
    * toward the cap" invariant. Lifecycle mirrors the `userWaiver` pair:
-   * task-scoped, fresh `0` on every prompt reset, never replay-restored,
-   * never carried through `mergeAfterReplay`.
+   * task-scoped, fresh `0` on an ordinary prompt reset, never replay-
+   * restored, but carried one prompt through `mergeAfterReplay` exactly like
+   * the restart-sticky gate flags, so a continuation-carry or replay grace
+   * prompt keeps the spent allowance the block messages will read — the
+   * waiver's own allowance travels with the waiver, while `reviewRounds`
+   * (the metered dispatch count) does not.
    */
   reviewWaiverRounds: number
   /**
