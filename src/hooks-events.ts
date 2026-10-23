@@ -181,10 +181,27 @@ export function startEventStream(
                 // recorded (a human's approval of an unrelated ask cannot
                 // release the plan or landing gate).
                 const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
-                if (prefixed || (message === "" && ctx.hasLiveAwaitingAsk(sid))) {
+                // The empty-message consume of a live plan latch is the
+                // steal-able window: an unrelated ask wins the latch over the
+                // escalate echo. A prefixed ask (the normal echo) never does.
+                const stolen = !prefixed && message === "" && ctx.hasLiveAwaitingAsk(sid)
+                if (prefixed || stolen) {
+                  const parent = ctx.ledger.parentOf(sid)
+                  if (stolen) {
+                    // Journal the steal for ladder diagnosability; it carries
+                    // no action/decision, so the human PERM table (status.mjs
+                    // counts only e.action === "ask") is untouched and it is
+                    // replay-inert (the ledger never replays permission rows).
+                    ctx.journaler.journal({
+                      type: "permission",
+                      sessionID: parent,
+                      event: "latch-steal",
+                      reason: "plan-gate",
+                    })
+                  }
                   ctx.awaitingPlanAsk.delete(sid)
                   ctx.planGateAsks.set(id, {
-                    sessionID: ctx.ledger.parentOf(sid),
+                    sessionID: parent,
                     recordedAt: Date.now(),
                   })
                   ctx.boundPlanAsks()
@@ -297,6 +314,19 @@ export function startEventStream(
                   decision: "reject",
                 })
               }
+            } else if (rid !== "") {
+              // A non-empty requestID that matches neither recorded ask was
+              // never an ask we raised: journal it as an unrecorded reply so
+              // the inert no-op is diagnosable. It carries no action/decision
+              // (human PERM table untouched, replay-inert). A requestID-less
+              // reply (rid === "") is a distinct, already-understood
+              // broken-host case and stays silent.
+              ctx.journaler.journal({
+                type: "permission",
+                sessionID: asSessionID(properties.sessionID),
+                event: "unrecorded-reply",
+                requestID: rid,
+              })
             }
             break
           }

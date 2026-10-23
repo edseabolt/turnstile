@@ -11,8 +11,10 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { turnstile } from "../turnstile.ts"
 import { BlockError, createGates } from "../src/gates.ts"
@@ -20,6 +22,7 @@ import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
 import { createLedger } from "../src/ledger.ts"
 import { LANDING_REQUIREMENT } from "../src/tool-policy.ts"
+import { PLAN_ASK_MESSAGE_PREFIX } from "../src/delivery.ts"
 import {
   callPermission,
   callSession,
@@ -33,6 +36,24 @@ import {
 } from "./helpers.ts"
 
 const APPROVAL = "PLAN APPROVED:"
+/** Path to scripts/status.mjs, resolved relative to this test file. */
+const statusScript = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "scripts",
+  "status.mjs",
+)
+/**
+ * Normalizes a spawnSync exit code across Node builds: `status` on modern
+ * builds, `exitCode` on older ones. Null-free here (status.mjs always exits
+ * normally, never errors out).
+ * @param res The spawnSync result.
+ * @returns The numeric exit code, or -1 when the process did not exit cleanly.
+ */
+function code(res: { status: number | null; exitCode?: number | null }): number {
+  return res.status ?? res.exitCode ?? -1
+}
+
 /** Gives the async event-loop consumer a tick to drain queued stream events. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
 
@@ -1025,7 +1046,7 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
  * capability's `escalate`; the next `permission.evaluate` for that bash action
  * forces a landing ask off that live latch, naming the reviewer
  * requirement. The ask is journaled exactly once (by guardLanding's escalate
- * path — the evaluate handler echoes it without a second entry). The arm is
+ * path — the evaluate handler stamps the consume, not a second ask). The arm is
  * ONE-SHOT: the first evaluate consumes it, so a second bash evaluate in the
  * TTL window is untouched (the next push re-blocks and re-arms).
  */
@@ -1064,8 +1085,11 @@ test("evaluate: a live pending-landing-ask arm forces the landing ask", async ()
     const second: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", second)
     assert.equal(second.effect, undefined)
+    // Count the ask record (action:"ask") only: the evaluate handler's
+    // consume-stamp (event:"forced", no action) is a separate entry, so the
+    // guard's landing ask is still the single ask record.
     const asks = journalEntries(metricsDir).filter(
-      (l) => l.type === "permission" && l.reason === "landing",
+      (l) => l.type === "permission" && l.reason === "landing" && l.action === "ask",
     )
     assert.equal(asks.length, 1, "the landing ask is journaled exactly once")
   } finally {
@@ -1468,6 +1492,279 @@ test("reply: a landing reject leaves the gate red and re-arms the ask", async ()
     const event: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", event)
     assert.equal(event.effect, "ask", "a reject keeps the landing gate red and re-forces the ask")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Unrecorded reply: a `permission.replied` whose non-empty `requestID`
+ * is in neither recorded ask map journals exactly one `event:"unrecorded-reply"`
+ * row — no action/decision, so the status PERM counters are untouched — and
+ * mutates no gate state: the plan gate stays red and the next executor dispatch
+ * still blocks (the inert reply released nothing).
+ */
+test("replied: a non-empty unrecorded requestID journals an unrecorded reply and holds the gate", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "ghost-1", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some(
+        (l) => l.type === "permission" && l.event === "unrecorded-reply",
+      ),
+    )
+    const rows = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.event === "unrecorded-reply",
+    )
+    assert.equal(rows.length, 1, "exactly one unrecorded-reply row")
+    const row = rows[0]
+    assert.ok(row, "the unrecorded-reply row is present")
+    assert.equal(row.requestID, "ghost-1")
+    assert.equal(row.sessionID, "p1")
+    assert.equal(row.action, undefined, "carries no action (status-inert)")
+    assert.equal(row.decision, undefined, "carries no decision (status-inert)")
+    // The gate is still red: the inert reply released nothing, so the next
+    // executor dispatch still blocks.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "executor", prompt: "do the work" },
+      }),
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Empty-rid silence: a `permission.replied` with no `requestID` resolves
+ * to an empty rid that takes the `rid !== ""` guard's false side, so it journals
+ * no `unrecorded-reply` row — the distinct broken-host case stays silent.
+ */
+test("replied: a requestID-less reply journals no unrecorded-reply row", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    h.pushEvent({ type: "permission.replied", properties: { sessionID: "p1" } })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some(
+        (l) => l.type === "permission" && l.event === "unrecorded-reply",
+      ),
+      "a requestID-less reply must not journal an unrecorded-reply row",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Latch-steal: an empty-message `permission.asked` that wins a live
+ * `awaitingPlanAsk` latch over the prefixed escalate echo journals an
+ * `event:"latch-steal"` row (no action, so status-inert) alongside the guard's
+ * `action:"ask"` plan-gate record.
+ */
+test("asked: an empty-message ask that wins a live plan latch journals a latch-steal", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    // Escalate a red plan gate: arms the latch and journals the guard ask.
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    // An empty-message ask wins the live latch (the steal-able window).
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "steal-1" } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.event === "latch-steal"),
+    )
+    const steals = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.event === "latch-steal",
+    )
+    assert.equal(steals.length, 1, "exactly one latch-steal row")
+    const steal = steals[0]
+    assert.ok(steal, "the latch-steal row is present")
+    assert.equal(steal.sessionID, "p1")
+    assert.equal(steal.reason, "plan-gate")
+    assert.equal(steal.action, undefined, "carries no action (status-inert)")
+    // The guard's own ask record (action:"ask") is the co-present PERM-ask row.
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "permission" && l.action === "ask" && l.reason === "plan-gate",
+      ),
+      "the guard's plan-gate ask record is present",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Prefixed-echo silence: a `permission.asked` whose message carries the
+ * plan-ask prefix (the normal escalate echo) takes the `prefixed` owner branch,
+ * so the `!prefixed` sub-branch is false and no `latch-steal` row journals.
+ */
+test("asked: a prefixed plan-ask echo journals no latch-steal", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    // The prefixed echo (what the evaluate handler composes) is the normal
+    // owner — no steal.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: {
+        sessionID: "p1",
+        id: "pfx-1",
+        message: `${PLAN_ASK_MESSAGE_PREFIX} — plan.md: Some plan body text.`,
+      },
+    })
+    await settle()
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.event === "latch-steal"),
+      "a prefixed plan-ask echo must not journal a latch-steal row",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Forced-ask stamp: the `permission.evaluate` landing arm that consumes a
+ * live `pendingLandingAsk` latch forces the ask and journals an `event:"forced"`
+ * stamp — deliberately with no `action:"ask"` field, so the guard's landing-ask
+ * record stays the single PERM-ask entry status.mjs counts.
+ */
+test("evaluate: the landing consume stamps event:forced with no action:ask", async () => {
+  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  try {
+    // First push: first block under enforce throws.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Repeat push: enforce arms the one-shot pending-landing-ask latch.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // The bash evaluate arm forces the ask off the live latch.
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    assert.equal(event.message, `turnstile: ${LANDING_REQUIREMENT}`)
+    const forced = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.event === "forced",
+    )
+    assert.equal(forced.length, 1, "exactly one forced-consume stamp")
+    const stamp = forced[0]
+    assert.ok(stamp, "the forced-consume stamp is present")
+    assert.equal(stamp.sessionID, "p1")
+    assert.equal(stamp.reason, "landing")
+    assert.equal(stamp.action, undefined, "the forced stamp carries no action:ask")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Status-inert regression: the three `permission` telemetry sub-kinds
+ * carry neither `action:"ask"` nor a `decision`, so the scripts/status.mjs
+ * PERM-ask and PERM-decision counters leave them untouched (the human PERM
+ * table does not drift).
+ */
+test("status-inert: the three permission sub-kinds leave the PERM counters untouched", () => {
+  const dir = tmpDir()
+  try {
+    fs.writeFileSync(
+      path.join(dir, "turnstile.jsonl"),
+      [
+        JSON.stringify({
+          ts: "t",
+          type: "permission",
+          sessionID: "s-inert",
+          event: "latch-steal",
+          reason: "plan-gate",
+        }),
+        JSON.stringify({
+          ts: "t",
+          type: "permission",
+          sessionID: "s-inert",
+          event: "forced",
+          reason: "landing",
+        }),
+        JSON.stringify({
+          ts: "t",
+          type: "permission",
+          sessionID: "s-inert",
+          event: "unrecorded-reply",
+          requestID: "ghost-1",
+        }),
+      ].join("\n") + "\n",
+    )
+    const res = spawnSync(process.execPath, [statusScript, "--json"], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: dir },
+      encoding: "utf8",
+    })
+    assert.equal(code(res), 0, "status.mjs exits 0")
+    const obj = JSON.parse(res.stdout) as {
+      sessions: Record<
+        string,
+        { permissionAsks: number; permissionDecisions: Record<string, number> }
+      >
+    }
+    const s = obj.sessions["s-inert"]
+    assert.ok(s, "the s-inert session is present in the status output")
+    assert.equal(s.permissionAsks, 0, "no sub-kind counts as a PERM ask")
+    assert.deepEqual(
+      s.permissionDecisions,
+      { once: 0, always: 0, reject: 0 },
+      "no sub-kind counts as a PERM decision",
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * Fail-open unchanged: a malformed `permission.replied` payload (a
+ * `requestID` that throws on access) is caught by the outer per-event handler
+ * and journaled as an `event permission.replied:` error — the stream survives
+ * and a subsequent normal reply still journals (here, an unrecorded reply).
+ */
+test("fail-open: a throwing permission.replied payload journals the event error and the stream survives", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan()
+  try {
+    // A requestID getter that throws trips the outer per-event catch.
+    h.pushEvent({
+      type: "permission.replied",
+      properties: {
+        get requestID() {
+          throw new Error("boom")
+        },
+      },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some(
+        (l) => l.type === "error" && /^event permission\.replied: /.test(String(l.error)),
+      ),
+    )
+    // The stream survived the per-event failure: a later normal reply still
+    // journals (its unrecorded requestID now records an unrecorded reply).
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "ghost-2", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some(
+        (l) =>
+          l.type === "permission" && l.event === "unrecorded-reply" && l.requestID === "ghost-2",
+      ),
+    )
   } finally {
     restore()
   }

@@ -335,6 +335,21 @@ event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   and is replay-inert (the prompt reset is the child's task boundary; nothing
   of its gate state survives to restore) and status-inert (the aggregate's
   entry-type chain does not count it).
+  A `permission` entry's telemetry sub-kinds make the permission-ask
+  escalation ladder diagnosable. `event:"latch-steal"`
+  (`{type:"permission", sessionID, event:"latch-steal",
+reason:"plan-gate"}`) journals an empty-message `permission.asked` that
+  wins a live plan latch over the prefixed escalate echo (the steal-able
+  window); `event:"forced"` (`{type:"permission", sessionID,
+reason:"landing", event:"forced"}`) stamps the evaluate landing arm's
+  one-shot consume of a live landing latch; and `event:"unrecorded-reply"`
+  (`{type:"permission", sessionID, event:"unrecorded-reply", requestID}`)
+  journals a non-empty `requestID` `permission.replied` that matches neither
+  recorded ask (a requestID-less reply stays silent — a distinct broken-host
+  case). None carries `action:"ask"` or `decision`, so the `status.mjs`
+  PERM-ask and PERM-decision counters (which key off those fields) leave the
+  human table untouched, and all three are replay-inert (the ledger never
+  replays `permission` rows).
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `journalRotateEveryEntries` appends (default 512), only

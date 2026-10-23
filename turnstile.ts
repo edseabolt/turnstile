@@ -120,7 +120,10 @@
  *   ask can never release the gate: an ask is recorded only when its message
  *   carries the plan-ask prefix, or when the parent's escalation latch is
  *   still live (it expires after a few seconds and is cleared by a prompt
- *   reset) and the ask carries no message of its own. The explicit
+ *   reset) and the ask carries no message of its own — an empty-message
+ *   ask that wins a live latch over the prefixed escalate echo is journaled
+ *   as a replay-inert, status-inert `latch-steal` audit
+ *   (event:"latch-steal"). The explicit
  *   user waiver is prompt-channel too (see the hard-gate bullet): a
  *   `USER WAIVER:` literal in the user's prompt waives the gate when the
  *   waiver covers this gate — unscoped covers every gate, while naming
@@ -318,7 +321,11 @@
  *   (`turnstile: push/PR requires a reviewer VERDICT: APPROVE before
  *   landing`). The reply `always` stands a reviewer approval for the task,
  *   `once` grants exactly one push (consumed by the next push), and `reject`
- *   re-blocks and re-arms — the repeat push is the human decision point.
+ *   re-blocks and re-arms — the repeat push is the human
+ *   decision point. The evaluate arm's one-shot consume of the live latch is
+ *   journaled as a replay-inert, status-inert `event:"forced"` stamp
+ *   (no `action:"ask"`, so the guard's landing-ask record stays the single
+ *   PERM-ask entry).
  * - Markers: `GATE:` / `VERDICT:` parsed from task results and child-session
  *   assistant text, deduped per task (streaming re-delivery is ignored); a
  *   marker the host streams across `session.text.delta` chunks is reassembled
