@@ -298,7 +298,7 @@ test("isPushLanding: empty or whitespace-only commands are not pushes", () => {
 /**
  * A bare `git` with no subcommand (the tokenizer yields no matching verb) and a
  * separator-only command (every segment tokenizes to no words) are not pushes:
- * the `gitVerb` fallback returns null on both, so the `.some(...)` scan is false.
+ * the `gitInvocation` fallback returns null on both, so the `.some(...)` scan is false.
  */
 test("isPushLanding: a bare git verb and separator-only input are not pushes", () => {
   assert.ok(!isPushLanding("git"))

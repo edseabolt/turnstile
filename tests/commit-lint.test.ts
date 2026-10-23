@@ -322,3 +322,76 @@ test("guardCommitMessage: the DEFAULT_COMMIT_FORMAT constant compiles as expecte
   assert.ok(re.test("feat: subject"))
   assert.ok(!re.test("nope: subject"))
 })
+
+/**
+ * Negatives: a bare `commit` word as an argument to a non-commit subcommand
+ * (e.g. `git log --grep commit`) is not a `git commit` invocation and is never
+ * linted. `git -c user.name=x commit -m "feat: x"` proves the positional parse
+ * skips global options before resolving the subcommand.
+ */
+test("guardCommitMessage: bare-word commit args and global-option commits are not false positives", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  allows(() => policy.guardCommitMessage("bash", "git log --grep commit", "s1"))
+  allows(() => policy.guardCommitMessage("bash", "git status --porcelain commit", "s1"))
+  allows(() => policy.guardCommitMessage("bash", "echo commit", "s1"))
+  allows(() => policy.guardCommitMessage("bash", 'git -c user.name=x commit -m "feat: x"', "s1"))
+  assert.deepEqual(blockEntries(entries, "invalid-commit-message"), [])
+  assert.deepEqual(blockEntries(entries, "commit-message-uninspectable"), [])
+})
+
+/**
+ * Bundled short-flag clusters that embed `-m` (e.g. `-am`, `-am<msg>`,
+ * `-aqm`) are inspectable: the message is extracted and linted normally.
+ * A cluster with a missing message (`-am` alone) blocks
+ * `commit-message-uninspectable`; a non-conventional message blocks
+ * `invalid-commit-message` (never `commit-message-uninspectable`).
+ */
+test("guardCommitMessage: bundled -m clusters are inspectable", () => {
+  const ok = makePolicy({ gitGates: { mode: "enforce" } })
+  allows(() => ok.policy.guardCommitMessage("bash", 'git commit -am "feat: x"', "s1"))
+  allows(() => ok.policy.guardCommitMessage("bash", 'git commit -am"feat: x"', "s1"))
+  allows(() => ok.policy.guardCommitMessage("bash", 'git commit -aqm "feat: x"', "s1"))
+  assert.deepEqual(blockEntries(ok.entries, "commit-message-uninspectable"), [])
+
+  const bad = makePolicy({ gitGates: { mode: "enforce" } })
+  blocks(() => bad.policy.guardCommitMessage("bash", 'git commit -am "garbage"', "s1"))
+  assert.equal(blockEntries(bad.entries, "invalid-commit-message").length, 1)
+  assert.deepEqual(blockEntries(bad.entries, "commit-message-uninspectable"), [])
+
+  const noMsg = makePolicy({ gitGates: { mode: "enforce" } })
+  blocks(() => noMsg.policy.guardCommitMessage("bash", "git commit -am", "s1"))
+  assert.equal(blockEntries(noMsg.entries, "commit-message-uninspectable").length, 1)
+})
+
+/**
+ * A bundled cluster carrying an editor flag (`e`/`t`/`F`) stays uninspectable
+ * (fail-closed); a cluster whose `m` needs a next token that is itself a flag
+ * also blocks `commit-message-uninspectable`.
+ */
+test("guardCommitMessage: a bundled cluster with an editor flag blocks uninspectable", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  blocks(() => policy.guardCommitMessage("bash", "git commit -aem", "s1"))
+  assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 1)
+
+  const { policy: p2, entries: e2 } = makePolicy({ gitGates: { mode: "enforce" } })
+  blocks(() => p2.guardCommitMessage("bash", "git commit -am -e", "s1"))
+  assert.equal(blockEntries(e2, "commit-message-uninspectable").length, 1)
+})
+
+/** A bundled cluster without `-m` (e.g. `-aq`) has no message and blocks uninspectable. */
+test("guardCommitMessage: a bundled cluster without -m blocks uninspectable", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  blocks(() => policy.guardCommitMessage("bash", "git commit -aq", "s1"))
+  assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 1)
+})
+
+/**
+ * Under shadow, a bundled `-am "garbage"` journals exactly one
+ * `invalid-commit-message` block (no throw, no `commit-message-uninspectable`).
+ */
+test("guardCommitMessage: shadow mode journals bundled -am invalid message without throwing", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "shadow" } })
+  allows(() => policy.guardCommitMessage("bash", 'git commit -am "garbage"', "s1"))
+  assert.equal(blockEntries(entries, "invalid-commit-message").length, 1)
+  assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 0)
+})

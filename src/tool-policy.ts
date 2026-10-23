@@ -122,11 +122,17 @@ export function tokenizeWords(input: string): string[] {
   return words
 }
 
-// Returns the git subcommand of one simple command's words (skipping leading
-// git global options such as `-C dir` / `--git-dir=dir`, each of which may take
-// a value in the following token), or null when `words` is not a `git`
-// invocation. A landing candidate is `git` followed by the `push` subcommand.
-function gitVerb(words: string[]): string | null {
+/**
+ * Returns the git subcommand of one simple command's words and its token index
+ * (skipping leading git global options such as `-C dir` / `--git-dir=dir`, each
+ * of which may take a value in the following token), or `null` when `words` is
+ * not a `git` invocation. Shared by `isPushLanding` and `analyzeCommit` so the
+ * positional parse has a single source of truth (no duplicated option-skip
+ * logic).
+ * @param words The tokenized words of one simple command.
+ * @returns The subcommand verb and its index, or `null` for a non-git invocation.
+ */
+function gitInvocation(words: string[]): { verb: string; index: number } | null {
   if (words.length === 0 || words[0] !== "git") return null
   let i = 1
   while (i < words.length && words[i]!.startsWith("-")) {
@@ -135,7 +141,7 @@ function gitVerb(words: string[]): string | null {
     // value and is skipped; an inline value (`--opt=val`) has none.
     if (i < words.length && !words[i]!.startsWith("-")) i++
   }
-  return i < words.length ? words[i]! : null
+  return i < words.length ? { verb: words[i]!, index: i } : null
 }
 
 /**
@@ -152,7 +158,9 @@ function gitVerb(words: string[]): string | null {
  */
 export function isPushLanding(command: string): boolean {
   if (typeof command !== "string" || command.trim() === "") return false
-  return splitCommands(command).some((simple) => gitVerb(tokenizeWords(simple)) === "push")
+  return splitCommands(command).some(
+    (simple) => gitInvocation(tokenizeWords(simple))?.verb === "push",
+  )
 }
 
 /**
@@ -169,6 +177,74 @@ export const LANDING_REQUIREMENT =
  * @returns The "expected …" suffix.
  */
 const COMMIT_EXPECTED = "is not a conventional commit — expected type(scope)!: subject"
+
+/**
+ * Reads a bundled short-flag cluster (e.g. `-am`) and returns the embedded
+ * `-m` message when `m` is present and no editor/template flag is, or
+ * `uninspectable: true` when an `e`/`t`/`F` character is present, when `m`
+ * requires a separate next token that is missing or is itself a flag. Returns
+ * `{ uninspectable: false }` (no message) when the cluster has no `m` at all.
+ * @param token The cluster word including the leading `-` (e.g. `-am`).
+ * @param next The word following the cluster in the arg list, or `undefined`.
+ * @returns The parsed result: `message` when `m` carried an inline or adjacent
+ *     value, `uninspectable` when the cluster is uninspectable, and
+ *     `consumedNext` when the caller must advance the loop index by one.
+ */
+function readShortCluster(
+  token: string,
+  next: string | undefined,
+): { message?: string; uninspectable: boolean; consumedNext: boolean } {
+  const letters = token.slice(1)
+  const mIdx = letters.indexOf("m")
+  const flagPart = mIdx === -1 ? letters : letters.slice(0, mIdx)
+  if (/[eFt]/.test(flagPart)) return { uninspectable: true, consumedNext: false }
+  if (mIdx === -1) return { uninspectable: false, consumedNext: false }
+  const inline = letters.slice(mIdx + 1)
+  if (inline.length > 0) return { message: inline, uninspectable: false, consumedNext: false }
+  if (next !== undefined && !next.startsWith("-"))
+    return { message: next, uninspectable: false, consumedNext: true }
+  return { uninspectable: true, consumedNext: false }
+}
+
+/**
+ * Scans the commit args of a `git commit` invocation for `-m`/`--message`
+ * messages and uninspectable flags. Bundled short-flag clusters that embed
+ * `-m` (e.g. `-am`, `-am<msg>`) are inspectable: their message is extracted
+ * and linted. A cluster carrying an `e`/`t`/`F` flag stays uninspectable.
+ * @param args The word list following the `commit` subcommand.
+ * @returns The extracted messages and whether the invocation is uninspectable.
+ */
+function parseCommitArgs(args: string[]): { messages: string[]; uninspectable: boolean } {
+  const messages: string[] = []
+  let uninspectable = false
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j]!
+    if (a === "-m" || a === "--message") {
+      const next = args[j + 1]
+      if (next !== undefined) messages.push(next)
+      else uninspectable = true
+    } else if (a.startsWith("--message=")) {
+      messages.push(a.slice("--message=".length))
+    } else if (a.startsWith("-m")) {
+      messages.push(a.slice(2))
+    } else if (/^-[A-Za-z]{2,}/.test(a)) {
+      const r = readShortCluster(a, args[j + 1])
+      if (r.uninspectable) uninspectable = true
+      else if (r.message !== undefined) messages.push(r.message)
+      if (r.consumedNext) j++
+    } else if (
+      a === "-F" ||
+      a === "--file" ||
+      a === "-t" ||
+      a === "--template" ||
+      a === "-e" ||
+      a === "--edit"
+    ) {
+      uninspectable = true
+    }
+  }
+  return { messages, uninspectable }
+}
 
 /**
  * The stateful landing-gate capability `setup.ts` hands to {@link ToolPolicy.guardLanding}
@@ -391,38 +467,14 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
 
   // Given one simple command's words, return its `git commit` analysis: the
   // extracted `-m` messages and whether the invocation is uninspectable
-  // (`-F`/`-t`/`--edit`/`-e` present). Returns null when `words` is not a
-  // `git commit` invocation — so `git commit-graph` (subcommand `commit-graph`)
-  // and `echo git commit` (command `echo`) never match.
+  // (`-F`/`-t`/`--edit`/`-e` present, or a bundled cluster carrying an
+  // editor/template flag). Returns null when `words` is not a `git commit`
+  // invocation — so `git commit-graph` (subcommand `commit-graph`) and
+  // `echo git commit` (command `echo`) never match.
   function analyzeCommit(words: string[]): { messages: string[]; uninspectable: boolean } | null {
-    if (words[0] !== "git") return null
-    const commitIdx = words.indexOf("commit", 1)
-    if (commitIdx === -1) return null
-    const args = words.slice(commitIdx + 1)
-    let uninspectable = false
-    const messages: string[] = []
-    // `-F`/`-t` values fall through to the catch-all (never a message).
-    for (const [j, a] of args.entries()) {
-      if (a === "-m" || a === "--message") {
-        const next = args[j + 1]
-        if (next !== undefined) messages.push(next)
-        else uninspectable = true
-      } else if (a.startsWith("--message=")) {
-        messages.push(a.slice("--message=".length))
-      } else if (a.startsWith("-m")) {
-        messages.push(a.slice(2))
-      } else if (
-        a === "-F" ||
-        a === "--file" ||
-        a === "-t" ||
-        a === "--template" ||
-        a === "-e" ||
-        a === "--edit"
-      ) {
-        uninspectable = true
-      }
-    }
-    return { messages, uninspectable }
+    const inv = gitInvocation(words)
+    if (inv === null || inv.verb !== "commit") return null
+    return parseCommitArgs(words.slice(inv.index + 1))
   }
 
   // --- Block-throw journal helpers -------------------------------------------
