@@ -42,6 +42,23 @@ output, runtime config — is out of scope. Do not disable or weaken tests.
 Do not assume a passing build means the feature works. Investigate
 failures rather than ignoring them.
 
+## Coverage (this repo's settled model)
+
+- `npm test` is the sole coverage authority. It enforces 100% line, branch, and
+  function coverage over `src/` + `turnstile.ts` via node:test's built-in V8
+  thresholds with `--experimental-test-isolation=none`, so on a green suite a
+  red branch report is a real never-executed decision, never a merge artifact.
+  Run it as the configured command; do not substitute bespoke coverage harnesses.
+- `scripts/branch-coverage.mjs` is diagnostic-only: it localizes a gap that
+  `npm test` has already flagged (file:line + snippet). Never loop on its output
+  and never treat its findings as a work queue — a zero span is a candidate gap,
+  possibly a V8 reporting artifact, and the note it prints says exactly that.
+- To confirm which tests exercise a new branch, run the gate command and read
+  its threshold summary; if you need per-file attribution, run a single test
+  file with the same `node --test --experimental-strip-types
+--experimental-test-isolation=none` invocation the gate uses — do not write
+  ad-hoc V8-parsing scripts to re-derive what the gate already enforces.
+
 ## Output
 
 Your FIRST line MUST be a machine-readable gate verdict, then the rest:

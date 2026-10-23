@@ -386,6 +386,23 @@ test("guardCommitMessage: a bundled cluster without -m blocks uninspectable", ()
 })
 
 /**
+ * A cluster consuming its next token advances the arg scan exactly once, so a
+ * following `-m <msg>` is still linted: both messages are valid, and if either
+ * is non-conventional the block is `invalid-commit-message` (both messages
+ * reach the lint, none is lost to mispairing).
+ */
+test("guardCommitMessage: bundled cluster advancement keeps later -m messages linted", () => {
+  const ok = makePolicy({ gitGates: { mode: "enforce" } })
+  allows(() => ok.policy.guardCommitMessage("bash", 'git commit -am "feat: a" -m "fix: b"', "s1"))
+  assert.deepEqual(blockEntries(ok.entries, "commit-message-uninspectable"), [])
+
+  const bad = makePolicy({ gitGates: { mode: "enforce" } })
+  blocks(() => bad.policy.guardCommitMessage("bash", 'git commit -am "feat: a" -m "garbage"', "s1"))
+  assert.equal(blockEntries(bad.entries, "invalid-commit-message").length, 1)
+  assert.deepEqual(blockEntries(bad.entries, "commit-message-uninspectable"), [])
+})
+
+/**
  * Under shadow, a bundled `-am "garbage"` journals exactly one
  * `invalid-commit-message` block (no throw, no `commit-message-uninspectable`).
  */

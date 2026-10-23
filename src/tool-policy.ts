@@ -180,10 +180,13 @@ const COMMIT_EXPECTED = "is not a conventional commit — expected type(scope)!:
 
 /**
  * Reads a bundled short-flag cluster (e.g. `-am`) and returns the embedded
- * `-m` message when `m` is present and no editor/template flag is, or
- * `uninspectable: true` when an `e`/`t`/`F` character is present, when `m`
- * requires a separate next token that is missing or is itself a flag. Returns
- * `{ uninspectable: false }` (no message) when the cluster has no `m` at all.
+ * `-m` message when `m` is present and no editor/template flag precedes it,
+ * or `uninspectable: true` when an `e`/`t`/`F` character precedes `m`, when
+ * `m` requires a separate next token that is missing or is itself a flag.
+ * Characters after `m` are its inline value (git bundling semantics), so they
+ * are never scanned for editor flags — e.g. `-am"feat: x"` tokenizes to
+ * `-amfeat: x`. Returns `{ uninspectable: false }` (no message) when the
+ * cluster has no `m` at all.
  * @param token The cluster word including the leading `-` (e.g. `-am`).
  * @param next The word following the cluster in the arg list, or `undefined`.
  * @returns The parsed result: `message` when `m` carried an inline or adjacent
