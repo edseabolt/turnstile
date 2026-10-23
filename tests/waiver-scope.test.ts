@@ -322,6 +322,7 @@ test("a reviewer-scoped waiver exempts the reviewer dispatch from the budget", (
   s.userWaiver = "USER WAIVER: I approve the reviewer"
   s.userWaiverScope = ["reviewer"]
   gates.guardDispatchBudget("p1", ledger, "reviewer")
+  gates.countDispatch("p1", ledger, "reviewer")
   assert.equal(ledger.state("p1").totalDispatches, 0, "a waived dispatch draws down no budget")
 })
 
@@ -357,10 +358,38 @@ test("an unscoped waiver keeps the whole-task budget exemption", () => {
   s.userWaiver = "USER WAIVER: just go"
   s.plannerRounds = 3 // the default maxPlannerRounds
   gates.guardDispatchBudget("p1", ledger, "planner")
+  gates.countDispatch("p1", ledger, "planner")
   assert.equal(
     ledger.state("p1").totalDispatches,
     0,
     "the unscoped waiver exempts without counting",
+  )
+  assert.equal(
+    ledger.state("p1").plannerRounds,
+    3,
+    "the unscoped waiver leaves the leg counter unmoved",
+  )
+})
+
+/** The guard→count round-trip advances both the leg counter and the budget
+ *  exactly once per admitted dispatch; the next guard call at the cap
+ *  refuses with the planner loop-cap message. */
+test("countDispatch advances the leg counter and the budget together", () => {
+  const { gates, ledger } = bootGates()
+  for (let i = 0; i < 3; i++) {
+    gates.guardDispatchBudget("p1", ledger, "planner")
+    gates.countDispatch("p1", ledger, "planner")
+  }
+  const s = ledger.state("p1")
+  assert.equal(
+    s.plannerRounds,
+    3,
+    "three admitted planner dispatches advance the leg counter to the cap",
+  )
+  assert.equal(s.totalDispatches, 3, "three admitted planner dispatches advance the budget")
+  assert.throws(
+    () => gates.guardDispatchBudget("p1", ledger, "planner"),
+    (e: Error) => e instanceof BlockError && e.message === PLANNER_LOOP_CAP_BASE,
   )
 })
 

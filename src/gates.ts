@@ -77,9 +77,9 @@ export interface Gates {
    * `{type:"escalation"}` entry, and tells the dispatcher to STOP and escalate;
    * when the budget is exceeded it refuses every further dispatch. Either way
    * the dispatcher is looping, so the message is STOP-and-escalate from any
-   * session. Increments the dispatched leg's counter and `totalDispatches`
-   * (single-count point: the reviewer's budget consumption lives here —
-   * `guardReviewerDispatch` only advances its own `reviewRounds`).
+   * session. The counters advance in `countDispatch` (single-count point) once
+   * every guard has admitted the dispatch — a blocked attempt draws down
+   * nothing.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
    * @param agent The dispatched agent name (resolved by the setup hook).
@@ -87,6 +87,21 @@ export interface Gates {
    *     must not proceed.
    */
   guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
+  /**
+   * Advances the dispatched leg's counter and the per-task total-dispatch
+   * budget. Sole advance of both counters: the check half
+   * (`guardDispatchBudget`) runs at guard entry and never touches them; a
+   * refusal never reaches this call, so a blocked dispatch draws down
+   * nothing. Mirrors the waiver exemption in the guard: when the live waiver
+   * covers the dispatched stage, this call returns without counting (the
+   * shared `waiverCovers` predicate keeps the two in lockstep). Must be
+   * paired with `guardDispatchBudget` at every admitted dispatch — the wiring
+   * layer invokes it only once every guard has admitted the dispatch.
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param agent The dispatched agent name (resolved by the setup hook).
+   */
+  countDispatch(sessionID: string, ledger: GateLedger, agent: string): void
   /**
    * Enforces the whole-file read horizon for a session with an atomic
    * check-then-increment: the read is allowed when the count is below

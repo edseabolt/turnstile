@@ -54,6 +54,7 @@ interface DispatchGates {
   guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
   reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
   guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): void
+  countDispatch(sessionID: string, ledger: GateLedger, agent: string): void
   guardReadLimit(sessionID: string, ledger: GateLedger): void
 }
 
@@ -661,9 +662,9 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
    * returns before either check, so when a block fires a live waiver is
    * necessarily out of scope or already consumed — each block appends
    * `waiverStateNote` so the message reports that state ("" otherwise).
-   * Increments the dispatched leg's counter and
-   * `totalDispatches`; the reviewer has no leg and is counted toward the budget
-   * solely here (single-count point — never in guardReviewerDispatch).
+   * Pure check: the counters advance in `countDispatch` (single-count point)
+   * once every guard has admitted the dispatch — a blocked attempt draws down
+   * nothing.
    * @param sessionID The parent session ID.
    * @param ledger The gate ledger to read and mutate state from.
    * @param agent The dispatched agent name (resolved by the setup hook).
@@ -692,9 +693,29 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     // budget reason wins).
     if (s.totalDispatches >= config.maxTotalDispatches)
       blockDispatchBudget(sessionID, agent, edge, s)
-    // Check-then-increment: the leg counter then the total budget advance. The
-    // reviewer has no leg and is counted toward totalDispatches solely here —
-    // guardReviewerDispatch never advances totalDispatches (single-count point).
+  }
+
+  /**
+   * Advances the dispatched leg's counter and the per-task total-dispatch
+   * budget. Sole advance of both counters: the check half
+   * (`guardDispatchBudget`) runs at guard entry and never touches them; a
+   * refusal never reaches this call, so a blocked dispatch draws down
+   * nothing. Mirrors the waiver exemption in the guard: when the live waiver
+   * covers the dispatched stage, this call returns without counting (the
+   * shared `waiverCovers` predicate keeps the two in lockstep). Must be
+   * paired with `guardDispatchBudget` at every admitted dispatch — the wiring
+   * layer invokes it only once every guard has admitted the dispatch.
+   * @param sessionID The parent session ID.
+   * @param ledger The gate ledger to read and mutate state from.
+   * @param agent The dispatched agent name (resolved by the setup hook).
+   */
+  function countDispatch(sessionID: string, ledger: GateLedger, agent: string): void {
+    const s = ledger.state(sessionID)
+    // A waiver exempts without counting: the guard admitted this dispatch
+    // without touching the counters, so the metering mirror stays in lockstep
+    // with the check (one shared waiver predicate).
+    if (waiverCovers(s, [agent])) return
+    const leg = resolveDispatchLeg(agent)
     if (leg) s[leg.countKey]++
     s.totalDispatches++
   }
@@ -728,6 +749,7 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     guardReviewerDispatch,
     reviewEnsembleComplete,
     guardDispatchBudget,
+    countDispatch,
     guardReadLimit,
   }
 }
