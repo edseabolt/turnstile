@@ -150,16 +150,20 @@ export interface Gates {
     ledger?: GateLedger,
   ): void
   /**
-   * Enforces the plan-approval gate: when any plan file exists in the
-   * configured plans directory, executor dispatches require a current
-   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A bound
-   * approval (the session's plan identity) is invalidated only when THAT
-   * plan's content changes or the file disappears; unbound approvals
-   * invalidate on any plans-dir change (the dir-signature rule, path-free so
-   * an approval survives a same-content move). A stale verdict is dropped
-   * loudly, journaling a replay-inert `STALE` plan entry rather than a
-   * silent mismatch. The block message names the resolved active plan
-   * (prompt-named, then session-bound, then first sorted).
+   * Enforces the plan-approval gate: executor dispatches require a current
+   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver) for the
+   * plans the dispatch resolves — the prompt-referenced existing plans, else
+   * the session's bound plan, else (nothing resolvable) every pending plan;
+   * a plans dir holding only unrelated stale plans no longer blocks a
+   * dispatch whose own plan approval is live. A bound approval (the
+   * session's plan identity) is invalidated only when THAT plan's content
+   * changes or the file disappears; unbound approvals invalidate on any
+   * plans-dir change (the dir-signature rule, path-free so an approval
+   * survives a same-content move). A stale verdict is dropped loudly,
+   * journaling a replay-inert `STALE` plan entry rather than a silent
+   * mismatch. The block message lists every blocker in resolution order
+   * (dispatch-referenced pending plans, then the session-bound pending
+   * plan, then remaining pending).
    * The waiver is the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt): a waiver
    * covers every gate while unscoped (the reviewer gate consumes an unscoped
@@ -174,8 +178,8 @@ export interface Gates {
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
    * @param prompt Optional dispatch prompt text for active-plan resolution.
-   * @throws Error with a `BLOCKED by turnstile:` prefix when no plan file
-   *     exists yet is approved for this task.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the plans the
+   *     dispatch resolves are pending (no live approval covers them).
    */
   enforcePlanApproval(
     sessionID: string,
@@ -208,29 +212,39 @@ export interface Gates {
   /**
    * Returns whether the plan-approval gate is currently red for a parent, and
    * when red, the plan file + body preview to surface in a permission ask.
-   * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, or an
-   * approved verdict is not red; otherwise red) so the evaluate handler and the
-   * enforcing dispatch decide escalation from the exact same scan. Waiver and
-   * approval are folded into `red`: a red result implies the task's waiver
-   * does not cover this gate's stage group (no live waiver, or a waiver
-   * scoped to other stages) and `hasPlanVerdict` is false, so the caller only
-   * tests `red`. The red preview names the resolved active plan (prompt-named,
-   * then session-bound, then the first sorted fallback).
+   * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, a green
+   * verdict, or no pending plan is not red; otherwise red) so the evaluate
+   * handler and the enforcing dispatch decide escalation from the exact same
+   * scan. Waiver, approval, and the pending set are folded into `red`: a red
+   * result implies the task's waiver does not cover this gate's stage group
+   * (no live waiver, or a waiver scoped to other stages), `hasPlanVerdict`
+   * is false, and at least one genuine blocker is pending, so the caller
+   * only tests `red`. "Pending" means the plan's bytes carry no durable,
+   * project-scoped approval in the ledger's approval store. The gate resolves
+   * the dispatch's relevant plans — the prompt-referenced existing plans, else
+   * the session-bound plan, else (nothing resolvable) every pending plan —
+   * and is red only when that resolution still holds a pending plan: a
+   * dispatch whose own plan holds a live (durable or session) approval is
+   * green even while unrelated plans stay pending, but with nothing
+   * resolvable every pending plan blocks, as before. The red preview and
+   * `blockers` name the resolved set's pending plans only — the
+   * prompt-referenced pending plans in prompt order, else the session-bound
+   * pending plan, else (nothing resolvable) every pending plan in sorted
+   * scan order; the preview names `blockers[0]`, so a stale bound
+   * approval's ask still names that plan.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
    * @param prompt Optional dispatch prompt text for active-plan resolution.
-   * @returns `{ red: false }` when the gate is not red, or `{ red: true, summary }` when it is.
+   * @returns `{ red: false }` when not red, or `{ red: true, summary,
+   *     blockers }` when red (summary is the first blocker's preview).
    */
   planGateStatus(
     projectDir: string,
     ledger: GateLedger,
     sessionID: string,
     prompt?: string,
-  ): {
-    red: boolean
-    summary?: { file: string; head: string }
-  }
+  ): { red: false } | { red: true; summary: { file: string; head: string }; blockers: string[] }
   /**
    * Extracts the plan file names a dispatch prompt mentions: the basenames of
    * every `*.md` token, last five (keeps a hostile or pathological prompt

@@ -42,10 +42,7 @@ interface PlanGates {
     ledger: GateLedger,
     sessionID: string,
     prompt?: string,
-  ): {
-    red: boolean
-    summary?: { file: string; head: string }
-  }
+  ): { red: false } | { red: true; summary: { file: string; head: string }; blockers: string[] }
   promptPlanNames(prompt: string): string[]
   planApprovalBinding(
     projectDir: string,
@@ -217,31 +214,17 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   }
 
   /**
-   * Resolves the plan a gate acts on: the dispatch prompt's name when it
-   * names exactly one candidate plan (a prompt name beats the session
-   * binding); else the session's bound plan when it is a candidate; else
-   * null (callers fall back to their own first-sorted rule). A prompt that
-   * names no candidates, two or more distinct candidates, or only non-
-   * candidate files resolves nothing from the prompt. Candidates default to
-   * every plan in the scan; the plan gate passes the pending set so a
-   * durably-approved landed plan never resolves as the blocked plan.
-   * @param s The session's gate state (bound identity).
-   * @param scan The current plans-dir scan.
+   * The plans a dispatch prompt references that exist in the current scan:
+   * `promptPlanNames` deduped and filtered to the scan's names (a prompt that
+   * mentions a missing plan or repeats an existing one resolves only the real,
+   * unique mentions). Prompt order, capped at five (the cap is inherited from
+   * `promptPlanNames`).
    * @param prompt The dispatch prompt text.
-   * @param candidates The plan names the resolution may return; defaults to
-   *     every plan in the scan.
-   * @returns The resolved plan name, or null when unresolved.
+   * @param scan The current plans-dir scan to resolve against.
+   * @returns The referenced existing plan names, prompt order, deduped, ≤ five.
    */
-  function resolveActivePlan(
-    s: GateState,
-    scan: PlansScan,
-    prompt: string,
-    candidates: string[] = scan.names,
-  ): string | null {
-    const named = new Set(promptPlanNames(prompt).filter((n) => candidates.includes(n)))
-    if (named.size === 1) return [...named][0]!
-    if (s.approvedPlan !== "" && candidates.includes(s.approvedPlan)) return s.approvedPlan
-    return null
+  function referencedPlans(prompt: string, scan: PlansScan): string[] {
+    return [...new Set(promptPlanNames(prompt))].filter((n) => scan.names.includes(n))
   }
 
   /**
@@ -423,27 +406,33 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * scan. Waiver, approval, and the pending set are folded into `red`: a red
    * result implies the task's waiver does not cover this gate's stage group
    * (no live waiver, or a waiver scoped to other stages), `hasPlanVerdict`
-   * is false, and at least one plan lacks a durable approval, so the caller
+   * is false, and at least one genuine blocker is pending, so the caller
    * only tests `red`. "Pending" means the plan's bytes carry no durable,
-   * project-scoped approval in the ledger's approval store: a dir whose plans
-   * are all durably approved (byte-identical to a recorded approval) is not
-   * red, whatever the session's live verdict. The red preview names a pending
-   * plan only (the prompt-named pending plan when exactly one is named, then
-   * the session-bound plan when it is still pending, then the first sorted
-   * pending plan) — the same plan the enforcement would act on, so a stale
+   * project-scoped approval in the ledger's approval store. The gate resolves
+   * the dispatch's relevant plans — the prompt-referenced existing plans, else
+   * the session-bound plan, else (nothing resolvable) every pending plan —
+   * and is red only when that resolution still holds a pending plan: a
+   * dispatch whose own plan holds a live (durable or session) approval is
+   * green even while unrelated plans stay pending, but with nothing
+   * resolvable every pending plan blocks, as before. The red preview and
+   * `blockers` name the resolved set's pending plans only — the
+   * prompt-referenced pending plans in prompt order, else the session-bound
+   * pending plan, else (nothing resolvable) every pending plan in sorted
+   * scan order; the preview names `blockers[0]`, so a stale
    * bound approval's ask still names that plan.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
    * @param prompt Optional dispatch prompt text for active-plan resolution.
-   * @returns `{ red: false }` when not red, or `{ red: true, summary }` when red.
+   * @returns `{ red: false }` when not red, or `{ red: true, summary,
+   *     blockers }` when red (summary is the first blocker's preview).
    */
   function planGateStatus(
     projectDir: string,
     ledger: GateLedger,
     sessionID: string,
     prompt?: string,
-  ): { red: boolean; summary?: { file: string; head: string } } {
+  ): { red: false } | { red: true; summary: { file: string; head: string }; blockers: string[] } {
     const s = ledger.state(sessionID)
     if (waiverCovers(s, planGateStages)) return { red: false }
     const plansDir = resolvePlansDir(projectDir)
@@ -462,11 +451,26 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
       if (s.hasPlanVerdict) return { red: false }
       const pending = pendingPlans(scan, ledger, projectDir)
       if (pending.length === 0) return { red: false }
-      // The preview names a pending plan only: a durably-approved landed
-      // plan is never the blocked plan, and the fallback is the first sorted
-      // pending plan, never the first plan in the dir.
-      const active = resolveActivePlan(s, scan, prompt ?? "", pending)
-      return { red: true, summary: planPreview(scan, plansDir, active ?? pending[0]) }
+      // Resolve the dispatch's relevant plans: the prompt's referenced
+      // existing plans, else the session-bound plan, else (nothing resolves)
+      // empty. Blockers are the resolved plans still pending; with nothing
+      // resolvable every pending plan blocks (the global rule). An empty set
+      // means the dispatch's own plan holds a live approval, so the dispatch
+      // is exempt (green) even while other plans stay pending.
+      const relevant = referencedPlans(prompt ?? "", scan)
+      const relevantOrBound =
+        relevant.length > 0
+          ? relevant
+          : s.approvedPlan !== "" && scan.names.includes(s.approvedPlan)
+            ? [s.approvedPlan]
+            : []
+      const blockers =
+        relevantOrBound.length > 0 ? relevantOrBound.filter((n) => pending.includes(n)) : pending
+      if (blockers.length === 0) {
+        journaler.traceEvent("plan-gate", "exempt", relevantOrBound.join(","), sessionID)
+        return { red: false }
+      }
+      return { red: true, summary: planPreview(scan, plansDir, blockers[0]), blockers }
     } catch (e) {
       // Journal the fail-open so an unreadable plans dir stays observable.
       journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
@@ -504,8 +508,17 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     try {
       if (!fs.existsSync(plansDir)) return
       const scan = scanPlans(plansDir)
-      const active = ledger ? resolveActivePlan(ledger.state(sessionID), scan, prompt) : null
-      const target = active ?? decompFallback(scan, projectDir, ledger)
+      // The resolved plan: the prompt's unique referenced existing plan, else
+      // the session's bound plan when it still exists, else the decomposition
+      // fallback (byte-identical to the legacy rule, including no-ledger calls).
+      const s = ledger ? ledger.state(sessionID) : null
+      const ref = ledger ? referencedPlans(prompt, scan) : []
+      const named = ref.length === 1 ? ref[0]! : null
+      const bound =
+        named === null && s !== null && s.approvedPlan !== "" && scan.names.includes(s.approvedPlan)
+          ? s.approvedPlan
+          : null
+      const target = named ?? bound ?? decompFallback(scan, projectDir, ledger)
       if (target !== null && scan.decomp.has(target)) {
         journaler.journal({
           type: "blocked",
@@ -601,9 +614,26 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   }
 
   /**
-   * Enforces the plan-approval gate: when any pending plan file exists in
-   * the configured plans directory, executor dispatches require a current
-   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A plan
+   * The English enumeration of plan names for the plan-gate block message:
+   * a single name as-is, two names joined with " or ", three or more as an
+   * Oxford list ("a, b, or c"). Red status implies at least one blocker, so
+   * the first branch handles only the single-name case in practice.
+   * @param names The plan names to enumerate, in enumeration order (≥ 1).
+   * @returns The enumeration phrase.
+   */
+  function listPhrase(names: string[]): string {
+    if (names.length <= 1) return names[0]!
+    if (names.length === 2) return `${names[0]} or ${names[1]}`
+    return `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`
+  }
+
+  /**
+   * Enforces the plan-approval gate: executor dispatches require a current
+   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver) for the
+   * plans the dispatch resolves — the prompt-referenced existing plans, else
+   * the session's bound plan, else (nothing resolvable) every pending plan;
+   * a plans dir holding only unrelated stale plans no longer blocks a
+   * dispatch whose own plan approval is live. A plan
    * is pending when its bytes carry no durable, project-scoped approval in
    * the ledger's approval store, so a byte-identical plan's exemption
    * survives replay-aging, a process restart, and a new-prompt reset. A
@@ -611,9 +641,9 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * THAT plan's content changes or the file disappears; unbound approvals
    * invalidate on any plans-dir change (the dir-signature rule). A stale
    * verdict is dropped loudly, journaling a replay-inert `STALE` plan entry
-   * rather than a silent mismatch. The block message names the resolved
-   * pending plan (the prompt-named pending plan, then the session-bound plan
-   * when it is still pending, then the first sorted pending plan).
+   * rather than a silent mismatch. The block message lists every blocker in
+   * resolution order (dispatch-referenced pending plans, then the session-
+   * bound pending plan, then remaining pending).
    * The waiver is the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt): a waiver
    * covers every gate while unscoped (the reviewer gate consumes an unscoped
@@ -628,8 +658,8 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
    * @param prompt Optional dispatch prompt text for active-plan resolution.
-   * @throws Error with a `BLOCKED by turnstile:` prefix when no plan file
-   *     exists yet is approved for this task.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the plans the
+   *     dispatch resolves are pending (no live approval covers them).
    */
   function enforcePlanApproval(
     sessionID: string,
@@ -643,11 +673,11 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
       return
     }
     const status = planGateStatus(projectDir, ledger, sessionID, prompt)
-    // status.red ⇒ summary is always present: planGateStatus builds it from a
-    // scan whose plan bytes were already read to compute the scan key, so the
-    // non-null assertion is sound.
+    // status.red ⇒ summary and blockers are present: the red branch builds the
+    // summary from blockers[0]'s preview, so the journal keeps naming it.
     if (status.red) {
-      const plan = status.summary!.file
+      const plan = status.summary.file
+      const phrase = listPhrase(status.blockers.map((n) => `"${n}"`))
       journaler.journal({
         type: "blocked",
         sessionID,
@@ -656,7 +686,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
         plan,
       })
       throw new BlockError(
-        `BLOCKED by turnstile: no plan approval for "${plan}". Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
+        `BLOCKED by turnstile: no plan approval for ${phrase}. Dispatch the ${config.agents.planReviewer} subagent first; proceed with ${config.agents.executor} only after the ${config.agents.planReviewer}'s first line is ` +
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
           `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).` +
           waiverStateNote(s, `${config.agents.executor} or ${config.agents.planReviewer}`),

@@ -1867,11 +1867,10 @@ test("promptPlanNames and planApprovalBinding resolve the dispatch's plan candid
 })
 
 /**
- * The preview and the red plan-gate summary name the resolved active plan: an
- * explicit name, else the prompt's unique existing mention, else the
- * session's bound plan when it still exists, else the first sorted plan
- * (byte-identical fallback). A prompt naming two plans is ambiguous and falls
- * through to the session binding.
+ * The red plan-gate summary names the first blocker: the prompt-referenced
+ * existing plans in prompt order, else the session's bound plan when it still
+ * exists, else the first sorted pending plan (the legacy fallback). A prompt
+ * naming two pending plans blocks on both, previewing the first mentioned.
  */
 test("plan preview names the bound or named plan, falling back to first sorted", () => {
   const { project, plansDir, gates, ledger } = bootUnitPlans({
@@ -1903,7 +1902,8 @@ test("plan preview names the bound or named plan, falling back to first sorted",
   )
   assert.equal(named.red, true)
   assert.equal(named.summary?.file, "z-work.md")
-  // A prompt naming two existing plans is ambiguous → the session binding.
+  // A prompt naming two existing pending plans: both block, the preview
+  // takes the first mentioned (prompt order).
   const ambiguous = gates.planGateStatus(
     project,
     ledger,
@@ -1994,6 +1994,165 @@ test("bound approval staleness is per-plan (plan-edited / plan-missing)", () => 
     journalEntries(metricsDir).filter((l) => l.result === "STALE")[2]!.reason,
     "signature-mismatch",
   )
+})
+
+/**
+ * A dispatch naming a plan that holds a durable approval is exempt from the
+ * plan gate even while an unrelated plan stays pending; naming nothing still
+ * blocks, naming only the pending plan.
+ */
+test("plan gate: naming a durably-approved plan is exempt from an unrelated stale plan", () => {
+  const { project, gates, ledger } = bootUnitPlans({
+    "aaa-stale.md": "# A\n",
+    "zzz-current.md": "# Z\n",
+  })
+  ledger.recordPlanApprovalDurable(
+    "zzz-current.md",
+    gates.planApprovalBinding(project, ["zzz-current.md"])!.key,
+    project,
+  )
+  assert.deepEqual(gates.planGateStatus(project, ledger, "p1", "implement zzz-current.md"), {
+    red: false,
+  })
+  const unnamed = gates.planGateStatus(project, ledger, "p1")
+  assert.equal(unnamed.red, true)
+  assert.deepEqual(unnamed.blockers, ["aaa-stale.md"])
+  assert.equal(unnamed.summary.file, "aaa-stale.md")
+})
+
+/**
+ * Nothing resolvable (no prompt, no binding) with two pending plans: the
+ * status lists both in sorted scan order and the enforcing dispatch blocks
+ * with the two-name phrase, journaling the first as the named plan.
+ */
+test("plan gate: nothing resolvable lists every pending plan and journals the first", () => {
+  const { project, gates, ledger, metricsDir } = bootUnitPlans({
+    "aaa-stale.md": "# A\n",
+    "zzz-current.md": "# Z\n",
+  })
+  const status = gates.planGateStatus(project, ledger, "p1")
+  assert.equal(status.red, true)
+  assert.deepEqual(status.blockers, ["aaa-stale.md", "zzz-current.md"])
+  assert.equal(status.summary.file, "aaa-stale.md")
+  assert.throws(
+    () => gates.enforcePlanApproval("p1", project, ledger),
+    /no plan approval for "aaa-stale\.md" or "zzz-current\.md"/,
+  )
+  const blocked = journalEntries(metricsDir).filter((e) => e.type === "blocked")
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0]!.plan, "aaa-stale.md")
+})
+
+/**
+ * The session-bound fallback: a session bound to a durably-covered plan is
+ * exempt from an unrelated pending plan; bound to a pending plan (no durable
+ * record) it blocks naming the bound plan.
+ */
+test("plan gate: the session-bound plan resolves the gate when the prompt names nothing", () => {
+  const { project, gates, ledger } = bootUnitPlans({
+    "aaa-stale.md": "# A\n",
+    "zzz-current.md": "# Z\n",
+  })
+  // Bound to a pending plan (no durable record): the bound plan is the blocker.
+  ledger.state("p-bound").approvedPlan = "zzz-current.md"
+  const pending = gates.planGateStatus(project, ledger, "p-bound")
+  assert.equal(pending.red, true)
+  assert.deepEqual(pending.blockers, ["zzz-current.md"])
+  assert.equal(pending.summary.file, "zzz-current.md")
+  // The same binding is exempt once the bound plan is durably covered.
+  ledger.recordPlanApprovalDurable(
+    "zzz-current.md",
+    gates.planApprovalBinding(project, ["zzz-current.md"])!.key,
+    project,
+  )
+  assert.deepEqual(gates.planGateStatus(project, ledger, "p-bound"), { red: false })
+})
+
+/**
+ * A prompt naming both a pending plan and a durably-approved one blocks on
+ * the pending one only: an approved referenced plan never blocks.
+ */
+test("plan gate: a mixed reference blocks only the pending referenced plan", () => {
+  const { project, gates, ledger } = bootUnitPlans({
+    "aaa-stale.md": "# A\n",
+    "zzz-current.md": "# Z\n",
+  })
+  ledger.recordPlanApprovalDurable(
+    "zzz-current.md",
+    gates.planApprovalBinding(project, ["zzz-current.md"])!.key,
+    project,
+  )
+  const mixed = gates.planGateStatus(
+    project,
+    ledger,
+    "p1",
+    "compare aaa-stale.md with zzz-current.md",
+  )
+  assert.equal(mixed.red, true)
+  assert.deepEqual(mixed.blockers, ["aaa-stale.md"])
+  assert.equal(mixed.summary.file, "aaa-stale.md")
+})
+
+/**
+ * The permission-ask arm: a no-prompt status with one pending plan carries
+ * the full red shape — the file + head preview paired with its single-blocker
+ * list.
+ */
+test("plan gate: the no-prompt red shape pairs the preview with its single blocker", () => {
+  const { project, gates, ledger } = bootUnitPlans({ "aaa-stale.md": "# A\nalpha body\n" })
+  assert.deepEqual(gates.planGateStatus(project, ledger, "p1"), {
+    red: true,
+    summary: { file: "aaa-stale.md", head: "alpha body" },
+    blockers: ["aaa-stale.md"],
+  })
+})
+
+/**
+ * Three pending plans with nothing resolvable: the block message enumerates
+ * all three as an Oxford list.
+ */
+test("plan gate: three pending plans enumerate as an Oxford list", () => {
+  const { project, gates, ledger } = bootUnitPlans({
+    "aaa-stale.md": "# A\n",
+    "m-mid.md": "# M\n",
+    "zzz-current.md": "# Z\n",
+  })
+  assert.throws(
+    () => gates.enforcePlanApproval("p1", project, ledger),
+    /no plan approval for "aaa-stale\.md", "m-mid\.md", or "zzz-current\.md"/,
+  )
+})
+
+/**
+ * The decomposition gate keeps its resolved-plan semantics after the
+ * plan-gate resolution change: an ambiguous prompt (two plans, one
+ * decomposed) with no chunk cite blocks via the fallback naming the
+ * decomposed plan, a session bound to a missing plan falls through to the
+ * same fallback, and a uniquely named decomposed plan blocks until cited.
+ */
+test("decomposition: ambiguous and bound-missing prompts fall back to the pending decomposed plan", () => {
+  const { project, gates, ledger } = bootUnitPlans({
+    "a-decoy.md": DECOY_BODY,
+    "z-work.md": "# Z\nplain body\n",
+  })
+  // Ambiguous: two plans named, one decomposed, no cite → the fallback names
+  // the decomposed one.
+  assert.throws(
+    () => gates.enforceDecomposition("p1", "compare a-decoy.md with z-work.md", project, ledger),
+    /plan "a-decoy\.md" has a ## Decomposition block/,
+  )
+  // Bound to a missing plan: the binding resolves nothing → the same fallback.
+  ledger.state("p2").approvedPlan = "ghost.md"
+  assert.throws(
+    () => gates.enforceDecomposition("p2", "do the work", project, ledger),
+    /plan "a-decoy\.md" has a ## Decomposition block/,
+  )
+  // Uniquely named decomposed plan: blocked until the prompt cites a chunk.
+  assert.throws(
+    () => gates.enforceDecomposition("p3", "work on a-decoy.md", project, ledger),
+    /plan "a-decoy\.md" has a ## Decomposition block/,
+  )
+  gates.enforceDecomposition("p3", "work on a-decoy.md chunk-1", project, ledger)
 })
 
 /**
@@ -2541,6 +2700,55 @@ test("plan gate: a durable approval survives a new-prompt reset", async () => {
 })
 
 /**
+ * A dispatch whose referenced plan holds a durable approval is admitted even
+ * while an unrelated plan stays pending (the end-to-end exemption): naming
+ * the approved plan passes, naming the stale plan blocks with the referenced
+ * name, naming only a missing plan falls through to the global rule, and
+ * naming the stale plan twice emits the byte-identical single-name message.
+ */
+test("plan gate: a dispatch naming its durably-approved plan is exempt from unrelated stale plans", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore } = await bootWithPlans(
+    { "aaa-stale.md": "# A\n", "zzz-current.md": "# Z\n" },
+    { metricsDir, approvalLedgerPath: sidecar },
+  )
+  try {
+    await reviewRound(h, "p1", "c1", "review zzz-current.md", APPROVE)
+    // A fresh prompt wipes the bucket; the sidecar still covers zzz-current.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
+    // Naming the approved plan: admitted even though aaa-stale stays pending.
+    await execDispatch(h, "p1", "implement zzz-current.md")
+    // Naming the stale plan: blocked, naming the referenced plan (never the
+    // other plan in the dir).
+    await assert.rejects(
+      () => execDispatch(h, "p1", "implement aaa-stale.md"),
+      (e: Error) =>
+        /no plan approval for "aaa-stale\.md"/.test(e.message) &&
+        !e.message.includes("zzz-current"),
+    )
+    // Naming only a missing plan resolves nothing: the global rule names the
+    // one pending plan.
+    await assert.rejects(
+      () => execDispatch(h, "p1", "implement ghost.md"),
+      /no plan approval for "aaa-stale\.md"/,
+    )
+    // Naming the stale plan twice dedupes to the byte-identical single-name
+    // message.
+    await assert.rejects(
+      () => execDispatch(h, "p1", "implement aaa-stale.md for aaa-stale.md"),
+      (e: Error) =>
+        e.message ===
+        `BLOCKED by turnstile: no plan approval for "aaa-stale.md". Dispatch the plan-reviewer subagent first; proceed with executor only after the plan-reviewer's first line is ` +
+          "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
+          "(a user prompt this task must contain the literal marker 'USER WAIVER:' followed by the user's words).",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
  * Editing the plan invalidates its durable approval: the approval recorded
  * under the original bytes, the journal dropped (replay-aging), and the plan
  * bytes changed while "down" — the fresh process sees a pending plan and
@@ -2573,9 +2781,10 @@ test("plan gate: an edited plan is pending despite its durable record", async ()
  * A plans dir holding only durably-approved, unchanged plans is not red:
  * after a fresh prompt wipes the bucket, an unnamed executor dispatch is
  * admitted (the pending set is empty via the sidecar). Once a genuinely
- * unapproved plan joins the dir, the dispatch blocks naming THAT plan —
- * never the durably-approved one, whether the dispatch names the landed
- * plan or none.
+ * unapproved plan joins the dir, the unnamed dispatch blocks naming the new
+ * plan, a dispatch naming the new plan blocks naming it, and a dispatch
+ * naming the landed plan is admitted — its approval is live, so the
+ * unrelated stale plan no longer blocks it.
  */
 test("plan gate: an all-landed plans dir is green; a new plan blocks naming itself, not the landed one", async () => {
   const metricsDir = tmpDir()
@@ -2593,17 +2802,19 @@ test("plan gate: an all-landed plans dir is green; a new plan blocks naming itse
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // All plans landed: the unnamed dispatch is admitted.
     await execDispatch(h, "p1", "do the work")
-    // A genuinely unapproved plan joins: the dispatch blocks naming it…
+    // A genuinely unapproved plan joins: the unnamed dispatch blocks naming it…
     fs.writeFileSync(path.join(project, ".opencode", "plans", "z-fresh.md"), "# F\n")
     await assert.rejects(
       () => execDispatch(h, "p1", "do the work"),
       /no plan approval for "z-fresh\.md"/,
     )
-    // …even when the dispatch names the landed plan (never the blocked plan).
+    // …and a dispatch naming the fresh plan blocks naming it…
     await assert.rejects(
-      () => execDispatch(h, "p1", "implement a-landed.md"),
+      () => execDispatch(h, "p1", "implement z-fresh.md"),
       /no plan approval for "z-fresh\.md"/,
     )
+    // …while naming the landed plan admits the dispatch (its approval is live).
+    await execDispatch(h, "p1", "implement a-landed.md")
   } finally {
     restore()
   }

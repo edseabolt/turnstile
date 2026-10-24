@@ -98,12 +98,16 @@
  *   authoritatively via an `execute.after` task result still flips — delivery is
  *   the recovery channel for a stream-time authority lookup failure.
  * - Plan-approval gate: `task` dispatches to `executor` require a current
- *   plan approval for every pending plan file in `.opencode/plans/` — a
- *   plan that holds neither a live approval (a
- *   plan-reviewer `VERDICT: APPROVE`, a prompt-channel human approval, or a
- *   permission-prompt human approval) nor a durable sidecar record (below);
- *   a plans dir with no pending plans is green even when it still holds
- *   fully approved files. A prompt-channel approval is a
+ *   plan approval for the plans the dispatch resolves — the
+ *   prompt-referenced existing plans, else the session's bound plan, else
+ *   (nothing resolvable) every pending plan in `.opencode/plans/`; a plans
+ *   dir holding only unrelated stale plans no longer blocks a dispatch
+ *   whose own plan approval is live. A plan is pending when it holds
+ *   neither a live approval (a plan-reviewer `VERDICT: APPROVE`, a
+ *   prompt-channel human approval, or a permission-prompt human approval)
+ *   nor a durable sidecar record (below); a plans dir with no pending
+ *   plans is green even when it still holds fully approved files. A
+ *   prompt-channel approval is a
  *   user-authored prompt captured at prompt admission through whichever host
  *   channel carries it — the `session` prompt hook, or the correlated
  *   `session.inbox.enqueued` admission carrying the same host message id where
@@ -169,10 +173,12 @@
  *   against the current dir like a live one (a field-less legacy line is
  *   accepted once and re-stamped); a replayed bound
  *   approval is validated against the current files immediately. The block
- *   and permission-ask preview name the resolved plan — the dispatch's
- *   named plan, then the session's bound plan, then the first sorted
- *   pending plan; a plan holding a durable approval is not pending, so the
- *   gate is green for it even with no live approval in the session bucket.
+ *   message and permission-ask preview name the blockers in resolution
+ *   order — dispatch-referenced pending plans (prompt order), then the
+ *   session-bound pending plan, then the first sorted remaining pending
+ *   plan; the block message enumerates all of them, and a plan holding a
+ *   durable approval is never a blocker, so the gate is green for it even
+ *   with no live approval in the session bucket.
  *   A journal-replayed approval
  *   survives the first prompt after a restart (the resume prompt) and then
  *   every later prompt starts a clean cycle; a durable approval is not
