@@ -190,7 +190,11 @@ test("planGateStatus / planSummary: the five red-gate outcomes", () => {
   const { gates, ledger } = makeGates(metricsDir)
 
   const red = gates.planGateStatus(project, ledger, "p1")
-  assert.deepEqual(red, { red: true, summary: { file: "plan.md", head: "Body text." } })
+  assert.deepEqual(red, {
+    red: true,
+    summary: { file: "plan.md", head: "Body text." },
+    blockers: ["plan.md"],
+  })
   assert.deepEqual(gates.planSummary(project), { file: "plan.md", head: "Body text." })
 
   // Waived — the prompt-channel waiver is never red (and short-circuits).
