@@ -42,9 +42,16 @@ export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turn
  * two concurrent sessions never both rename the shared file. Disk usage stays
  * bounded at (N + 1) × maxBytes plus at most `rotateEveryEntries × ~2 KB` of
  * overshoot between the size check and the rename. A crashed process between
- * the create and the remove of `<file>.lock` leaves a stale lock, so that
- * file's rotation is skipped until the directory is removed, and the append
- * hot path keeps journaling through it. */
+ * the create and the remove of `<file>.lock` leaves a stale lock: the next
+ * tick steals it once its mtime passes the staleness bound, journaling a
+ * `rotation-lock-stale:` error entry, so rotation resumes; a fresh
+ * (contended) lock is still skipped silently, and the append hot path keeps
+ * journaling through either. */
+
+/** A created `<file>.lock` older than this cannot be held by a live
+ *  rotation (the hold spans one stat + at most maxGenerations renames):
+ *  it marks a crashed process. Steal it. */
+const ROTATION_LOCK_STALE_MS = 60_000
 
 /**
  * Returns the current time as an ISO-8601 timestamp.
@@ -52,6 +59,20 @@ export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turn
  */
 export function now(): string {
   return new Date().toISOString()
+}
+
+/**
+ * Steals a lock directory whose mtime proves its creator crashed
+ * mid-rotation. A stat or rmdir failure throws to the caller's catch, so a
+ * lock in an unexpected state (a file, a non-empty directory, a vanished
+ * path) is never forced open — it just skips the tick.
+ * @param lock Path of the contended `<file>.lock` directory.
+ * @returns True when the stale lock was removed (a steal happened).
+ */
+function stealStaleLock(lock: string): boolean {
+  if (Date.now() - fs.statSync(lock).mtimeMs < ROTATION_LOCK_STALE_MS) return false
+  fs.rmdirSync(lock)
+  return true
 }
 
 /**
@@ -155,13 +176,43 @@ export function createJournaler(options: {
   const journalTick = { n: 0 }
   const traceTick = { n: 0 }
   /**
+   * Acquires the `<file>.lock` mutex for the tick. A stale lock (mtime past
+   * the staleness bound — its creator crashed) is stolen and journaled as a
+   * `rotation-lock-stale:` error entry before the mkdir is retried once; a
+   * fresh contention returns false without journaling. Non-EEXIST mkdir
+   * errors and steal-path throws propagate to the caller's catch.
+   * @param file Path of the file whose lock is acquired.
+   * @returns True when the lock is held by the caller on return.
+   */
+  function tryLock(file: string): boolean {
+    const lock = `${file}.lock`
+    try {
+      fs.mkdirSync(lock)
+      return true
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
+      if (!stealStaleLock(lock)) return false
+      appendLine(
+        journalPath,
+        JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
+      )
+      fs.mkdirSync(lock) // raced again: the throw lands in tickRotate's catch
+      return true
+    }
+  }
+
+  /**
    * Rotates `file` once per `rotateEveryEntries` writes, under a created
    * `<file>.lock` directory that is an atomic mutex (mkdir fails with EEXIST
    * while another session holds it) so concurrent sessions never both rename
-   * the shared file. Fail-open: a contended lock or any rotation error is
-   * swallowed by the single outer catch, so a throw inside the finally (a
-   * failed rmdir) or the rotate cannot propagate out of `journal()` into the
-   * hook. The per-write hot path never calls this past the counter gate.
+   * the shared file. A stale lock — its mtime past the staleness bound,
+   * proving its creator crashed — is stolen by `tryLock`, journaled as a
+   * `rotation-lock-stale:` error entry, and the mkdir retried; a fresh
+   * contention is a silent return. Fail-open: the single outer catch
+   * swallows every steal-path throw and the finally's failed rmdir, so a
+   * throw inside the finally (a failed rmdir) or the rotate cannot propagate
+   * out of `journal()` into the hook. The per-write hot path never calls
+   * this past the counter gate.
    * @param file Path of the file to rotate.
    * @param counter A per-file `{ n }` counter; callers pass one bound here.
    */
@@ -169,16 +220,14 @@ export function createJournaler(options: {
     if (++counter.n < options.rotateEveryEntries) return
     counter.n = 0
     try {
-      const lock = `${file}.lock`
-      fs.mkdirSync(lock)
+      if (!tryLock(file)) return
       try {
         rotateIfLarge(file, options.maxBytes, options.maxGenerations)
       } finally {
-        fs.rmdirSync(lock)
+        fs.rmdirSync(`${file}.lock`)
       }
     } catch {
-      // Contended lock or any rotation failure: skip the tick. Journaling must
-      // never break execution, so every error here is swallowed (fail-open).
+      // steal-path throw, non-EEXIST mkdir error, or failed rmdir: skip the tick
     }
   }
   return {

@@ -149,9 +149,10 @@ test("journal appends without renaming below the rotate tick", () => {
   assert.equal(fs.existsSync(`${journalPath}.lock`), false)
 })
 
-/** A held `<file>.lock` directory makes the tick skip rotation without losing
- *  an entry: the contended mkdir is swallowed by tickRotate's single outer
- *  catch, so the entry still appends and the caller never sees the churn. */
+/** A `<file>.lock` directory held by a live rotation (its mtime fresh,
+ *  inside the staleness bound) keeps the tick skipped without losing an
+ *  entry and without journaling: a fresh contention is a silent skip, not a
+ *  steal, so no `type:"error"` entry appears and the directory stays. */
 test("a held .lock directory skips the rotation tick and never loses an entry", () => {
   const metricsDir = tmpDir()
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
@@ -162,12 +163,151 @@ test("a held .lock directory skips the rotation tick and never loses an entry", 
     maxGenerations: 1,
     rotateEveryEntries: 1,
   })
-  // Pre-create the lock so the first tick's mkdir fails (EEXIST); the swallow
-  // runs and the directory stays (no rmdir executed on the failed path).
+  // Pre-create the lock so the first tick's mkdir fails (EEXIST); the tick
+  // skips the rotation and the directory stays (no rmdir ever runs).
   fs.mkdirSync(`${journalPath}.lock`)
   assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
   assert.equal(journalEntries(metricsDir).length, 1)
   assert.equal(fs.existsSync(`${journalPath}.lock`), true)
+  // A fresh contention never journals: no error entry was written.
+  assert.equal(journalEntries(metricsDir).filter((e) => e.type === "error").length, 0)
+})
+
+/** A stale, empty `<file>.lock` (mtime past the staleness bound) is stolen
+ *  on the next tick: the steal journals a `rotation-lock-stale:` error entry
+ *  before the mkdir is retried, so the entry lands in the rotated generation
+ *  alongside the task entry, rotation proceeds, and the lock is released. */
+test("a stale rotation lock is stolen and rotation resumes", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  const lock = `${journalPath}.lock`
+  fs.mkdirSync(lock)
+  // Age the lock well past the staleness bound without sleeping.
+  const past = new Date(Date.now() - 120_000)
+  fs.utimesSync(lock, past, past)
+  assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  // The steal happened: the lock is gone and rotation ran on this tick.
+  assert.equal(fs.existsSync(lock), false)
+  // The audit entry was appended before the rename, so it landed in `.1`
+  // alongside the task entry — exactly one rotation-lock-stale line.
+  const rotated = fs
+    .readFileSync(`${journalPath}.1`, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+  assert.equal(
+    rotated.filter((e) => e.type === "error" && String(e.error).includes("rotation-lock-stale:"))
+      .length,
+    1,
+  )
+  assert.ok(rotated.some((e) => e.type === "tool"))
+})
+
+/** A stale `<file>.lock` that is not an empty directory cannot be stolen:
+ *  the rmdir fails inside the staleness escape and the throw lands in the
+ *  outer catch, so the entry still appends, the lock stays for a future
+ *  tick, and no audit entry is journaled. */
+test("a stale non-empty lock directory fails the steal and skips the tick", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1_000_000,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  const lock = `${journalPath}.lock`
+  fs.mkdirSync(lock)
+  // A stray file makes the rmdir fail; creating it refreshes the directory
+  // mtime, so the lock is aged last.
+  fs.writeFileSync(path.join(lock, "stray"), "x")
+  const past = new Date(Date.now() - 120_000)
+  fs.utimesSync(lock, past, past)
+  assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  assert.equal(journalEntries(metricsDir).length, 1)
+  assert.equal(fs.existsSync(lock), true)
+  assert.equal(journalEntries(metricsDir).filter((e) => e.type === "error").length, 0)
+})
+
+/** A stale `<file>.lock` path that is a file, not a directory, fails the
+ *  steal the same way: the stat passes and the aged mtime clears the bound,
+ *  but the rmdir throws and the tick skips without an audit entry. */
+test("a stale lock that is not a directory fails the steal and skips the tick", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1_000_000,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  const lock = `${journalPath}.lock`
+  fs.writeFileSync(lock, "x")
+  const past = new Date(Date.now() - 120_000)
+  fs.utimesSync(lock, past, past)
+  assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  assert.equal(journalEntries(metricsDir).length, 1)
+  assert.equal(fs.existsSync(lock), true)
+  assert.equal(journalEntries(metricsDir).filter((e) => e.type === "error").length, 0)
+})
+
+/** A lock that vanishes between the contended mkdir and the staleness stat
+ *  (modeled stub-free as a dangling symlink, whose stat follows to a missing
+ *  target) throws inside the staleness escape: the tick skips, the symlink
+ *  stays, and no audit entry is journaled. */
+test("a lock whose stat fails skips the tick", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1_000_000,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  const lock = `${journalPath}.lock`
+  fs.symlinkSync(path.join(metricsDir, "gone"), lock)
+  assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  assert.equal(journalEntries(metricsDir).length, 1)
+  assert.equal(fs.lstatSync(lock).isSymbolicLink(), true)
+  assert.equal(journalEntries(metricsDir).filter((e) => e.type === "error").length, 0)
+})
+
+/** An unexpected lock-creation error (a read-only metrics dir blocks the
+ *  mkdir with EACCES) is rethrown from the staleness escape into the outer
+ *  catch: journal() never throws, the entry still lands, and no lock is
+ *  left behind. */
+test("an unexpected lock-creation error never escapes journal()", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 1_000_000,
+    maxGenerations: 1,
+    rotateEveryEntries: 1,
+  })
+  // The first entry creates the journal file; its tick succeeds (no lock).
+  j.journal({ type: "tool", tool: "read" })
+  // Drop write on the dir: the file stays writable (it already exists) but
+  // the new lock directory cannot be created.
+  fs.chmodSync(metricsDir, 0o500)
+  try {
+    assert.doesNotThrow(() => j.journal({ type: "tool", tool: "read" }))
+  } finally {
+    fs.chmodSync(metricsDir, 0o700)
+  }
+  assert.equal(journalEntries(metricsDir).length, 2)
+  assert.equal(fs.existsSync(`${journalPath}.lock`), false)
 })
 
 /** pathsSignature fails open (null) when the plans dir is unreadable. */

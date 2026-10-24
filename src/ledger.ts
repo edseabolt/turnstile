@@ -736,7 +736,9 @@ export function createLedger(
   // like the other maps, bounded by `maxTrackedParents`; registration is the
   // eviction-protection signal for the `states` cap.
   const parents = new Map<string, true>()
-  const maxTrackedParents = Math.max(256, maxSessions * 4) // mirrors maxTrackedLookups in hooks-core.ts
+  // Registry bound: 4× the states cap, floored at 256 so a small cap still
+  // tracks an active fleet of registered parents.
+  const maxTrackedParents = Math.max(256, maxSessions * 4)
 
   /**
    * Promotes a key to most-recently-used in an insertion-ordered map.

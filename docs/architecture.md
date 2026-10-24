@@ -359,9 +359,11 @@ reason:"landing", event:"forced"}`) stamps the evaluate landing arm's
   both rename the shared file. Disk usage stays bounded at `(N + 1) ×
 maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   between the size check and the rename; a contended lock or any rotation error is
-  swallowed (fail-open); a leftover `<file>.lock` from a crash between create
-  and remove is skipped, so that file stops rotating until the directory is
-  removed while journaling keeps appending. A residual bounded race remains:
+  swallowed (fail-open); a leftover `<file>.lock` from a crash is stolen once
+  its mtime passes the staleness bound (journaling a `rotation-lock-stale:`
+  `error` entry), so rotation resumes instead of stopping forever; a freshly
+  held lock is still skipped silently while journaling keeps appending. A
+  residual bounded race remains:
   a writer that opens the path across the rename may land an entry in a
   generation past the current file, but the replay scan walks all retained
   generations, so such an entry simply joins the tail window when it is

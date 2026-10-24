@@ -150,8 +150,10 @@ export function classifyDelivery(event: ToolHookEvent): Delivery {
  * placed at the front for "prepend" and the end for "append" (the host
  * passes a content array through to the model unchanged); absent or other
  * `content` falls back to the structured output string (`output.output`,
- * which the host stringifies when `content` is absent). The structured
- * `output` object otherwise stays unmutated.
+ * which the host stringifies when `content` is absent). In that fallback
+ * the `output` object keeps its shape and other keys, but its `output`
+ * field is rewritten in place — the host stringifies `output`, so rewriting
+ * the field is what makes the transformation visible to the model.
  *
  * Each shape re-reads the field's current value before mutating, so more
  * than one transformation on the same delivery (the per-delivery status
