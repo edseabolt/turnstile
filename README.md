@@ -215,7 +215,11 @@ Defaults live in code (`src/config.ts`); override via
 (precedence: defaults < file < env; config is read once at setup — restart
 sessions to apply). Copy
 [`examples/turnstile.example.json`](examples/turnstile.example.json) as a
-starting point: every key is optional and matches the code defaults. The key
+starting point: every key is optional and matches the code defaults. One
+exception to know about: `agents.bareOutput` in the example is
+`[]` because JSON cannot express the "unset" sentinel the code uses — an
+explicit empty list disables the built-in derivation; delete the key to
+inherit the default. The key
 knobs most people touch:
 
 | Key                          | Default            | Meaning                                                                                                                     |
