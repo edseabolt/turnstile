@@ -758,6 +758,12 @@ export interface TurnstileOptions {
   config?: Partial<TurnstileConfig>
   /** Environment for config resolution; defaults to `process.env`. */
   env?: Record<string, string | undefined>
+  /**
+   * Absolute path of the durable approved-plan sidecar; defaults to
+   * `approved-plans.jsonl` beside the journal (the metrics dir). Injected to
+   * redirect the sidecar (tests, fail-open drills).
+   */
+  approvalLedgerPath?: string
 }
 
 /**

@@ -10,6 +10,9 @@ jsonl: "turnstile.jsonl\n5 MB × 5 generations" {
 trace: "gate-events.jsonl" {
   shape: cylinder
 }
+approval: "approved-plans.jsonl\nbound plan approvals\nname + content key + project scope\n256 cap, rewrite on eviction" {
+  shape: cylinder
+}
 
 replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignature), hasReviewApprove,\nensemble counts\n→ replayGrace = one-prompt survival"
 ledger: "GateLedger in memory"
@@ -18,6 +21,8 @@ cli: "opencode-turnstile status\n(read-only aggregation)"
 
 writers.hooks -> jsonl: "every decision,\n20 entry types"
 writers.hooks -> trace: "trace:true only"
+writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
+approval -> ledger: "at ledger creation:\nload, last-wins per (project, plan),\nevict to cap"
 jsonl -> replay: "at ledger creation:\nreplayTailLines (2000) newest,\nwalking all retained\ngenerations, early stop\nonce the bound is met"
 replay -> ledger
 ledger -> enforce

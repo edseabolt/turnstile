@@ -405,6 +405,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     journaler.journalPath,
     config.maxSessions,
     config.replayTailLines,
+    opts.approvalLedgerPath,
   )
   // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
   // Hits are detected and journaled at prompt admission (see admitPrompt) and
@@ -1046,6 +1047,23 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * The shared tail of the two plan-approval credit sites: records the bound
+   * plan identity (name + content key) durably under the project, outside the
+   * session bucket and the journal replay window, so the approval survives
+   * replay aging, a restart, and a new-prompt reset. An unbound approval
+   * records nothing — a human prompt approval binds no plan identity, and a
+   * reviewer approval whose dispatch named no resolvable plan stays
+   * session-scoped. The ledger sanitizes its arguments and fails open, so
+   * this never throws.
+   * @param s The session's gate state (stamped by stampPlanApproval).
+   * @param projectDir The project directory the approval is recorded under.
+   */
+  function recordDurablePlanApproval(s: GateState, projectDir: string): void {
+    if (s.approvedPlan === "") return
+    ledger.recordPlanApprovalDurable(s.approvedPlan, s.approvedPlanKey, projectDir)
+  }
+
+  /**
    * Splits a self-keyed delivery's attributable children into the
    * registered-edge scan (`edge`, today's scan) and every child with a stored
    * verdict that is not the delivery session itself (`unresolved`). `edge`
@@ -1506,7 +1524,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   ): Promise<void> {
     const s = ledger.state(sid)
     s.hasPlanVerdict = result === "APPROVE"
-    stampPlanApproval(s, result, await resolveProjectDir(sid), planReviewTarget.get(sid) ?? [])
+    const projectDir = await resolveProjectDir(sid)
+    stampPlanApproval(s, result, projectDir, planReviewTarget.get(sid) ?? [])
     journaler.journal({
       type: "plan",
       sessionID: sid,
@@ -1520,6 +1539,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       ...planApprovalStampFields(s),
     })
     journaler.traceEvent("plan-reviewer", "verdict", traceMarker, sid)
+    recordDurablePlanApproval(s, projectDir)
   }
 
   /**
@@ -2289,7 +2309,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         // candidates → unbound), so replay re-validates it like a reviewer
         // verdict and an offline plan edit invalidates it. Fail-open: an
         // absent/unreadable dir stamps "" and keeps the accept-once path.
-        stampPlanApproval(s, "APPROVE", currentProjectDir(sessionID), [])
+        const projectDir = currentProjectDir(sessionID)
+        stampPlanApproval(s, "APPROVE", projectDir, [])
         journaler.journal({
           type: "plan",
           sessionID,
@@ -2299,6 +2320,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
           marker: config.approvalMarker,
           ...planApprovalStampFields(s),
         })
+        recordDurablePlanApproval(s, projectDir)
       }
     } catch (e) {
       // Fail-open: approval capture never blocks a prompt.

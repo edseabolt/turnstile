@@ -98,9 +98,12 @@
  *   authoritatively via an `execute.after` task result still flips — delivery is
  *   the recovery channel for a stream-time authority lookup failure.
  * - Plan-approval gate: `task` dispatches to `executor` require a current
- *   plan approval whenever a plan file exists in `.opencode/plans/`: a
+ *   plan approval for every pending plan file in `.opencode/plans/` — a
+ *   plan that holds neither a live approval (a
  *   plan-reviewer `VERDICT: APPROVE`, a prompt-channel human approval, or a
- *   permission-prompt human approval. A prompt-channel approval is a
+ *   permission-prompt human approval) nor a durable sidecar record (below);
+ *   a plans dir with no pending plans is green even when it still holds
+ *   fully approved files. A prompt-channel approval is a
  *   user-authored prompt captured at prompt admission through whichever host
  *   channel carries it — the `session` prompt hook, or the correlated
  *   `session.inbox.enqueued` admission carrying the same host message id where
@@ -146,7 +149,17 @@
  *   `plan` entry so journal replay restores the identity): a bound
  *   approval goes stale only when THAT plan's content changes
  *   (`plan-edited`) or the file disappears (`plan-missing`) — changes to
- *   other plans do not invalidate it. Unbound approvals (human releases,
+ *   other plans do not invalidate it. A bound plan-reviewer approval is
+ *   also recorded in a durable, bounded, project-scoped sidecar
+ *   (`approved-plans.jsonl` beside the journal; records carry the plan
+ *   name, its content key, and a scope derived from the resolved project
+ *   directory; the store is capped and rewritten on eviction): the record
+ *   outlives the journal replay window and prompt resets, so an unchanged
+ *   plan stays exempt from the gate long after its APPROVE line ages out,
+ *   while an edited or replaced plan (content-key mismatch) and any other
+ *   project's plans stay pending. A sidecar that cannot be read or written
+ *   is journaled and the gate degrades to the journal-replay semantics
+ *   (fail-open). Unbound approvals (human releases,
  *   prompts naming no single plan, legacy replays) stamp the path-free
  *   plans-dir signature (directory-independent): a same-content move to
  *   another checkout survives, while any plans-dir change drops the
@@ -157,10 +170,13 @@
  *   accepted once and re-stamped); a replayed bound
  *   approval is validated against the current files immediately. The block
  *   and permission-ask preview name the resolved plan — the dispatch's
- *   named plan, then the session's bound plan, then the first sorted plan.
+ *   named plan, then the session's bound plan, then the first sorted
+ *   pending plan; a plan holding a durable approval is not pending, so the
+ *   gate is green for it even with no live approval in the session bucket.
  *   A journal-replayed approval
  *   survives the first prompt after a restart (the resume prompt) and then
- *   every later prompt starts a clean cycle.
+ *   every later prompt starts a clean cycle; a durable approval is not
+ *   prompt-scoped at all.
  * - Hard gate: `task` dispatches to `reviewer` require a recorded `GATE: PASS`
  *   from test-runner for the current task (a later `GATE: FAIL` un-sets
  *   it), or an explicit user waiver captured at prompt admission — a
