@@ -218,21 +218,64 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
 
   /**
    * Resolves the plan a gate acts on: the dispatch prompt's name when it
-   * names exactly one existing plan file (a prompt name beats the session
-   * binding); else the session's bound plan when it still exists in the dir;
-   * else null (callers fall back to the legacy first-sorted rule). A prompt
-   * that names no plans, two or more distinct plans, or only missing files
-   * resolves nothing from the prompt.
+   * names exactly one candidate plan (a prompt name beats the session
+   * binding); else the session's bound plan when it is a candidate; else
+   * null (callers fall back to their own first-sorted rule). A prompt that
+   * names no candidates, two or more distinct candidates, or only non-
+   * candidate files resolves nothing from the prompt. Candidates default to
+   * every plan in the scan; the plan gate passes the pending set so a
+   * durably-approved landed plan never resolves as the blocked plan.
    * @param s The session's gate state (bound identity).
    * @param scan The current plans-dir scan.
    * @param prompt The dispatch prompt text.
+   * @param candidates The plan names the resolution may return; defaults to
+   *     every plan in the scan.
    * @returns The resolved plan name, or null when unresolved.
    */
-  function resolveActivePlan(s: GateState, scan: PlansScan, prompt: string): string | null {
-    const named = new Set(promptPlanNames(prompt).filter((n) => scan.names.includes(n)))
+  function resolveActivePlan(
+    s: GateState,
+    scan: PlansScan,
+    prompt: string,
+    candidates: string[] = scan.names,
+  ): string | null {
+    const named = new Set(promptPlanNames(prompt).filter((n) => candidates.includes(n)))
     if (named.size === 1) return [...named][0]!
-    if (s.approvedPlan !== "" && scan.names.includes(s.approvedPlan)) return s.approvedPlan
+    if (s.approvedPlan !== "" && candidates.includes(s.approvedPlan)) return s.approvedPlan
     return null
+  }
+
+  /**
+   * The pending plan names of a scan: the plans whose durable approval
+   * (project-scoped, byte-identical content key) no longer covers the file
+   * on disk. A plan with a live durable record is exempt from the plan gate;
+   * the rest are pending and drive its red state. Every scan name carries a
+   * key in `fileKeys` (both structures are built from the same entries).
+   * @param scan The current plans-dir scan.
+   * @param ledger The gate ledger carrying the durable approval store.
+   * @param projectDir The current project directory (the scope key).
+   * @returns The scan names lacking a durable approval, in scan order.
+   */
+  function pendingPlans(scan: PlansScan, ledger: GateLedger, projectDir: string): string[] {
+    return scan.names.filter(
+      (n) => !ledger.isPlanApprovalDurable(n, scan.fileKeys.get(n)!, projectDir),
+    )
+  }
+
+  /**
+   * The decomposition fallback target for a scan: the first sorted decomposed
+   * plan that is still pending (a durably-approved decomposed plan no longer
+   * forces chunk citations for unrelated work), or — when no ledger is
+   * present — the first sorted decomposed plan (the legacy rule, applied
+   * byte-identically).
+   * @param scan The current plans-dir scan.
+   * @param projectDir The current project directory (the scope key).
+   * @param ledger The optional gate ledger; absent, the legacy rule applies.
+   * @returns The fallback plan name, or null when none applies.
+   */
+  function decompFallback(scan: PlansScan, projectDir: string, ledger?: GateLedger): string | null {
+    if (ledger === undefined) return scan.decompFile
+    const pending = pendingPlans(scan, ledger, projectDir)
+    return scan.names.find((n) => scan.decomp.has(n) && pending.includes(n)) ?? null
   }
 
   /**
@@ -374,17 +417,21 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   /**
    * Returns whether the plan-approval gate is currently red for a parent, and
    * when red, the plan file + body preview to surface in a permission ask.
-   * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, or an
-   * approved verdict is not red; otherwise red) so the evaluate handler and the
-   * enforcing dispatch decide escalation from the exact same scan. Waiver and
-   * approval are folded into `red`: a red result implies the task's waiver
-   * does not cover this gate's stage group (no live waiver, or a waiver
-   * scoped to other stages) and `hasPlanVerdict` is false, so the caller only
-   * tests `red`. The
-   * red preview names the resolved active plan (prompt-named, then
-   * session-bound, then the first sorted fallback) — the same plan the
-   * enforcement would act on, so a stale bound approval's ask still names
-   * that plan.
+   * Mirrors `enforcePlanApproval`'s guard (waived, absent/empty dir, a green
+   * verdict, or no pending plan is not red; otherwise red) so the evaluate
+   * handler and the enforcing dispatch decide escalation from the exact same
+   * scan. Waiver, approval, and the pending set are folded into `red`: a red
+   * result implies the task's waiver does not cover this gate's stage group
+   * (no live waiver, or a waiver scoped to other stages), `hasPlanVerdict`
+   * is false, and at least one plan lacks a durable approval, so the caller
+   * only tests `red`. "Pending" means the plan's bytes carry no durable,
+   * project-scoped approval in the ledger's approval store: a dir whose plans
+   * are all durably approved (byte-identical to a recorded approval) is not
+   * red, whatever the session's live verdict. The red preview names a pending
+   * plan only (the prompt-named pending plan when exactly one is named, then
+   * the session-bound plan when it is still pending, then the first sorted
+   * pending plan) — the same plan the enforcement would act on, so a stale
+   * bound approval's ask still names that plan.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
@@ -404,18 +451,22 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
       if (!fs.existsSync(plansDir)) return { red: false }
       const scan = scanPlans(plansDir)
       if (scan.names.length === 0) return { red: false }
-      // Resolve the active plan BEFORE reconciling: a reconcile drop (bound
-      // plan edited or missing) must still name that plan in the red preview
-      // (the identity outlives the drop until the next stamp or reset).
-      const active = resolveActivePlan(s, scan, prompt ?? "")
       // Reconcile this session's approval with the current scan (bound
       // per-plan rule or the unbound dir-signature rule — same as
       // enforcePlanApproval, so the handler and the dispatch agree). A stale
       // verdict is dropped loudly (STALE journaled) so the evaluate ask never
-      // re-grants a stale approval.
+      // re-grants a stale approval. Reconciling before the pending set means
+      // the drop is journaled before red is decided; resolving after it means
+      // a green session skips the pending computation.
       reconcilePlanStamp(s, scan, sessionID)
       if (s.hasPlanVerdict) return { red: false }
-      return { red: true, summary: planPreview(scan, plansDir, active) }
+      const pending = pendingPlans(scan, ledger, projectDir)
+      if (pending.length === 0) return { red: false }
+      // The preview names a pending plan only: a durably-approved landed
+      // plan is never the blocked plan, and the fallback is the first sorted
+      // pending plan, never the first plan in the dir.
+      const active = resolveActivePlan(s, scan, prompt ?? "", pending)
+      return { red: true, summary: planPreview(scan, plansDir, active ?? pending[0]) }
     } catch (e) {
       // Journal the fail-open so an unreadable plans dir stays observable.
       journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
@@ -429,7 +480,9 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * AC-n they implement. The resolved plan is the dispatch prompt's named
    * plan when it names exactly one existing plan file, else the session's
    * bound plan when it still exists, else the first sorted decomposed plan
-   * (the legacy rule — what a no-ledger call enforces, byte-identically).
+   * that is still pending (a durably-approved decomposed plan no longer
+   * forces chunk citations for unrelated work); a no-ledger call enforces
+   * the first sorted decomposed plan byte-identically (the legacy rule).
    * Unreadable plans dirs fail open.
    * @param sessionID The parent session ID (used in journal entries).
    * @param prompt The dispatch prompt text to check for chunk citations.
@@ -452,7 +505,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
       if (!fs.existsSync(plansDir)) return
       const scan = scanPlans(plansDir)
       const active = ledger ? resolveActivePlan(ledger.state(sessionID), scan, prompt) : null
-      const target = active ?? scan.decompFile
+      const target = active ?? decompFallback(scan, projectDir, ledger)
       if (target !== null && scan.decomp.has(target)) {
         journaler.journal({
           type: "blocked",
@@ -548,15 +601,19 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   }
 
   /**
-   * Enforces the plan-approval gate: when any plan file exists in the
-   * configured plans directory, executor dispatches require a current
-   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A bound
-   * approval (the session's plan identity) is invalidated only when THAT
-   * plan's content changes or the file disappears; unbound approvals
+   * Enforces the plan-approval gate: when any pending plan file exists in
+   * the configured plans directory, executor dispatches require a current
+   * plan-reviewer `VERDICT: APPROVE` for the session (or a waiver). A plan
+   * is pending when its bytes carry no durable, project-scoped approval in
+   * the ledger's approval store, so a byte-identical plan's exemption
+   * survives replay-aging, a process restart, and a new-prompt reset. A
+   * bound approval (the session's plan identity) is invalidated only when
+   * THAT plan's content changes or the file disappears; unbound approvals
    * invalidate on any plans-dir change (the dir-signature rule). A stale
    * verdict is dropped loudly, journaling a replay-inert `STALE` plan entry
    * rather than a silent mismatch. The block message names the resolved
-   * active plan (prompt-named, then session-bound, then first sorted).
+   * pending plan (the prompt-named pending plan, then the session-bound plan
+   * when it is still pending, then the first sorted pending plan).
    * The waiver is the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt): a waiver
    * covers every gate while unscoped (the reviewer gate consumes an unscoped

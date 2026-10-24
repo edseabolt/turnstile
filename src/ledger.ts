@@ -2,12 +2,16 @@
  * @fileoverview Ledger boundary: the LRU-capped session maps behind the gate
  * bookkeeping — child→parent edges, the child verdict store, and live-parent
  * eviction protection — plus journal replay so a completed task's `GATE: PASS`
- * survives restarts. On a parent's prompt reset, also releases that parent's
- * registered children's metering counters. Pure bookkeeping; no enforcement
- * decisions here.
+ * survives restarts, and a bounded durable approved-plan sidecar so a bound
+ * plan approval survives replay-aging, a process restart, and a new-prompt
+ * reset. On a parent's prompt reset, also releases that parent's registered
+ * children's metering counters. Pure bookkeeping; no enforcement decisions
+ * here.
  */
 
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
+import * as path from "node:path"
 
 import { evictTo } from "./bounded.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
@@ -144,6 +148,34 @@ export interface GateLedger {
    * @returns A new array of `{ child, verdict }` pairs with non-empty verdicts.
    */
   evidencedChildren(): Array<{ child: string; verdict: ChildVerdict }>
+  /**
+   * Whether a plan identity carries a durable approval recorded for this
+   * project: the store holds a record with the same project scope, plan name,
+   * and content key. A durable approval is a fact about a plan file's bytes
+   * (recorded when a bound plan approval was captured) that lives outside the
+   * journal replay window and the session bucket, so it survives replay-aging,
+   * a process restart, and a new-prompt reset. Both arguments are sanitized
+   * before the lookup; an unbound (empty) name or key reports false.
+   * @param name The plan file name (path-free).
+   * @param key The plan file's sha256 content key.
+   * @param projectDir The project directory the identity is checked under.
+   * @returns True when a durable approval matches the identity in this project.
+   */
+  isPlanApprovalDurable(name: string, key: string, projectDir: string): boolean
+  /**
+   * Records a durable approval for a plan identity under a project: the bound
+   * identity (name + content key) plus the project scope, persisted to the
+   * bounded sidecar beside the journal. A re-record refreshes the entry's
+   * recency; over the cap the oldest entry is evicted and the file is
+   * rewritten compacted (bounded growth). All file access fails open: an
+   * unwritable sidecar journals one error and leaves the in-memory store
+   * without the record (the non-durable wall keeps applying), and never
+   * throws; a bad-shaped argument is dropped without any write.
+   * @param name The plan file name (path-free).
+   * @param key The plan file's sha256 content key.
+   * @param projectDir The project directory the approval was recorded under.
+   */
+  recordPlanApprovalDurable(name: string, key: string, projectDir: string): void
 }
 
 /**
@@ -167,6 +199,13 @@ const PLAN_NAME_RE = /^[A-Za-z0-9._-]+$/
  *  journaled as one summary entry instead (bounded writes, like
  *  maxTrackedNearMiss elsewhere in the codebase). */
 const MAX_REPLAY_TELEMETRY = 16
+/** Sidecar file name beside the journal: the durable approved-plan store. */
+const APPROVAL_LEDGER_FILE = "approved-plans.jsonl"
+/** Cap on durable approval records; over-cap, the oldest record is evicted
+ *  and the sidecar is rewritten compacted (bounded growth, like the journal). */
+const MAX_APPROVAL_RECORDS = 256
+/** Shape of a stored project scope token (a `projectScope` output). */
+const PROJECT_SCOPE_RE = /^[0-9a-f]{16}$/
 
 /**
  * One replay line rejected by validation, awaiting its telemetry entry.
@@ -185,6 +224,17 @@ interface ReplayMaps {
   lastReviewVerdict: Map<string, string>
   lastEnsemble: Map<string, number>
   lastRefusedApprove: Map<string, boolean>
+}
+
+/** One durable approved-plan record (one sidecar line, JSONL): the bound
+ *  plan identity plus the project scope it was recorded under. */
+interface ApprovalRecord {
+  /** The plan file name (path-free, sanitized). */
+  name: string
+  /** The plan file's sha256 content key (sanitized). */
+  key: string
+  /** The project scope token (16 hex chars; see `projectScope`). */
+  project: string
 }
 
 /**
@@ -599,6 +649,93 @@ function sanitizePlansSig(sig: unknown): string {
 }
 
 /**
+ * Journals one `approval ledger:` error entry for a failed sidecar operation
+ * (one per failed operation — bounded). The entries are replay-inert and
+ * status-inert by construction: neither the boot replay nor the status chain
+ * reads them for state.
+ * @param journalPath Absolute path of the journal to append to.
+ * @param detail The failure detail (no plan content, no prompt text).
+ */
+function journalApprovalLedgerError(journalPath: string, detail: string): void {
+  appendLine(
+    journalPath,
+    JSON.stringify({ ts: now(), type: "error", error: `approval ledger: ${detail}` }),
+  )
+}
+
+/**
+ * The durable store's project identity: a stable short hash of the resolved
+ * project directory. A byte-identical plan approved in one project must not
+ * exempt a same-named, same-content plan in another (the sidecar lives beside
+ * the shared journal, outside any single checkout).
+ * @param projectDir The project directory to scope under.
+ * @returns The 16-hex-char scope token.
+ */
+function projectScope(projectDir: string): string {
+  return createHash("sha256").update(path.resolve(projectDir)).digest("hex").slice(0, 16)
+}
+
+/**
+ * Parses one sidecar line into a durable approval record, or null when the
+ * line is not a well-shaped record (bad JSON, a non-object, or a field that
+ * fails its shape check: the path-free plan-name alphabet, the sha256-hex
+ * key, the 16-hex-char project scope). The sidecar is untrusted input: a
+ * torn or hostile line sanitizes away rather than throwing.
+ * @param line The raw sidecar line.
+ * @returns The parsed record, or null when malformed.
+ */
+function parseApprovalLine(line: string): ApprovalRecord | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null
+  const entry = parsed as Record<string, unknown>
+  const name = sanitizePlanName(entry.name)
+  const key = sanitizePlanKey(entry.key)
+  const project =
+    typeof entry.project === "string" && PROJECT_SCOPE_RE.test(entry.project) ? entry.project : ""
+  if (name === "" || key === "" || project === "") return null
+  return { name, key, project }
+}
+
+/**
+ * Loads the durable approved-plan sidecar into the in-memory store at boot.
+ * A missing file is the fresh state (empty store, nothing journaled); any
+ * other read failure journals one error and leaves the store empty (the
+ * non-durable wall then applies). Lines are untrusted input: a torn or
+ * hostile line sanitizes away (see `parseApprovalLine`). Last-wins per
+ * (project, name); insertion order is the eviction order. An over-cap file
+ * (a torn tail or concurrent appends) still bounds the memory store; the file
+ * recompacts on the next eviction-triggered rewrite.
+ * @param sidecarPath Absolute path of the sidecar file.
+ * @param journalPath Absolute path of the journal a read failure journals into.
+ * @returns The loaded store (empty when nothing valid was read).
+ */
+function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string, ApprovalRecord> {
+  const map = new Map<string, ApprovalRecord>()
+  let raw: string
+  try {
+    raw = fs.readFileSync(sidecarPath, "utf8")
+  } catch (e) {
+    // ENOENT is the fresh-install state: nothing to journal.
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+      journalApprovalLedgerError(journalPath, `read failed: ${e}`)
+    }
+    return map
+  }
+  for (const line of raw.split("\n")) {
+    if (line === "") continue
+    const record = parseApprovalLine(line)
+    if (record !== null) map.set(`${record.project}:${record.name}`, record)
+  }
+  evictTo(map, MAX_APPROVAL_RECORDS)
+  return map
+}
+
+/**
  * Replays the journal's tail so completed `GATE: PASS` entries restore
  * gate state after a restart. Reads the last `tailLines` lines across all
  * retained generations; drops malformed lines. Only the *last flipping*
@@ -716,12 +853,16 @@ function replayGatePasses(
  * @param maxSessions LRU cap for tracked sessions (states + parent map).
  * @param replayTailLines Replay tail window in lines for the boot replay
  *     (see `replayGatePasses`).
+ * @param approvalLedgerPath Optional absolute path of the durable approved-plan
+ *     sidecar; defaults to `approved-plans.jsonl` beside the journal (the
+ *     metrics dir). Injected to redirect the sidecar (tests, fail-open drills).
  * @returns A ledger bound to a fresh in-memory session map.
  */
 export function createLedger(
   journalPath: string,
   maxSessions: number,
   replayTailLines: number,
+  approvalLedgerPath?: string,
 ): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
@@ -739,6 +880,13 @@ export function createLedger(
   // Registry bound: 4× the states cap, floored at 256 so a small cap still
   // tracks an active fleet of registered parents.
   const maxTrackedParents = Math.max(256, maxSessions * 4)
+  // Durable approved-plan sidecar: a bounded store of bound plan approvals
+  // (name + content key + project scope) beside the journal, outside the
+  // session bucket and the replay window. The boot load is fail-open (a
+  // missing file is the fresh state; an unreadable one journals one error).
+  const sidecarPath =
+    approvalLedgerPath ?? path.join(path.dirname(journalPath), APPROVAL_LEDGER_FILE)
+  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath)
 
   /**
    * Promotes a key to most-recently-used in an insertion-ordered map.
@@ -841,6 +989,33 @@ export function createLedger(
     return freed
   }
 
+  /**
+   * Persists the sidecar after a record: a plain append (the appended line is
+   * the store's most-recent entry) or, when an eviction just happened, a full
+   * compacted rewrite so the file holds exactly the bounded store. Creates the
+   * parent directory. Any fs failure journals one `approval ledger:` error and
+   * reports false — the record rolls its in-memory entry back (an unpersisted
+   * approval must not exempt in-process).
+   * @param record The just-recorded entry (the append payload).
+   * @param rewrite True when an eviction just happened (the file is rewritten).
+   * @returns True when the write landed.
+   */
+  function persistApprovalStore(record: ApprovalRecord, rewrite: boolean): boolean {
+    try {
+      fs.mkdirSync(path.dirname(sidecarPath), { recursive: true })
+      if (rewrite) {
+        const lines = [...approvedPlans.values()].map((r) => JSON.stringify(r))
+        fs.writeFileSync(sidecarPath, `${lines.join("\n")}\n`)
+      } else {
+        fs.appendFileSync(sidecarPath, `${JSON.stringify(record)}\n`)
+      }
+      return true
+    } catch (e) {
+      journalApprovalLedgerError(journalPath, `persist failed: ${e}`)
+      return false
+    }
+  }
+
   // Replay runs before capping so the restored set honors the LRU cap too.
   replayGatePasses(states, journalPath, replayTailLines)
   cap(states, isParent)
@@ -920,6 +1095,28 @@ export function createLedger(
       for (const [child, v] of childVerdicts)
         if (v.marker !== "") out.push({ child, verdict: { ...v } })
       return out
+    },
+    isPlanApprovalDurable(name: string, key: string, projectDir: string): boolean {
+      const n = sanitizePlanName(name)
+      const k = sanitizePlanKey(key)
+      if (n === "" || k === "") return false
+      return approvedPlans.get(`${projectScope(projectDir)}:${n}`)?.key === k
+    },
+    recordPlanApprovalDurable(name: string, key: string, projectDir: string): void {
+      const n = sanitizePlanName(name)
+      const k = sanitizePlanKey(key)
+      if (n === "" || k === "") return
+      const record = { name: n, key: k, project: projectScope(projectDir) }
+      const mapKey = `${record.project}:${record.name}`
+      // delete+set keeps a re-record most-recent (a plain set would age the
+      // entry out on its first-insertion slot).
+      approvedPlans.delete(mapKey)
+      approvedPlans.set(mapKey, record)
+      const overCap = approvedPlans.size > MAX_APPROVAL_RECORDS
+      if (overCap) evictTo(approvedPlans, MAX_APPROVAL_RECORDS)
+      // An unpersisted record must not exempt in-process (fail toward the
+      // non-durable wall): roll the entry back when the write failed.
+      if (!persistApprovalStore(record, overCap)) approvedPlans.delete(mapKey)
     },
   }
 }

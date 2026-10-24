@@ -3,7 +3,10 @@
  * a plan-reviewer result records `VERDICT: APPROVE`, waiver bypass, bare
  * output and BLOCK verdicts keep the gate red, re-plan invalidation, the
  * no-plans-dir pass-through, and journal replay of plan approvals, via a
- * fake host with injected config.
+ * fake host with injected config. Also covers the durable approved-plan
+ * sidecar: survival across replay-aging, a new-prompt reset, and a restart
+ * (and its content wall), the all-landed pending-set exemption, and the
+ * unbound human-approval scope boundary.
  */
 
 import { test } from "node:test"
@@ -35,7 +38,13 @@ const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
 /** Gives the async event loop a tick to drain queued stream events. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
 
-/** Boots in a temp project dir containing a plan file. */
+/**
+ * Boots in a temp project dir containing a plan file.
+ * @param planBody The plan file body to seed.
+ * @param planName The plan file name to seed.
+ * @param extra Overrides spread over the per-test metrics directory; an
+ *     `approvalLedgerPath` key is lifted to the factory's top-level option.
+ */
 async function bootWithPlan(
   planBody = "# P\n",
   planName = "plan.md",
@@ -54,9 +63,11 @@ async function bootWithPlan(
   const h = makeFakeHost()
   const prev = process.cwd()
   process.chdir(project)
+  const { approvalLedgerPath, ...configExtra } = extra
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...extra },
+    config: { metricsDir, ...configExtra },
+    approvalLedgerPath,
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -2025,7 +2036,8 @@ test("enforceDecomposition enforces the resolved plan when a ledger is given", (
  * Boots in a temp project dir containing the given `name → body` plan files
  * (multi-plan variant of bootWithPlan).
  * @param plans The plan file names and bodies to seed.
- * @param config Override config spread over the per-test metrics directory.
+ * @param config Overrides spread over the per-test metrics directory; an
+ *     `approvalLedgerPath` key is lifted to the factory's top-level option.
  * @returns The fake host, the dispose callback, the metrics directory, the
  *     project root, and a `restore` that disposes and returns the cwd.
  */
@@ -2048,9 +2060,11 @@ async function bootWithPlans(
   const h = makeFakeHost()
   const prev = process.cwd()
   process.chdir(project)
+  const { approvalLedgerPath, ...configOverrides } = config
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, ...configOverrides },
+    approvalLedgerPath,
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -2434,4 +2448,226 @@ test("plan-gate-blocked executor dispatches draw down no budget; the grant-relea
   } finally {
     restore()
   }
+})
+
+/**
+ * Boots a second fake-host process over the same project and metrics dir
+ * (a restart): chdirs to the project, sets up the plugin with the same
+ * config, and disposes + restores the cwd when done.
+ * @param metricsDir The shared metrics directory.
+ * @param project The project directory to chdir into.
+ * @param sidecar The injected approval-ledger path.
+ * @returns A function that runs `fn` inside the restarted process.
+ */
+async function restartOver(
+  metricsDir: string,
+  project: string,
+  sidecar: string,
+  fn: (h: FakeHost) => Promise<void>,
+): Promise<void> {
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir },
+      approvalLedgerPath: sidecar,
+    })
+    const dispose = (await setup(h.host)) as () => void
+    await fn(h)
+    dispose()
+  } finally {
+    process.chdir(prev)
+  }
+}
+
+/**
+ * A durable approval outlives the journal replay window: a bound reviewer
+ * APPROVE records the plan identity in the sidecar, the journal is then
+ * dropped (the replay-aging extreme — no APPROVE line left to restore), and
+ * a fresh process still admits an executor dispatch naming the unchanged
+ * plan — the exemption is re-derived from the sidecar, not the session
+ * bucket.
+ */
+test("plan gate: a durable approval survives replay aging with an empty journal", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore, project } = await bootWithPlan("# P\n", "plan.md", {
+    metricsDir,
+    approvalLedgerPath: sidecar,
+  })
+  try {
+    await reviewRound(h, "p1", "c1", `review plan.md`, APPROVE)
+    assert.ok(fs.existsSync(sidecar), "the bound approval recorded a durable sidecar record")
+    assert.ok(
+      fs.readFileSync(sidecar, "utf8").includes('"name":"plan.md"'),
+      "the sidecar record carries the plan name",
+    )
+  } finally {
+    restore()
+  }
+  // The journal no longer carries the APPROVE line: replay restores nothing.
+  fs.rmSync(path.join(metricsDir, "turnstile.jsonl"), { force: true })
+  await restartOver(metricsDir, project, sidecar, async (h2) => {
+    await execDispatch(h2, "p1", "implement plan.md")
+  })
+})
+
+/**
+ * A durable approval survives a new-prompt reset: the bound reviewer APPROVE
+ * credits the session bucket and records the sidecar, a fresh prompt wipes
+ * the bucket (the old behavior left the gate red from there), and the next
+ * executor dispatch naming the unchanged plan is still admitted — the
+ * exemption is re-derived, not carried through the bucket.
+ */
+test("plan gate: a durable approval survives a new-prompt reset", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore } = await bootWithPlan("# P\n", "plan.md", {
+    metricsDir,
+    approvalLedgerPath: sidecar,
+  })
+  try {
+    await reviewRound(h, "p1", "c1", `review plan.md`, APPROVE)
+    // The fresh prompt wipes the bucket (verdict, binding, stamp).
+    await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
+    // The dispatch names the unchanged plan: the sidecar still covers it.
+    await execDispatch(h, "p1", "implement plan.md")
+    assert.ok(fs.existsSync(sidecar), "the bound approval recorded a durable sidecar record")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Editing the plan invalidates its durable approval: the approval recorded
+ * under the original bytes, the journal dropped (replay-aging), and the plan
+ * bytes changed while "down" — the fresh process sees a pending plan and
+ * blocks the dispatch naming it (the content wall survives durability).
+ */
+test("plan gate: an edited plan is pending despite its durable record", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore, project } = await bootWithPlan("# P\n", "plan.md", {
+    metricsDir,
+    approvalLedgerPath: sidecar,
+  })
+  try {
+    await reviewRound(h, "p1", "c1", `review plan.md`, APPROVE)
+  } finally {
+    restore()
+  }
+  // The offline edit + the aged-out journal: only the stale record remains.
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P revised\n")
+  fs.rmSync(path.join(metricsDir, "turnstile.jsonl"), { force: true })
+  await restartOver(metricsDir, project, sidecar, async (h2) => {
+    await assert.rejects(
+      () => execDispatch(h2, "p1", "implement plan.md"),
+      /no plan approval for "plan\.md"/,
+    )
+  })
+})
+
+/**
+ * A plans dir holding only durably-approved, unchanged plans is not red:
+ * after a fresh prompt wipes the bucket, an unnamed executor dispatch is
+ * admitted (the pending set is empty via the sidecar). Once a genuinely
+ * unapproved plan joins the dir, the dispatch blocks naming THAT plan —
+ * never the durably-approved one, whether the dispatch names the landed
+ * plan or none.
+ */
+test("plan gate: an all-landed plans dir is green; a new plan blocks naming itself, not the landed one", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore, project } = await bootWithPlans(
+    { "a-landed.md": "# L\n" },
+    {
+      metricsDir,
+      approvalLedgerPath: sidecar,
+    },
+  )
+  try {
+    await reviewRound(h, "p1", "c1", "review a-landed.md", APPROVE)
+    // The fresh prompt wipes the bucket; only the sidecar remains.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
+    // All plans landed: the unnamed dispatch is admitted.
+    await execDispatch(h, "p1", "do the work")
+    // A genuinely unapproved plan joins: the dispatch blocks naming it…
+    fs.writeFileSync(path.join(project, ".opencode", "plans", "z-fresh.md"), "# F\n")
+    await assert.rejects(
+      () => execDispatch(h, "p1", "do the work"),
+      /no plan approval for "z-fresh\.md"/,
+    )
+    // …even when the dispatch names the landed plan (never the blocked plan).
+    await assert.rejects(
+      () => execDispatch(h, "p1", "implement a-landed.md"),
+      /no plan approval for "z-fresh\.md"/,
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Deleting the approved plan and replacing it with a new plan leaves the
+ * new plan pending: the durable record covers a name that no longer exists
+ * (it cannot exempt anything), the replacement file carries no approval,
+ * and after a restart with the journal aged out the dispatch blocks naming
+ * the new plan.
+ */
+test("plan gate: a deleted-and-replaced plan is pending under its replacement", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore, project } = await bootWithPlan("# P\n", "plan.md", {
+    metricsDir,
+    approvalLedgerPath: sidecar,
+  })
+  try {
+    await reviewRound(h, "p1", "c1", `review plan.md`, APPROVE)
+  } finally {
+    restore()
+  }
+  // The offline replace: the approved file is gone, a new plan takes its place.
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.rmSync(path.join(plansDir, "plan.md"))
+  fs.writeFileSync(path.join(plansDir, "new-plan.md"), "# N\nreplacement body\n")
+  fs.rmSync(path.join(metricsDir, "turnstile.jsonl"), { force: true })
+  await restartOver(metricsDir, project, sidecar, async (h2) => {
+    await assert.rejects(
+      () => execDispatch(h2, "p1", "do the work"),
+      /no plan approval for "new-plan\.md"/,
+    )
+  })
+})
+
+/**
+ * A human `PLAN APPROVED:` prompt approval is not durable: it binds no plan
+ * identity, so nothing is recorded in the sidecar, and after a restart with
+ * the approval aged out of the journal a plan-named executor dispatch is
+ * still blocked — the durability scope is the bound reviewer channel only.
+ */
+test("plan gate: a human PLAN APPROVED approval is not durable across an aged-out restart", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore, project } = await bootWithPlan("# P\n", "plan.md", {
+    metricsDir,
+    approvalLedgerPath: sidecar,
+  })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: looks good" })
+    // Admitted via the live stamped bucket (the sidecar plays no part).
+    await execDispatch(h, "p1", "do the work")
+    assert.ok(!fs.existsSync(sidecar), "the unbound human approval records nothing durable")
+  } finally {
+    restore()
+  }
+  // The approval ages out: the journal no longer carries the APPROVE line.
+  fs.rmSync(path.join(metricsDir, "turnstile.jsonl"), { force: true })
+  await restartOver(metricsDir, project, sidecar, async (h2) => {
+    await assert.rejects(
+      () => execDispatch(h2, "p1", "implement plan.md"),
+      /no plan approval for "plan\.md"/,
+    )
+  })
 })
