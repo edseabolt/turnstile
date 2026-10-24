@@ -641,9 +641,11 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * THAT plan's content changes or the file disappears; unbound approvals
    * invalidate on any plans-dir change (the dir-signature rule). A stale
    * verdict is dropped loudly, journaling a replay-inert `STALE` plan entry
-   * rather than a silent mismatch. The block message lists every blocker in
-   * resolution order (dispatch-referenced pending plans, then the session-
-   * bound pending plan, then remaining pending).
+   * rather than a silent mismatch. The blocker set is an exclusive
+   * fallback, not a union: the prompt-referenced pending plans in prompt
+   * order if any referenced plan is pending, else the session-bound pending
+   * plan, else (nothing resolvable) every pending plan in sorted scan
+   * order.
    * The waiver is the task's prompt-channel waiver
    * (`ledger.state().userWaiver`, captured from the user prompt): a waiver
    * covers every gate while unscoped (the reviewer gate consumes an unscoped

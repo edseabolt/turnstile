@@ -172,11 +172,12 @@
  *   unbound approval carries its journaled dir signature and is validated
  *   against the current dir like a live one (a field-less legacy line is
  *   accepted once and re-stamped); a replayed bound
- *   approval is validated against the current files immediately. The block
- *   message and permission-ask preview name the blockers in resolution
- *   order — dispatch-referenced pending plans (prompt order), then the
- *   session-bound pending plan, then the first sorted remaining pending
- *   plan; the block message enumerates all of them, and a plan holding a
+ *   approval is validated against the current files immediately. The
+ *   blocker set is an exclusive fallback, not a union: the
+ *   prompt-referenced pending plans in prompt order if any referenced plan
+ *   is pending, else the session-bound pending plan, else (nothing
+ *   resolvable) every pending plan in sorted scan order; the block
+ *   message and ask preview name them, and a plan holding a
  *   durable approval is never a blocker, so the gate is green for it even
  *   with no live approval in the session bucket.
  *   A journal-replayed approval
