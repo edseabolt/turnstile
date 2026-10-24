@@ -67,10 +67,22 @@ export const DEFAULT_COMMIT_FORMAT =
   "(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\\([^)]*\\))?(?:[!]:?|:) [^\\r\\n]{1,72}(?:(?:\\r?\\n){1,2}[^\\r\\n]*)?"
 
 /**
+ * Identity sentinel for "bareOutput not configured": `defaultConfig()` stores
+ * this exact reference for `agents.bareOutput`, and derivation fires only when
+ * the resolved list is still this reference. `mergeConfig` always stores a
+ * fresh array for an explicitly configured list, so an explicit list —
+ * including a user-authored empty one or a reordered copy of the default
+ * names — is distinguishable from the unset default regardless of its
+ * contents.
+ */
+export const BARE_OUTPUT_UNSET: string[] = []
+
+/**
  * Builds the code defaults for every config key.
  * @param env Environment consulted for XDG_DATA_HOME only.
- * @returns The default TurnstileConfig (byte-equivalent to the historical
- *     hardcoded constants).
+ * @returns The default TurnstileConfig matching the historical hardcoded
+ *     constants; `agents.bareOutput` stores the unset sentinel, which
+ *     `loadConfig`'s derivation step resolves to the derived agent list.
  */
 export function defaultConfig(
   env: Record<string, string | undefined> = process.env,
@@ -108,7 +120,7 @@ export function defaultConfig(
       executor: "executor",
       testRunner: "test-runner",
       debugger: "debugger",
-      bareOutput: ["test-runner", "reviewer", "plan-reviewer"],
+      bareOutput: BARE_OUTPUT_UNSET,
     },
     gateMarker: GATE_RE.source,
     verdictMarker: VERDICT_RE.source,
@@ -148,7 +160,9 @@ export function defaultConfig(
  * Validates a patch value for a scalar key.
  * @param key Config key being set.
  * @param value Candidate value.
- * @returns true when the value has the right type for the key.
+ * @returns true when the value has the right type for the key: numeric keys
+ *     accept positive integers only (Number.isInteger subsumes the finite
+ *     check, so NaN/Infinity are rejected as non-integers).
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "trace" || key === "continuationCarry") return typeof value === "boolean"
@@ -176,10 +190,10 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
       return false
     }
   }
-  return typeof value === "number" && Number.isFinite(value) && value > 0
+  return typeof value === "number" && Number.isInteger(value) && value > 0
 }
 
-/** Scalar config keys whose valid values are finite positive numbers. */
+/** Scalar config keys whose valid values are positive integers. */
 type NumericConfigKey = Extract<
   keyof TurnstileConfig,
   | "journalMaxBytes"
@@ -439,13 +453,18 @@ export function mergeConfig(
  * Journals a config warning to the env-resolved metrics directory. Used
  * only for problems detected before the real journaler exists, so the
  * sink honors the caller's injected env (tests stay off the user journal).
+ * The injected TURNSTILE_METRICS_DIR is honored only when absolute,
+ * mirroring the default-metrics-dir contract: a relative or empty value
+ * falls through to the absolute default directory.
  * @param error The warning/error text.
  * @param env Environment providing TURNSTILE_METRICS_DIR / XDG_DATA_HOME.
  */
 function journalConfigError(error: string, env: Record<string, string | undefined>): void {
+  const abs = (v: string | undefined): string | undefined =>
+    v !== undefined && path.isAbsolute(v) ? v : undefined
   const metricsDir =
-    env[ENV_KEYS.metricsDir] ??
-    process.env[ENV_KEYS.metricsDir] ??
+    abs(env[ENV_KEYS.metricsDir]) ??
+    abs(process.env[ENV_KEYS.metricsDir]) ??
     defaultMetricsDir({ ...process.env, ...env })
   appendLine(
     path.join(metricsDir, "turnstile.jsonl"),
@@ -617,15 +636,16 @@ export function validateResolved(config: TurnstileConfig): string[] {
 
 /**
  * Re-derives `bareOutput` from the configured agent names when the resolved
- * list is still the unchanged default literal (i.e. nobody configured it), so
- * a renamed agent stays bare-output-qualified automatically. Explicit lists
- * are kept verbatim so no configured name ever vanishes. Mutates
- * `agents.bareOutput` in place.
+ * list is still the unset sentinel (i.e. nobody configured it), so a renamed
+ * agent stays bare-output-qualified automatically. Derivation keys off the
+ * configured/unset distinction by reference identity, not list equality, so
+ * an explicit list — reordered, default-valued, or empty — is always kept
+ * verbatim and no configured name ever vanishes. Mutates `agents.bareOutput`
+ * in place (the sentinel array itself is replaced, never mutated).
  * @param agents The resolved agents block to update in place.
- * @param defaultBareOutput The current default bare-output literal.
  */
-function deriveBareOutput(agents: TurnstileAgents, defaultBareOutput: string[]): void {
-  if (JSON.stringify(agents.bareOutput) !== JSON.stringify(defaultBareOutput)) return
+function deriveBareOutput(agents: TurnstileAgents): void {
+  if (agents.bareOutput !== BARE_OUTPUT_UNSET) return
   const derived = [agents.testRunner, agents.reviewer, agents.planReviewer].filter(
     (name): name is string => typeof name === "string" && name.trim().length > 0,
   )
@@ -659,7 +679,7 @@ export function loadConfig(
     warnings.push(...merged.warnings)
   }
   warnings.push(...validateResolved(resolved))
-  deriveBareOutput(resolved.agents, defaults.agents.bareOutput)
+  deriveBareOutput(resolved.agents)
   for (const warning of warnings) {
     if (!warning.startsWith("config file")) journalConfigError(warning, env)
   }

@@ -20,6 +20,7 @@ process.env.XDG_DATA_HOME = xdgTmp
 const {
   configDigest,
   defaultConfig,
+  BARE_OUTPUT_UNSET,
   CONFIG_PATH,
   ENV_KEYS,
   loadConfig,
@@ -69,8 +70,9 @@ test("defaultConfig reproduces the historical constants", () => {
     executor: "executor",
     testRunner: "test-runner",
     debugger: "debugger",
-    bareOutput: ["test-runner", "reviewer", "plan-reviewer"],
+    bareOutput: [],
   })
+  assert.equal(cfg.agents.bareOutput, BARE_OUTPUT_UNSET)
   assert.equal(cfg.agents.planner, "planner")
 })
 
@@ -155,11 +157,12 @@ test("mergeConfig validates journalRotateEveryEntries and the digest flips on ov
 })
 
 /** The replay tail window runs the shared numeric scalar path: 0, a
- *  negative, and a non-number are each rejected with a keeping-default
- *  warning, and a valid override flips the digest. */
+ *  negative, a non-integer float, Infinity, and a non-number are each
+ *  rejected with a keeping-default warning, and a valid positive integer
+ *  override flips the digest. */
 test("mergeConfig validates replayTailLines and the digest flips on override", () => {
   const base = defaultConfig({})
-  for (const value of [0, -3, "x" as unknown]) {
+  for (const value of [0, -3, 1500.5, Infinity, "x" as unknown]) {
     const { config, warnings } = mergeConfig(base, { replayTailLines: value })
     assert.equal(config.replayTailLines, 2000)
     assert.deepEqual(warnings, ['config: invalid value for "replayTailLines"; keeping default'])
@@ -195,7 +198,7 @@ test("mergeConfig merges agents one level deep and validates bareOutput", () => 
   assert.deepEqual(config.agents.bareOutput, ["qc"])
   assert.equal(warnings.length, 1)
   const bad = mergeConfig(base, { agents: { bareOutput: [1, 2] } })
-  assert.deepEqual(bad.config.agents.bareOutput, ["test-runner", "reviewer", "plan-reviewer"])
+  assert.equal(bad.config.agents.bareOutput, BARE_OUTPUT_UNSET)
 })
 
 /** The config file layer applies over defaults. */
@@ -315,7 +318,10 @@ test("loadConfig clamps readWarn down to readBlock-1 with exactly one warning", 
   assert.equal(warnings[0], "config: readWarn (20) >= readBlock (15); clamping readWarn to 14")
 })
 
-/** (o)/(f) default config never clamps and its digest stays byte-identical to defaultConfig. */
+/** (o)/(f) default config never clamps; the resolved default's bareOutput and
+ *  digest stay byte-identical to the fully-derived default (the raw default
+ *  carries the unset sentinel, so the resolved digest is tied to the derived
+ *  list, not the raw default). */
 test("loadConfig leaves the default bareOutput and digest unchanged", () => {
   const file = path.join(xdgTmp, "default-stable.json")
   fs.writeFileSync(file, "{}")
@@ -323,7 +329,12 @@ test("loadConfig leaves the default bareOutput and digest unchanged", () => {
   assert.deepEqual(config.agents.bareOutput, ["test-runner", "reviewer", "plan-reviewer"])
   assert.equal(config.readWarn, 8)
   assert.equal(config.readBlock, 15)
-  assert.equal(configDigest(config), configDigest(defaultConfig({})))
+  const raw = defaultConfig({})
+  const fullyDerivedDefault = {
+    ...raw,
+    agents: { ...raw.agents, bareOutput: ["test-runner", "reviewer", "plan-reviewer"] },
+  }
+  assert.equal(configDigest(config), configDigest(fullyDerivedDefault))
 })
 
 /** (g) a relative metricsDir from the file layer is rejected, default kept, warned. */
@@ -336,8 +347,7 @@ test("loadConfig rejects a relative metricsDir from the file layer", () => {
 })
 
 /** (g) a relative metricsDir from the env layer is rejected, default kept, warned.
- *  Runs in a temp cwd so the documented cwd-relative journal write stays out of
- *  the repo working tree. */
+ *  Runs in a temp cwd so any journal write stays out of the repo working tree. */
 test("loadConfig rejects a relative metricsDir from the env layer", async () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-rel-"))
   const prev = process.cwd()
@@ -396,8 +406,10 @@ test("loadConfig keeps an explicit non-default bareOutput list verbatim", () => 
   assert.deepEqual(config.agents.bareOutput, ["ci-bot", "custom-agent"])
 })
 
-/** (o) an explicit list byte-identical to the default literal is treated as unset and re-derived. */
-test("loadConfig re-derives when an explicit bareOutput equals the default literal", () => {
+/** (o) an explicit list byte-identical to the default literal is still
+ *  explicit: it is kept verbatim, so the renamed test-runner is not derived
+ *  into it. */
+test("loadConfig keeps an explicit bareOutput verbatim even when it equals the default literal", () => {
   const file = path.join(xdgTmp, "default-list.json")
   fs.writeFileSync(
     file,
@@ -406,7 +418,32 @@ test("loadConfig re-derives when an explicit bareOutput equals the default liter
     }),
   )
   const { config } = loadConfig({ [ENV_KEYS.config]: file })
-  assert.deepEqual(config.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
+  assert.deepEqual(config.agents.bareOutput, ["test-runner", "reviewer", "plan-reviewer"])
+})
+
+/** (o) an explicit bareOutput that reorders the default-valued list is kept
+ *  verbatim: derivation fires only for the unset default, so a renamed agent
+ *  named in an explicit list never silently drops out. */
+test("loadConfig keeps a reordered default-valued bareOutput verbatim", () => {
+  const file = path.join(xdgTmp, "reordered.json")
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      agents: { testRunner: "ci-bot", bareOutput: ["reviewer", "test-runner", "plan-reviewer"] },
+    }),
+  )
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["reviewer", "test-runner", "plan-reviewer"])
+})
+
+/** (o) a config copied from the shipped example (bareOutput: []) is an
+ *  explicit empty list, not the unset default: no derivation from the agent
+ *  names occurs. */
+test("loadConfig treats an explicit empty bareOutput as configured, not unset", () => {
+  const file = path.join(xdgTmp, "explicit-empty.json")
+  fs.writeFileSync(file, JSON.stringify({ agents: { testRunner: "ci-bot", bareOutput: [] } }))
+  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, [])
 })
 
 /** an invalid gateEvidence value keeps the default, names the key, and warns once. */
@@ -842,20 +879,87 @@ test("loadConfig warns a directory config path is ignored", () => {
 })
 
 /** An empty TURNSTILE_METRICS_DIR warns and keeps the current metrics dir; the
- *  journal resolves to the empty directory, so its write is cwd-relative and
- *  confined to the temp dir rather than the checkout (warnings-only by design). */
+ *  config-error journal resolves to the absolute default directory (an empty
+ *  value is not a usable path), so its write never lands cwd-relative. */
 test("loadConfig warns and keeps the value when the metrics dir env is empty", () => {
   const env = { [ENV_KEYS.metricsDir]: "" }
+  const { config, warnings } = loadConfig(env)
+  assert.ok(warnings.some((w) => w.includes("TURNSTILE_METRICS_DIR empty")))
+  const expected = defaultConfig(env).metricsDir
+  assert.equal(config.metricsDir, expected)
+  const journal = fs
+    .readFileSync(journalFile(), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+  assert.ok(
+    journal.some(
+      (l) => l.type === "error" && String(l.error).includes("TURNSTILE_METRICS_DIR empty"),
+    ),
+    "the config error journals to the absolute default directory",
+  )
+})
+
+/** A relative TURNSTILE_METRICS_DIR is not an absolute path the journal can
+ *  honor: config-error journaling resolves to the absolute default directory
+ *  and never writes cwd-relative. */
+test("loadConfig journals config errors to the absolute default for a relative metrics dir env", () => {
+  const file = path.join(xdgTmp, "rel-metrics-broken.json")
+  fs.writeFileSync(file, "{not json")
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-rel-metrics-"))
   const prev = process.cwd()
-  process.chdir(xdgTmp)
+  process.chdir(sandbox)
   try {
-    const { config, warnings } = loadConfig(env)
-    assert.ok(warnings.some((w) => w.includes("TURNSTILE_METRICS_DIR empty")))
-    const expected = defaultConfig(env).metricsDir
-    assert.equal(config.metricsDir, expected)
+    loadConfig({ [ENV_KEYS.metricsDir]: "rel/metrics", [ENV_KEYS.config]: file })
+    const journal = fs
+      .readFileSync(journalFile(), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+    assert.ok(
+      journal.some(
+        (l) => l.type === "error" && String(l.error).includes("rel-metrics-broken.json"),
+      ),
+      "the config error journals to the absolute default directory",
+    )
+    assert.ok(
+      !fs.existsSync(path.join(sandbox, "rel/metrics", "turnstile.jsonl")),
+      "no cwd-relative journal write",
+    )
   } finally {
     process.chdir(prev)
   }
+})
+
+/** An absolute TURNSTILE_METRICS_DIR is honored by the config-error journal:
+ *  the error lands at that absolute path and not in the default journal. */
+test("loadConfig journals config errors at an absolute metrics dir env", () => {
+  const dir = path.join(xdgTmp, "abs-error-journal")
+  const file = path.join(xdgTmp, "abs-metrics-broken.json")
+  fs.writeFileSync(file, "{not json")
+  loadConfig({ [ENV_KEYS.metricsDir]: dir, [ENV_KEYS.config]: file })
+  const lines = fs
+    .readFileSync(path.join(dir, "turnstile.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+  assert.ok(
+    lines.some((l) => l.type === "error" && String(l.error).includes("abs-metrics-broken.json")),
+    "the config error journals at the absolute env directory",
+  )
+  const journal = fs
+    .readFileSync(journalFile(), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+  assert.ok(
+    !journal.some((l) => String(l.error ?? "").includes("abs-metrics-broken.json")),
+    "the absolute env directory wins over the default",
+  )
 })
 
 /** (1) A string $schema is accepted silently and never lands in the resolved
