@@ -114,7 +114,7 @@
         "bareOutput": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Agents contracted to emit GATE/VERDICT markers (default [test-runner, reviewer, plan-reviewer])."
+          "description": "Agents contracted to emit GATE/VERDICT markers (unset by default; an absent or omitted value derives from the configured test-runner, reviewer, and plan-reviewer names)."
         }
       }
     },

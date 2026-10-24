@@ -23,7 +23,7 @@
     "executor": "executor",
     "testRunner": "test-runner",
     "debugger": "debugger",
-    "bareOutput": ["test-runner", "reviewer", "plan-reviewer"]
+    "bareOutput": []
   },
   "gateMarker": "^\\s*[`>#*\\s]*GATE: (PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+",
   "verdictMarker": "^\\s*[`>#*\\s]*VERDICT: (APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+",
