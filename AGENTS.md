@@ -182,7 +182,11 @@ stated feature; devDependencies are tooling only.)
   restore gate state on restart (last `replayTailLines` lines, default 2000),
   and plan-reviewer
   `VERDICT: APPROVE` entries restore the plan-approval gate the same way.
-  A new user prompt resets the session's gate state.
+  A new user prompt resets the session's gate state, unless
+  `continuationCarry` re-arms the one-prompt grace for a same-worktree/branch
+  continuation carrying earned credit (a journaled `GATE: PASS` or a credited
+  reviewer `VERDICT: APPROVE`); replay-time `refusedApprove:true` last-wins
+  suppression still outranks the carried approval.
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
   requires updating both the regexes here and the marker examples in the

@@ -53,8 +53,9 @@ export interface GateLedger {
    * worktree/branch — `taskFingerprint` unchanged) re-arms `replayGrace` on
    * the reset so the restart-sticky flags carry forward too: values, not
    * provenance, the same single-prompt grace the restart-resume path grants.
-   * The carry is GATE-SCOPED — only an earned `hasGatePass` (paired with
-   * `reviewerDispatches`) survives, so a continuation before any `GATE: PASS`
+   * The carry is CREDIT-SCOPED — an earned `hasGatePass` or
+   * `hasReviewApprove` (each paired with `reviewerDispatches`) survives, so
+   * a continuation before any `GATE: PASS` or reviewer `VERDICT: APPROVE`
    * starts a clean cycle. `taskFingerprint` is stamped by setup after the
    * reset, so a fresh bucket starts empty and the next carry predicate keys
    * off the just-stamped identity.

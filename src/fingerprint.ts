@@ -90,18 +90,21 @@ export function worktreeFingerprint(projectDir: string, exec: ExecFile = realExe
 /**
  * Pure predicate deciding whether a continuation prompt carries the current
  * task's restart-sticky gate flags across a prompt reset. The carry is
- * GATE-SCOPED by design: it is a no-op unless a gate flag was actually earned
- * (`hasGatePass`), so a continuation arriving before any `GATE: PASS` resets
- * fully rather than carrying a freshly-earned-but-empty flag. Only
- * `taskFingerprint` distinguishes a same-branch continuation from a genuinely
- * new task, so a fingerprint mismatch never carries.
+ * CREDIT-SCOPED by design: it is a no-op unless credit was actually earned
+ * (the test gate `hasGatePass` or the landing approval `hasReviewApprove`),
+ * so a continuation arriving before any `GATE: PASS` or reviewer
+ * `VERDICT: APPROVE` resets fully rather than carrying a
+ * freshly-earned-but-empty flag. Only `taskFingerprint` distinguishes a
+ * same-branch continuation from a genuinely new task, so a fingerprint
+ * mismatch never carries.
  * @param prior The prior prompt's gate state; `undefined` before any prompt.
  * @param fingerprint The worktree/branch identity the task was re-admitted
  *     against.
  * @param enabled The `continuationCarry` config flag, passed through so the
  *     predicate stays unit-testable without a real config.
- * @returns True only when carry is enabled, a gate flag was earned, and the
- *     task was admitted again in the exact same worktree/branch.
+ * @returns True only when carry is enabled, earned credit (a gate pass or a
+ *     landing approval) exists, and the task was admitted again in the exact
+ *     same worktree/branch.
  */
 export function shouldCarryGate(
   prior: GateState | undefined,
@@ -111,7 +114,7 @@ export function shouldCarryGate(
   return (
     enabled &&
     prior !== undefined &&
-    prior.hasGatePass &&
+    (prior.hasGatePass || prior.hasReviewApprove) &&
     prior.taskFingerprint !== "" &&
     prior.taskFingerprint === fingerprint
   )

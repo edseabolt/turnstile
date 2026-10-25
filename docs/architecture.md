@@ -91,7 +91,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/gates-common.ts`     | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                             |
 | `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                                                                  |
 | `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                        |
-| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the gate-scoped continuation-carry predicate                                                                                                                  |
+| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                |
 | `src/bounded.ts`          | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                   |
 | `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                                                                     |
 | `src/policy.ts`           | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers) |
@@ -231,7 +231,8 @@ A typical enforced run:
 
 All state is keyed per parent session. `replayGrace` gives restart-restored
 flags a one-prompt survival window; `continuationCarry` re-arms it when a
-continuing prompt has an unchanged worktree fingerprint.
+continuing prompt has an unchanged worktree fingerprint and earned
+credit (a green test gate or a reviewer approval).
 
 ![Gate state machine](images/d04-gate-state.svg)
 
