@@ -1827,6 +1827,19 @@ test("replay ignores non-gate entries and restores gate state from a mixed journ
   dispose()
 })
 
+/** A `continuation` entry is replay-inert: a journal holding only
+ *  continuation entries mints no bucket and restores no flags — a carried
+ *  approval never re-credits itself from its own carry telemetry. */
+test("replay ignores continuation entries and restores nothing", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "t", type: "continuation", sessionID: "p1" })}\n`,
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  assert.equal(ledger.peek("p1"), undefined, "no bucket minted from a continuation entry")
+})
+
 /** With custom agent names and waiver marker, the no-gate-pass message interpolates all three. */
 test("block messages: custom config interpolates into the no-gate-pass message", async () => {
   const { h, dispose, metricsDir } = await boot({
@@ -2065,6 +2078,38 @@ test("replay restores hasReviewApprove and the grace prompt carries it once, the
   // Second prompt: a full reset clears it (task-scoped again).
   ledger.resetState("p1")
   assert.equal(ledger.state("p1").hasReviewApprove, false, "hasReviewApprove clears on full reset")
+})
+
+/** A prompt reset with carry armed (the grace re-armed by a continuation
+ *  prompt) restores hasReviewApprove together with its paired ensemble count,
+ *  and the next full reset clears both — the pairing is restart-sticky on
+ *  every survival path, not just the journal replay. */
+test("grace prompt carries hasReviewApprove with its paired ensemble count, then clears", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({
+        ts: "t",
+        type: "verdict",
+        sessionID: "p1",
+        raw: "c1",
+        marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+        source: "task-result",
+      }),
+      JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 2 }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "replay restored hasReviewApprove")
+  // Grace prompt: the pair carries together.
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "grace carries the flag")
+  assert.equal(ledger.state("p1").reviewerDispatches, 2, "the pair carries together")
+  // Second prompt: a full reset clears the pair together.
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "the flag clears on full reset")
+  assert.equal(ledger.state("p1").reviewerDispatches, 0, "the pair clears together")
 })
 
 /** A trailing `GATE: FAIL` does not clear a restored reviewer approval — the

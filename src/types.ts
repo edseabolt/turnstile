@@ -697,11 +697,15 @@ export interface TurnstileConfig {
   /**
    * When true, a prompt admitted in an unchanged worktree/branch carries the
    * current task's restart-sticky gate flags across the prompt reset instead
-   * of wiping them (a continuation, not a new task). The carry is GATE-SCOPED:
-   * only an earned gate flag (`hasGatePass`) is carried, so a continuation
-   * arriving before any GATE: PASS still starts a clean cycle. Default false:
-   * every prompt starts a clean gate cycle. Opt-in because a genuinely new
-   * task on the same branch is indistinguishable from a continuation.
+   * of wiping them (a continuation, not a new task). The carry is
+   * CREDIT-SCOPED: only earned credit (an earned gate pass `hasGatePass` or
+   * a landing approval `hasReviewApprove`, each paired with the restart-
+   * sticky ensemble count) is carried, so a continuation arriving before any
+   * `GATE: PASS` or reviewer `VERDICT: APPROVE` still starts a clean cycle.
+   * Default false: every prompt starts a clean gate cycle. Opt-in because a
+   * genuinely new task on the same branch is indistinguishable from a
+   * continuation, and a carried landing approval releases pushes for that
+   * new task too until a fresh prompt resets the bucket.
    */
   continuationCarry: boolean
   /** Agent names turnstile recognizes. */

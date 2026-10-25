@@ -57,7 +57,7 @@ function gate(overrides: Partial<GateState> = {}): GateState {
 }
 
 /**
- * `shouldCarryGate` is a pure, GATE-SCOPED predicate: one case per branch of
+ * `shouldCarryGate` is a pure, CREDIT-SCOPED predicate: one case per branch of
  * the short-circuit chain.
  */
 test("shouldCarryGate", async (t) => {
@@ -88,6 +88,16 @@ test("shouldCarryGate", async (t) => {
   await t.test("the same branch after an earned pass carries", () => {
     const prior = gate({ hasGatePass: true, taskFingerprint: "abc" })
     assert.equal(shouldCarryGate(prior, "abc", true), true)
+  })
+
+  await t.test("an earned landing approval without a gate pass carries", () => {
+    const prior = gate({ hasGatePass: false, hasReviewApprove: true, taskFingerprint: "abc" })
+    assert.equal(shouldCarryGate(prior, "abc", true), true)
+  })
+
+  await t.test("an earned landing approval in a changed worktree never carries", () => {
+    const prior = gate({ hasGatePass: false, hasReviewApprove: true, taskFingerprint: "abc" })
+    assert.equal(shouldCarryGate(prior, "xyz", true), false)
   })
 })
 
@@ -423,6 +433,91 @@ test("a continuation prompt restating an unscoped waiver resets the carried scop
     // The unscoped waiver now covers the plan gate's stages: the executor
     // dispatch is admitted rather than blocked.
     await executorDispatch(h, "p1")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A same-worktree continuation whose earned landing approval outlived a later
+ * `GATE: FAIL` carries the approval + ensemble pair across the reset: the
+ * prompt journals a `continuation` entry and the snapshot renders
+ * `reviewer: APPROVED dispatches=2`, while the reviewer dispatch stays
+ * blocked — the carried bucket is tests=RED, so the gate keeps blocking until
+ * a fresh `GATE: PASS`.
+ */
+test("a same-worktree continuation carries a landing approval whose gate went red", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan({
+    continuationCarry: true,
+    gateEvidence: "flag",
+  })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
+    await earnGate(h, "p1")
+    // Two unwaived reviewer dispatches, then a delivery-attributed verdict
+    // credits the landing approval.
+    await reviewerDispatch(h, "p1")
+    await reviewerDispatch(h, "p1")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
+    // A red test run un-greens the gate; the approval survives it.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: FAIL tests=3 passed=2 failed=1\nrest" },
+    })
+    // The continuation re-admits the same worktree.
+    await callSession(h, "prompt", { sessionID: "p1", text: "now open the PR" })
+    assert.ok(
+      journalEntries(metricsDir).some((l) => l.type === "continuation" && l.sessionID === "p1"),
+    )
+    // The approval and its paired ensemble count carried together.
+    const system = await compact(h, "p1")
+    assert.match(snapshotOf(system), /- reviewer: APPROVED dispatches=2 /)
+    // The gate is still red: the reviewer dispatch is blocked on the gate.
+    await assert.rejects(
+      reviewerDispatch(h, "p1"),
+      (e: Error) => e.message === NO_GATE_MESSAGE && e instanceof BlockError,
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The same sequence with continuation carry off (the default): no
+ * `continuation` entry is journaled and the snapshot renders
+ * `reviewer: PENDING dispatches=0` — the approval dies with the reset, like
+ * any other prompt.
+ */
+test("a continuation with continuation carry off resets the landing approval like any prompt", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan({ gateEvidence: "flag" })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
+    await earnGate(h, "p1")
+    await reviewerDispatch(h, "p1")
+    await reviewerDispatch(h, "p1")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: FAIL tests=3 passed=2 failed=1\nrest" },
+    })
+    await callSession(h, "prompt", { sessionID: "p1", text: "now open the PR" })
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "continuation"))
+    const system = await compact(h, "p1")
+    assert.match(snapshotOf(system), /- reviewer: PENDING dispatches=0 /)
   } finally {
     restore()
   }

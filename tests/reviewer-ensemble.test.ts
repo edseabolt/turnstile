@@ -576,6 +576,39 @@ test("T7b: replay suppresses a refused APPROVE and restores a credited one", () 
   }
 })
 
+/** T7b2: the last-wins fold's hostile-journal boundary at the credited count
+ *  — a verdict APPROVE whose last ensemble entry stamps
+ *  `refusedApprove:true` at count-2 is still suppressed on replay, and the
+ *  count itself still restores. */
+test("T7b2: a refusedApprove stamp at the credited count still suppresses the verdict", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({
+        ts: "t",
+        type: "verdict",
+        sessionID: "p1",
+        raw: "c1",
+        marker: APPROVE,
+        source: "task-result",
+      }),
+      JSON.stringify({
+        ts: "t",
+        type: "ensemble",
+        sessionID: "p1",
+        agent: "reviewer",
+        count: 2,
+        refusedApprove: true,
+      }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  const s = ledger.state("p1")
+  assert.equal(s.hasReviewApprove, false, "a refused APPROVE at the credited count is not restored")
+  assert.equal(s.reviewerDispatches, 2, "the count is still restored")
+})
+
 /** T7c: an ensemble-only journal line restores the count with no grace and no
  *  grace carry. */
 test("T7c: an ensemble-only entry restores the count without grace", () => {
