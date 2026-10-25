@@ -480,14 +480,14 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
 
   /**
    * Enforces the decomposition gate: when the resolved plan carries a
-   * `## Decomposition` block, executor dispatches must cite the chunk-N /
-   * AC-n they implement. The resolved plan is the dispatch prompt's named
-   * plan when it names exactly one existing plan file, else the session's
-   * bound plan when it still exists, else the first sorted decomposed plan
-   * that is still pending (a durably-approved decomposed plan no longer
-   * forces chunk citations for unrelated work); a no-ledger call enforces
-   * the first sorted decomposed plan byte-identically (the legacy rule).
-   * Unreadable plans dirs fail open.
+   * `## Decomposition` block, executor dispatches must cite the chunk-N
+   * (or sub-chunk `chunk-Na`) / AC-n they implement. The resolved plan is
+   * the dispatch prompt's named plan when it names exactly one existing
+   * plan file, else the session's bound plan when it still exists, else the
+   * first sorted decomposed plan that is still pending (a durably-approved
+   * decomposed plan no longer forces chunk citations for unrelated work);
+   * a no-ledger call enforces the first sorted decomposed plan
+   * byte-identically (the legacy rule). Unreadable plans dirs fail open.
    * @param sessionID The parent session ID (used in journal entries).
    * @param prompt The dispatch prompt text to check for chunk citations.
    * @param projectDir The current project directory.
@@ -503,7 +503,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     projectDir: string,
     ledger?: GateLedger,
   ): void {
-    if (/\b(?:chunk-\d+|AC-\d+)\b/.test(prompt)) return
+    if (/\b(?:chunk-\d+[a-z]?|AC-\d+)\b/.test(prompt)) return
     const plansDir = resolvePlansDir(projectDir)
     try {
       if (!fs.existsSync(plansDir)) return
