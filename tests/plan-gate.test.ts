@@ -2193,6 +2193,44 @@ test("enforceDecomposition enforces the resolved plan when a ledger is given", (
 })
 
 /**
+ * The decomposition gate's citation grammar admits a chunk number with an
+ * optional single-letter sub-chunk suffix (chunk-Na) as well as an AC-n;
+ * near-miss tokens — a letter where the digit belongs, a two-letter tail,
+ * and the placeholder chunk-N / AC-n prose — never satisfy it, so a prompt
+ * that merely quotes the gate's own wording can't pass the gate.
+ */
+test("decomposition: sub-chunk citations satisfy the gate, near-miss tokens do not", () => {
+  const { project, gates, ledger } = bootUnitPlans({
+    "z-work.md": WORK_BODY,
+  })
+  // No citation at all still blocks the decomposed plan.
+  assert.throws(
+    () => gates.enforceDecomposition("g1", "do the work", project, ledger),
+    /has a ## Decomposition block/,
+  )
+  // The unchanged chunk and AC citations still pass.
+  gates.enforceDecomposition("g1", "do the work in chunk-1", project, ledger)
+  gates.enforceDecomposition("g1", "do the work in AC-2", project, ledger)
+  // A single-letter sub-chunk suffix passes, alone or alongside another cite.
+  gates.enforceDecomposition("g1", "do the work in chunk-1a", project, ledger)
+  gates.enforceDecomposition("g1", "finish chunk-1a and chunk-1b", project, ledger)
+  // Near-misses: no digit, a two-letter tail, and the placeholder prose.
+  assert.throws(
+    () => gates.enforceDecomposition("g1", "cite chunk-a only", project, ledger),
+    /has a ## Decomposition block/,
+  )
+  assert.throws(
+    () => gates.enforceDecomposition("g1", "cite chunk-1ab only", project, ledger),
+    /has a ## Decomposition block/,
+  )
+  assert.throws(
+    () =>
+      gates.enforceDecomposition("g1", "the gate says to cite the chunk-N / AC-n", project, ledger),
+    /has a ## Decomposition block/,
+  )
+})
+
+/**
  * Boots in a temp project dir containing the given `name → body` plan files
  * (multi-plan variant of bootWithPlan).
  * @param plans The plan file names and bodies to seed.
@@ -2304,6 +2342,8 @@ test("multi-plan: executor dispatch enforces the named or bound plan, never the 
     )
     // The same dispatch with a chunk cite passes.
     await execDispatch(h, "p1", `implement ${path.join(plansDir, "z-work.md")} chunk-1`)
+    // The same dispatch with a sub-chunk cite passes too.
+    await execDispatch(h, "p1", `implement ${path.join(plansDir, "z-work.md")} chunk-1b`)
     // Unnamed dispatch → the session binding, never the first sorted plan.
     await assert.rejects(
       () => execDispatch(h, "p1", "do the work"),

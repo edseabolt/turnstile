@@ -922,6 +922,12 @@ test("decomposition gate: executor must cite chunk-N when a plan has Decompositi
       sessionID: "p1",
       input: { agent: "executor", prompt: "implements chunk-1 / AC-1" },
     })
+    // A sub-chunk-only citation satisfies the gate end-to-end too.
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "implements chunk-2a" },
+    })
     dispose()
   } finally {
     process.chdir(prev)
