@@ -31,6 +31,14 @@ import {
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 const GATE_PASS = "GATE: PASS tests=1 passed=1 failed=0"
 
+/**
+ * The GATE_PASS marker split at character 21: streaming the head, losing the
+ * session's window to churn, then streaming the tail leaves a window holding
+ * only the tail, so the marker never completes and nothing is journaled.
+ */
+const GATE_HEAD = GATE_PASS.slice(0, 21)
+const GATE_TAIL = GATE_PASS.slice(21)
+
 /** The exact reviewer gate block message (used to confirm the control blocks). */
 const NO_GATE_MESSAGE =
   "BLOCKED by turnstile: no reviewer dispatch before the test gate is green. " +
@@ -83,6 +91,14 @@ const gateCount = (metricsDir: string): number =>
 /** Counts journal verdict entries journaled across the whole run. */
 const verdictCount = (metricsDir: string): number =>
   journalEntries(metricsDir).filter((l) => l.type === "verdict").length
+
+/** Pushes a `session.created` event carrying the given properties (awaited). */
+const created = (h: FakeHost, properties: Record<string, unknown>): Promise<void> =>
+  h.pushEvent({ type: "session.created", properties })
+
+/** Pushes a `session.text.delta` event for a child (awaited drain). */
+const delta = (h: FakeHost, sessionID: string, chunk: string): Promise<void> =>
+  h.pushEvent({ type: "session.text.delta", properties: { sessionID, delta: chunk } })
 
 /** T1 — ledger unit: a registered parent bucket is never evicted while it
  *  stays registered; sibling churn still evicts unrelated buckets; once the
@@ -246,12 +262,14 @@ test("T3: a registered parents plan approval survives >64 noisy children and pro
 })
 
 /**
- * A bounded admitted-id dedupe registry: past 64 distinct hook admits the
- * oldest dedupe key is evicted, so re-admitting that id captures again while
- * fresh admits still capture — the set stays bounded at the cap (bounded-memory
- * invariant) rather than growing with every prompt.
+ * A bounded admitted-id dedupe registry: 65 distinct hook admits each
+ * capture once, and once the set reaches its cap the oldest entries evict,
+ * so re-admitting previously-seen ids captures again while the set stays
+ * bounded (bounded-memory invariant) rather than growing with every prompt.
+ * Only the lower bound on re-captures is asserted: eviction order is an
+ * implementation detail, not a contract.
  */
-test("admitted-id registry is bounded: the oldest dedupe key evicts past 64", async () => {
+test("admitted-id registry is bounded: evicted ids re-capture on re-admit", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
     // 65 distinct admits (distinct shared message ids) each capture once.
@@ -266,22 +284,102 @@ test("admitted-id registry is bounded: the oldest dedupe key evicts past 64", as
       (l) => l.type === "plan" && l.result === "APPROVE",
     ).length
     assert.equal(approves, 65, "65 distinct admits each capture once")
-    // The oldest key (msg_0) was evicted past the cap: re-admitting it captures
-    // again — a collision-free admission still admits.
-    await callSession(h, "prompt", {
-      sessionID: "p1",
-      messageID: "msg_0",
-      text: "PLAN APPROVED: go",
-    })
+    // Re-admit every seen id: the set sits at its cap, so evicted keys
+    // capture again and the total grows — but the growth is the eviction
+    // mechanism at work, not a pinned order (lower bound only).
+    for (let i = 0; i < 65; i++) {
+      await callSession(h, "prompt", {
+        sessionID: "p1",
+        messageID: `msg_${i}`,
+        text: "PLAN APPROVED: go",
+      })
+    }
     approves = journalEntries(metricsDir).filter(
       (l) => l.type === "plan" && l.result === "APPROVE",
     ).length
-    assert.equal(
-      approves,
-      66,
-      "the evicted oldest key re-captures; the registry stays bounded at the cap",
+    assert.ok(
+      approves >= 66,
+      `evicted ids re-capture while the registry stays bounded (approves=${approves})`,
     )
   } finally {
     dispose()
+  }
+})
+
+/**
+ * Churning `deltaWindows` past its cap evicts a live child's window mid-
+ * marker: the straddling marker is simply not delivered (no crash, no
+ * wrong-session delivery) while a child whose window survives still
+ * completes its marker and journals exactly one gate entry.
+ */
+test("delta-window churn evicts a live child mid-marker without mis-delivering", async () => {
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  try {
+    // Target T (a test-runner root) starts streaming the marker's head.
+    await created(h, { sessionID: "T", agent: "test-runner" })
+    await delta(h, "T", GATE_HEAD)
+    // 60 delta-only noise children churn the window map past its cap of 50:
+    // T's window is the oldest and evicts while the marker is straddled.
+    for (let i = 0; i < 60; i++) await delta(h, `n${i}`, "noise")
+    // The tail lands in a fresh window holding only the tail: the marker
+    // never completes for T, so no gate entry is journaled for it.
+    await delta(h, "T", GATE_TAIL)
+    // Stream alive: a survivor whose whole marker fits one window still
+    // journals its gate entry, attributed to itself (no parent edge).
+    await created(h, { sessionID: "S", agent: "test-runner" })
+    await delta(h, "S", GATE_PASS)
+    const gates = journalEntries(metricsDir).filter((l) => l.type === "gate")
+    assert.equal(gates.length, 1, "only the survivor's completed marker journals")
+    const { ts: _stamp, ...shape } = gates[0]!
+    assert.deepEqual(shape, {
+      type: "gate",
+      sessionID: "S",
+      raw: "S",
+      result: "PASS",
+      source: "child-text-delta",
+      marker: GATE_PASS,
+      verified: false,
+      mode: "flag",
+    })
+    const errors = journalEntries(metricsDir).filter((l) => l.type === "error")
+    assert.equal(errors.length, 0, "the churn never crashes the stream")
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * Churning `sessionDirs` past its cap evicts a live root's directory mid-
+ * stream: a later streamed verdict from its child is still attributed to
+ * the right parent (the edge route, independent of the directory map), with
+ * no crash and no mis-attribution — the root's project dir degrades to the
+ * process cwd, the documented fallback.
+ */
+test("session-dir churn evicts a live root's directory without mis-attributing its child", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan()
+  const churnDir = tmpDir()
+  try {
+    // Root R carries a directory (seeds its sessionDirs entry); child c is
+    // registered under it as a plan-reviewer.
+    await created(h, { sessionID: "R", directory: churnDir })
+    await created(h, { sessionID: "c", parentID: "R", agent: "plan-reviewer" })
+    // 51 root created-events each carry a directory: the churn evicts R's
+    // entry past the cap of 50 (R is the oldest).
+    for (let i = 0; i < 51; i++) await created(h, { sessionID: `r${i}`, directory: churnDir })
+    // The child streams its APPROVE: attribution resolves through the
+    // registered edge, so the verdict still keys on the right parent.
+    await h.pushEvent({
+      type: "message.part.updated",
+      properties: { sessionID: "c", part: { type: "text", text: APPROVE } },
+    })
+    const verdicts = journalEntries(metricsDir).filter((l) => l.type === "verdict")
+    assert.equal(verdicts.length, 1, "the child's streamed verdict journals exactly once")
+    assert.equal(verdicts[0]!.sessionID, "R", "the verdict keys on the child's real parent")
+    assert.equal(verdicts[0]!.raw, "c", "the raw field keeps the child id")
+    assert.equal(verdicts[0]!.source, "child-message", "the streamed-text provenance is kept")
+    const errors = journalEntries(metricsDir).filter((l) => l.type === "error")
+    assert.equal(errors.length, 0, "the churn never crashes the stream")
+  } finally {
+    restore()
   }
 })

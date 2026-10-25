@@ -35,9 +35,6 @@ import {
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
 
-/** Gives the async event loop a tick to drain queued stream events. */
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
-
 /**
  * Boots the plugin over a fake host with a temp metrics dir and config.
  * @param config Config overrides merged over the injected `metricsDir`.
@@ -711,11 +708,10 @@ test("T9: a no-input structured APPROVE credits through the created edge", async
   try {
     await greenGate(h, "p1")
     await dispatchReviewers(h, "p1")
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
     const entries = journalEntries(metricsDir)
     const verdict = entries.find((e) => e.type === "verdict")
@@ -864,11 +860,10 @@ test("T13: a no-input delivery credit journals no prompt-admission entries", asy
   try {
     await greenGate(h, "p1")
     await dispatchReviewers(h, "p1")
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     await deliverStructured(h, "p1", "c1", `${APPROVE}\n`)
     assert.equal(ledgerState(metricsDir, "p1").hasReviewApprove, true)
     // The released landing gate allows a push.
@@ -903,11 +898,10 @@ test("T14: a dispatch-input agent outranks the created edge's agent", async () =
   try {
     await greenGate(h, "p1")
     await dispatchReviewers(h, "p1")
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
     })
-    await settle()
     await deliverStructured(h, "p1", "c1", `${APPROVE}\n`, { agent: "reviewer" })
     assert.equal(
       ledgerState(metricsDir, "p1").hasReviewApprove,

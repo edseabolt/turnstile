@@ -35,8 +35,23 @@ import {
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"
 
-/** Gives the async event loop a tick to drain queued stream events. */
+/**
+ * The 30ms wall-clock buffer implementation; call it through `dispatchGap`,
+ * which carries the ordering rationale in one place.
+ */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
+
+/**
+ * Wall-clock buffer, not event sync: event drains are awaited `pushEvent`
+ * calls — an awaited push guarantees handler completion but no millisecond
+ * boundary. This sleep sits where strict wall-clock ordering between a
+ * streamed verdict's `recordedAt` (stamped as its handler runs) and the
+ * round-scoped dispatch timestamps the plausibility filter compares against
+ * (`recordedAt >= dispatchTs`) must hold, so markers and dispatches of
+ * different rounds stay separable. Call-site comments state the specific
+ * ordering each site protects.
+ */
+const dispatchGap = (): Promise<void> => settle()
 
 /** Boots a temp project dir with a plan file so an executor dispatch is gated. */
 async function bootWithPlan(
@@ -75,11 +90,10 @@ test("marker-less parent re-fire cannot clobber a live child-text approval", asy
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // child → parent edge; the child streams APPROVE on its own text.
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     h.pushEvent({
       type: "session.text.ended",
       data: { sessionID: "c1", text: `\nreview\n\n${APPROVE}\n` },
@@ -139,11 +153,13 @@ test("stale parent-store approval is not re-approved on a marker-less parent re-
   try {
     // Seed the PARENT's own store; no child is registered as anyone's child.
     h.pushEvent({ type: "session.created", data: { sessionID: "p1", agent: "reviewer" } })
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "p1", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "p1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "p1"),
     )
-    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
       sessionID: "p1",
@@ -177,11 +193,10 @@ test("every plan entry is keyed raw = a child id across both edge routes", async
   // Route 1: session.created child→parent edge.
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
     await waitUntil(() => journalEntries(metricsDir).some((e) => e.type === "verdict"))
     await callTool(h, "execute.after", {
@@ -216,9 +231,11 @@ test("every plan entry is keyed raw = a child id across both edge routes", async
       config: { metricsDir: metricsDir2 },
     })
     await setup(host.host)
-    host.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await host.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() => journalEntries(metricsDir2).some((e) => e.type === "verdict"))
-    await settle()
     await callTool(host, "execute.after", {
       tool: "task",
       sessionID: "c1",
@@ -271,29 +288,30 @@ test("streamed verdicts dedup on identical re-delivery and flip", async () => {
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c2", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     // Five identical streamed APPROVEs on c1 → exactly one verdict.
     for (let i = 0; i < 5; i++)
-      h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
-    await settle()
+      await h.pushEvent({
+        type: "session.text.ended",
+        data: { sessionID: "c1", text: `${APPROVE}\n` },
+      })
     assert.equal(journalEntries(metricsDir).filter((e) => e.type === "verdict").length, 1)
     // A sibling with an identical marker: its verdict *entry* is suppressed by
     // the child-text bucket, but its store still records the verdict (so the
     // subsequent marker-less delivery on c2 can still attribute c2).
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c2", text: `${APPROVE}\n` } })
-    await settle()
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c2", text: `${APPROVE}\n` },
+    })
     assert.equal(journalEntries(metricsDir).filter((e) => e.type === "verdict").length, 1)
     // c1's marker flips APPROVE→BLOCK: a replay, journaled.
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
-    await settle()
+    await h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
     assert.equal(journalEntries(metricsDir).filter((e) => e.type === "verdict").length, 2)
     // An identical BLOCK re-delivery is silently suppressed.
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
-    await settle()
+    await h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
     assert.equal(journalEntries(metricsDir).filter((e) => e.type === "verdict").length, 2)
     // A cross-source delta→ended replay with the same marker: the bucket keys
     // on (scope, marker) with no source component, so both are suppressed
@@ -302,8 +320,10 @@ test("streamed verdicts dedup on identical re-delivery and flip", async () => {
       type: "message.part.updated",
       data: { sessionID: "c1", part: { type: "text", text: `${APPROVE}\n` } },
     })
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
-    await settle()
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     assert.equal(journalEntries(metricsDir).filter((e) => e.type === "verdict").length, 2)
   } finally {
     restore()
@@ -333,9 +353,11 @@ test("continued subagent session attributes through session records, emits verdi
     await setup(h.host)
     // The child streams its verdict before any task result; the edge is
     // resolved via the host session record (no session.created event).
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() => journalEntries(metricsDir).some((e) => e.type === "verdict"))
-    await settle()
     // Continued marker-less delivery on the child → attributed raw=c1 child-text.
     await callTool(h, "execute.after", {
       tool: "task",
@@ -422,18 +444,26 @@ const dispatch = (h: FakeHost, parent: string): Promise<void> =>
  * Streams an APPROVE verdict on the given child's text (default c1). Seeds the
  * child's agent first so its streamed verdict is honored: a child streaming a
  * verdict is a reviewer, and an unresolved child still self-keys and records
- * the verdict even without a parent edge.
+ * the verdict even without a parent edge. Awaiting it guarantees both handlers
+ * have run (including the store's `recordedAt` refresh) — required at call
+ * sites whose preceding wait cannot observe the re-observation (identical
+ * marker/source re-deliveries journal nothing).
  */
-const streamApprove = (h: FakeHost, child = "c1"): void => {
-  h.pushEvent({ type: "session.created", data: { sessionID: child, agent: "reviewer" } })
-  h.pushEvent({ type: "session.text.ended", data: { sessionID: child, text: `${APPROVE}\n` } })
+const streamApprove = async (h: FakeHost, child = "c1"): Promise<void> => {
+  await h.pushEvent({ type: "session.created", data: { sessionID: child, agent: "reviewer" } })
+  await h.pushEvent({
+    type: "session.text.ended",
+    data: { sessionID: child, text: `${APPROVE}\n` },
+  })
 }
 
 /** Streams a BLOCK verdict on the given child's text (default c1). Seeds the
- *  child's agent first (a streaming verdict is a reviewer) so it is honored. */
-const streamBlock = (h: FakeHost, child = "c1"): void => {
-  h.pushEvent({ type: "session.created", data: { sessionID: child, agent: "reviewer" } })
-  h.pushEvent({ type: "session.text.ended", data: { sessionID: child, text: `${BLOCK}\n` } })
+ *  child's agent first (a streaming verdict is a reviewer) so it is honored.
+ *  Awaiting it guarantees both handlers have run before the caller proceeds;
+ *  bare calls remain valid where a later wait observes the new journal entry. */
+const streamBlock = async (h: FakeHost, child = "c1"): Promise<void> => {
+  await h.pushEvent({ type: "session.created", data: { sessionID: child, agent: "reviewer" } })
+  await h.pushEvent({ type: "session.text.ended", data: { sessionID: child, text: `${BLOCK}\n` } })
 }
 
 /** Marker-less plan-reviewer task-result delivery on the given session id. */
@@ -469,7 +499,6 @@ test("unresolved edge + streamed APPROVE is attributed through the streaming sto
   try {
     // Prompt reset drops p1's task scope; the child is never registered (throwingGet).
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     // Seed the parent's plan-reviewer dispatch (the plausibility input).
     await dispatch(h, "p1")
     // Saturate the failed lookup: two benign parts + the APPROVE text = 3 attempts (cap).
@@ -485,7 +514,6 @@ test("unresolved edge + streamed APPROVE is attributed through the streaming sto
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     // Parent-keyed, marker-less delivery: self-keyed, plausibility claims c1.
     await deliver(h, "p1")
 
@@ -541,7 +569,6 @@ test("unresolved edge without a recorded dispatch fails open", async () => {
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h, "p1")
 
     assert.equal(planEntries(metricsDir).length, 0)
@@ -587,7 +614,6 @@ test("a child-keyed unresolved delivery cannot attribute (parent-keyed gate by d
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h, "c1")
 
     assert.equal(planEntries(metricsDir).length, 0)
@@ -623,19 +649,16 @@ test("a reset clears dispatch scope so a prior task's streamed verdict cannot ap
   try {
     // Task 1: dispatch, then stream the child's APPROVE (unresolved child).
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     streamApprove(h)
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
 
     // Reset drops p1's dispatch scope WITHOUT re-dispatching; the delivery is
     // now fail-open (the streamed verdict is no longer plausible).
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await deliver(h, "p1")
     // Fail open: no plan entry, exactly one unattributable error.
     assert.equal(planEntries(metricsDir).length, 0)
@@ -646,12 +669,15 @@ test("a reset clears dispatch scope so a prior task's streamed verdict cannot ap
 
     // Re-dispatch + re-stream re-arms the join; the delivery attributes.
     await dispatch(h, "p1")
-    await settle()
-    streamApprove(h)
+    await dispatchGap()
+    // Awaited drain: this re-observation carries the same marker/source as
+    // round 1, so it journals no new verdict entry — the wait below would
+    // resolve on round 1's entry and cannot observe this store refresh,
+    // which is what re-plausibilizes c1 against round 2's dispatch.
+    await streamApprove(h)
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h, "p1")
     const plan = planEntries(metricsDir)
     const latest = plan[plan.length - 1]
@@ -673,15 +699,13 @@ test("contradictory plausible verdicts fail open", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     streamApprove(h, "c1")
     streamBlock(h, "c2")
     await waitUntil(
       () => journalEntries(metricsDir).filter((e) => e.type === "verdict").length >= 2,
     )
-    await settle()
     await deliver(h, "p1")
 
     assert.equal(planEntries(metricsDir).length, 0)
@@ -712,17 +736,14 @@ test("a verdict with two candidate parents is excluded from each", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
     await callSession(h, "prompt", { sessionID: "p2" })
-    await settle()
     await dispatch(h, "p2")
-    await settle()
+    await dispatchGap()
     streamApprove(h, "c1")
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h, "p1")
 
     assert.equal(planEntries(metricsDir).length, 0)
@@ -760,21 +781,18 @@ test("an agreeing unresolved child never regresses attribution into fail-open", 
     const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
     const dispose = (await setup(h.host)) as () => void
     // c1 registered via session.created (edge); c2 unresolved.
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     streamApprove(h, "c1")
     streamApprove(h, "c2")
     await waitUntil(
       () => journalEntries(metricsDir).filter((e) => e.type === "verdict").length >= 2,
     )
-    await settle()
     await deliver(h, "p1")
 
     const plan = planEntries(metricsDir)
@@ -804,15 +822,13 @@ test("an unresolved BLOCK stream attributes as BLOCK", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     h.pushEvent({ type: "session.created", data: { sessionID: "c1", agent: "reviewer" } })
     h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h, "p1")
 
     const plan = planEntries(metricsDir)
@@ -883,9 +899,8 @@ test("a replayed approval stays independent from a self-keyed fix for a new pare
     const dispose = (await setup(h.host)) as () => void
     // New parent p2 runs the self-keyed repro with an unresolved child c2.
     await callSession(h, "prompt", { sessionID: "p2" })
-    await settle()
     await dispatch(h, "p2")
-    await settle()
+    await dispatchGap()
     h.pushEvent({
       type: "message.part.updated",
       data: { sessionID: "c2", part: { type: "text", text: "noise one" } },
@@ -898,7 +913,6 @@ test("a replayed approval stays independent from a self-keyed fix for a new pare
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c2"),
     )
-    await settle()
     await deliver(h, "p2")
 
     const plans = planEntries(metricsDir)
@@ -936,7 +950,6 @@ test("each self-keyed delivery journals exactly one attribution entry", async ()
   try {
     // Two self-keyed deliveries (no registered child, no evidence).
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await deliver(h, "p1")
     await deliver(h, "p1")
 
@@ -968,14 +981,12 @@ test("an attributed self-keyed delivery never clobbers and H2 resolves as no-par
   const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     streamApprove(h)
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h, "p1")
 
     const plans = planEntries(metricsDir)
@@ -1006,14 +1017,12 @@ test("an attributed self-keyed delivery never clobbers and H2 resolves as no-par
     })
     const dispose = (await setup(h2.host)) as () => void
     await callSession(h2, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h2, "p1")
-    await settle()
+    await dispatchGap()
     streamApprove(h2, "c1")
     await waitUntil(() =>
       journalEntries(metricsDir2).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     await deliver(h2, "p1")
 
     const ats = attribution(metricsDir2)
@@ -1044,29 +1053,28 @@ test("a superseded prior-round BLOCK never contradicts this round's approval", a
   try {
     // Round 1: register c1 -> p1, then stream a BLOCK on c1 under round 1's
     // dispatch, so it becomes the stale edge child.
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
+    // The prior-round BLOCK must be strictly older than the round-2 dispatch
+    // or it re-enters that round's pool and contradicts the APPROVE.
+    await dispatchGap()
     // Round 2: re-dispatch, then stream an APPROVE on an unrelated child c2,
     // both after the round-2 dispatch.
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     streamApprove(h, "c2")
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c2"),
     )
-    await settle()
     // Marker-less self-keyed delivery on the parent: c1's stale BLOCK is
     // round-scoped out, so c2's APPROVE attributes.
     await deliver(h, "p1")
@@ -1104,23 +1112,22 @@ test("a prior-round edge child with no current verdict still fails open", async 
   try {
     // Round 1: register c1 -> p1 and stream a BLOCK on it under round 1's
     // dispatch, making it the stale edge child.
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
+    // The prior-round BLOCK must be strictly older than the round-2 dispatch
+    // or it counts as a current-round edge candidate.
+    await dispatchGap()
     // Round 2: re-dispatch with no current-round evidence at all.
     await dispatch(h, "p1")
-    await settle()
     // Marker-less self-keyed delivery: the stale edge child is round-scoped
     // out, so nothing attributes.
     await deliver(h, "p1")
@@ -1154,15 +1161,13 @@ test("a prior-round edge child with no current verdict still fails open", async 
 test("a same-round edge BLOCK still contradicts a plausible APPROVE", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    await settle()
     await callSession(h, "prompt", { sessionID: "p1" })
-    await settle()
     await dispatch(h, "p1")
-    await settle()
+    await dispatchGap()
     // Both verdicts record after the single dispatch => both are this round's
     // (fresh), so the edge filter keeps the registered edge child.
     h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${BLOCK}\n` } })
@@ -1170,7 +1175,6 @@ test("a same-round edge BLOCK still contradicts a plausible APPROVE", async () =
     await waitUntil(
       () => journalEntries(metricsDir).filter((e) => e.type === "verdict").length >= 2,
     )
-    await settle()
     await deliver(h, "p1")
 
     assert.equal(planEntries(metricsDir).length, 0)
