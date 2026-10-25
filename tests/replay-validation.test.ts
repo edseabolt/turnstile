@@ -375,3 +375,43 @@ test("replay reads nothing for a non-positive tail bound", () => {
   const ledger = createLedger(journalPath, 64, 0)
   assert.equal(ledger.peek("p1"), undefined, "a zero tail restores nothing")
 })
+
+/** Duplicate-keyed gate entries restore last-wins: a FAIL followed by a PASS
+ *  restores green (the newest line decides), and a PASS followed by a FAIL
+ *  mints no bucket at all (a trailing FAIL keeps the gate red). */
+test("replay restores duplicate-keyed gate entries last-wins", () => {
+  const greenDir = tmpDir()
+  const greenPath = writeJournal(greenDir, [gateLine("p1", "FAIL"), gateLine("p1")])
+  const green = createLedger(greenPath, 64, 2000)
+  assert.equal(
+    green.peek("p1")?.hasGatePass,
+    true,
+    "a FAIL followed by a PASS restores green (newest wins)",
+  )
+  assert.equal(replayDrops(greenDir).length, 0, "well-shaped duplicates journal no drop")
+  const redDir = tmpDir()
+  const redPath = writeJournal(redDir, [gateLine("p1"), gateLine("p1", "FAIL")])
+  const red = createLedger(redPath, 64, 2000)
+  assert.equal(red.peek("p1"), undefined, "a trailing FAIL keeps the gate red (no bucket)")
+  assert.equal(replayDrops(redDir).length, 0, "a trailing FAIL is a fold, not a drop")
+})
+
+/** A task-result verdict whose marker is full of regex metacharacters
+ *  restores the flag per the existing fold (the derived APPROVE is credited)
+ *  but stores no raw bytes: no bucket field echoes the marker, no drop is
+ *  journaled, and a second boot re-folds identically. */
+test("replay stores no raw bytes for a regex-metacharacter verdict marker", () => {
+  const hostile = "VERDICT: APPROVE (.*+)["
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [verdictLine("p1", hostile)])
+  const ledger = createLedger(journalPath, 64, 2000)
+  const bucket = ledger.peek("p1")
+  assert.ok(bucket, "a within-bound marker restores a bucket")
+  assert.equal(bucket.hasReviewApprove, true, "the derived APPROVE restores per the existing fold")
+  assert.equal(replayDrops(metricsDir).length, 0, "a within-bound marker is folded, not dropped")
+  const serialized = JSON.stringify(bucket)
+  assert.ok(!serialized.includes(hostile), "no bucket field echoes the raw marker")
+  assert.ok(!serialized.includes(".*+"), "no bucket field echoes the metacharacters")
+  const secondBoot = createLedger(journalPath, 64, 2000)
+  assert.deepEqual(secondBoot.peek("p1"), bucket, "a second boot re-folds identically")
+})

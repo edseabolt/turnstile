@@ -41,7 +41,12 @@ const cfg = (): ReturnType<typeof defaultConfig> => defaultConfig()
 /** A pass-through parent resolver: every raw session resolves to itself. */
 const identityParent = (raw: string): string => raw
 
-/** Gives the async event loop a tick to drain queued stream events. */
+/**
+ * Wall-clock buffer for waits with no bus drain boundary: stream-death
+ * timing (thrown subscriptions, self-terminating streams) and the strict
+ * timestamp ordering between a streamed verdict and a dispatch. Event-
+ * stream drains use the awaited push boundary instead.
+ */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
 
 /** Boots a plugin on a host in a temp metrics dir, returning the pieces. */
@@ -476,9 +481,11 @@ test("boundLookups evicts failed-lookup entries past the cap", async () => {
   const { dispose } = await boot(h.host)
   try {
     for (let i = 0; i < 257; i++) {
-      h.pushEvent({ type: "session.text.delta", properties: { sessionID: `s${i}`, delta: "x" } })
+      await h.pushEvent({
+        type: "session.text.delta",
+        properties: { sessionID: `s${i}`, delta: "x" },
+      })
     }
-    await settle()
   } finally {
     dispose()
   }
@@ -666,6 +673,9 @@ test("event subscription failure journals each death then disables after the bud
     },
   }
   const { dispose, metricsDir } = await boot(throwingHost)
+  // Wall-clock wait: the subscription deaths are stream-side (subscribe()
+  // throws before any event is pushed), so no bus drain boundary exists —
+  // wait for the restart budget to exhaust on the clock.
   await settle()
   dispose()
   const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
@@ -783,6 +793,10 @@ test("a subscribe that throws after dispose stays silent", async () => {
     },
   }
   const { dispose, metricsDir } = await boot(host)
+  // Wall-clock waits with no bus drain boundary: first let the iterator
+  // reach its abort-listener block, then let the post-dispose throw reach
+  // the supervise loop — both are stream-death timing, and no events are
+  // ever pushed.
   await settle()
   dispose()
   await settle()
@@ -833,6 +847,9 @@ test("event stream ending without abort journals a stream-ended error", async ()
     },
   }
   const { dispose, metricsDir } = await boot(finiteHost)
+  // Wall-clock wait: the stream ends by itself (no events were pushed),
+  // so the stream-ended journal entry is awaited on the clock, not on a
+  // bus drain boundary.
   await settle()
   dispose()
   const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
@@ -910,11 +927,10 @@ test("streamed child-text verdict records in the store and moves the parent gate
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: `review done\n${APPROVE}` },
     })
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.ended",
       properties: { sessionID: "c1", text: `review done\n${APPROVE}` },
     })
-    await settle()
     const verdicts = journalEntries(metricsDir).filter((e) => e.type === "verdict")
     assert.equal(verdicts.length, 1)
   } finally {
@@ -1005,6 +1021,10 @@ test("a verdict older than the latest plan-reviewer dispatch is not plausible", 
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: `review\n${APPROVE}` },
     })
+    // Wall-clock gap: the verdict must be recorded strictly before the
+    // dispatch below — the plausibility window orders verdicts against
+    // the dispatch timestamp, and an awaited drain could resolve in the
+    // same millisecond.
     await settle()
     await callTool(h, "execute.before", {
       tool: "task",
@@ -1059,8 +1079,7 @@ test("stream events survive empty session ids and unknown event types", async ()
     })
     h.pushEvent({ type: "session.created", properties: { sessionID: "r2", directory: "/tmp/b" } })
     h.pushEvent({ type: "session.created", properties: { sessionID: "r3" } })
-    h.pushEvent({ type: "session.created", properties: {} })
-    await settle()
+    await h.pushEvent({ type: "session.created", properties: {} })
     const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
     assert.ok(errors.some((e) => String(e.error) === ""))
   } finally {
@@ -1073,11 +1092,10 @@ test("a properties-only event parses markers like a data event", async () => {
   const { dispose, metricsDir } = await boot(h.host)
   try {
     h.pushEvent({ type: "session.created", properties: { sessionID: "c1", agent: "reviewer" } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "message.part.updated",
       properties: { part: { type: "text", text: `ok\n${APPROVE}`, sessionID: "c1" } },
     })
-    await settle()
     const verdicts = journalEntries(metricsDir).filter((e) => e.type === "verdict")
     assert.equal(verdicts.length, 1)
   } finally {
@@ -1091,11 +1109,10 @@ test("message.part.updated falls back to the event properties as the part", asyn
   try {
     // No nested `part`: the properties bag itself carries the text fields.
     h.pushEvent({ type: "session.created", properties: { sessionID: "c1", agent: "reviewer" } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "message.part.updated",
       properties: { type: "text", text: `ok\n${APPROVE}`, sessionID: "c1" },
     })
-    await settle()
     const verdicts = journalEntries(metricsDir).filter((e) => e.type === "verdict")
     assert.equal(verdicts.length, 1)
   } finally {
@@ -1149,6 +1166,9 @@ test("a self-keyed delivery after a same-session dispatch excludes stale verdict
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: `review\n${APPROVE}` },
     })
+    // Wall-clock gap: the streamed verdict must be recorded strictly
+    // before the same-session dispatch below, or the plausibility window
+    // could no longer exclude it as a stale verdict.
     await settle()
     await callTool(h, "execute.before", {
       tool: "task",
@@ -1181,11 +1201,10 @@ test("a marker-carrying self-keyed delivery attributes through its own verdict",
       type: "session.created",
       properties: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.delta",
       properties: { sessionID: "c1", delta: `review\n${APPROVE}` },
     })
-    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
       sessionID: "p1",
@@ -1216,6 +1235,9 @@ test("a contradictory self-keyed pool reports plural candidates", async () => {
       sessionID: "p1",
       input: { agent: "plan-reviewer", prompt: "review" },
     })
+    // Wall-clock buffer: keep the verdicts streamed below strictly after
+    // the dispatch timestamp above, so the round ordering the test
+    // documents stays explicit rather than same-millisecond.
     await settle()
     h.pushEvent({ type: "session.created", properties: { sessionID: "c1", agent: "reviewer" } })
     h.pushEvent({
@@ -1223,11 +1245,10 @@ test("a contradictory self-keyed pool reports plural candidates", async () => {
       properties: { sessionID: "c1", delta: "review\nVERDICT: BLOCK crit=1 high=0 med=0 low=0" },
     })
     h.pushEvent({ type: "session.created", properties: { sessionID: "c2", agent: "reviewer" } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.delta",
       properties: { sessionID: "c2", delta: `review\n${APPROVE}` },
     })
-    await settle()
     await callTool(h, "execute.after", {
       tool: "task",
       sessionID: "p1",
@@ -1251,8 +1272,7 @@ test("a hostile stream-event payload journals and the loop continues", async () 
         throw new Error("hostile properties")
       },
     })
-    h.pushEvent({ type: "message.part.updated", properties: props })
-    await settle()
+    await h.pushEvent({ type: "message.part.updated", properties: props })
     const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
     assert.ok(errors.some((e) => String(e.error).includes("event message.part.updated")))
   } finally {

@@ -8,6 +8,7 @@ import * as fs from "node:fs"
 import assert from "node:assert/strict"
 import * as os from "node:os"
 import * as path from "node:path"
+import type { TestContext } from "node:test"
 import { defaultConfig, mergeConfig } from "../src/config.ts"
 import { orchestratorPolicyFor } from "../src/policy.ts"
 import type { Host } from "../src/types.ts"
@@ -24,32 +25,101 @@ export interface FakeHost {
   sessionHooks: Record<string, (input: any) => Promise<void> | void>
   /** Permission hook callbacks keyed by hook name (`evaluate`, …). */
   permissionHooks: Record<string, (event: any) => unknown | Promise<unknown>>
-  /** Pushes a stream event to the host's `event.subscribe` consumer. */
-  pushEvent: (event: { type: string; data?: unknown; properties?: unknown }) => void
+  /**
+   * Pushes a stream event to the host's `event.subscribe` consumer.
+   * Resolves when the consumer has finished handling the event (or the
+   * stream is aborted), so awaiting it orders the test deterministically
+   * behind the handler; an un-awaited call remains valid when the test
+   * does not need that ordering.
+   */
+  pushEvent: (event: { type: string; data?: unknown; properties?: unknown }) => Promise<void>
 }
+
+/** A promise with externally held settlement controls. */
+export interface Deferred<T = undefined> {
+  /** The promise that the controls settle. */
+  promise: Promise<T>
+  /** Settles the promise with a value. */
+  resolve: (value: T) => void
+  /** Rejects the promise with a reason. */
+  reject: (reason?: unknown) => void
+}
+
+/**
+ * Creates a promise the caller can settle from outside — used to park a
+ * plugin await on a controllable lookup (e.g. `session.get`) and release it
+ * at a chosen point, such as after a dispose. The Promise executor runs
+ * synchronously in the constructor, so the controls are assigned before the
+ * returned object exists: no definite-assignment marker is needed and the
+ * module stays erasable TypeScript.
+ * @returns The promise plus its resolve/reject controls.
+ */
+export function createDeferred<T = undefined>(): Deferred<T> {
+  const controls: { resolve?: (value: T) => void; reject?: (reason?: unknown) => void } = {}
+  const promise = new Promise<T>((res, rej) => {
+    controls.resolve = res
+    controls.reject = rej
+  })
+  return {
+    promise,
+    resolve: (value: T): void => {
+      controls.resolve?.(value)
+    },
+    reject: (reason?: unknown): void => {
+      controls.reject?.(reason)
+    },
+  }
+}
+
+/** A queued bus event plus the boundary that resolves its pusher's promise. */
+type BusEvent = { event: any; drain: () => void }
 
 /**
  * Creates a push-based async-iterable event bus backing a fake host's
  * `event.subscribe`. The iterable ends when the subscriber's abort signal
  * fires (the plugin's dispose path), mirroring the real host stream.
+ *
+ * Each pushed event carries a drain boundary: the promise `push` returns
+ * resolves once the consumer has finished handling the event. The consumer
+ * awaits each handler before its next `next()` call, and the iterator
+ * resolves the previous event's boundary at the top of that call, so the
+ * boundary is a precise "handler complete" signal. Any still-pending
+ * boundary also resolves when the stream is aborted, so a late push can
+ * never hang a disposed test.
  * @returns The push function and the subscribe factory.
  */
 function makeEventBus(): {
-  push: (event: any) => void
+  push: (event: any) => Promise<void>
   subscribe: (options?: { signal?: AbortSignal }) => AsyncIterable<any>
 } {
-  const queue: any[] = []
+  const queue: BusEvent[] = []
+  const pending: BusEvent[] = []
   let notify: (() => void) | null = null
-  const push = (event: any): void => {
-    queue.push(event)
+  let current: BusEvent | null = null
+  let aborted = false
+  const push = (event: any): Promise<void> => {
+    if (aborted) return Promise.resolve()
+    const entry: BusEvent = { event, drain: (): void => {} }
+    const drained = new Promise<void>((resolve) => {
+      entry.drain = (): void => {
+        const i = pending.indexOf(entry)
+        if (i !== -1) pending.splice(i, 1)
+        resolve()
+      }
+    })
+    pending.push(entry)
+    queue.push(entry)
     const n = notify
     notify = null
     n?.()
+    return drained
   }
   const subscribe = (options?: { signal?: AbortSignal }): AsyncIterable<any> => ({
     [Symbol.asyncIterator](): AsyncIterator<any> {
       const signal = options?.signal
       const onAbort = (): void => {
+        aborted = true
+        for (const entry of pending.splice(0)) entry.drain()
         const n = notify
         notify = null
         n?.()
@@ -58,11 +128,21 @@ function makeEventBus(): {
       return {
         next: async (): Promise<IteratorResult<any>> => {
           for (;;) {
+            // The consumer only calls next() after the previous handler has
+            // completed, so the previous event is drained here.
+            if (current) {
+              current.drain()
+              current = null
+            }
             if (signal?.aborted) {
               signal.removeEventListener("abort", onAbort)
               return { done: true, value: undefined }
             }
-            if (queue.length > 0) return { done: false, value: queue.shift() }
+            const entry = queue.shift()
+            if (entry) {
+              current = entry
+              return { done: false, value: entry.event }
+            }
             await new Promise<void>((resolve) => {
               notify = resolve
             })
@@ -77,12 +157,16 @@ function makeEventBus(): {
 /**
  * Creates a fake host whose `tool.hook`/`session.hook` store callbacks and
  * whose `event.subscribe` yields pushed events.
- * @param opts Optional host behavior: `sessionRecords` backs the
- *     `session.get` API with a session-ID → record map; `throwingGet` makes
- *     `session.get` reject (models a record not yet visible).
+ * @param opts Optional host behavior: `sessionGet` delegates `session.get`
+ *     to a caller-controlled function (checked first — a controllable
+ *     lookup window); `sessionRecords` backs the `session.get` API with a
+ *     session-ID → record map; `throwingGet` makes `session.get` reject
+ *     (models a record not yet visible).
  * @returns The host plus the recorded callback tables and event pusher.
  */
 export function makeFakeHost(opts?: {
+  /** When set, `session.get` delegates to this function (checked first). */
+  sessionGet?: (input: { sessionID: string }) => Promise<any>
   sessionRecords?: Map<string, any>
   /** When set, `session.get` rejects (models a record not yet visible). */
   throwingGet?: boolean
@@ -130,18 +214,20 @@ export function makeFakeHost(opts?: {
               sessionHooks[name] = cb
               return { dispose: (): void => {} }
             },
-            ...(opts?.throwingGet
-              ? {
-                  get: async (): Promise<any> => {
-                    throw new Error("not visible")
-                  },
-                }
-              : sessionRecords
+            ...(opts?.sessionGet
+              ? { get: opts.sessionGet }
+              : opts?.throwingGet
                 ? {
-                    get: async ({ sessionID }: { sessionID: string }): Promise<any> =>
-                      sessionRecords.get(sessionID),
+                    get: async (): Promise<any> => {
+                      throw new Error("not visible")
+                    },
                   }
-                : {}),
+                : sessionRecords
+                  ? {
+                      get: async ({ sessionID }: { sessionID: string }): Promise<any> =>
+                        sessionRecords.get(sessionID),
+                    }
+                  : {}),
           },
         }
       : {}),
@@ -259,6 +345,42 @@ export async function waitUntil(predicate: () => boolean, ms = 1000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.ok(predicate(), "waitUntil: condition not met within timeout")
+}
+
+/** Controls for a clock frozen by {@link frozenClock}. */
+export interface FrozenClock {
+  /** Advances the frozen clock by the given number of milliseconds. */
+  advance(ms: number): void
+  /** Restores the original `Date.now`; safe to call more than once. */
+  restore(): void
+}
+
+/**
+ * Freezes `Date.now` at the call moment for a test's duration, so latch TTLs
+ * and marker timestamps can be aged deterministically instead of by sleeping.
+ * The original `Date.now` is restored both by {@link FrozenClock.restore}
+ * (idempotent) and through the test's `after` hook, so a failed assertion
+ * never leaks the patch into a later test.
+ * @param t The test context, used to register the after-hook restore.
+ * @returns Controls for advancing and restoring the frozen clock.
+ */
+export function frozenClock(t: TestContext): FrozenClock {
+  const realNow = Date.now
+  let value = realNow()
+  ;(Date as unknown as { now: () => number }).now = (): number => value
+  let restored = false
+  const restore = (): void => {
+    if (restored) return
+    restored = true
+    ;(Date as unknown as { now: () => number }).now = realNow
+  }
+  t.after(restore)
+  return {
+    advance: (ms: number): void => {
+      value += ms
+    },
+    restore,
+  }
 }
 
 /**

@@ -34,7 +34,6 @@ import {
 const GATE_PASS = "GATE: PASS tests=5 passed=5 failed=0"
 const GATE_FAIL = "GATE: FAIL tests=1 passed=0 failed=1"
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
 
 /** Boots the plugin over a fake host in a temp metrics dir. */
 async function boot(
@@ -194,11 +193,10 @@ test("wiring: a reviewer child's streamed gate is suppressed but its verdict app
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.ended",
       data: { sessionID: "c1", text: `\nfindings\n\n${GATE_PASS}\n` },
     })
-    await settle()
 
     const suppressed = journalEntries(metricsDir).filter((l) => l.type === "suppressed")
     assert.equal(suppressed.length, 1, "exactly one suppressed audit entry")
@@ -212,14 +210,13 @@ test("wiring: a reviewer child's streamed gate is suppressed but its verdict app
     )
 
     // The same child's own verdict is authoritative and records.
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.ended",
       data: { sessionID: "c1", text: `\nreview\n\n${APPROVE}\n` },
     })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
   } finally {
     restore()
   }
@@ -229,11 +226,10 @@ test("wiring: a reviewer child's streamed gate is suppressed but its verdict app
 test("wiring: an unseeded root session echo is suppressed with an empty agent", async () => {
   const { h, metricsDir, dispose } = await boot()
   try {
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.ended",
       data: { sessionID: "p1", text: `as listed:\n${GATE_PASS}\n` },
     })
-    await settle()
     const suppressed = journalEntries(metricsDir).filter((l) => l.type === "suppressed")
     assert.ok(suppressed.some((l) => l.kind === "gate" && l.agent === ""))
     assert.equal(
@@ -255,9 +251,8 @@ test("wiring: a streaming-suppressed gate flips again on authoritative delivery"
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "reviewer" },
     })
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: GATE_PASS } })
+    await h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: GATE_PASS } })
     await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "suppressed"))
-    await settle()
     // ...then an authoritative test-runner delivery of the same marker flips.
     await callTool(h, "execute.after", {
       tool: "task",
@@ -268,7 +263,6 @@ test("wiring: a streaming-suppressed gate flips again on authoritative delivery"
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
     )
-    await settle()
     const all = journalEntries(metricsDir)
     const suppressed = all.filter((l) => l.type === "suppressed")
     const gates = all.filter((l) => l.type === "gate" && l.result === "PASS")
@@ -293,11 +287,13 @@ test("wiring: record agent resolves the emitter, flat and data.-nested keys both
       {},
       { sessionRecords: withAgent({ parentID: "p1", agent: "reviewer" }) },
     )
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     dispose()
   }
   // Nested data.agent key.
@@ -306,11 +302,13 @@ test("wiring: record agent resolves the emitter, flat and data.-nested keys both
       {},
       { sessionRecords: withAgent({ parentID: "p1", data: { agent: "reviewer" } }) },
     )
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "c1"),
     )
-    await settle()
     dispose()
   }
   // No agent at all → suppressed.
@@ -319,9 +317,11 @@ test("wiring: record agent resolves the emitter, flat and data.-nested keys both
       {},
       { sessionRecords: withAgent({ parentID: "p1" }) },
     )
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "suppressed"))
-    await settle()
     assert.equal(
       journalEntries(metricsDir).some((l) => l.type === "verdict"),
       false,
@@ -335,9 +335,11 @@ test("wiring: record agent resolves the emitter, flat and data.-nested keys both
 test("wiring: a throwing-get host suppresses the stream without new errors", async () => {
   const { h, dispose, metricsDir } = await boot({}, { throwingGet: true })
   try {
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: `${APPROVE}\n` },
+    })
     await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "suppressed"))
-    await settle()
     assert.equal(
       journalEntries(metricsDir).some((l) => l.type === "error"),
       false,
@@ -355,23 +357,24 @@ test("wiring: the emitter cache evicts past its bound", async () => {
   try {
     // "early" seeds the cache first (as a reviewer) and records an APPROVE.
     h.pushEvent({ type: "session.created", data: { sessionID: "early", agent: "reviewer" } })
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "early", text: `${APPROVE}\n` } })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "early", text: `${APPROVE}\n` },
+    })
     await waitUntil(() =>
       journalEntries(metricsDir).some((e) => e.type === "verdict" && e.raw === "early"),
     )
-    await settle()
     // 60 fresh reviewers push the cache past its bound of 50, evicting "early".
     for (let i = 0; i < 60; i++) {
       h.pushEvent({ type: "session.created", data: { sessionID: "f" + i, agent: "reviewer" } })
-      h.pushEvent({
+      await h.pushEvent({
         type: "session.text.ended",
         data: { sessionID: "f" + i, text: `${APPROVE}\n` },
       })
     }
-    await settle()
     // "early" re-streams a distinct APPROVE. Evicted from the cache, its agent
     // is gone, so this second verdict is denied (suppressed), not applied.
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.text.ended",
       data: { sessionID: "early", text: "VERDICT: APPROVE crit=1 high=0 med=0 low=0\n" },
     })
@@ -380,7 +383,6 @@ test("wiring: the emitter cache evicts past its bound", async () => {
         (l) => l.type === "suppressed" && l.marker.includes("crit=1"),
       ),
     )
-    await settle()
     const appliedEarly = journalEntries(metricsDir).filter(
       (e) => e.type === "verdict" && e.raw === "early" && e.marker.includes("crit=1"),
     )
@@ -406,11 +408,10 @@ test("wiring: a renamed test-runner agent gates for that name only", async () =>
       type: "session.created",
       data: { sessionID: "c1", parentID: "p1", agent: "ci-bot" },
     })
-    h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: GATE_PASS } })
+    await h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: GATE_PASS } })
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
     )
-    await settle()
   } finally {
     dispose()
   }

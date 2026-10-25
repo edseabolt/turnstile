@@ -27,6 +27,7 @@ import {
   callPermission,
   callSession,
   callTool,
+  frozenClock,
   isolatedEnv,
   journalEntries,
   makeFakeHost,
@@ -53,9 +54,6 @@ const statusScript = path.join(
 function code(res: { status: number | null; exitCode?: number | null }): number {
   return res.status ?? res.exitCode ?? -1
 }
-
-/** Gives the async event-loop consumer a tick to drain queued stream events. */
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
 
 /**
  * Boots a temp project dir whose `.opencode/plans` holds one plan file, and the
@@ -486,11 +484,10 @@ test("reply: a reply with no matching pending ask is inert", async () => {
   const { h, restore, metricsDir } = await bootWithPlan()
   try {
     // No evaluate ask happened, so planAskRequestID is empty.
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "orphan", reply: "once" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
     )
@@ -513,11 +510,10 @@ test("reply: a requestID mismatch does not grant", async () => {
   try {
     await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
     h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-1" } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "WRONG", reply: "once" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
     )
@@ -543,18 +539,16 @@ test("asked: a non-string and an empty request id are not recorded", async () =>
     await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
     // Non-string id: not recorded.
     h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: 42 } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "42", reply: "once" },
     })
-    await settle()
     // Empty id: not recorded either.
     h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "" } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "", reply: "once" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
     )
@@ -597,8 +591,7 @@ test("asked: a missing id falls back to requestID and the ask registers", async 
 test("replied: a requestID-less reply touches neither map", async () => {
   const { h, restore, metricsDir } = await bootWithPlan()
   try {
-    h.pushEvent({ type: "permission.replied", properties: { sessionID: "p1" } })
-    await settle()
+    await h.pushEvent({ type: "permission.replied", properties: { sessionID: "p1" } })
     // No decision journal entry and the plan gate is still red.
     assert.ok(!journalEntries(metricsDir).some((l) => l.type === "permission"))
     await assert.rejects(() =>
@@ -681,11 +674,10 @@ test("reply: an unrelated ask/reply between the plan ask and its reply is inert"
     })
     // The human approves the bash ask — that approval must NOT release the
     // plan gate.
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "bash-1", reply: "always" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
       "an unrelated ask approval must not be applied to the plan gate",
@@ -724,11 +716,10 @@ test("asked: a non-prefixed message under a live latch is not recorded; a prefix
       type: "permission.asked",
       properties: { sessionID: "p1", id: "bash-1", message: "run rm -rf / ?" },
     })
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "bash-1", reply: "always" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
       "a bash-ask approval under the latch must not release the plan gate",
@@ -764,25 +755,22 @@ test("asked: a non-prefixed message under a live latch is not recorded; a prefix
  * empty-message ask is not recorded and its reply is inert (fail-toward-strict:
  * the gate re-asks).
  */
-test("asked: an expired awaiting latch does not record the ask", async () => {
+test("asked: an expired awaiting latch does not record the ask", async (t) => {
   const { h, restore, metricsDir } = await bootWithPlan()
-  const realNow = Date.now
-  let now = realNow()
-  ;(Date as unknown as { now: () => number }).now = () => now
+  const clock = frozenClock(t)
   try {
     await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
     // Age the latch past the TTL, then send the ask the escalation awaited.
-    now += 6001
+    clock.advance(6001)
     h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-late" } })
-    h.pushEvent({
-      type: "permission.replied",
-      properties: { sessionID: "p1", requestID: "req-late", reply: "once" },
-    })
     // Drain the queued events while time is still frozen: the stream consumer
     // is asynchronous, so restoring the clock before it runs would make the
     // latch look live again.
-    await settle()
-    now = realNow()
+    await h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-late", reply: "once" },
+    })
+    clock.restore()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
       "an expired latch must not record the ask",
@@ -796,7 +784,6 @@ test("asked: an expired awaiting latch does not record the ask", async () => {
       }),
     )
   } finally {
-    ;(Date as unknown as { now: () => number }).now = realNow
     restore()
   }
 })
@@ -812,11 +799,10 @@ test("asked: a prompt reset clears the awaiting latch", async () => {
     // A new user prompt resets the parent's task scope — including the latch.
     await callSession(h, "prompt", { sessionID: "p1", text: "start something new" })
     h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-post" } })
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "req-post", reply: "once" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
       "a post-reset ask must not be recorded as the plan ask",
@@ -907,11 +893,10 @@ test("reply: a message-prefixed plan ask is recorded and the map stays bounded",
       journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
     )
     // A stale evicted id is inert.
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "old-1", reply: "always" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
     )
@@ -948,11 +933,10 @@ test("reply: landing-gate asks stay bounded and a recent ask still matches", asy
       journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
     )
     // A stale evicted id is inert.
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.replied",
       properties: { sessionID: "p1", requestID: "land-old-1", reply: "always" },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
     )
@@ -1157,11 +1141,11 @@ test("evaluate: an approved landing gate releases without forcing the ask", asyn
  * gate re-blocks). Mirrors the awaiting-plan-ask expiry test, using a frozen
  * clock aged past the TTL.
  */
-test("evaluate: an expired pending-landing-ask arm does not force the ask", async () => {
+test("evaluate: an expired pending-landing-ask arm does not force the ask", async (t) => {
   const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
-  const realNow = Date.now
-  let now = realNow()
-  ;(Date as unknown as { now: () => number }).now = () => now
+  // The clock restore rides on the test's after hook: the final assertion
+  // runs while time is still frozen, as the latch age it measures.
+  const clock = frozenClock(t)
   try {
     // First push: block (frozen time used for its journal ts).
     await assert.rejects(() =>
@@ -1171,19 +1155,18 @@ test("evaluate: an expired pending-landing-ask arm does not force the ask", asyn
         input: { command: "git push origin main" },
       }),
     )
-    // Repeat push: escalate arms the latch at frozen time `now`.
+    // Repeat push: escalate arms the latch at the frozen time.
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
       input: { command: "git push origin main" },
     })
     // Age the latch past the pending-landing-ask TTL.
-    now += 6001
+    clock.advance(6001)
     const event: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", event)
     assert.equal(event.effect, undefined, "an expired arm arms nothing")
   } finally {
-    ;(Date as unknown as { now: () => number }).now = realNow
     restore()
   }
 })
@@ -1552,8 +1535,7 @@ test("replied: a non-empty unrecorded requestID journals an unrecorded reply and
 test("replied: a requestID-less reply journals no unrecorded-reply row", async () => {
   const { h, restore, metricsDir } = await bootWithPlan()
   try {
-    h.pushEvent({ type: "permission.replied", properties: { sessionID: "p1" } })
-    await settle()
+    await h.pushEvent({ type: "permission.replied", properties: { sessionID: "p1" } })
     assert.ok(
       !journalEntries(metricsDir).some(
         (l) => l.type === "permission" && l.event === "unrecorded-reply",
@@ -1613,7 +1595,7 @@ test("asked: a prefixed plan-ask echo journals no latch-steal", async () => {
     await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
     // The prefixed echo (what the evaluate handler composes) is the normal
     // owner — no steal.
-    h.pushEvent({
+    await h.pushEvent({
       type: "permission.asked",
       properties: {
         sessionID: "p1",
@@ -1621,7 +1603,6 @@ test("asked: a prefixed plan-ask echo journals no latch-steal", async () => {
         message: `${PLAN_ASK_MESSAGE_PREFIX} — plan.md: Some plan body text.`,
       },
     })
-    await settle()
     assert.ok(
       !journalEntries(metricsDir).some((l) => l.type === "permission" && l.event === "latch-steal"),
       "a prefixed plan-ask echo must not journal a latch-steal row",

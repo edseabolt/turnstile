@@ -26,9 +26,6 @@ import {
   type FakeHost,
 } from "./helpers.ts"
 
-/** Gives the async event loop a tick to drain queued stream events. */
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30))
-
 /**
  * Builds a session record carrying `dir` at a dotted candidate key, e.g.
  * `data.location.directory`. One place for the four candidate shapes.
@@ -281,11 +278,10 @@ test("session_move invalidates the cache under both observeSessionMove configs",
 test("root session.created seeds the per-session directory cache", async () => {
   const { h, restore, projectB } = await boot()
   try {
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "p1", location: { directory: projectB } },
     })
-    await settle()
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {
@@ -309,11 +305,10 @@ test("root session.created seeds the per-session directory cache", async () => {
 test("another session's fallback is the process cwd, not a seeded directory", async () => {
   const { h, restore, projectB } = await boot()
   try {
-    h.pushEvent({
+    await h.pushEvent({
       type: "session.created",
       data: { sessionID: "p1", location: { directory: projectB } },
     })
-    await settle()
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {
