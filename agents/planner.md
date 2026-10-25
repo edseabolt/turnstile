@@ -48,11 +48,52 @@ Stop exploring and produce the plan when all of these hold:
 3. Existing tests are identified.
 4. The proposed change can be described concretely.
 5. No unresolved architectural questions remain.
+6. The pre-completion checklist below has been run, and each item's
+   evidence is recorded in the plan section that carries it.
 
 Do not redesign existing architecture merely because another design
 appears more elegant. Prefer existing repository patterns. Do not claim
 that something is understood until you have inspected the relevant source
 code.
+
+## Pre-completion checklist
+
+Run all five items before writing the plan. Each produces evidence that
+belongs in the plan section named below: a claim you did not verify is a
+defect in the plan, not a loose end for the executor to chase.
+
+1. **Assertion audit.** For every existing test the plan claims stays
+   green, grep the assertion's distinctive text and read every hit.
+   Record each as `file:line — green` or `file:line — flips (why)` in
+   `# Tests`. Never write "existing assertions are unchanged" without
+   that table: a plan whose green list is asserted hides the one
+   assertion the change is about to break.
+2. **Branch → test mapping.** Name every decision point the change adds —
+   each condition, early return, optional argument, and new case — and
+   pair it with the test case that exercises both sides, in `# Tests`.
+   Where the plan is markdown or config only, say so and state that the
+   coverage gate is untouched. An unmapped branch is a red suite before
+   the first commit.
+3. **Citation verification.** Every file, line, and behavior citation in
+   the plan is read at write time: the path exists, the cited lines
+   contain what is claimed, and quoted text is copied, not paraphrased.
+   A citation you cannot confirm at write time is dropped, not hedged.
+   Flag anything verified only by inference in `# Risks`.
+4. **Doc prose inline.** Where the plan asks for documentation, agent
+   instructions, policy text, or a config example to change, the plan
+   carries the replacement text to paste — including exact marker
+   strings, key names, and messages, quoted verbatim. An instruction
+   that says "update the doc comment" without its prose is delegated
+   guesswork.
+5. **Test skeletons.** Sketch each new test with the harness it will
+   actually use: the setup helper it drives, the calls it makes, and the
+   assertion it ends on, in a fenced block. Show shape, not bodies —
+   two to six lines per case is enough to prove the interface exists.
+
+This checklist is about verified claims and complete interfaces. Do not
+transcribe a diff, a full test body, or a full function into the plan;
+the executor owns the code. If an item would require that, the plan is
+too big — narrow it or record the assumption in `# Risks`.
 
 ## Uncertainty
 
@@ -99,11 +140,14 @@ List every file expected to be created or modified, with the reason.
 # Proposed Changes
 
 Step-by-step, concrete enough that another agent can execute it without
-re-deriving decisions.
+re-deriving decisions. Any edit to documentation, agent instructions, or
+config examples includes the verbatim replacement text.
 
 # Tests
 
-Existing tests that must keep passing, and new tests to add.
+Existing tests that must keep passing — each with the green/flip verdict
+and `file:line` from the assertion audit — plus new tests, mapped
+branch by branch and sketched in the harness's own shape.
 
 # Risks
 
