@@ -337,14 +337,17 @@
  *   the user configures a `bashDeny` rule that denies it first (the two
  *   journal reasons stay disjoint either way), and every `git push` is
  *   journaled as landing telemetry in every mode.
- * - Landing escalation: on a repeat `git push` with no approval and
- *   `gitGates.mode: enforce`, turnstile journals a permission ask
+ * - Landing escalation: on a `git push` with no approval that either repeats
+ *   a blocked attempt or follows a credited reviewer APPROVE (the journal
+ *   still carries the credit even though the prompt reset dropped the flag),
+ *   under `gitGates.mode: enforce`, turnstile journals a permission ask
  *   (`reason:"landing"`) and lets `execute.before` pass so the
  *   `permission.evaluate` handler forces a human ask
  *   (`turnstile: push/PR requires a reviewer VERDICT: APPROVE before
  *   landing`). The reply `always` stands a reviewer approval for the task,
  *   `once` grants exactly one push (consumed by the next push), and `reject`
- *   re-blocks and re-arms — the repeat push is the human
+ *   re-blocks and re-arms — the escalated push (a repeat, or the first push on a
+ *   prompt that reset a credited approval) is the human
  *   decision point. The evaluate arm's one-shot consume of the live latch is
  *   journaled as a replay-inert, status-inert `event:"forced"` stamp
  *   (no `action:"ask"`, so the guard's landing-ask record stays the single

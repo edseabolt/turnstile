@@ -222,8 +222,9 @@ A typical enforced run:
    executions journaled within the parent's current task window.
 6. The reviewer's APPROVE credits the landing gate — under
    `reviewEnsemble:"enforce"` only after ≥2 unwaived reviewer dispatches.
-7. `git push` is blocked until reviewer approval exists; a repeat push arms the
-   interactive landing ask.
+7. `git push` is blocked until reviewer approval exists; the interactive
+   landing ask arms immediately when the session carries a credited reviewer
+   APPROVE that the prompt reset just dropped, and on a repeat push otherwise.
 
 ---
 

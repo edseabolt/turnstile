@@ -18,6 +18,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { createLedger } from "../src/ledger.ts"
+import { LANDING_REQUIREMENT } from "../src/tool-policy.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callPermission,
@@ -1049,6 +1050,198 @@ test("T15: a no-input plan-reviewer APPROVE attributes through the session recor
     dispose()
   } finally {
     process.chdir(prev)
+  }
+})
+
+/**
+ * T10: a mechanical credit outlives its own task bucket — the landing prompt
+ * resets `hasReviewApprove`, but the credit trace survives, so the first push
+ * of the landing turn is the human decision point: no `BlockError`, exactly
+ * one enforce-mode landing ask journaled, no `no-landing-approval` block, and
+ * the evaluate handler forces the ask with the landing requirement message.
+ */
+test("T10: a credited APPROVE arms the landing ask on the first push of the landing prompt", async () => {
+  const { h, dispose, metricsDir } = await boot({
+    gateEvidence: "flag",
+    gitGates: { mode: "enforce" },
+  })
+  try {
+    await greenGate(h, "p1")
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it again" },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+      result: { output: `${APPROVE}\n` },
+    })
+    assert.equal(
+      ledgerState(metricsDir, "p1").hasReviewApprove,
+      true,
+      "the complete-ensemble APPROVE credits before the reset",
+    )
+    // The orchestrator's landing prompt: the bucket reset clears the flag;
+    // the credit trace (bucket-free) survives.
+    await callSession(h, "prompt", { sessionID: "p1", text: "create branch, push, open PR" })
+    // The landing turn's first push: the prior block count is 0, so the
+    // credit trace is the only branch that can reach the escalation — it
+    // must not throw the first block.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-10" } })
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask", "the escalated first push forces the landing ask")
+    assert.equal(event.message, `turnstile: ${LANDING_REQUIREMENT}`)
+    const entries = journalEntries(metricsDir)
+    const asks = entries.filter(
+      (e) => e.type === "permission" && e.action === "ask" && e.reason === "landing",
+    )
+    assert.equal(asks.length, 1, "the escalated first push is the single ask record")
+    assert.equal(asks[0]!.mode, "enforce")
+    assert.ok(
+      !entries.some((e) => e.type === "blocked" && e.reason === "no-landing-approval"),
+      "a credited session's first push journals no no-landing-approval block",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * T11: the human always-release is credit — the next prompt's reset clears
+ * the `hasReviewApprove` flag but not the credit trace, so the next turn's
+ * first push escalates to the human ask instead of throwing the first block.
+ */
+test("T11: a human always landing release arms the ask on the next turn's first push", async () => {
+  const { h, dispose, metricsDir } = await boot({
+    gateEvidence: "flag",
+    gitGates: { mode: "enforce" },
+  })
+  try {
+    // Ladder to the human release: first block, repeat escalates, and the
+    // always reply becomes the standing release (flag + credit trace).
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-11" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-11", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "permission" && e.decision === "always"),
+    )
+    // The next turn: the prompt reset clears the flag, but the human release
+    // is credit the trace still carries.
+    await callSession(h, "prompt", { sessionID: "p1", text: "fix the flake and push" })
+    // The next turn's first push escalates (no BlockError): the release is
+    // credit, so the human decides it again.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-11b" } })
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask", "the next turn's first push forces the landing ask")
+    assert.equal(event.message, `turnstile: ${LANDING_REQUIREMENT}`)
+    const entries = journalEntries(metricsDir)
+    assert.equal(
+      entries.filter((e) => e.type === "permission" && e.action === "ask" && e.reason === "landing")
+        .length,
+      2,
+      "one ask per escalated attempt (pre-reset repeat, post-reset first push)",
+    )
+    assert.equal(
+      entries.filter((e) => e.type === "blocked" && e.reason === "no-landing-approval").length,
+      1,
+      "only the pre-reset first block carries no-landing-approval",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/**
+ * Stale credit: the credit trace has no TTL, and prompt resets neither
+ * consume nor clear it, so a release journaled several turns ago still
+ * escalates the session's first push to the human ask instead of throwing a
+ * `no-landing-approval` block — the human remains the decision point across
+ * the stale window (documented as assumed-acceptable: the restart path
+ * already trusts the same journal fact indefinitely).
+ */
+test("a stale journaled release still escalates the first push after later prompts", async () => {
+  const { h, dispose, metricsDir } = await boot({
+    gateEvidence: "flag",
+    gitGates: { mode: "enforce" },
+  })
+  try {
+    // Ladder to the human release: first block, repeat escalates, always reply.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "land-stale" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "land-stale", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "permission" && e.decision === "always"),
+    )
+    // Two later turns: each prompt reset clears the flag; none clears the trace.
+    await callSession(h, "prompt", { sessionID: "p1", text: "task A" })
+    await callSession(h, "prompt", { sessionID: "p1", text: "task B" })
+    // The stale turn's first push escalates instead of throwing the first block.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    const entries = journalEntries(metricsDir)
+    assert.equal(
+      entries.filter((e) => e.type === "permission" && e.action === "ask" && e.reason === "landing")
+        .length,
+      2,
+      "one ask per escalated attempt (pre-reset repeat, stale first push)",
+    )
+    assert.equal(
+      entries.filter((e) => e.type === "blocked" && e.reason === "no-landing-approval").length,
+      1,
+      "only the pre-reset first block carries no-landing-approval",
+    )
+  } finally {
+    dispose()
   }
 })
 

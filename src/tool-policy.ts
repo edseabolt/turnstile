@@ -258,6 +258,13 @@ function parseCommitArgs(args: string[]): { messages: string[]; uninspectable: b
 export interface LandingGateCapability {
   /** True when the task already carries a reviewer `VERDICT: APPROVE` (release signal). */
   hasApproval(): boolean
+  /**
+   * True when the session journaled a credited reviewer APPROVE — the
+   * bucket-free credit that a prompt reset drops the `hasReviewApprove` flag
+   * for (refuses only a refusal-stamped verdict). Lets guardLanding escalate
+   * a credited session's first push instead of throwing the first block.
+   */
+  hasCreditedApproval(): boolean
   /** Count of `no-landing-approval` blocks recorded this task. */
   priorBlocks(): number
   /** Increment {@link LandingGateCapability.priorBlocks} (block path only). */
@@ -679,11 +686,13 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   /**
    * Gates a `git push` on a reviewer `VERDICT: APPROVE`. `gate` is the
    * stateful capability from `setup.ts`. With approval: allow, no journal noise
-   * beyond telemetry. Without, the first block this task journals
-   * `no-landing-approval` (and throws under `enforce`); a repeat attempt under
-   * `enforce` journals a `permission` ask and signals escalation (allowing
-   * `execute.before` to pass so the evaluate handler forces the human ask);
-   * `shadow` journals only, `off` is a no-op.
+   * beyond telemetry. Without, the first block journals
+   * `no-landing-approval` — unless the session already carries a credited
+   * reviewer APPROVE that a prompt reset dropped, in which case even the first
+   * attempt is the human decision point: under `enforce` it journals a
+   * `permission` ask and signals escalation, allowing `execute.before` to pass
+   * so the evaluate handler forces the ask. A repeat attempt under `enforce`
+   * escalates the same way; `shadow` journals only, `off` is a no-op.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
@@ -712,8 +721,13 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
       // Approval releases the gate: allow, no journal noise beyond telemetry.
       if (gate.hasApproval()) return
       const prior = gate.priorBlocks()
-      if (prior >= 1) {
-        // Repeat attempt without approval. Under enforce, arm the human ask:
+      // A journaled credit escalates the first attempt too: the prompt reset
+      // dropped the `hasReviewApprove` flag, but the session still carries a
+      // non-refused reviewer APPROVE, so the human decides this first push
+      // rather than one wasted `no-landing-approval` block earlier.
+      if (prior >= 1 || gate.hasCreditedApproval()) {
+        // Escalation to the human ask (repeat attempt, or a credited first
+        // attempt). Under enforce, arm the human ask:
         // journal the landing ask and call gate.escalate() to set the
         // pending-landing-ask latch, then allow execute.before to pass so the
         // setup-side evaluate handler (which forces the ask off that latch,

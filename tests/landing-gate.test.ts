@@ -76,13 +76,15 @@ function allows(fn: () => void): void {
 /**
  * Builds a `LandingGateCapability` fake that records call counts and can be
  * armed to throw from one method (to exercise the guard's fail-open path).
- * `prior` seeds `priorBlocks()`; `approval` seeds `hasApproval()`.
+ * `prior` seeds `priorBlocks()`; `approval` seeds `hasApproval()`; `credited`
+ * seeds `hasCreditedApproval()`.
  * @param opts Capability configuration.
  * @returns The capability and its observable call log.
  */
 function recordingCapability(opts?: {
   prior?: number
   approval?: boolean
+  credited?: boolean
   throwIn?: keyof LandingGateCapability
 }): { gate: LandingGateCapability; log: Record<string, number | boolean> } {
   const log: Record<string, number | boolean> = {
@@ -96,6 +98,10 @@ function recordingCapability(opts?: {
     hasApproval: () => {
       if (throwAt === "hasApproval") throw new Error("hasApproval boom")
       return opts?.approval ?? false
+    },
+    hasCreditedApproval: () => {
+      if (throwAt === "hasCreditedApproval") throw new Error("hasCreditedApproval boom")
+      return opts?.credited ?? false
     },
     priorBlocks: () => {
       if (throwAt === "priorBlocks") throw new Error("priorBlocks boom")
@@ -175,6 +181,42 @@ test("guardLanding: repeat attempt under shadow re-blocks and records", () => {
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.recordBlock, 1, "recordBlock called once on the repeat attempt")
   assert.equal(log.escalate, 0, "no escalate under shadow")
+  const blocked = landingBlocks(entries)
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0].mode, "shadow")
+})
+
+/**
+ * A session journaled with a credited reviewer APPROVE whose `hasReviewApprove`
+ * flag a prompt reset dropped escalates on the FIRST enforce attempt: no
+ * first-block throw, no block recorded, one landing ask journaled, and
+ * `gate.escalate()` armed so the evaluate handler can force the human ask.
+ */
+test("guardLanding: a credited session escalates on the first enforce attempt", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { gate, log } = recordingCapability({ credited: true })
+  allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.escalate, 1, "escalate is called on the credited first attempt")
+  assert.equal(log.escalated, true)
+  assert.equal(log.recordBlock, 0, "a credited first attempt records no block")
+  const perm = entries.find((e) => e.type === "permission" && e.reason === "landing")
+  assert.ok(perm, "the landing ask is journaled on the credited first attempt")
+  assert.equal(perm.action, "ask")
+  assert.equal(perm.mode, "enforce")
+  assert.deepEqual(landingBlocks(entries), [], "a credited first attempt journals no block")
+})
+
+/**
+ * A journaled credit under `shadow` journals the first block unchanged: shadow
+ * never arms the escalation — one `no-landing-approval` block is recorded and
+ * journaled, with no throw and no escalate.
+ */
+test("guardLanding: a credited session under shadow journals the first block", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "shadow" } })
+  const { gate, log } = recordingCapability({ credited: true })
+  allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.escalate, 0, "shadow never escalates")
+  assert.equal(log.recordBlock, 1, "a credited first attempt records one block under shadow")
   const blocked = landingBlocks(entries)
   assert.equal(blocked.length, 1)
   assert.equal(blocked[0].mode, "shadow")
