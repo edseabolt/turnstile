@@ -410,6 +410,7 @@ test("git-side guards journal their internal failure when the sink throws", () =
   const policy = createToolPolicy(config, hostile)
   const stub = {
     hasApproval: (): boolean => false,
+    hasCreditedApproval: (): boolean => false,
     priorBlocks: (): number => 0,
     recordBlock: (): void => {},
     escalate: (): void => {},

@@ -64,6 +64,14 @@ export interface GateLedger {
    * verdict evidence is dropped and their metering counters are cleared (see
    * `clearMeteringCounters`), so a cap-exhausted child is re-dispatchable
    * after the parent's next prompt.
+   *
+   * The credit-bearing reviewer APPROVE trace (`markCreditedApproval` /
+   * `hasCreditedApproval`) is a deliberate exception to this reset: it is
+   * bucket-free provenance, not a bucket flag, so the prompt reset that drops
+   * `hasReviewApprove` leaves it intact — the window the landing gate reads to
+   * escalate a credited session's first push. A refusal stamp suppresses the
+   * mark at restore (replay) time, never at read time, so this reset performs
+   * no refusal re-check.
    * @param sessionID The parent session ID to reset.
    * @returns The number of registered child buckets whose metering counters
    *     were non-fresh before clearing (0 for a no-op release).
@@ -177,6 +185,27 @@ export interface GateLedger {
    * @param projectDir The project directory the approval was recorded under.
    */
   recordPlanApprovalDurable(name: string, key: string, projectDir: string): void
+  /**
+   * Marks a parent session's reviewer APPROVE as credit-bearing — the fact
+   * that a non-refused credit was earned for this session (a live mechanical
+   * credit or a human `always` release) or restored from replay. The
+   * `hasReviewApprove` flag lives on the session bucket, which a prompt reset
+   * rebuilds; the journal-recorded credit outlives that reset, so the ledger
+   * carries this provenance bucket-free. It is the ledger's signal for the
+   * landing gate's credit-driven escalation (a credited session's first push
+   * arms the human ask instead of throwing `no-landing-approval`). Re-marks
+   * are idempotent; LRU-capped like the other session maps.
+   * @param sessionID The parent session ID the credit is bound to.
+   */
+  markCreditedApproval(sessionID: string): void
+  /**
+   * Whether a parent session carries a credit-bearing reviewer APPROVE mark
+   * (see `markCreditedApproval`). Refusal-stamped credits are never marked, so
+   * this reports the journaled provenance, not the live bucket flag.
+   * @param sessionID The parent session ID to test.
+   * @returns True when the session carries an earned credit mark.
+   */
+  hasCreditedApproval(sessionID: string): boolean
 }
 
 /**
@@ -546,16 +575,20 @@ function restorePlanVerdicts(
  * @param states The session→state map to populate.
  * @param lastReviewVerdict The replayed last-wins reviewer verdicts.
  * @param lastRefusedApprove The replayed last-wins refusal stamps.
+ * @param creditedApprovals The bucket-free credit trace to stamp with each
+ *     restored, non-refused credit (the mark outlives a later prompt reset).
  */
 function restoreReviewApprovals(
   states: Map<string, GateState>,
   lastReviewVerdict: Map<string, string>,
   lastRefusedApprove: Map<string, boolean>,
+  creditedApprovals: Map<string, number>,
 ): void {
   for (const [sessionID, result] of lastReviewVerdict) {
     if (result !== "APPROVE") continue
     if (lastRefusedApprove.get(sessionID) === true) continue
     graceBucket(states, sessionID).hasReviewApprove = true
+    creditedApprovals.set(sessionID, Date.now())
   }
 }
 
@@ -567,14 +600,18 @@ function restoreReviewApprovals(
  * entry `refusedApprove:true`) falls through and is not re-credited.
  * @param states The session→state map to populate.
  * @param lastRefusedApprove The replayed last-wins refusal stamps.
+ * @param creditedApprovals The bucket-free credit trace to stamp with each
+ *     restored human grant (the mark outlives a later prompt reset).
  */
 function restoreHumanGrants(
   states: Map<string, GateState>,
   lastRefusedApprove: Map<string, boolean>,
+  creditedApprovals: Map<string, number>,
 ): void {
   for (const [sessionID, refused] of lastRefusedApprove) {
     if (refused !== false) continue
     graceBucket(states, sessionID).hasReviewApprove = true
+    creditedApprovals.set(sessionID, Date.now())
   }
 }
 
@@ -603,12 +640,18 @@ function restoreEnsembleCounts(
  * ensemble) over the replayed last-wins maps.
  * @param states The session→state map to populate.
  * @param maps The filled replay maps.
+ * @param creditedApprovals The bucket-free credit trace stamped by the
+ *     verdict/human-grant restore loops (their provenance for escalation).
  */
-function restoreBuckets(states: Map<string, GateState>, maps: ReplayMaps): void {
+function restoreBuckets(
+  states: Map<string, GateState>,
+  maps: ReplayMaps,
+  creditedApprovals: Map<string, number>,
+): void {
   restoreGatePasses(states, maps.lastGateResult)
   restorePlanVerdicts(states, maps.lastPlanResult)
-  restoreReviewApprovals(states, maps.lastReviewVerdict, maps.lastRefusedApprove)
-  restoreHumanGrants(states, maps.lastRefusedApprove)
+  restoreReviewApprovals(states, maps.lastReviewVerdict, maps.lastRefusedApprove, creditedApprovals)
+  restoreHumanGrants(states, maps.lastRefusedApprove, creditedApprovals)
   restoreEnsembleCounts(states, maps.lastEnsemble)
 }
 
@@ -807,11 +850,14 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  *     envelope.
  * @param tailLines Maximum number of combined journal lines replayed; older
  *     lines are dropped.
+ * @param creditedApprovals The bucket-free credit trace to stamp with each
+ *     restored, non-refused credit (threaded to the restore loops).
  */
 function replayGatePasses(
   states: Map<string, GateState>,
   journalPath: string,
   tailLines: number,
+  creditedApprovals: Map<string, number>,
 ): void {
   try {
     const maps = newReplayMaps()
@@ -831,7 +877,7 @@ function replayGatePasses(
       const drop = foldReplayLine(entry, maps, sessionID)
       if (drop) drops.push(drop)
     }
-    restoreBuckets(states, maps)
+    restoreBuckets(states, maps, creditedApprovals)
     journalReplayDrops(journalPath, drops)
   } catch {
     // fail-open
@@ -878,6 +924,15 @@ export function createLedger(
   // like the other maps, bounded by `maxTrackedParents`; registration is the
   // eviction-protection signal for the `states` cap.
   const parents = new Map<string, true>()
+  // Credit-bearing reviewer APPROVE provenance (parent session -> mark stamp).
+  // Bucket-free and LRU-capped at `maxSessions`: the `hasReviewApprove` flag
+  // lives on the session bucket (rebuilt by a prompt reset), but the
+  // journal-recorded credit outlives that reset, so the ledger carries this
+  // provenance outside the bucket to drive the landing gate's escalation.
+  // Refusal-stamped credits are never marked (replay honors the stamp before
+  // the mark). No eviction protection: an evicted trace just falls back to
+  // the ordinary first-block (fail-toward-strict, matching the other maps).
+  const creditedApprovals = new Map<string, number>()
   // Registry bound: 4× the states cap, floored at 256 so a small cap still
   // tracks an active fleet of registered parents.
   const maxTrackedParents = Math.max(256, maxSessions * 4)
@@ -953,6 +1008,37 @@ export function createLedger(
   }
 
   /**
+   * Marks a parent session's reviewer APPROVE as credit-bearing on the
+   * bucket-free trace (see the interface doc). The `hasReviewApprove` flag is
+   * dropped by a prompt reset but the journaled credit outlives it, so the
+   * ledger keeps this provenance outside the bucket; it is what the landing
+   * gate reads to escalate a credited session's first push. Re-marks refresh
+   * the stamp (idempotent); the map is LRU-capped at `maxSessions` with no
+   * eviction protection (an evicted trace falls back to the ordinary
+   * first-block, fail-toward-strict).
+   * @param sessionID The parent session ID the credit is bound to.
+   */
+  function markCreditedApproval(sessionID: string): void {
+    creditedApprovals.set(sessionID, Date.now())
+    promote(creditedApprovals, sessionID)
+    cap(creditedApprovals)
+  }
+
+  /**
+   * Whether a parent session carries a credit-bearing reviewer APPROVE mark
+   * (see the interface doc), with LRU promotion (the trace is LRU by use).
+   * Refusal-stamped credits are never marked, so this reports the journaled
+   * provenance, not the live bucket flag.
+   * @param sessionID The parent session ID to test.
+   * @returns True when the session carries an earned credit mark.
+   */
+  function hasCreditedApproval(sessionID: string): boolean {
+    if (!creditedApprovals.has(sessionID)) return false
+    promote(creditedApprovals, sessionID)
+    return true
+  }
+
+  /**
    * Returns the most-recently-admitted live parent: the registry map is
    * MRU-ordered (markParent promotes the key to the end on every admission),
    * so the last key is the most-recently-admitted parent. "" when the registry
@@ -1017,15 +1103,20 @@ export function createLedger(
     }
   }
 
-  // Replay runs before capping so the restored set honors the LRU cap too.
-  replayGatePasses(states, journalPath, replayTailLines)
+  // Replay runs before capping so the restored set honors the LRU cap too; the
+  // credit trace is capped once after replay (restore marks take a boot-time
+  // stamp, and the map is bounded like the other session maps).
+  replayGatePasses(states, journalPath, replayTailLines, creditedApprovals)
   cap(states, isParent)
+  cap(creditedApprovals)
 
   return {
     childToParent,
     markParent,
     isParent,
     lastParent,
+    markCreditedApproval,
+    hasCreditedApproval,
     state(sessionID: string): GateState {
       promote(states, sessionID)
       let s = states.get(sessionID)

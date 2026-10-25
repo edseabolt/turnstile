@@ -1364,6 +1364,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     const parent = ledger.parentOf(child)
     if (!gates.reviewEnsembleComplete(parent, ledger)) return
     ledger.state(parent).hasReviewApprove = true
+    // Credit the bucket-free trace too: the flag above dies on the landing
+    // prompt's reset, but the journaled APPROVE outlives it — the trace is
+    // what the landing gate reads to escalate the first push instead of
+    // throwing the misleading `no-landing-approval` block.
+    ledger.markCreditedApproval(parent)
   }
 
   /** The discovery snapshot for a self-keyed plan-verdict delivery. */
@@ -1845,7 +1850,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * human ask off it) and is called by guardLanding only under `enforce`
    * on a repeat attempt (no approval, >= 1 prior block); fail-toward-strict
    * — a host reject leaves approval absent, so the next attempt re-blocks
-   * and re-arms.
+   * and re-arms. `hasCreditedApproval` is a read of the ledger's bucket-free
+   * credit trace (a journaled, non-refused reviewer APPROVE that a prompt
+   * reset dropped the `hasReviewApprove` flag for) that guardLanding
+   * consults to escalate a credited session's first push instead of throwing
+   * the first block.
    * @param st The parent's gate-state bucket.
    * @param parent The parent session (the latch's key).
    * @returns The landing-gate capability record.
@@ -1853,6 +1862,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   function landingGateHandles(st: GateState, parent: string): LandingGateCapability {
     return {
       hasApproval: () => st.hasReviewApprove,
+      hasCreditedApproval: () => ledger.hasCreditedApproval(parent),
       priorBlocks: () => st.landingBlocks,
       recordBlock: () => {
         st.landingBlocks += 1

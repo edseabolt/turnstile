@@ -47,10 +47,10 @@ flow: {
   hooks -> journal: "reviewEnsemble=enforce: approve credits only at ≥2 reviewer dispatches"
 
   orch -> hooks: "git push"
-  hooks -> orch: "BLOCKED: no-landing-approval (hasReviewApprove false)" {
+  hooks -> orch: "BLOCKED: no-landing-approval (no credited APPROVE for the session)" {
     style.stroke: "#c0392b"
   }
-  hooks -> user: "landing ask on repeat push"
+  hooks -> user: "landing ask (first push after a credited APPROVE, or repeat)"
   user -> hooks: "always / once / reject"
 
   hooks -> journal: "every decision journaled"

@@ -2135,6 +2135,98 @@ test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
   assert.equal(ledger.state("p1").hasReviewApprove, true, "GATE: FAIL never clears the approval")
 })
 
+/**
+ * The credit-bearing reviewer APPROVE trace is bucket-free: a prompt reset
+ * rebuilds the session bucket (dropping the `hasReviewApprove` flag), but the
+ * journaled credit outlives that reset. That is the exact window the landing
+ * gate reads to escalate a credited session's first push instead of throwing
+ * the misleading `no-landing-approval` block.
+ */
+test("the credited-approval trace survives the prompt reset the flag does not", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 64, 2000)
+  ledger.markCreditedApproval("p1")
+  ledger.state("p1").hasReviewApprove = true
+  // The landing prompt: the bucket is rebuilt fresh, dropping the flag...
+  ledger.resetState("p1")
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "the flag dies on the prompt reset")
+  // ...but the credit provenance survives it.
+  assert.equal(ledger.hasCreditedApproval("p1"), true, "the trace survives the prompt reset")
+})
+
+/**
+ * The credit trace is LRU-capped at `maxSessions` like the other session maps:
+ * over the cap the least-recently-used mark is evicted, and an evicted trace
+ * simply falls back to the ordinary first-block (fail-toward-strict).
+ */
+test("the credited-approval trace is LRU-capped like the other session maps", () => {
+  const ledger = createLedger(path.join(tmpDir(), "turnstile.jsonl"), 2, 2000)
+  ledger.markCreditedApproval("p1")
+  ledger.markCreditedApproval("p2")
+  ledger.markCreditedApproval("p3")
+  assert.equal(ledger.hasCreditedApproval("p1"), false, "over the cap, the oldest mark is evicted")
+  assert.equal(ledger.hasCreditedApproval("p2"), true, "the surviving marks stay")
+  assert.equal(ledger.hasCreditedApproval("p3"), true, "the surviving marks stay")
+})
+
+/**
+ * A refusal-stamped verdict suppresses the credit at restore time: replay does
+ * not restore the flag or the trace for a session whose last counted ensemble
+ * entry stamped `refusedApprove:true`. The refusal is honored at restore, not
+ * re-checked at read, so the trace is simply absent.
+ */
+test("replay restores no credit trace for a refusal-stamped verdict", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({
+        ts: "t0",
+        type: "verdict",
+        sessionID: "p1",
+        raw: "c1",
+        marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+        source: "task-result",
+      }),
+      JSON.stringify({
+        ts: "t1",
+        type: "ensemble",
+        sessionID: "p1",
+        agent: "reviewer",
+        count: 1,
+        refusedApprove: true,
+      }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  assert.equal(ledger.state("p1").hasReviewApprove, false, "the refusal suppresses the flag")
+  assert.equal(ledger.hasCreditedApproval("p1"), false, "the refusal suppresses the trace")
+})
+
+/**
+ * A human always-grant (an explicit `refusedApprove:false` clear) restores
+ * both the flag and the credit trace, so the standing human release survives
+ * restart — and the prompt reset — exactly as the live mark does.
+ */
+test("replay stamps the credit trace on a human always-grant clear", () => {
+  const metricsDir = tmpDir()
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    [
+      JSON.stringify({
+        ts: "t0",
+        type: "ensemble",
+        sessionID: "p1",
+        agent: "reviewer",
+        count: 2,
+        refusedApprove: false,
+      }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  assert.equal(ledger.state("p1").hasReviewApprove, true, "the human clear restores the flag")
+  assert.equal(ledger.hasCreditedApproval("p1"), true, "the human clear stamps the trace")
+})
+
 /** resetState drops the task-scoped waiver (and its scope, consumed flag, and
  *  allowance counter), the per-reason once-grants, and resets humanApproval to
  *  false on an ordinary (non-grace) prompt reset. */
