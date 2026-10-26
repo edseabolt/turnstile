@@ -50,7 +50,15 @@ async function boot(
   const h = makeFakeHost(hostOpts)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    // emptyDiffExempt is pinned false here: these tests assert a push BLOCKS,
+    // and with the default-on exemption the probe would consult the live
+    // repo's git state at process.cwd() (nondeterministic). The dedicated
+    // empty-diff tests opt back in explicitly.
+    config: {
+      metricsDir,
+      ...config,
+      gitGates: { emptyDiffExempt: false, ...config.gitGates },
+    },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }

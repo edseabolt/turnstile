@@ -3,7 +3,8 @@
  * total, never-throwing git-side decision of whether a `git push` command is
  * *provably* a no-op against its upstream — every planned branch resolving to
  * the same commit as its upstream ref — the opt-in landing-gate
- * exemption (`gitGates.emptyDiffExempt`). `planPushRefs` stays pure text;
+ * exemption (`gitGates.emptyDiffExempt`, default on; `false` is the strict
+ * opt-out). `planPushRefs` stays pure text;
  * the git-side probes (current branch, remote/upstream, ref-hash equality) run
  * through a child_process seam exactly like `fingerprint.ts` (that module is
  * the prior seam occurrence; lifting it to a shared module is a follow-up,

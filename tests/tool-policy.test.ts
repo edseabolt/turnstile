@@ -421,10 +421,15 @@ async function boot(
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    // A partial toolPolicy is structurally not a Partial<TurnstileConfig> (the
-    // nested object is required); the cast mirrors the codebase's test pattern
-    // of passing partial nested config, and loadConfig is permissive at runtime.
-    config: { metricsDir, ...configOverrides } as Partial<TurnstileConfig>,
+    // emptyDiffExempt is pinned false so the landing-ladder tests (which
+    // assert a push BLOCKS) stay deterministic against whatever git state
+    // process.cwd() happens to have; the dedicated empty-diff tests opt
+    // back in explicitly per call.
+    config: {
+      metricsDir,
+      ...configOverrides,
+      gitGates: { emptyDiffExempt: false, ...configOverrides.gitGates },
+    } as Partial<TurnstileConfig>,
   })
   const dispose = ((await setup(h.host)) as (() => void) | undefined) ?? (() => {})
   return { h, metricsDir, dispose }
@@ -728,7 +733,13 @@ async function bootInGitProject(
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...configOverrides } as Partial<TurnstileConfig>,
+    // Same pin as boot(): the exemption-off default keeps push-blocking
+    // assertions deterministic; the empty-diff tests opt in per call.
+    config: {
+      metricsDir,
+      ...configOverrides,
+      gitGates: { emptyDiffExempt: false, ...configOverrides.gitGates },
+    } as Partial<TurnstileConfig>,
   })
   const dispose = ((await setup(h.host)) as (() => void) | undefined) ?? (() => {})
   return {

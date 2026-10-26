@@ -75,7 +75,14 @@ async function bootWithPlan(
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    // emptyDiffExempt pinned false: push-blocking assertions must not depend
+    // on the fixture project's git state (the dedicated empty-diff tests opt
+    // in explicitly).
+    config: {
+      metricsDir,
+      gitGates: { emptyDiffExempt: false, ...config.gitGates },
+      ...config,
+    },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -103,7 +110,13 @@ async function bootLanding(
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    // emptyDiffExempt pinned false: the landing-ladder tests assert pushes
+    // BLOCK, which must not depend on the live repo's git state at cwd.
+    config: {
+      metricsDir,
+      gitGates: { emptyDiffExempt: false, ...config.gitGates },
+      ...config,
+    },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, metricsDir, restore: (): void => dispose() }

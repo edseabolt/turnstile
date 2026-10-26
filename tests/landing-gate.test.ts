@@ -259,9 +259,11 @@ test("guardLanding: an exempted empty-diff push is journaled, not blocked", () =
   assert.equal(log.recordBlock, 0)
 })
 
-/** With the exemption off (the default), the probe is never consulted. */
+/** With the exemption explicitly disabled (the strict opt-out), the probe is never consulted. */
 test("guardLanding: the probe is not consulted while the exemption is off", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy({
+    gitGates: { mode: "enforce", emptyDiffExempt: false },
+  })
   const { gate, log } = recordingCapability({ emptyDiff: true })
   blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.emptyDiff, 0, "the probe is never consulted while off")
