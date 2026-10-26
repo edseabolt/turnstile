@@ -30,6 +30,7 @@ core: "src/ — one concern per boundary" {
   gatesplan: "gates-plan.ts\nplan-approval gate, decomposition gate,\nplans-dir scan + cache"
   gatescommon: "gates-common.ts\nBlockError + waiver coverage semantics"
   toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate"
+  emptydiff: "empty-diff.ts\nempty-diff probe: planPushRefs (static)\n+ ref-equality check (exec seam)"
   evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
   bounded: "bounded.ts\nbounded-map FIFO eviction"
@@ -65,6 +66,8 @@ core.hookscore -> core.gates
 core.hookscore -> core.gatescommon
 core.hookscore -> core.evidence
 core.hookscore -> core.toolpolicy
+core.hookscore -> core.emptydiff
+core.toolpolicy -> core.emptydiff
 core.hookscore -> core.state
 core.hookscore -> core.ledger
 core.hookscore -> core.markers
