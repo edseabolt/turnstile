@@ -195,8 +195,8 @@
         },
         "emptyDiffExempt": {
           "type": "boolean",
-          "default": false,
-          "description": "Whether a statically-provable empty-diff git push (zero commits ahead of upstream) skips the landing gate (default false; opt-in)."
+          "default": true,
+          "description": "Whether a statically-provable empty-diff git push (every refspec ref-equal to its upstream; no force flags) skips the landing gate (default true; false is the strict opt-out)."
         }
       }
     }

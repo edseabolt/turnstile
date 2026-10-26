@@ -153,10 +153,12 @@ export function defaultConfig(
       commitMessages: true,
       commitFormat: DEFAULT_COMMIT_FORMAT,
       landingGate: true,
-      // Opt-in (like continuationCarry): the probe reads live git state
-      // synchronously inside execute.before, so the suite's own repo would
-      // become a load-bearing input when left default-on.
-      emptyDiffExempt: false,
+      // Default on: the probe releases only pushes git proves land nothing
+      // (ref-equal upstream, no force flags), so it never bypasses review of
+      // real work. Set false for the strict opt-out. Tests that assert a
+      // push blocks pass this key explicitly (false) so they stay
+      // deterministic against the live repo's git state.
+      emptyDiffExempt: true,
     },
   }
 }

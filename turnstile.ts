@@ -337,7 +337,8 @@
  *   the user configures a `bashDeny` rule that denies it first (the two
  *   journal reasons stay disjoint either way), and every `git push` is
  *   journaled as landing telemetry in every mode. With `gitGates.emptyDiffExempt`
- *   (opt-in, default false), a push the landing probe proves statically empty
+ *   (default true; `false` is the strict opt-out), a push the landing probe
+ *   proves statically empty
  *   against its upstream — every refspec's branch resolving to the same
  *   commit as its upstream ref — is exempt: journaled
  *   `{type:"tool", tool:"bash", landing:true, exempt:"empty-diff"}` and allowed.

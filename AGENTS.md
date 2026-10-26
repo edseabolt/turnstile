@@ -1,13 +1,25 @@
 # AGENTS.md — turnstile
 
+## Branching & releases (standing instruction — Ed, Oct 2026)
+
+- `dev` is the default and the only primary development branch; it is
+  GitHub-protected (required `ci` status check, no direct pushes). All work
+  lands in `dev` via PR — never push directly, never commit to `main`.
+- `main` is release-only. It is promoted exclusively by a `dev` → `main`
+  PR that **Ed merges himself**. Do not merge anything into `main`, and do
+  not click through a dev→main PR merge, unless Ed asks explicitly in the
+  session.
+- Keep local `main` as a read-only mirror of `origin/main`; branch feature
+  work from `dev`.
+
 ## What this repo is
 
 OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
 file (`types`, `config`, `policy`, `journal`, `state`, `ledger`, `markers`,
 `evidence`, `fingerprint`, `gates`, `gates-common`, `gates-dispatch`,
-`gates-plan`, `tool-policy`, `delivery`, `hooks-core`, `hooks-session`,
-`hooks-permission`, `hooks-tool`, `hooks-events`, `setup`). It
+`gates-plan`, `tool-policy`, `empty-diff`, `delivery`, `hooks-core`,
+`hooks-session`, `hooks-permission`, `hooks-tool`, `hooks-events`, `setup`). It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
 into the parent session at runtime by the plugin (from `src/policy.ts`
