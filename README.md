@@ -6,17 +6,39 @@
 [![deps](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/npm/l/opencode-turnstile)](LICENSE)
 
-![turnstile — the enforced pipeline: planner → plan-reviewer → executor → test-runner → reviewer, with gates blocking every dispatch](docs/images/hero.svg)
+![turnstile verifies what your agents claim: unverified claims hit a red gate, verified evidence flips it green, every decision lands in the journal](docs/images/demo.svg)
 
-An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
-agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
-The orchestrator policy is injected at runtime by the plugin (nothing is
-written to any instructions file), and turnstile **blocks the dispatches that
-violate it** — decided in tool and task-dispatch hooks, outside the model
-loop. Zero runtime dependencies, fails open.
+**Verify what your agents claim.** An agent that says "tests pass" is asking
+you to trust it. Turnstile checks instead: a reviewer dispatch stays blocked
+until a `GATE: PASS` is correlated with a real exit-0 test run, an executor
+stays blocked until a plan-reviewer has approved the plan, and every block,
+verdict, and gate flip appends to an auditable JSONL journal —
+`npx opencode-turnstile status` shows the evidence trail. Decided in tool and
+task-dispatch hooks, outside the model loop. Zero runtime dependencies, fails
+open.
+
+## What you get
+
+- **Premature dispatch blocked** — an executor cannot start against an
+  unreviewed plan and a reviewer cannot start on an unverified test claim;
+  blocked work says `BLOCKED by turnstile: <reason>`, never a silent
+  violation.
+- **Test claims verified** — a `GATE: PASS` greens the reviewer gate only
+  when turnstile finds a journaled exit-0 test execution behind it; a bare
+  claim stays unverified and the gate holds.
+- **Plan approval journaled** — every verdict, waiver, block, and gate flip
+  is appended to `turnstile.jsonl`; the evidence trail outlives the session
+  and the replay window.
+- **Restart-safe replay** — restart OpenCode mid-task and earned gate state
+  comes back from the journal; the pipeline resumes where the evidence
+  left it.
+
+How it does it: an enforced pipeline — planner → plan-reviewer → executor →
+test-runner → reviewer — with a gate at every hand-off, injected into your
+session at runtime. Mechanics below the fold.
 
 - Quick start: [below](#tldr--try-it-in-two-minutes)
-- Using it for real work: [the walkthrough](#using-it-for-real-work)
+- The walkthrough: [using it for real work](#using-it-for-real-work)
 - How it works inside: [`docs/architecture.md`](docs/architecture.md)
 - Day-to-day reference (waivers, config, journals, install modes):
   [`docs/usage.md`](docs/usage.md)
@@ -50,6 +72,14 @@ and every decision is journaled — see it with
 You never invoke the pipeline stages directly. Start a task the way you
 already would, and the enforcement wraps it. The one habit to build: open
 with the planner.
+
+![turnstile — the enforced pipeline: planner → plan-reviewer → executor → test-runner → reviewer, with gates blocking every dispatch](docs/images/hero.svg)
+
+An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
+agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
+The orchestrator policy is injected at runtime by the plugin (nothing is
+written to any instructions file), and turnstile **blocks the dispatches
+that violate it**.
 
 **1. Start a task by invoking the planner.** Paste an issue or a topic into
 your prompt and ask for a plan:
