@@ -52,6 +52,7 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.maxTotalDispatches, 16)
   assert.equal(cfg.readWarn, 8)
   assert.equal(cfg.readBlock, 15)
+  assert.equal(cfg.observeSessions, 0)
   assert.equal(cfg.maxSessions, 64)
   assert.equal(cfg.waiverMarker, "USER WAIVER:")
   assert.equal(cfg.approvalMarker, "PLAN APPROVED:")
@@ -171,6 +172,25 @@ test("mergeConfig validates replayTailLines and the digest flips on override", (
   assert.equal(ok.config.replayTailLines, 50)
   assert.equal(ok.warnings.length, 0)
   assert.notEqual(configDigest(base), configDigest(ok.config))
+})
+
+/** observeSessions runs the non-negative numeric scalar path: 0 (explicitly
+ *  settable to end an observe period) and a positive integer merge, while a
+ *  negative, a non-integer float, a string, and NaN are each rejected with a
+ *  keeping-default warning that leaves the default in place. */
+test("mergeConfig validates observeSessions as a non-negative integer", () => {
+  const base = defaultConfig({})
+  const zero = mergeConfig(base, { observeSessions: 0 })
+  assert.equal(zero.config.observeSessions, 0)
+  assert.deepEqual(zero.warnings, [])
+  const ok = mergeConfig(base, { observeSessions: 2 })
+  assert.equal(ok.config.observeSessions, 2)
+  assert.equal(ok.warnings.length, 0)
+  for (const value of [-1, 0.5, "x" as unknown, NaN]) {
+    const { config, warnings } = mergeConfig(base, { observeSessions: value })
+    assert.equal(config.observeSessions, 0)
+    assert.deepEqual(warnings, ['config: invalid value for "observeSessions"; keeping default'])
+  }
 })
 
 /** approvalMarker is a valid string key: a non-empty string merges, an

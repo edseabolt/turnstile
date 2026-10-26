@@ -11,6 +11,7 @@
   "maxSessions": 64,
   "readWarn": 8,
   "readBlock": 15,
+  "observeSessions": 0,
   "waiverMarker": "USER WAIVER:",
   "approvalMarker": "PLAN APPROVED:",
   "plansDir": ".opencode/plans",

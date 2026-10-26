@@ -681,6 +681,12 @@ export interface TurnstileConfig {
   readWarn: number
   /** Whole-file read count at which further reads are blocked. */
   readBlock: number
+  /**
+   * Number of admitted parent sessions that run in observe mode
+   * (decisions journaled, nothing blocked) before enforcement switches
+   * on. 0 (default) enforces from the first session.
+   */
+  observeSessions: number
   /** Literal marker that waives the reviewer gate when in the prompt. */
   waiverMarker: string
   /**

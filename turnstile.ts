@@ -420,6 +420,16 @@
  *   `~/.config/opencode/turnstile.json` ⊕ env (`TURNSTILE_TRACE`,
  *   `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`) ⊕ injected options (tests).
  *   Invalid keys are ignored and journaled (fail-open); restart to apply.
+ * - Observe mode: with `observeSessions: N` (default 0), the first N
+ *   admitted parent sessions compute and journal every gate decision but
+ *   enforce nothing: a deliberate `BlockError` at the execute.before
+ *   surface is journaled as a `would-block` audit entry and the call
+ *   proceeds, metered like any admitted dispatch. Phases and running
+ *   counts replay last-wins, so a restart resumes the same period; the
+ *   session's gate evaluation, markers, and credit are untouched. On the
+ *   transition the once-per-load `[turnstile] observe:` block reports
+ *   the would-have-blocked counts; fail-toward-enforce: any observer
+ *   failure journals and enforces.
  *
  * Fail-open by design: every hook body is guarded; an internal error is
  * journaled and the tool call proceeds. Removing this file leaves the

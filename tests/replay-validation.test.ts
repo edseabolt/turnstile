@@ -75,6 +75,38 @@ function planLine(sessionID: string, fields: Record<string, unknown>): string {
 }
 
 /**
+ * An `observe` admission-stamp entry line for a session. Any field may be a
+ * non-well-shaped value (the hostile-counter and hostile-phase tests pass
+ * strings, fractions, negatives, and out-of-bound totals through).
+ * @param sessionID The session ID to journal.
+ * @param phase The admission phase (or a bad value for a shape-drop test).
+ * @param observed The observed counter (or a bad value for a count-drop test).
+ * @param wouldBlocks The would-blocks counter (or a bad value).
+ * @returns The raw JSONL line.
+ */
+function observeLine(
+  sessionID: string,
+  phase: unknown,
+  observed: unknown,
+  wouldBlocks: unknown,
+): string {
+  return JSON.stringify({ ts: "t", type: "observe", sessionID, phase, observed, wouldBlocks })
+}
+
+/**
+ * A `would-block` entry line for a session. The counters may be non-well-shaped
+ * (the hostile-counter tests pass strings, fractions, negatives, and
+ * out-of-bound totals through).
+ * @param sessionID The session ID to journal.
+ * @param observed The observed counter (or a bad value for a count-drop test).
+ * @param wouldBlocks The would-blocks counter (or a bad value).
+ * @returns The raw JSONL line.
+ */
+function wouldBlockLine(sessionID: string, observed: unknown, wouldBlocks: unknown): string {
+  return JSON.stringify({ ts: "t", type: "would-block", sessionID, observed, wouldBlocks })
+}
+
+/**
  * The replay-drop telemetry entries appended by a boot to a metrics dir.
  * Tolerates the deliberately malformed lines these tests pre-write (the
  * shared journal reader parses every line and would throw on them).
@@ -414,4 +446,103 @@ test("replay stores no raw bytes for a regex-metacharacter verdict marker", () =
   assert.ok(!serialized.includes(".*+"), "no bucket field echoes the metacharacters")
   const secondBoot = createLedger(journalPath, 64, 2000)
   assert.deepEqual(secondBoot.peek("p1"), bucket, "a second boot re-folds identically")
+})
+
+/** Well-shaped observe stamps and would-blocks fold last-wins into the period
+ *  state: the per-session phases and the running totals restore exactly, no
+ *  drop is journaled, and a summary marker is still absent (pendingSummary
+ *  stays true once the period is complete). */
+test("replay folds well-shaped observe stamps and would-blocks last-wins", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    observeLine("p1", "observe", 1, 0),
+    observeLine("p2", "observe", 2, 0),
+    wouldBlockLine("p2", 2, 1),
+    observeLine("p3", "enforce", 3, 1),
+  ])
+  const ledger = createLedger(journalPath, 64, 2000, undefined, 2)
+  assert.deepEqual(
+    ledger.observeCounts(),
+    { observed: 3, wouldBlocks: 1, pendingSummary: true },
+    "the last stamped line restores the totals and a completed period is pending",
+  )
+  assert.deepEqual(
+    ledger.observePhase("p1"),
+    { phase: "observe", isNew: false, completed: false },
+    "a replayed observe stamp restores its phase without re-stamping",
+  )
+  assert.deepEqual(
+    ledger.observePhase("p3"),
+    { phase: "enforce", isNew: false, completed: false },
+    "a replayed enforce stamp restores its phase",
+  )
+  assert.equal(replayDrops(metricsDir).length, 0, "well-shaped observe lines journal no drop")
+})
+
+/** An observe stamp whose phase is not exactly `observe`/`enforce` is a shape
+ *  drop that keeps its validated session ID and folds nothing into the period
+ *  state (the session is not admitted, so a later stamp re-counts it). */
+test("replay drops an observe stamp with a bad phase", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [observeLine("p1", "bogus", 1, 0)])
+  const ledger = createLedger(journalPath, 64, 2000, undefined, 2)
+  const drops = replayDrops(metricsDir)
+  assert.equal(drops.length, 1, "one shape drop for the bad phase")
+  assert.equal(drops[0]!.reason, "entry-shape")
+  assert.equal(drops[0]!.sessionID, "p1", "a drop keeps its validated session ID")
+  assert.deepEqual(
+    ledger.observeCounts(),
+    { observed: 0, wouldBlocks: 0, pendingSummary: false },
+    "a dropped stamp folds nothing into the period",
+  )
+})
+
+/** Every counter-shape violation on an observe or would-block line is a
+ *  count-invalid drop: each of the eight sub-conditions (non-integer,
+ *  negative, out-of-bound, non-number — on either counter) is exercised once,
+ *  and none of them fold into the period state. */
+test("replay drops observe and would-block lines with invalid counters", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    observeLine("p1", "observe", -1, 0), // observed negative
+    observeLine("p2", "observe", 1, 2.5), // wouldBlocks fractional
+    observeLine("p3", "observe", 1e9, 0), // observed out of bound
+    observeLine("p4", "observe", "x", 0), // observed non-number
+    wouldBlockLine("p5", 1.5, 0), // observed fractional
+    wouldBlockLine("p6", 1, -1), // wouldBlocks negative
+    wouldBlockLine("p7", 1, "x"), // wouldBlocks non-number
+    wouldBlockLine("p8", 1, 1e9), // wouldBlocks out of bound
+  ])
+  const ledger = createLedger(journalPath, 64, 2000, undefined, 2)
+  const drops = replayDrops(metricsDir)
+  assert.equal(drops.length, 8, "each invalid-counter line journals one entry")
+  for (const d of drops) assert.equal(d.reason, "count-invalid")
+  assert.deepEqual(
+    drops.map((d) => d.sessionID),
+    ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"],
+    "each drop keeps its validated session ID",
+  )
+  assert.deepEqual(
+    ledger.observeCounts(),
+    { observed: 0, wouldBlocks: 0, pendingSummary: false },
+    "no invalid-counter line folds into the period",
+  )
+})
+
+/** An observe or would-block line whose sessionID fails the host shape is a
+ *  session-id drop (never echoed into the journal), exactly like the other
+ *  replay-typed kinds: the shape check runs before any per-kind fold. */
+test("replay drops hostile observe and would-block session IDs", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    observeLine("p 1", "observe", 1, 0),
+    wouldBlockLine("p1\ninjected", 1, 0),
+  ])
+  createLedger(journalPath, 64, 2000, undefined, 2)
+  const drops = replayDrops(metricsDir)
+  assert.equal(drops.length, 2, "one telemetry entry per dropped line")
+  for (const d of drops) {
+    assert.equal(d.reason, "session-id")
+    assert.ok(!("sessionID" in d), "hostile bytes are never echoed into the journal")
+  }
 })

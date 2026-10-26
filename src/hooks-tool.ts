@@ -49,7 +49,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     if (event?.tool === "read") {
       // Keyed off the parent session: a subagent's reads draw down the
       // parent's budget (AGENTS.md contract), not a per-child one.
-      ctx.gates.guardReadLimit(await ctx.readBudgetKey(asSessionID(event?.sessionID)), ctx.ledger)
+      ctx.handleReadBudget(await ctx.readBudgetKey(asSessionID(event?.sessionID)))
       return
     }
     // Tool-call denylist: bash/shell commands and write/edit
@@ -336,10 +336,11 @@ export function createToolHooks(ctx: TurnstileContext): {
   }
 
   /**
-   * execute.after body: surfaces the once-per-plugin-load config block
-   * and the once-per-prompt near-miss diagnostics FIRST (the ordering
-   * invariant: policy head → config block → marker block → child output
-   * → PIPELINE: status tail), then routes per tool: task/subagent to
+   * execute.after body: surfaces the once-per-scope blocks FIRST — the
+   * end-of-period observe summary, the once-per-plugin-load config block, and
+   * the once-per-prompt near-miss diagnostics (the ordering invariant: policy
+   * head → marker block → config block → observe block → child output →
+   * PIPELINE: status tail) — then routes per tool: task/subagent to
    * afterTaskDelivery, read to afterRead, bash/shell to afterBash. The
    * per-tool bodies inherit this guard: they never throw — every
    * failure journals `tool.execute.after:` and the call proceeds.
@@ -347,16 +348,20 @@ export function createToolHooks(ctx: TurnstileContext): {
    */
   async function after(event: ToolHookEvent): Promise<void> {
     try {
-      // Invariant: the config block and marker block surface BEFORE the
-      // per-tool bodies' injection, so on a task delivery carrying every
-      // surface the output reads policy head (built from config,
-      // prepended), then `[turnstile] config:` (once-per-plugin-load
-      // block), then `[turnstile] marker:` (once-per-prompt near-miss
-      // diagnostics), then the child's own output, then the appended
-      // PIPELINE: status line (last — per-delivery, so it lands even on
-      // a delivery whose policy head already landed). All fail-open; the
-      // head, config block, and marker block are once-per-scope, the
-      // status tail is per-delivery.
+      // Invariant: every once-per-scope surface block is PREPENDED, and each
+      // call prepends above everything the earlier calls already landed, so
+      // the call order is bottom-up in the final render — the first surface
+      // called lands closest to the child output. On a task delivery carrying
+      // every surface the output reads the policy head (prepended last, by
+      // the per-tool body), then `[turnstile] marker:` (once-per-prompt
+      // near-miss diagnostics), then `[turnstile] config:` (once-per-plugin-
+      // load block), then `[turnstile] observe:` (once-per-load end-of-period
+      // summary), then the child's own output, then the appended PIPELINE:
+      // status line (per-delivery, so it lands even on a delivery whose
+      // policy head already landed). All fail-open; the head, marker, config,
+      // and observe blocks are once-per-scope, the status tail is
+      // per-delivery.
+      ctx.surfaceObserveSummary(event)
       ctx.surfaceConfigWarnings(event)
       ctx.surfaceNearMissDiagnostics(event)
       if (event?.tool === "task" || event?.tool === "subagent") {

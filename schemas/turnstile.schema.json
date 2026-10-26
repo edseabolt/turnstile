@@ -74,6 +74,11 @@
       "minimum": 1,
       "description": "Whole-file read count at which further reads are blocked (default 15)."
     },
+    "observeSessions": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of admitted parent sessions that run in observe mode (decisions journaled, nothing blocked) before enforcement switches on (default 0)."
+    },
     "waiverMarker": {
       "type": "string",
       "description": "Literal marker that, appearing in the user's OWN prompt, waives gates: unscoped (no agent names in the words) it covers every gate; naming configured agent stages scopes it to those stages' gates (default USER WAIVER:)."

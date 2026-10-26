@@ -144,6 +144,27 @@ prompt — the plugin observes it at prompt admission, never from an agent's
 dispatch prompt. A marker inside an agent-composed prompt must never unlock
 a gate, so the channel is checked, not the text.
 
+### Observe mode
+
+`observeSessions: N` runs the first N admitted parent sessions as an
+adoption period: every gate keeps computing and journaling exactly as
+before, but the deliberate `BLOCKED by turnstile:` throw is suppressed —
+the decision is journaled as a `would-block` entry and the call proceeds,
+metered like an admitted dispatch. When the next session admits past the
+boundary, the period completes and enforcement switches on; the first
+string-output delivery after it carries a once-per-load `[turnstile]
+observe:` block reporting the would-have-blocked counts, and that
+surfacing is journaled so a restart never re-fires it. The default
+`observeSessions: 0` enforces from the first session — byte-identical to
+the pre-observe behavior. Fail-toward-enforce: if the observe phase read
+itself fails, the error is journaled and the block proceeds. The
+summary's counts are read at injection time, so sessions admitted between
+period completion and the first delivery shift the reported totals
+slightly (cosmetic drift, accepted). A boot that replays a completed
+period whose summary never surfaced re-arms the block even if the current
+config has since been disarmed (`observeSessions: 0`) — at most one block
+per load, accepted behavior.
+
 ### Prompt-channel waiver
 
 Put the literal marker `USER WAIVER:` in the text of your prompt to waive a
@@ -543,6 +564,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `maxTotalDispatches`                                                                                                       | 16                                                                                                                                                                           | total task dispatches per task across every leg — the global loop backstop (waived dispatches exempt)                                                                                                                                                  |
 | `maxSessions`                                                                                                              | 64                                                                                                                                                                           | LRU cap on tracked sessions (gate state, child→parent edges, verdicts); registered live parents are never evicted                                                                                                                                      |
 | `readWarn` / `readBlock`                                                                                                   | 8 / 15                                                                                                                                                                       | whole-file read horizon                                                                                                                                                                                                                                |
+| `observeSessions`                                                                                                          | 0                                                                                                                                                                            | first N admitted sessions journal decisions without blocking; `0` enforces immediately                                                                                                                                                                 |
 | `waiverMarker`                                                                                                             | `USER WAIVER:`                                                                                                                                                               | literal waiver marker                                                                                                                                                                                                                                  |
 | `approvalMarker`                                                                                                           | `PLAN APPROVED:`                                                                                                                                                             | literal prompt-channel plan-approval marker                                                                                                                                                                                                            |
 | `plansDir`                                                                                                                 | `.opencode/plans`                                                                                                                                                            | executor decomposition scan directory — an absolute value is honored as-is with a journaled warning (not joined to projectDir)                                                                                                                         |
