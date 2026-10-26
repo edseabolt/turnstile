@@ -2,11 +2,12 @@
  * @fileoverview Ledger boundary: the LRU-capped session maps behind the gate
  * bookkeeping — child→parent edges, the child verdict store, and live-parent
  * eviction protection — plus journal replay so a completed task's `GATE: PASS`
- * survives restarts, and a bounded durable approved-plan sidecar so a bound
- * plan approval survives replay-aging, a process restart, and a new-prompt
- * reset. On a parent's prompt reset, also releases that parent's registered
- * children's metering counters. Pure bookkeeping; no enforcement decisions
- * here.
+ * survives restarts, the observe-mode period state (per-session admission
+ * phases plus the running would-block totals) survives the same way, and a
+ * bounded durable approved-plan sidecar so a bound plan approval survives
+ * replay-aging, a process restart, and a new-prompt reset. On a parent's
+ * prompt reset, also releases that parent's registered children's metering
+ * counters. Pure bookkeeping; no enforcement decisions here.
  */
 
 import { createHash } from "node:crypto"
@@ -17,6 +18,14 @@ import { evictTo } from "./bounded.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE, clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
+
+/**
+ * The observe-mode admission phase of a session: `observe` (gate decisions
+ * are computed and journaled but not enforced), `enforce` (normal
+ * enforcement), or `off` (the configured period is 0 — observe mode
+ * disabled).
+ */
+export type ObservePhase = "observe" | "enforce" | "off"
 
 /** Live gate bookkeeping shared by the gate, marker, and wiring layers. */
 export interface GateLedger {
@@ -206,6 +215,48 @@ export interface GateLedger {
    * @returns True when the session carries an earned credit mark.
    */
   hasCreditedApproval(sessionID: string): boolean
+  /**
+   * Returns the observe-mode admission phase for a session, stamping it when
+   * the session is seen for the first time: the running `observed` total
+   * increments once per unseen session ID, and the stamped phase is
+   * `observe` while the total stays within the configured period, `enforce`
+   * past it. `isNew` marks a first-time stamp: the caller journals exactly
+   * one `observe` entry per new session — every stamp, not just the
+   * completing one. The journaled session IDs ARE the admission dedup set at
+   * replay: a stamp that never reaches the journal means a restart re-folds
+   * a shorter set and re-increments the `observed` total for a session it
+   * already counted, corrupting the period boundary. `completed` marks the
+   * period boundary (the total just crossed the configured count on this
+   * unseen session ID). A session journaled as admitted (a surviving
+   * `would-block` line) but lacking a phase stamp restores its `observe`
+   * phase without re-incrementing (a suppression presupposes an
+   * observe-phase stamp that aged out of the replay tail). With a configured
+   * period of 0, or for an empty session ID, the phase is `off` and nothing
+   * is stamped.
+   * @param sessionID The parent session ID to look up or stamp.
+   * @returns The phase, whether this call stamped it, and whether the
+   *     period just completed on this stamp.
+   */
+  observePhase(sessionID: string): { phase: ObservePhase; isNew: boolean; completed: boolean }
+  /**
+   * Records one suppressed enforcement decision: increments the running
+   * would-block total and returns both running totals for the stamped
+   * `would-block` entry. The session is also recorded as admitted — its
+   * suppression presupposes an observe-phase stamp, and re-recording keeps
+   * the dedup set whole when the stamp's line ages out of the replay tail.
+   * @param sessionID The session whose decision was suppressed.
+   * @returns The running `observed` and `wouldBlocks` totals.
+   */
+  noteWouldBlock(sessionID: string): { observed: number; wouldBlocks: number }
+  /**
+   * Returns the running observe-mode totals plus `pendingSummary`: true once
+   * the `observed` total passes the configured period and no journaled
+   * end-of-period summary marker exists in the replayed tail — the surfaced
+   * summary is journaled as a `kind:"summary"` marker, so it never re-fires
+   * after a restart.
+   * @returns The totals and the pending-summary probe.
+   */
+  observeCounts(): { observed: number; wouldBlocks: number; pendingSummary: boolean }
 }
 
 /**
@@ -236,6 +287,9 @@ const APPROVAL_LEDGER_FILE = "approved-plans.jsonl"
 const MAX_APPROVAL_RECORDS = 256
 /** Shape of a stored project scope token (a `projectScope` output). */
 const PROJECT_SCOPE_RE = /^[0-9a-f]{16}$/
+/** Upper bound on a replayed observe-mode counter (a real period stays far
+ *  below this; anything larger is hostile padding). */
+const MAX_REPLAY_OBSERVE_COUNT = 1_000_000
 
 /**
  * One replay line rejected by validation, awaiting its telemetry entry.
@@ -247,13 +301,47 @@ interface ReplayDrop {
   sessionID?: string
 }
 
-/** The five last-wins replay maps, one store per replayed entry kind. */
+/** The five last-wins replay maps, one store per replayed entry kind.
+ *  Observe-mode entries (`observe`/`would-block`) fold directly into the
+ *  passed-in period state instead of a map here. */
 interface ReplayMaps {
   lastGateResult: Map<string, string>
   lastPlanResult: Map<string, { result: string; plan: unknown; planKey: unknown; sig: unknown }>
   lastReviewVerdict: Map<string, string>
   lastEnsemble: Map<string, number>
   lastRefusedApprove: Map<string, boolean>
+}
+
+/**
+ * The observe-mode period state: the per-session admission phases, the
+ * admitted-session dedup set, the running totals, and the end-of-period
+ * summary marker. Restored last-wins by the boot replay and mutated at
+ * runtime by the ledger's observe methods. The phase map, dedup set, and
+ * totals are deliberately uncapped: evicting an admitted session ID would
+ * let a later re-admission re-increment the `observed` total and corrupt
+ * the period boundary (the double-count guard), so nothing here is subject
+ * to the session-bucket LRU.
+ */
+interface ObservePeriod {
+  /** Per-session admission phase (stamped `observe` entries only). */
+  phases: Map<string, "observe" | "enforce">
+  /** Journaled session IDs (admission stamps + would-blocks): the
+   *  admission dedup set (see `observePhase`). */
+  admitted: Set<string>
+  /** Total admitted sessions (last-wins from the replayed tail). */
+  observed: number
+  /** Total suppressed blocks (last-wins from the replayed tail). */
+  wouldBlocks: number
+  /** True when the replayed tail holds a journaled summary marker. */
+  summary: boolean
+}
+
+/**
+ * A fresh empty observe-period state (the boot replay fills it).
+ * @returns The empty period state.
+ */
+function newObservePeriod(): ObservePeriod {
+  return { phases: new Map(), admitted: new Set(), observed: 0, wouldBlocks: 0, summary: false }
 }
 
 /** One durable approved-plan record (one sidecar line, JSONL): the bound
@@ -310,11 +398,11 @@ function readReplayLines(journalPath: string, tailLines: number): string[] {
  * Parses one journal line for the boot replay.
  * @param line The raw journal line.
  * @returns The parsed record when `line` is a JSON object of a replay-typed
- *     kind (`gate`, `plan`, `verdict`, `ensemble`); `"malformed"` when the
- *     line does not parse to an object record (a JSON error, a non-object,
- *     or an array); and `null` for every other, replay-inert line (any other
- *     entry type) — inert lines stay inert without telemetry, exactly as
- *     before.
+ *     kind (`gate`, `plan`, `verdict`, `ensemble`, `observe`,
+ *     `would-block`); `"malformed"` when the line does not parse to an
+ *     object record (a JSON error, a non-object, or an array); and `null`
+ *     for every other, replay-inert line (any other entry type) — inert
+ *     lines stay inert without telemetry, exactly as before.
  */
 function parseReplayLine(line: string): Record<string, unknown> | "malformed" | null {
   let parsed: unknown
@@ -329,7 +417,9 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "gate" &&
     entry.type !== "plan" &&
     entry.type !== "verdict" &&
-    entry.type !== "ensemble"
+    entry.type !== "ensemble" &&
+    entry.type !== "observe" &&
+    entry.type !== "would-block"
   ) {
     return null
   }
@@ -445,10 +535,100 @@ function foldEnsemble(
 }
 
 /**
+ * Validates and extracts the `observed`/`wouldBlocks` pair carried by an
+ * observe-mode replay entry: both must be non-negative integers within the
+ * counter bound (a real period stays far below it; anything larger or
+ * non-integer is hostile padding, not a count).
+ * @param entry The parsed `observe` or `would-block` entry.
+ * @returns The validated counts, or `null` when either fails its shape.
+ */
+function observeCountsOf(
+  entry: Record<string, unknown>,
+): { observed: number; wouldBlocks: number } | null {
+  const { observed, wouldBlocks } = entry
+  if (
+    typeof observed !== "number" ||
+    !Number.isInteger(observed) ||
+    observed < 0 ||
+    observed > MAX_REPLAY_OBSERVE_COUNT
+  ) {
+    return null
+  }
+  if (
+    typeof wouldBlocks !== "number" ||
+    !Number.isInteger(wouldBlocks) ||
+    wouldBlocks < 0 ||
+    wouldBlocks > MAX_REPLAY_OBSERVE_COUNT
+  ) {
+    return null
+  }
+  return { observed, wouldBlocks }
+}
+
+/**
+ * Folds an `observe` entry into the period state. An end-of-period summary
+ * marker (`kind:"summary"`) folds inert: it is exempt from the phase check
+ * and sets only the summary flag (the `pendingSummary` probe) — never the
+ * per-session phase, the dedup set, or the totals. A plain admission stamp
+ * requires an exact `observe`/`enforce` phase and records the session as
+ * admitted. The totals are last-wins.
+ * @param entry The parsed `observe` entry.
+ * @param period The period state to fill.
+ * @param sessionID The validated session ID.
+ * @returns A drop record for invalid counts or a bad phase, or `null` when
+ *     folded (a summary marker folds with no drop).
+ */
+function foldObserve(
+  entry: Record<string, unknown>,
+  period: ObservePeriod,
+  sessionID: string,
+): ReplayDrop | null {
+  const counts = observeCountsOf(entry)
+  if (counts === null) return { reason: "count-invalid", sessionID }
+  if (entry.kind === "summary") {
+    period.summary = true
+    return null
+  }
+  if (entry.phase !== "observe" && entry.phase !== "enforce") {
+    return { reason: "entry-shape", sessionID }
+  }
+  period.phases.set(sessionID, entry.phase)
+  period.admitted.add(sessionID)
+  period.observed = counts.observed
+  period.wouldBlocks = counts.wouldBlocks
+  return null
+}
+
+/**
+ * Folds a `would-block` entry into the period state: records the session as
+ * admitted (its suppression presupposes an observe-phase stamp) and applies
+ * last-wins to the totals. The entry's `cause` is audit-only and never
+ * folded.
+ * @param entry The parsed `would-block` entry.
+ * @param period The period state to fill.
+ * @param sessionID The validated session ID.
+ * @returns A count drop for invalid counters, or `null` when folded.
+ */
+function foldWouldBlock(
+  entry: Record<string, unknown>,
+  period: ObservePeriod,
+  sessionID: string,
+): ReplayDrop | null {
+  const counts = observeCountsOf(entry)
+  if (counts === null) return { reason: "count-invalid", sessionID }
+  period.admitted.add(sessionID)
+  period.observed = counts.observed
+  period.wouldBlocks = counts.wouldBlocks
+  return null
+}
+
+/**
  * Dispatches a replay-typed entry to its per-kind fold.
  * @param entry The parsed replay-typed entry.
  * @param maps The last-wins maps to fill.
  * @param sessionID The validated session ID.
+ * @param period The observe-mode period state to fill (observe-mode kinds
+ *     only).
  * @returns The kind's drop record, or `null` when the entry folded (or is an
  *     inert sub-kind, which folds nothing and drops nothing).
  */
@@ -456,6 +636,7 @@ function foldReplayLine(
   entry: Record<string, unknown>,
   maps: ReplayMaps,
   sessionID: string,
+  period: ObservePeriod,
 ): ReplayDrop | null {
   const type = entry.type
   if (type === "gate") {
@@ -468,6 +649,12 @@ function foldReplayLine(
   }
   if (type === "verdict") {
     return foldVerdict(entry, maps.lastReviewVerdict, sessionID)
+  }
+  if (type === "observe") {
+    return foldObserve(entry, period, sessionID)
+  }
+  if (type === "would-block") {
+    return foldWouldBlock(entry, period, sessionID)
   }
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
@@ -793,9 +980,14 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  * non-integer or negative count is a drop), and a bound plan identity
  * degrades to the unbound value when it fails its shape (a name with path
  * separators or over-length, a non-sha256 key, an over-length signature).
- * Each dropped line journals one replay-inert `suppressed` telemetry entry
- * (capped per boot, with a summary entry for the overflow) so truncation and
- * forgery are observable.
+ * An `observe` stamp requires an exact `observe`/`enforce` phase (a bad
+ * phase is a shape drop), an end-of-period `kind:"summary"` marker is
+ * exempt from the phase check and folds inert (it sets only the summary
+ * probe), and an `observe` or `would-block` line requires both counters to
+ * be non-negative integers within the counter bound (a violation is a count
+ * drop). Each dropped line journals one replay-inert `suppressed` telemetry
+ * entry (capped per boot, with a summary entry for the overflow) so
+ * truncation and forgery are observable.
  *
  * A replayed green is journaled audited evidence, not runtime proof: the
  * flipping-entry filter skips enforce-mode `verified:false` PASSes (they
@@ -852,12 +1044,17 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  *     lines are dropped.
  * @param creditedApprovals The bucket-free credit trace to stamp with each
  *     restored, non-refused credit (threaded to the restore loops).
+ * @param observePeriod The observe-mode period state to fill: the per-session
+ *     admission phases, the admitted-session dedup set, the running totals
+ *     (last-wins), and the summary-marker probe fold in directly, online, as
+ *     the lines are read.
  */
 function replayGatePasses(
   states: Map<string, GateState>,
   journalPath: string,
   tailLines: number,
   creditedApprovals: Map<string, number>,
+  observePeriod: ObservePeriod,
 ): void {
   try {
     const maps = newReplayMaps()
@@ -874,7 +1071,7 @@ function replayGatePasses(
         drops.push({ reason: "session-id" })
         continue
       }
-      const drop = foldReplayLine(entry, maps, sessionID)
+      const drop = foldReplayLine(entry, maps, sessionID, observePeriod)
       if (drop) drops.push(drop)
     }
     restoreBuckets(states, maps, creditedApprovals)
@@ -903,6 +1100,9 @@ function replayGatePasses(
  * @param approvalLedgerPath Optional absolute path of the durable approved-plan
  *     sidecar; defaults to `approved-plans.jsonl` beside the journal (the
  *     metrics dir). Injected to redirect the sidecar (tests, fail-open drills).
+ * @param observeSessions The configured observe-mode period length (number of
+ *     admitted parent sessions that observe before enforcement switches on);
+ *     0 (the default) disables observe mode entirely.
  * @returns A ledger bound to a fresh in-memory session map.
  */
 export function createLedger(
@@ -910,6 +1110,7 @@ export function createLedger(
   maxSessions: number,
   replayTailLines: number,
   approvalLedgerPath?: string,
+  observeSessions = 0,
 ): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
@@ -933,6 +1134,11 @@ export function createLedger(
   // the mark). No eviction protection: an evicted trace just falls back to
   // the ordinary first-block (fail-toward-strict, matching the other maps).
   const creditedApprovals = new Map<string, number>()
+  // Observe-mode period state: per-session admission phases, the admitted
+  // session dedup set, the running totals, and the summary-marker probe.
+  // Restored last-wins by the boot replay (see ObservePeriod for why it is
+  // uncapped); mutated at runtime by the observe methods below.
+  const observePeriod = newObservePeriod()
   // Registry bound: 4× the states cap, floored at 256 so a small cap still
   // tracks an active fleet of registered parents.
   const maxTrackedParents = Math.max(256, maxSessions * 4)
@@ -1103,10 +1309,78 @@ export function createLedger(
     }
   }
 
+  /**
+   * Returns the observe-mode admission phase for a session, stamping it for
+   * the first time this process sees it (see the interface doc for the
+   * journaled-dedup-set invariant). With a configured period of 0, or for an
+   * empty session ID, nothing is stamped and the phase is `off`. A session
+   * that already carries a stamped phase returns it unchanged (no re-stamp).
+   * A session restored as admitted from replay but lacking a phase stamp
+   * (its stamp line aged out of the tail, a surviving `would-block` kept it
+   * in the dedup set) restores its `observe` phase without re-incrementing —
+   * the double-count guard.
+   * @param sessionID The parent session ID to look up or stamp.
+   * @returns The phase, whether this call stamped it, and whether the period
+   *     just completed on this stamp.
+   */
+  function observePhase(sessionID: string): {
+    phase: ObservePhase
+    isNew: boolean
+    completed: boolean
+  } {
+    if (observeSessions === 0 || !sessionID) return { phase: "off", isNew: false, completed: false }
+    const stamped = observePeriod.phases.get(sessionID)
+    if (stamped !== undefined) return { phase: stamped, isNew: false, completed: false }
+    if (observePeriod.admitted.has(sessionID)) {
+      // A suppression presupposes an observe-phase stamp; restore that phase
+      // without re-incrementing (the double-count guard).
+      observePeriod.phases.set(sessionID, "observe")
+      return { phase: "observe", isNew: false, completed: false }
+    }
+    const observed = (observePeriod.observed += 1)
+    const phase = observed <= observeSessions ? "observe" : "enforce"
+    observePeriod.phases.set(sessionID, phase)
+    observePeriod.admitted.add(sessionID)
+    return { phase, isNew: true, completed: observed === observeSessions + 1 }
+  }
+
+  /**
+   * Records one suppressed enforcement decision: increments the running
+   * would-block total, re-records the session in the admission dedup set (its
+   * suppression presupposes an observe-phase stamp, and re-recording keeps the
+   * set whole when the stamp's line ages out of the replay tail), and returns
+   * both running totals for the stamped `would-block` entry.
+   * @param sessionID The session whose decision was suppressed.
+   * @returns The running `observed` and `wouldBlocks` totals.
+   */
+  function noteWouldBlock(sessionID: string): { observed: number; wouldBlocks: number } {
+    observePeriod.wouldBlocks += 1
+    if (sessionID) observePeriod.admitted.add(sessionID)
+    return { observed: observePeriod.observed, wouldBlocks: observePeriod.wouldBlocks }
+  }
+
+  /**
+   * Returns the running observe-mode totals plus `pendingSummary`: true once
+   * the `observed` total passes the configured period and no journaled
+   * end-of-period summary marker exists in the replayed tail (see the
+   * interface doc — the surfaced summary is journaled as a `kind:"summary"`
+   * marker, so it never re-fires after a restart). With a configured period of
+   * 0 the total never passes the period, so the probe is always false.
+   * @returns The totals and the pending-summary probe.
+   */
+  function observeCounts(): { observed: number; wouldBlocks: number; pendingSummary: boolean } {
+    return {
+      observed: observePeriod.observed,
+      wouldBlocks: observePeriod.wouldBlocks,
+      pendingSummary: observePeriod.observed > observeSessions && !observePeriod.summary,
+    }
+  }
+
   // Replay runs before capping so the restored set honors the LRU cap too; the
   // credit trace is capped once after replay (restore marks take a boot-time
-  // stamp, and the map is bounded like the other session maps).
-  replayGatePasses(states, journalPath, replayTailLines, creditedApprovals)
+  // stamp, and the map is bounded like the other session maps). The observe
+  // period folds in online during the replay (see replayGatePasses).
+  replayGatePasses(states, journalPath, replayTailLines, creditedApprovals, observePeriod)
   cap(states, isParent)
   cap(creditedApprovals)
 
@@ -1117,6 +1391,9 @@ export function createLedger(
     lastParent,
     markCreditedApproval,
     hasCreditedApproval,
+    observePhase,
+    noteWouldBlock,
+    observeCounts,
     state(sessionID: string): GateState {
       promote(states, sessionID)
       let s = states.get(sessionID)

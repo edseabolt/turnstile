@@ -406,6 +406,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     config.maxSessions,
     config.replayTailLines,
     opts.approvalLedgerPath,
+    config.observeSessions,
   )
   // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
   // Hits are detected and journaled at prompt admission (see admitPrompt) and

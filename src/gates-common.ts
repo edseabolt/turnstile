@@ -100,3 +100,42 @@ export function reviewerEnsembleEntry(
 export function decisionEntry(sessionID: string, decision: string): Record<string, unknown> {
   return { type: "permission", sessionID, decision }
 }
+
+/**
+ * Builds an `observe` journal entry stamped at a session's first admission
+ * during an observe period: the session's phase plus the running period
+ * totals at the moment of the stamp. Every observe-mode entry kind carries
+ * both totals, so the last stamped line restores the whole period state at
+ * replay. Pure: returns the entry, journals nothing.
+ * @param sessionID The admitted session the entry belongs to.
+ * @param phase The session's admission phase.
+ * @param observed The total number of admitted sessions so far.
+ * @param wouldBlocks The total number of suppressed blocks so far.
+ * @returns The `observe` admission-stamp journal entry.
+ */
+export function observeEntry(
+  sessionID: string,
+  phase: "observe" | "enforce",
+  observed: number,
+  wouldBlocks: number,
+): Record<string, unknown> {
+  return { type: "observe", sessionID, phase, observed, wouldBlocks }
+}
+
+/**
+ * Builds the end-of-period `observe` summary marker journaled once the
+ * observe-summary prose has surfaced: it carries no phase (replay folds it
+ * inert — its only role is proving the summary surfaced, so it never
+ * re-fires after a restart). Pure: returns the entry, journals nothing.
+ * @param sessionID The session whose admission completed the period.
+ * @param observed The total number of admitted sessions at surfacing.
+ * @param wouldBlocks The total number of suppressed blocks at surfacing.
+ * @returns The `observe` summary marker entry.
+ */
+export function observeSummaryEntry(
+  sessionID: string,
+  observed: number,
+  wouldBlocks: number,
+): Record<string, unknown> {
+  return { type: "observe", sessionID, kind: "summary", injected: true, observed, wouldBlocks }
+}
