@@ -46,12 +46,16 @@ flow: {
   agents -> hooks: "VERDICT: APPROVE crit=…"
   hooks -> journal: "reviewEnsemble=enforce: approve credits only at ≥2 reviewer dispatches"
 
-  orch -> hooks: "git push"
-  hooks -> orch: "BLOCKED: no-landing-approval (no credited APPROVE for the session)" {
+  orch -> hooks: "git push (non-empty, no credited APPROVE)"
+  hooks -> orch: "BLOCKED: no-landing-approval" {
     style.stroke: "#c0392b"
   }
   hooks -> user: "landing ask (first push after a credited APPROVE, or repeat)"
   user -> hooks: "always / once / reject"
+  orch -> hooks: "git push (every refspec ref-equal to upstream,\nemptyDiffExempt on, no force flags)"
+  hooks -> journal: "exempt:empty-diff journaled — push allowed" {
+    style.stroke-dash: 4
+  }
 
   hooks -> journal: "every decision journaled"
 }
