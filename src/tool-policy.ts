@@ -381,9 +381,9 @@ export interface ToolPolicy {
    * human ask naming the missing reviewer verdict. `shadow` journals only; `off`
    * is a no-op. Fail-toward-strict: a host `reject` leaves approval absent, so
    * the next attempt re-blocks and re-arms the ask. Fail-open on an internal
-   * error. With `gitGates.emptyDiffExempt` (default false), a push the
-   * capability proves statically empty against upstream is journaled
-   * `exempt:"empty-diff"` and allowed; every ambiguous shape (detached HEAD,
+   * error. With `gitGates.emptyDiffExempt` (default true; `false` is the strict
+   * opt-out), a push the capability proves statically empty against upstream is
+   * journaled `exempt:"empty-diff"` and allowed; every ambiguous shape (detached HEAD,
    * unresolvable remote/upstream, explicit shas/ranges, `--mirror`/`--tags`,
    * any non-empty refspec) falls through to the ladder — fail-toward-strict.
    * @param tool The tool name, recorded in the journal.
@@ -706,10 +706,10 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * `permission` ask and signals escalation, allowing `execute.before` to pass
    * so the evaluate handler forces the ask. A repeat attempt under `enforce`
    * escalates the same way; `shadow` journals only, `off` is a no-op. With
-   * `gitGates.emptyDiffExempt` (default false), a push the capability proves
-   * statically empty against upstream is journaled `exempt:"empty-diff"` and
-   * allowed; every ambiguous shape falls through to the ladder —
-   * fail-toward-strict.
+   * `gitGates.emptyDiffExempt` (default true; `false` is the strict opt-out),
+   * a push the capability proves statically empty against upstream is
+   * journaled `exempt:"empty-diff"` and allowed; every ambiguous shape falls
+   * through to the ladder — fail-toward-strict.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
@@ -737,7 +737,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
       if (!isPushLanding(text)) return
       // Approval releases the gate: allow, no journal noise beyond telemetry.
       if (gate.hasApproval()) return
-      // Opt-in empty-diff exemption: a push the capability proves statically
+      // Empty-diff exemption: a push the capability proves statically
       // empty against its upstream is journaled and allowed. The probe is
       // total (every ambiguous shape is false), so this clause can only
       // release pushes the git state proves to land nothing.
