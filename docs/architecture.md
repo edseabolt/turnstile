@@ -268,8 +268,9 @@ admission; repeat admissions read the stored phase and journal nothing.
 `observeActive` gates the suppression and fails toward enforce: any ledger
 throw journals an `error` entry and the block proceeds normally. On the
 period-completing stamp — or at boot, when the replayed tail shows a
-completed period whose summary never surfaced — `surfaceObserveSummary`
-arms, and the first string-output delivery after it is prefixed with the
+completed period whose summary never surfaced — the `observeSummaryPending`
+flag (beside `surfaceObserveSummary`) arms, and the first string-output
+delivery after it is prefixed with the
 once-per-load `[turnstile] observe:` block (`formatObserveSummary`, rendered
 from the `observeCounts()` totals at injection time) and the inert
 `kind:"summary"` marker is journaled so a restart never re-fires it.
