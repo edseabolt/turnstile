@@ -69,6 +69,14 @@ const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_REPLAY_MARKER_LEN = 512
 
 /**
+ * Upper bound on a journaled observe-mode counter. Mirrors the canonical
+ * bound in src/ledger.ts (this standalone script cannot import TS source): a
+ * real period stays far below it, so anything larger — or non-integer — is
+ * hostile padding, not a count, and the line folds nothing.
+ */
+const MAX_REPLAY_OBSERVE_COUNT = 1_000_000
+
+/**
  * Reads and parses the config file the config layer uses, silently tolerating
  * a missing or malformed file (fail-open). Returns `null` when nothing usable
  * is present.
@@ -99,12 +107,26 @@ function resolveReplayTailLines(value) {
 }
 
 /**
+ * Validates a configured `observeSessions` period. Only an integer ≥ 0 is
+ * accepted; anything else falls back to 0 (observe mode off) so the observe
+ * header line degrades to the in-period rendering rather than misphasing or
+ * crashing (mirrors the runtime config's junk rejection — except this script
+ * journals nothing, so the fallback is silent).
+ * @param {unknown} value The raw `observeSessions` from the config file.
+ * @returns {number} The validated period.
+ */
+function resolveObserveSessions(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+/**
  * Resolves both the metrics directory and the replay tail bound the status
  * surface uses. The config file is parsed once (silently-failing, fail-open)
- * and always supplies the replay tail bound; the TURNSTILE_METRICS_DIR env
- * overrides only the metrics directory (precedence env → file → default).
+ * and always supplies the replay tail bound and the observe period; the
+ * TURNSTILE_METRICS_DIR env overrides only the metrics directory (precedence
+ * env → file → default).
  * @param {NodeJS.ProcessEnv} env The process environment.
- * @returns {{ metricsDir: string, replayTailLines: number }} The resolved values.
+ * @returns {{ metricsDir: string, replayTailLines: number, observeSessions: number }} The resolved values.
  */
 function resolveConfig(env) {
   const config = loadConfigFile(env)
@@ -115,7 +137,11 @@ function resolveConfig(env) {
   const fileDir =
     config && typeof config.metricsDir === "string" && config.metricsDir ? config.metricsDir : ""
   const metricsDir = envDir || fileDir || defaultMetricsDir(env)
-  return { metricsDir, replayTailLines: resolveReplayTailLines(config?.replayTailLines) }
+  return {
+    metricsDir,
+    replayTailLines: resolveReplayTailLines(config?.replayTailLines),
+    observeSessions: resolveObserveSessions(config?.observeSessions),
+  }
 }
 
 /**
@@ -173,6 +199,30 @@ function freshSession() {
 }
 
 /**
+ * Validates the two running totals an `observe` or `would-block` line
+ * carries. Both must be integers within the replay counter bound (a real
+ * period stays far below it; anything larger or non-integer is hostile
+ * padding, not a count) — the all-or-nothing shape src/ledger.ts's replay
+ * validation uses, deliberately parallel because this standalone script
+ * cannot import TS source. A line whose counters fail folds nothing (status
+ * is observation-only, so a dropped line is silent here rather than
+ * journaled).
+ * @param {Record<string, unknown>} entry The parsed `observe`/`would-block` line.
+ * @returns {{ observed: number, wouldBlocks: number } | null} The validated
+ *     totals, or null when either fails its shape.
+ */
+function observeCountsOf(entry) {
+  const { observed, wouldBlocks } = entry
+  if (!Number.isInteger(observed) || observed < 0 || observed > MAX_REPLAY_OBSERVE_COUNT) {
+    return null
+  }
+  if (!Number.isInteger(wouldBlocks) || wouldBlocks < 0 || wouldBlocks > MAX_REPLAY_OBSERVE_COUNT) {
+    return null
+  }
+  return { observed, wouldBlocks }
+}
+
+/**
  * Aggregates the journal lines into per-session status. Replays the same
  * gate/plan last-wins rules as ledger.ts's replayGatePasses: a trailing
  * `GATE: FAIL` keeps the gate red, an enforce-mode `verified:false` PASS never
@@ -182,11 +232,21 @@ function freshSession() {
  * observation-only, so a dropped line is silent here rather than journaled).
  * Verdict markers over the replay marker bound degrade to "" (they then flow
  * into the empty-marker BLOCK fallback below). Parent-keyed.
+ *
+ * Observe-mode lines fold in parallel with the ledger replay: last-wins on
+ * the two running totals (every line carries both, so the last stamped line
+ * restores the whole period), a `kind:"summary"` marker folds inert (its only
+ * replay role is the one-shot summary probe, never the totals), and a line
+ * whose counters fail validation folds nothing. `observe.seen` marks that the
+ * journal holds observe-mode entries at all — the report's observe header
+ * line renders only then, so journals without them stay byte-identical.
  * @param {string[]} lines Journal lines, oldest-first.
- * @returns {Map<string, Record<string, unknown>>} sessionID → accumulator.
+ * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number } }}
+ *     sessionID → accumulator, plus the folded observe-mode state.
  */
 function aggregate(lines) {
   const sessions = new Map()
+  const observe = { seen: 0, observed: 0, wouldBlocks: 0 }
   const forSession = (id) => {
     let a = sessions.get(id)
     if (!a) {
@@ -275,10 +335,21 @@ function aggregate(lines) {
       } else if (e.decision === "once" || e.decision === "always" || e.decision === "reject") {
         a.permissionDecisions[e.decision]++
       }
+    } else if (type === "observe" || type === "would-block") {
+      // Observe-mode fold (see the function doc): the line is present no
+      // matter which counter checks pass, so `seen` marks the header line;
+      // then the summary marker folds inert and a counter-invalid line folds
+      // nothing.
+      observe.seen++
+      if (type === "observe" && e.kind === "summary") continue
+      const counts = observeCountsOf(e)
+      if (counts === null) continue
+      observe.observed = counts.observed
+      observe.wouldBlocks = counts.wouldBlocks
     }
   }
 
-  return sessions
+  return { sessions, observe }
 }
 
 /**
@@ -291,12 +362,18 @@ function fmtSession(id) {
 }
 
 /**
- * Renders the human-readable table.
+ * Renders the human-readable table. When the journal holds observe-mode
+ * entries, the report gains one extra line right below the header line with
+ * the folded phase and running period totals — journals without observe
+ * entries render byte-identically to before (the observe argument carries
+ * `seen: 0` and no line is emitted).
  * @param {Map<string, Record<string, unknown>>} sessions Aggregated sessions.
  * @param {string} journalPath The journal file path for the header.
+ * @param {{ seen: number, observed: number, wouldBlocks: number }} observe The folded observe-mode state.
+ * @param {number} observeSessions The configured observe period (from the config file).
  * @returns {string} The table text.
  */
-function renderTable(sessions, journalPath) {
+function renderTable(sessions, journalPath, observe, observeSessions) {
   const rows = [...sessions.entries()].map(([id, a]) => ({
     session: fmtSession(id),
     gate: a.hasGatePass ? "PASS" : "red",
@@ -329,6 +406,15 @@ function renderTable(sessions, journalPath) {
       .replace(/\s+$/, "")
 
   const out = [`turnstile status — ${journalPath}`]
+  if (observe.seen > 0) {
+    // `enforce` once the folded total passes the configured period, `observe`
+    // while the period is still running (a default-period journal holds no
+    // observe entries, so this line never renders there).
+    const phase = observe.observed > observeSessions ? "enforce" : "observe"
+    out.push(
+      `observe: ${phase} ${observe.observed}/${observeSessions} sessions, ${observe.wouldBlocks} would-blocks`,
+    )
+  }
   if (rows.length === 0) {
     out.push("(no sessions recorded yet)")
   } else {
@@ -375,7 +461,7 @@ async function main(argv) {
     return 0
   }
 
-  const { metricsDir, replayTailLines } = resolveConfig(process.env)
+  const { metricsDir, replayTailLines, observeSessions } = resolveConfig(process.env)
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
   const { files, lines } = readJournal(journalPath, replayTailLines)
 
@@ -396,7 +482,7 @@ async function main(argv) {
     return 0
   }
 
-  const sessions = aggregate(lines)
+  const { sessions, observe } = aggregate(lines)
   for (const [id, a] of sessions) {
     base.sessions[id] = a
   }
@@ -404,7 +490,7 @@ async function main(argv) {
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(base, null, 2)}\n`)
   } else {
-    process.stdout.write(`${renderTable(sessions, journalPath)}\n`)
+    process.stdout.write(`${renderTable(sessions, journalPath, observe, observeSessions)}\n`)
   }
   return 0
 }

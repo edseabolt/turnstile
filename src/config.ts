@@ -726,6 +726,28 @@ export function formatConfigWarnings(
 }
 
 /**
+ * Renders the end-of-period observe-mode summary as a compact, model-facing
+ * block for the once-per-load surfacing in `src/hooks-core.ts`. Pure and
+ * side-effect free (throws nothing): a fixed first line reports the period
+ * totals — how many deliberate blocks were suppressed and how many sessions
+ * were observed — and names that enforcement is now on, followed by a single
+ * journal-path line pointing at the JSONL journal that holds the full audit.
+ * The shape (fixed header, one journal line) mirrors `formatConfigWarnings`;
+ * both render through the shared `formatDiagnosticBlock` and diverge only in
+ * wording.
+ * @param counts The running observe-period totals at the moment of surfacing.
+ * @param journalPath Absolute path of the JSONL journal (named in the block).
+ * @returns The formatted `[turnstile] observe:` block.
+ */
+export function formatObserveSummary(
+  counts: { observed: number; wouldBlocks: number },
+  journalPath: string,
+): string {
+  const header = `[turnstile] observe: Observe period complete: ${counts.wouldBlocks} premature dispatch attempts would have been blocked, ${counts.observed} sessions observed. Enforcing from now on.`
+  return formatDiagnosticBlock(header, [`[journal: ${journalPath}]`], 1)
+}
+
+/**
  * Computes a short, stable digest of a resolved config.
  *
  * The digest is the first 12 hex characters of the SHA-256 of the config's

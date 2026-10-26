@@ -14,6 +14,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { BlockError } from "../src/gates.ts"
+import { formatObserveSummary } from "../src/config.ts"
 import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
 import { createLedger } from "../src/ledger.ts"
 import { observeEntry, observeSummaryEntry } from "../src/gates-common.ts"
@@ -338,14 +339,17 @@ const NO_PLAN_MESSAGE =
 
 /** Creates a fresh hooks-core context over an isolated env and a temp
  *  metrics dir, so neither config resolution nor journaling touches the
- *  real home.
+ *  real home. An existing metrics dir (pre-seeded with a journal tail) can
+ *  be supplied in place of a fresh one, for restart-over-tail tests: the
+ *  journaler only appends, so the pre-seeded lines replay at boot.
  *  @param config Injected config overrides (applied last by loadConfig).
+ *  @param existingMetricsDir Optional pre-seeded metrics dir (default: fresh).
  *  @returns The context plus the temp metrics dir (for journal assertions). */
-function coreWith(config: Partial<TurnstileConfig>): {
-  ctx: TurnstileContext
-  metricsDir: string
-} {
-  const metricsDir = tmpDir()
+function coreWith(
+  config: Partial<TurnstileConfig>,
+  existingMetricsDir?: string,
+): { ctx: TurnstileContext; metricsDir: string } {
+  const metricsDir = existingMetricsDir ?? tmpDir()
   const ctx = createHooksCore({
     env: isolatedEnv(metricsDir),
     config: { metricsDir, ...config },
@@ -459,6 +463,11 @@ test("an enforce-period executor dispatch enforces the plan-gate block and journ
     ])
     assert.equal(entriesOf(metricsDir, "observe").length, 0)
     assert.equal(entriesOf(metricsDir, "would-block").length, 0)
+    // An off period never arms the summary: a string-output delivery through
+    // the real execute.after hook is untouched.
+    const event = { tool: "read", sessionID: "p1", result: { output: "body" } }
+    await callTool(h, "execute.after", event)
+    assert.equal(String(event.result.output), "body", "no observe block for an off period")
   } finally {
     restore()
   }
@@ -682,4 +691,196 @@ test("a non-BlockError read-guard failure propagates without consulting the obse
   )
   assert.equal(observerErrors.length, 0, "the observer is never consulted for a non-BlockError")
   assert.equal(entriesOf(metricsDir, "would-block").length, 0)
+})
+
+/** The end-of-period summary renders its exact counts first line (suppressed
+ *  attempt count, then observed session count, then the enforcement notice)
+ *  followed by the single journal-path line; a zero-period renders the same
+ *  shape with zero counts. */
+test("formatObserveSummary renders the exact counts line and the journal path", () => {
+  assert.equal(
+    formatObserveSummary({ observed: 12, wouldBlocks: 7 }, "/m/turnstile.jsonl"),
+    "[turnstile] observe: Observe period complete: 7 premature dispatch attempts would have been blocked, 12 sessions observed. Enforcing from now on.\n" +
+      "[journal: /m/turnstile.jsonl]",
+    "a non-zero period renders the exact two-line block",
+  )
+  assert.equal(
+    formatObserveSummary({ observed: 0, wouldBlocks: 0 }, "/m/turnstile.jsonl"),
+    "[turnstile] observe: Observe period complete: 0 premature dispatch attempts would have been blocked, 0 sessions observed. Enforcing from now on.\n" +
+      "[journal: /m/turnstile.jsonl]",
+    "a zero period renders the same shape with zero counts",
+  )
+})
+
+/** The period transition end to end: in-period sessions suppress their
+ *  plan-gate blocks as would-block audit entries, the session admitted past
+ *  the boundary enforces and arms the summary, a result-less or non-string
+ *  delivery keeps it pending, the first string-output delivery carries the
+ *  exact counts line and journals the injected marker, and the block is
+ *  once-per-load. */
+test("the completing session enforces and the first string-output delivery surfaces the observe summary", async () => {
+  const { h, metricsDir, restore } = await bootObserve({ observeSessions: 2 })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "one" })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "p" },
+    })
+    await callSession(h, "prompt", { sessionID: "p2", text: "two" })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "executor", prompt: "p" },
+    })
+    await callSession(h, "prompt", { sessionID: "p3", text: "three" })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p3",
+          input: { agent: "executor", prompt: "p" },
+        }),
+      (e: Error) => e instanceof BlockError && e.message === NO_PLAN_MESSAGE,
+    )
+    const nonString = { tool: "read", sessionID: "p3", result: { output: 42 } }
+    await callTool(h, "execute.after", nonString)
+    assert.equal(
+      String(nonString.result.output),
+      "42",
+      "a non-string delivery keeps the summary pending",
+    )
+    const event = { tool: "read", sessionID: "p3", result: { output: "body" } }
+    await callTool(h, "execute.after", event)
+    const out = String(event.result.output)
+    assert.equal(
+      out.split("\n")[0],
+      "[turnstile] observe: Observe period complete: 2 premature dispatch attempts would have been blocked, 3 sessions observed. Enforcing from now on.",
+      "the first line carries the exact period totals",
+    )
+    assert.ok(
+      out.includes(path.join(metricsDir, "turnstile.jsonl")),
+      "the journal-path line is present",
+    )
+    assert.ok(out.endsWith("body"), "the original output is preserved")
+    assert.deepEqual(entriesOf(metricsDir, "observe").at(-1), {
+      ts: undefined,
+      type: "observe",
+      sessionID: "p3",
+      kind: "summary",
+      injected: true,
+      observed: 3,
+      wouldBlocks: 2,
+    })
+    const second = { tool: "read", sessionID: "p3", result: { output: "body" } }
+    await callTool(h, "execute.after", second)
+    assert.equal(String(second.result.output), "body", "a second delivery is untouched")
+  } finally {
+    restore()
+  }
+})
+
+/** A delivery whose output mutation throws fails open: the error is journaled,
+ *  no marker lands, and the summary stays pending for a later delivery, which
+ *  then surfaces it exactly once. */
+test("a throwing observe-summary mutation fails open and keeps the summary pending", async () => {
+  const { h, metricsDir, restore } = await bootObserve({ observeSessions: 1 })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "one" })
+    await callSession(h, "prompt", { sessionID: "p2", text: "two" })
+    let threw = false
+    try {
+      // A frozen result: assigning the prefaced value throws in strict mode.
+      await callTool(h, "execute.after", {
+        tool: "read",
+        sessionID: "p2",
+        result: Object.freeze({ output: "frozen-body" }),
+      })
+    } catch {
+      threw = true
+    }
+    assert.equal(threw, false, "the hook completes even when the mutation throws")
+    const errors = journalEntries(metricsDir).filter(
+      (e) => e.type === "error" && String(e.error).startsWith("observe summary injection:"),
+    )
+    assert.equal(errors.length, 1, "the failed injection is journaled")
+    assert.equal(
+      journalEntries(metricsDir).filter((e) => e.type === "observe" && e.kind === "summary").length,
+      0,
+      "no summary marker landed",
+    )
+    const later = { tool: "read", sessionID: "p2", result: { output: "body" } }
+    await callTool(h, "execute.after", later)
+    assert.equal(
+      String(later.result.output).split("\n")[0],
+      "[turnstile] observe: Observe period complete: 0 premature dispatch attempts would have been blocked, 2 sessions observed. Enforcing from now on.",
+      "the later delivery surfaces the pending summary",
+    )
+    assert.equal(
+      journalEntries(metricsDir).filter((e) => e.type === "observe" && e.kind === "summary").length,
+      1,
+      "the later delivery journals the marker",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/** A restart over a completed period lacking its journaled summary marker
+ *  re-arms the one-shot from replay: a result-less delivery consumes
+ *  nothing, the first string-output delivery surfaces the replayed totals and
+ *  journals the marker under the surfacing session, and a second delivery is
+ *  untouched. */
+test("a restart re-arms a completed period lacking its journaled summary marker", () => {
+  const metricsDir = tmpDir()
+  writeJournal(metricsDir, [
+    observeLine("s1", "observe", 1, 0),
+    observeLine("s2", "observe", 2, 0),
+    observeLine("s3", "enforce", 3, 1),
+  ])
+  const { ctx } = coreWith({ observeSessions: 2 }, metricsDir)
+  ctx.surfaceObserveSummary({ tool: "read", sessionID: "s4" })
+  const event = { tool: "read", sessionID: "s4", result: { output: "body" } }
+  ctx.surfaceObserveSummary(event)
+  const out = String(event.result.output)
+  assert.equal(
+    out.split("\n")[0],
+    "[turnstile] observe: Observe period complete: 1 premature dispatch attempts would have been blocked, 3 sessions observed. Enforcing from now on.",
+    "the replayed totals surface after restart",
+  )
+  assert.ok(out.endsWith("body"), "the original output is preserved")
+  assert.deepEqual(entriesOf(metricsDir, "observe").at(-1), {
+    ts: undefined,
+    type: "observe",
+    sessionID: "s4",
+    kind: "summary",
+    injected: true,
+    observed: 3,
+    wouldBlocks: 1,
+  })
+  const second = { tool: "read", sessionID: "s4", result: { output: "body" } }
+  ctx.surfaceObserveSummary(second)
+  assert.equal(String(second.result.output), "body", "a second delivery is untouched")
+})
+
+/** A restart over a completed period whose summary already surfaced (the
+ *  journaled marker in the tail) re-arms nothing: a string-output delivery is
+ *  untouched and journals no second marker. */
+test("a restart does not re-arm a completed period whose summary already surfaced", () => {
+  const metricsDir = tmpDir()
+  writeJournal(metricsDir, [
+    observeLine("s1", "observe", 1, 0),
+    observeLine("s2", "observe", 2, 0),
+    observeLine("s3", "enforce", 3, 1),
+    JSON.stringify(observeSummaryEntry("s3", 3, 1)),
+  ])
+  const { ctx } = coreWith({ observeSessions: 2 }, metricsDir)
+  const event = { tool: "read", sessionID: "s4", result: { output: "body" } }
+  ctx.surfaceObserveSummary(event)
+  assert.equal(String(event.result.output), "body", "no re-surfacing after restart")
+  assert.equal(
+    journalEntries(metricsDir).filter((e) => e.type === "observe" && e.kind === "summary").length,
+    1,
+    "the pre-existing marker is the only one",
+  )
 })

@@ -7,7 +7,7 @@
  */
 
 import { evictTo } from "./bounded.ts"
-import { formatConfigWarnings, loadConfig } from "./config.ts"
+import { formatConfigWarnings, formatObserveSummary, loadConfig } from "./config.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
   agentFromTaskInput,
@@ -22,7 +22,7 @@ import {
   VERDICT_RE,
 } from "./markers.ts"
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
-import { observeEntry, wouldBlockEntry } from "./gates-common.ts"
+import { observeEntry, observeSummaryEntry, wouldBlockEntry } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import {
   createToolPolicy,
@@ -179,6 +179,8 @@ export interface TurnstileContext {
   // ── services ──────────────────────────────────────────────────────────────
   /** Surfaces config warnings once into the first tool delivery. */
   surfaceConfigWarnings(event: ToolHookEvent): void
+  /** Surfaces the end-of-period observe summary once into the first tool delivery. */
+  surfaceObserveSummary(event: ToolHookEvent): void
   /** True when text contains at least one GATE or VERDICT marker. */
   hasMarker(text: string): boolean
   /** Journals one task/subagent dispatch entry. */
@@ -325,6 +327,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // delivery that carries string output — the same model-facing channel as
   // the policy injection and the read-budget warning prefix.
   let configWarningsPending = configWarnings.length > 0
+  // End-of-period observe summary: true while the once-per-load
+  // `[turnstile] observe:` block still deserves a context slot. Armed by the
+  // admission stamp that completes the observe period (see
+  // `stampObserveAdmission`) and re-armed at boot when the replayed journal
+  // tail shows a completed period whose summary never surfaced (the
+  // journaled `kind:"summary"` marker is the one-shot proof — a tail that
+  // holds it re-arms nothing). Consumed by the first tool delivery that
+  // carries string output (see `surfaceObserveSummary`); a default (off)
+  // period never arms it.
+  let observeSummaryPending = false
   // Surfaces unresolved config-validation warnings once per plugin load by
   // prepending a `[turnstile] config:` block to the first tool result with
   // string output — from any session, primary or child — the model-facing
@@ -353,6 +365,36 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         sessionID,
         surfaced: false,
         error: String(e),
+      })
+    }
+  }
+  /**
+   * Surfaces the end-of-period observe summary once per plugin load by
+   * prepending a `[turnstile] observe:` block to the first tool result with
+   * string output — the same model-facing channel as the config-warning and
+   * read-budget blocks. Armed by the period-completing admission stamp and by
+   * boot replay of a completed period lacking its journaled summary marker
+   * (never armed by a default, off period). Fail-open: a throwing mutation
+   * journals `type:"error"` and never blocks the tool, and the block stays
+   * pending for a later delivery — the `kind:"summary"` marker is journaled
+   * only after a successful prepend, so a restart re-surfaces exactly once.
+   * @param event The host execute.after tool-hook payload (mutated in place).
+   */
+  function surfaceObserveSummary(event: ToolHookEvent): void {
+    if (!observeSummaryPending) return
+    if (!event?.result || typeof event.result.output !== "string") return
+    const sessionID = asSessionID(event.sessionID)
+    try {
+      const counts = ledger.observeCounts()
+      event.result.output =
+        formatObserveSummary(counts, journaler.journalPath) + "\n" + event.result.output
+      observeSummaryPending = false
+      journaler.journal(observeSummaryEntry(sessionID, counts.observed, counts.wouldBlocks))
+    } catch (e) {
+      journaler.journal({
+        type: "error",
+        sessionID,
+        error: `observe summary injection: ${e}`,
       })
     }
   }
@@ -411,6 +453,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     opts.approvalLedgerPath,
     config.observeSessions,
   )
+  // Re-arm the end-of-period summary at boot: the replayed tail may show a
+  // completed period whose summary never surfaced (the process died between
+  // the completing stamp and the first string-output delivery) — replay
+  // re-arms the one-shot so the summary still lands on this load. A tail
+  // that already holds the `kind:"summary"` marker re-arms nothing; a
+  // default (off) period never completes, so this is a no-op there.
+  if (ledger.observeCounts().pendingSummary) observeSummaryPending = true
   // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
   // Hits are detected and journaled at prompt admission (see admitPrompt) and
   // parked here; the session's next string-output tool delivery surfaces them
@@ -958,6 +1007,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * attempted but stayed inconclusive — a child whose record is not yet visible
    * to `session.get`. Root sessions that resolve cleanly as parent-less, and
    * children already resolved to a parent, never signal (no journal spam).
+   * Observe-mode edge: when the edge is genuinely absent the caller keys the
+   * suppression check on the session itself, so a suppressed read there can
+   * stamp the child as an extra observed session (shifting the period boundary
+   * by one per unresolved child) and carry the `would-block` entry under the
+   * child key rather than a parent key. Accepted: it only happens while an
+   * observe period is armed (an off phase stamps nothing) and the audit stays
+   * internally consistent — the entry is keyed like the suppression that
+   * produced it.
    * @param sid The reading session ID, already normalized via `asSessionID`.
    * @returns The session ID the read budget should be keyed against.
    */
@@ -992,6 +1049,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * proceeds instead of the block throwing. A non-BlockError failure
    * propagates to the fail-open handler (only deliberate blocks are
    * suppressible).
+   * Deliberate asymmetry with the dispatch path: the read guard journals its
+   * own `blocked`/`read-limit` line before throwing (that stamping stays
+   * byte-identical for enforce users, so the suppression cannot remove it),
+   * whereas a suppressed dispatch journals no `blocked` stamp at all (its
+   * catch branch skips it). A suppressed read therefore co-journals both that
+   * `blocked` line and the `would-block` audit entry; the dispatch path
+   * journals the `would-block` entry alone.
    * @param key The session ID the read budget is keyed against (the parent,
    *     or the session itself when the edge is genuinely absent).
    * @throws The deliberate read-budget block error when the block is not
@@ -2526,7 +2590,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * admission entry the first time the process sees it: the phase plus the
    * running period totals (every observe-mode entry carries both, so the
    * last stamped line restores the whole period at replay). Repeat
-   * admissions of an already-stamped session journal nothing new.
+   * admissions of an already-stamped session journal nothing new. The
+   * completing stamp — the session admitted past the period boundary, whose
+   * phase is `enforce` — additionally arms the once-per-load
+   * `[turnstile] observe:` summary block for the first string-output
+   * delivery after it (see `surfaceObserveSummary`).
    * Fail-toward-enforce: any ledger throw is journaled and swallowed — a
    * broken observer must not disturb prompt admission, and the unstamped
    * session re-stamps (or fails the same way) on its next enforcement read,
@@ -2540,6 +2608,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       const phase: "observe" | "enforce" = stamp.phase === "observe" ? "observe" : "enforce"
       const counts = ledger.observeCounts()
       journaler.journal(observeEntry(sessionID, phase, counts.observed, counts.wouldBlocks))
+      if (stamp.completed) observeSummaryPending = true
     } catch (e) {
       journaler.journal({ type: "error", sessionID, error: `observe admission stamp: ${e}` })
     }
@@ -2680,6 +2749,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     boundAdmittedIds,
     // services
     surfaceConfigWarnings,
+    surfaceObserveSummary,
     hasMarker,
     recordDispatch,
     surfaceNearMissDiagnostics,

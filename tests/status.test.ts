@@ -11,6 +11,9 @@
  *  - last markers (text + timestamp);
  *  - waiver events (with channel) and prompt-channel plan approvals;
  *  - the `--json` shape;
+ *  - the observe-mode header line (phase + period totals, rendered only when
+ *    the journal holds observe-mode entries; journals without them stay
+ *    byte-identical);
  *  - absent journal (exit 0 + note), malformed lines (skipped), and unknown
  *    flags (exit 2).
  *
@@ -779,5 +782,136 @@ test("status subcommand is routed from the CLI router", () => {
     assert.equal(obj.noJournal, true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** Runs status.mjs against a temp metrics dir plus a shared temp config
+ *  file, so a developer's real config can never leak into the assertion.
+ *  @param dir The temp metrics directory.
+ *  @param cfgPath The installed config file path.
+ *  @param args Arguments after the subcommand.
+ *  @returns The spawn result.
+ */
+function runStatusWithConfig(dir: string, cfgPath: string, args: string[] = []) {
+  return spawnSync(process.execPath, [statusScript, ...args], {
+    env: { ...process.env, TURNSTILE_METRICS_DIR: dir, TURNSTILE_CONFIG: cfgPath },
+    encoding: "utf8",
+  })
+}
+
+/** The observe-mode header line renders right below the journal header with
+ *  the folded phase and running totals: last-wins over observe and
+ *  would-block lines, the summary marker folds inert, and a counter over the
+ *  replay bound folds nothing; the `--json` shape stays unchanged (no
+ *  observe key), and gate/plan flag parity with the real replay holds. */
+test("observe-mode entries fold last-wins into the header line and leave the json shape unchanged", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(cfgPath, JSON.stringify({ observeSessions: 2 }))
+    const journalPath = join(dir, "turnstile.jsonl")
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "gate",
+        sessionID: "sp-obs",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+      line(2, { type: "observe", sessionID: "s1", phase: "observe", observed: 1, wouldBlocks: 0 }),
+      line(3, { type: "observe", sessionID: "s2", phase: "observe", observed: 2, wouldBlocks: 0 }),
+      line(4, {
+        type: "would-block",
+        sessionID: "s2",
+        cause: "plan-gate",
+        observed: 2,
+        wouldBlocks: 1,
+      }),
+      line(5, { type: "observe", sessionID: "s3", phase: "enforce", observed: 3, wouldBlocks: 1 }),
+      line(6, {
+        type: "observe",
+        sessionID: "s3",
+        kind: "summary",
+        injected: true,
+        observed: 3,
+        wouldBlocks: 1,
+      }),
+      // A hostile counter over the replay bound folds nothing (the summary
+      // marker above remains the last valid line).
+      line(7, {
+        type: "observe",
+        sessionID: "s-hostile",
+        phase: "observe",
+        observed: 1e12,
+        wouldBlocks: 0,
+      }),
+    ])
+    const table = runStatusWithConfig(dir, cfgPath)
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(out[1], "observe: enforce 3/2 sessions, 1 would-blocks")
+    const json = runStatusWithConfig(dir, cfgPath, ["--json"])
+    assert.equal(code(json), 0)
+    const obj = JSON.parse(json.stdout) as StatusJSON
+    assert.ok(!("observe" in obj), "the json shape carries no observe state")
+    assertReplayParity(obj, journalPath)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+/** While the period is still running (folded total at the configured
+ *  boundary, not past it), the header line reports the `observe` phase. */
+test("an in-period journal renders the observe phase on the header line", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(cfgPath, JSON.stringify({ observeSessions: 2 }))
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "observe", sessionID: "s1", phase: "observe", observed: 1, wouldBlocks: 0 }),
+      line(2, { type: "observe", sessionID: "s2", phase: "observe", observed: 2, wouldBlocks: 0 }),
+    ])
+    const res = runStatusWithConfig(dir, cfgPath)
+    assert.equal(code(res), 0)
+    assert.equal(res.stdout.split("\n")[1], "observe: observe 2/2 sessions, 0 would-blocks")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+/** A journal without observe-mode entries renders byte-identically to the
+ *  pre-observe table even when a period is configured: the observe line only
+ *  renders over a journal that actually holds observe-mode entries. */
+test("a journal without observe entries renders byte-identically despite a configured period", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(cfgPath, JSON.stringify({ observeSessions: 2 }))
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "gate",
+        sessionID: "sp-b",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+      line(2, { type: "dispatch", sessionID: "sp-b", agent: "executor" }),
+    ])
+    const res = runStatusWithConfig(dir, cfgPath)
+    assert.equal(code(res), 0)
+    const out = res.stdout.split("\n")
+    assert.equal(out[0], `turnstile status — ${join(dir, "turnstile.jsonl")}`)
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM")
+    assert.ok(!res.stdout.includes("observe:"), "no observe line renders")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
   }
 })
