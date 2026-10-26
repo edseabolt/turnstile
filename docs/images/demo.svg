@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="720" viewBox="0 0 1760 720" role="img" aria-label="terminal mock: an agent claims its tests pass; turnstile blocks the reviewer dispatch until a verified GATE: PASS from a real test run, and every decision lands in turnstile.jsonl">
+  <defs>
+    <!-- Background: deep vertical gradient with a subtle vignette (matches hero.svg) -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#181825"/>
+      <stop offset="0.55" stop-color="#1E1E2E"/>
+      <stop offset="1" stop-color="#11111B"/>
+    </linearGradient>
+    <radialGradient id="vignette" cx="0.5" cy="0.42" r="0.75">
+      <stop offset="0.55" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+    <filter id="cardshadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="softglow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ======== background ======== -->
+  <rect width="1760" height="720" fill="url(#bg)"/>
+  <rect width="1760" height="720" fill="url(#vignette)"/>
+
+  <!-- ======== terminal window ======== -->
+  <g filter="url(#cardshadow)">
+    <rect x="44" y="36" width="1672" height="648" rx="20" fill="#11111B" stroke="#CDD6F4" stroke-opacity="0.18" stroke-width="1.5"/>
+  </g>
+
+  <!-- title bar -->
+  <circle cx="88" cy="76" r="8" fill="#F38BA8"/>
+  <circle cx="120" cy="76" r="8" fill="#F9E2AF"/>
+  <circle cx="152" cy="76" r="8" fill="#A6E3A1"/>
+  <text x="880" y="83" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#A6ADC8" opacity="0.7">opencode</text>
+  <line x1="45" y1="112" x2="1715" y2="112" stroke="#CDD6F4" stroke-opacity="0.12" stroke-width="1.5"/>
+
+  <!-- 1. the agent's claim -->
+  <text x="92" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6ADC8">$ your agent: "done — tests pass, ready to ship"</text>
+
+  <!-- 2. the unverified claim hits the gate -->
+  <text x="92" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" fill="#F38BA8">BLOCKED by turnstile: reviewer dispatch without gate evidence:</text>
+  <text x="92" y="300" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#F38BA8">a GATE: PASS was recorded without a journaled successful test-command execution …</text>
+  <text x="92" y="352" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6ADC8">Run the test-runner subagent first, or obtain an explicit user waiver …</text>
+
+  <!-- 3. verified evidence flips it green -->
+  <text x="92" y="448" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6E3A1">test-runner ▸ npm run ci  → exit 0</text>
+  <text x="92" y="502" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" fill="#A6E3A1" filter="url(#softglow)">GATE: PASS tests=412 passed=412 failed=0</text>
+  <text x="92" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6E3A1">reviewer dispatch ✓</text>
+
+  <!-- 4. footer: the journal -->
+  <line x1="92" y1="610" x2="1668" y2="610" stroke="#CBA6F7" stroke-opacity="0.3" stroke-width="1.5"/>
+  <text x="880" y="660" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="600" fill="#CBA6F7">every decision → turnstile.jsonl · opencode-turnstile status replays it after restart</text>
+</svg>
