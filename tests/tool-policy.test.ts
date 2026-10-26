@@ -7,6 +7,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 
 import { turnstile } from "../turnstile.ts"
 import { BlockError } from "../src/gates.ts"
@@ -672,3 +673,157 @@ test("integration: execute.before gates a git push through the landing guard", a
     dispose()
   }
 })
+
+/** True when git is available (the real-git fixture cases skip otherwise). */
+const hasGit = spawnSync("git", ["--version"]).error === undefined
+
+/**
+ * Builds a real git fixture: a bare origin plus a worktree on `main` with one
+ * commit pushed and its upstream set (`push -u`), so the empty-diff probe has
+ * a resolvable remote and upstream.
+ * @returns The worktree directory.
+ */
+function gitProjectFixture(): string {
+  const work = tmpDir("turnstile-landing-emptydiff-")
+  const origin = tmpDir("turnstile-landing-emptydiff-origin-")
+  const run = (dir: string, ...args: string[]): void => {
+    const result = spawnSync("git", ["-C", dir, ...args], { stdio: "ignore" })
+    assert.equal(result.status, 0, `git ${args.join(" ")} failed`)
+  }
+  run(origin, "init", "--bare", "-b", "main")
+  run(work, "init", "-b", "main")
+  run(work, "remote", "add", "origin", origin)
+  run(
+    work,
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "user.name=Test",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "init",
+  )
+  run(work, "push", "-u", "origin", "main")
+  return work
+}
+
+/**
+ * Boots the plugin with the working directory swapped to a git fixture
+ * project (a bare origin plus a worktree on `main`, one commit, upstream set),
+ * so the empty-diff probe's project-directory fallback resolves inside the
+ * worktree. The session's record has no directory on the default fake host,
+ * so the probe reads `process.cwd()`.
+ * @param configOverrides Config overrides forwarded to `boot`.
+ * @returns The booted host, metrics dir, worktree path, and a `restore` that
+ *     disposes and returns to the previous directory.
+ */
+async function bootInGitProject(
+  configOverrides: BootConfig = {},
+): Promise<{ h: FakeHost; metricsDir: string; project: string; restore: () => void }> {
+  const project = gitProjectFixture()
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, ...configOverrides } as Partial<TurnstileConfig>,
+  })
+  const dispose = ((await setup(h.host)) as (() => void) | undefined) ?? (() => {})
+  return {
+    h,
+    metricsDir,
+    project,
+    restore: (): void => {
+      dispose()
+      process.chdir(prev)
+    },
+  }
+}
+
+/**
+ * AC-1: with the exemption on, a push the probe proves empty against its
+ * upstream is allowed through the enforced landing gate and journaled exactly
+ * once as `exempt:"empty-diff"`, with no landing block.
+ */
+test(
+  "integration: a proved empty-diff push passes the enforced gate",
+  { skip: !hasGit },
+  async () => {
+    const { h, metricsDir, restore } = await bootInGitProject({
+      gitGates: { mode: "enforce", emptyDiffExempt: true },
+    })
+    try {
+      await callTool(h, "execute.before", {
+        tool: "bash",
+        sessionID: "p1",
+        input: { command: "git push origin main" },
+      })
+      const entries = journalEntries(metricsDir)
+      const exempt = entries.filter((e) => e.exempt === "empty-diff")
+      assert.equal(exempt.length, 1, "exactly one empty-diff exemption is journaled")
+      const entry = exempt[0]
+      assert.ok(entry, "the exemption entry exists")
+      assert.equal(entry.type, "tool")
+      assert.equal(entry.tool, "bash")
+      assert.equal(entry.landing, true)
+      assert.equal(entry.sessionID, "p1")
+      assert.ok(!entries.some((e) => e.reason === "no-landing-approval"), "no landing block")
+    } finally {
+      restore()
+    }
+  },
+)
+
+/**
+ * AC-2: with the exemption on but the push non-empty (a new commit ahead of
+ * upstream), the probe is false and the enforced landing gate blocks with
+ * `no-landing-approval`.
+ */
+test(
+  "integration: a non-empty-diff push is blocked under the exemption",
+  { skip: !hasGit },
+  async () => {
+    const { h, metricsDir, project, restore } = await bootInGitProject({
+      gitGates: { mode: "enforce", emptyDiffExempt: true },
+    })
+    try {
+      const commit = spawnSync(
+        "git",
+        [
+          "-C",
+          project,
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "user.name=Test",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "feat: ahead",
+        ],
+        { stdio: "ignore" },
+      )
+      assert.equal(commit.status, 0)
+      await assert.rejects(
+        () =>
+          callTool(h, "execute.before", {
+            tool: "bash",
+            sessionID: "p1",
+            input: { command: "git push origin main" },
+          }),
+        (e: unknown) => e instanceof BlockError,
+      )
+      const blocked = journalEntries(metricsDir).find((e) => e.reason === "no-landing-approval")
+      assert.ok(blocked, "a no-landing-approval block is journaled")
+      assert.equal(blocked.type, "blocked")
+      assert.ok(
+        !journalEntries(metricsDir).some((e) => e.exempt === "empty-diff"),
+        "no exemption journaled",
+      )
+    } finally {
+      restore()
+    }
+  },
+)

@@ -77,7 +77,7 @@ function allows(fn: () => void): void {
  * Builds a `LandingGateCapability` fake that records call counts and can be
  * armed to throw from one method (to exercise the guard's fail-open path).
  * `prior` seeds `priorBlocks()`; `approval` seeds `hasApproval()`; `credited`
- * seeds `hasCreditedApproval()`.
+ * seeds `hasCreditedApproval()`; `emptyDiff` seeds `isEmptyDiff()`.
  * @param opts Capability configuration.
  * @returns The capability and its observable call log.
  */
@@ -85,6 +85,7 @@ function recordingCapability(opts?: {
   prior?: number
   approval?: boolean
   credited?: boolean
+  emptyDiff?: boolean
   throwIn?: keyof LandingGateCapability
 }): { gate: LandingGateCapability; log: Record<string, number | boolean> } {
   const log: Record<string, number | boolean> = {
@@ -92,6 +93,7 @@ function recordingCapability(opts?: {
     escalate: 0,
     escalated: false,
     blockCount: opts?.prior ?? 0,
+    emptyDiff: 0,
   }
   const throwAt = opts?.throwIn
   const gate: LandingGateCapability = {
@@ -116,6 +118,11 @@ function recordingCapability(opts?: {
       if (throwAt === "escalate") throw new Error("escalate boom")
       log.escalate = (log.escalate as number) + 1
       log.escalated = true
+    },
+    isEmptyDiff: () => {
+      if (throwAt === "isEmptyDiff") throw new Error("isEmptyDiff boom")
+      log.emptyDiff = (log.emptyDiff as number) + 1
+      return opts?.emptyDiff ?? false
     },
   }
   return { gate, log }
@@ -229,6 +236,61 @@ test("guardLanding: approval releases the gate", () => {
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.deepEqual(landingBlocks(entries), [], "approval emits no block")
   assert.equal(log.recordBlock, 0)
+  assert.equal(log.emptyDiff, 0, "the exemption clause sits after the approval release")
+})
+
+/**
+ * With `gitGates.emptyDiffExempt` on and the probe proving the push empty,
+ * the push is allowed: exactly one `exempt:"empty-diff"` tool entry is
+ * journaled and no landing block is recorded.
+ */
+test("guardLanding: an exempted empty-diff push is journaled, not blocked", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", emptyDiffExempt: true } })
+  const { gate, log } = recordingCapability({ emptyDiff: true })
+  allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.emptyDiff, 1, "the probe is consulted exactly once")
+  const ex = entries.find((e) => e.exempt === "empty-diff")
+  assert.ok(ex, "the exemption is journaled")
+  assert.equal(ex.type, "tool")
+  assert.equal(ex.tool, "bash")
+  assert.equal(ex.landing, true)
+  assert.equal(ex.sessionID, "s1")
+  assert.deepEqual(landingBlocks(entries), [], "an exempted push records no block")
+  assert.equal(log.recordBlock, 0)
+})
+
+/** With the exemption off (the default), the probe is never consulted. */
+test("guardLanding: the probe is not consulted while the exemption is off", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { gate, log } = recordingCapability({ emptyDiff: true })
+  blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.emptyDiff, 0, "the probe is never consulted while off")
+  assert.equal(landingBlocks(entries).length, 1, "the first block still fires")
+})
+
+/** Exemption on but the probe proves the push non-empty: the ladder is unchanged. */
+test("guardLanding: a non-empty probe under the exemption leaves the ladder unchanged", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", emptyDiffExempt: true } })
+  const { gate, log } = recordingCapability({ emptyDiff: false })
+  blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.emptyDiff, 1, "the probe is consulted while on")
+  assert.equal(landingBlocks(entries).length, 1, "the first block still fires")
+  assert.equal(
+    entries.find((e) => e.exempt === "empty-diff"),
+    undefined,
+    "no exemption entry",
+  )
+})
+
+/** A capability error from `isEmptyDiff` fails open: journaled, never thrown. */
+test("guardLanding: an isEmptyDiff capability error fails open", () => {
+  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", emptyDiffExempt: true } })
+  const { gate } = recordingCapability({ throwIn: "isEmptyDiff" })
+  allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  const errs = entries.filter(
+    (e) => e.type === "error" && /tool policy guard/.test(String(e.error)),
+  )
+  assert.equal(errs.length, 1)
 })
 
 /** `landingGate:false` is a no-op even under enforce. */
@@ -259,10 +321,11 @@ test("guardLanding: empty or absent command fails open", () => {
  */
 test("guardLanding: gh pr is not the landing gate's target", () => {
   const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
-  const { gate } = recordingCapability()
+  const { gate, log } = recordingCapability()
   allows(() => policy.guardLanding("bash", "gh pr create", "s1", gate))
   allows(() => policy.guardLanding("bash", "gh pr merge --squash", "s1", gate))
   assert.deepEqual(entries, [], "the landing gate is push-only")
+  assert.equal(log.emptyDiff, 0, "gh pr never consults the empty-diff probe")
 })
 
 /**

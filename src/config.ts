@@ -153,6 +153,10 @@ export function defaultConfig(
       commitMessages: true,
       commitFormat: DEFAULT_COMMIT_FORMAT,
       landingGate: true,
+      // Opt-in (like continuationCarry): the probe reads live git state
+      // synchronously inside execute.before, so the suite's own repo would
+      // become a load-bearing input when left default-on.
+      emptyDiffExempt: false,
     },
   }
 }
@@ -390,10 +394,11 @@ export function mergeConfig(
               'config: gitGates.mode must be "enforce", "shadow", or "off"; keeping default',
             )
           }
-        } else if (gk === "commitMessages" || gk === "landingGate") {
+        } else if (gk === "commitMessages" || gk === "landingGate" || gk === "emptyDiffExempt") {
           if (typeof gv === "boolean") {
             if (gk === "commitMessages") merged.commitMessages = gv
-            else merged.landingGate = gv
+            else if (gk === "landingGate") merged.landingGate = gv
+            else merged.emptyDiffExempt = gv
           } else {
             warnings.push(`config: gitGates.${gk} must be a boolean; keeping default`)
           }

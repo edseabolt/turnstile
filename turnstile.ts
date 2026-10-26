@@ -336,7 +336,14 @@
  *   satisfy the gate); `gh pr create|merge` flows as landing telemetry unless
  *   the user configures a `bashDeny` rule that denies it first (the two
  *   journal reasons stay disjoint either way), and every `git push` is
- *   journaled as landing telemetry in every mode.
+ *   journaled as landing telemetry in every mode. With `gitGates.emptyDiffExempt`
+ *   (opt-in, default false), a push the landing probe proves statically empty
+ *   against its upstream — every refspec's branch resolving to the same
+ *   commit as its upstream ref — is exempt: journaled
+ *   `{type:"tool", tool:"bash", landing:true, exempt:"empty-diff"}` and allowed.
+ *   Ambiguous shapes (detached HEAD, unresolvable remote/upstream, explicit
+ *   commits or sha ranges, `--mirror`/`--tags`, force flags, any non-empty
+ *   refspec among several) fall through to the gate — fail-toward-strict.
  * - Landing escalation: on a `git push` with no approval that either repeats
  *   a blocked attempt or follows a credited reviewer APPROVE (the journal
  *   still carries the credit even though the prompt reset dropped the flag),

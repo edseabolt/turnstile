@@ -192,6 +192,11 @@
         "landingGate": {
           "type": "boolean",
           "description": "Whether pushing/PR-landing is gated on a reviewer VERDICT: APPROVE (default true)."
+        },
+        "emptyDiffExempt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether a statically-provable empty-diff git push (zero commits ahead of upstream) skips the landing gate (default false; opt-in)."
         }
       }
     }
