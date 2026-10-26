@@ -529,6 +529,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
         })
         throw new BlockError(
           `BLOCKED by turnstile: plan "${target}" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.`,
+          "plan-gate",
         )
       }
     } catch (e) {
@@ -692,6 +693,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
           "`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`, or obtain an explicit user waiver " +
           `(a user prompt this task must contain the literal marker '${config.waiverMarker}' followed by the user's words).` +
           waiverStateNote(s, `${config.agents.executor} or ${config.agents.planReviewer}`),
+        "plan-gate",
       )
     }
   }

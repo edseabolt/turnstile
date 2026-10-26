@@ -38,8 +38,8 @@ test("gates.ts exposes only BlockError and createGates at runtime", async () => 
 /**
  * The shared gates leaf must expose the block error, the two waiver-semantics
  * helpers both gate families import, and the pure journal-entry composers
- * (the gate composers plus the observe-mode admission-stamp and summary
- * marker builders).
+ * (the gate composers plus the observe-mode admission-stamp, suppressed-block
+ * audit, and summary marker builders).
  */
 test("gates-common.ts exposes the block error, waiver helpers, and composers", async () => {
   const mod = await import("../src/gates-common.ts")
@@ -51,6 +51,7 @@ test("gates-common.ts exposes the block error, waiver helpers, and composers", a
     "reviewerEnsembleEntry",
     "waiverCovers",
     "waiverStateNote",
+    "wouldBlockEntry",
   ])
 })
 

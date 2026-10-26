@@ -10,12 +10,18 @@ import type { GateState } from "./types.ts"
 /**
  * The only error type turnstile deliberately throws at the host: an
  * enforcement block. Hook guards rethrow `BlockError` instances and
- * journal everything else (fail-open contract).
+ * journal everything else (fail-open contract). The optional `cause` names
+ * the blocking gate for the observe-mode `would-block` audit entry (the hook
+ * body's fallback ladder reads it without re-parsing the message); an
+ * unstamped block falls back to the dispatch agent name or `"gate"`.
  */
 export class BlockError extends Error {
-  constructor(message: string) {
+  /** The blocking gate's audit name (unset for gates that do not stamp it). */
+  cause: string | undefined
+  constructor(message: string, cause?: string) {
     super(message)
     this.name = "BlockError"
+    this.cause = cause
   }
 }
 
@@ -138,4 +144,29 @@ export function observeSummaryEntry(
   wouldBlocks: number,
 ): Record<string, unknown> {
   return { type: "observe", sessionID, kind: "summary", injected: true, observed, wouldBlocks }
+}
+
+/**
+ * Builds a `would-block` journal entry stamped when a deliberate block is
+ * suppressed during an observe period: the session, the blocking gate's
+ * audit name, and the running period totals at the moment of the suppression.
+ * Every observe-mode entry kind carries both totals, so the last stamped line
+ * restores the whole period state at replay. The cause is truncated to 200
+ * characters, mirroring the trace-detail truncation in `src/journal.ts` (a
+ * cause is a guard phrase, never a payload — the bound keeps a hostile one
+ * bounded too). Pure: returns the entry, journals nothing.
+ * @param sessionID The session whose block was suppressed.
+ * @param cause The blocking gate's audit name (stamped gate phrase, the
+ *     dispatch agent name, or the `"gate"` fallback).
+ * @param observed The total number of admitted sessions so far.
+ * @param wouldBlocks The total number of suppressed blocks so far.
+ * @returns The `would-block` audit journal entry.
+ */
+export function wouldBlockEntry(
+  sessionID: string,
+  cause: string,
+  observed: number,
+  wouldBlocks: number,
+): Record<string, unknown> {
+  return { type: "would-block", sessionID, cause: cause.slice(0, 200), observed, wouldBlocks }
 }

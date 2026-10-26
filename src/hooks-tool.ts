@@ -49,7 +49,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     if (event?.tool === "read") {
       // Keyed off the parent session: a subagent's reads draw down the
       // parent's budget (AGENTS.md contract), not a per-child one.
-      ctx.gates.guardReadLimit(await ctx.readBudgetKey(asSessionID(event?.sessionID)), ctx.ledger)
+      ctx.handleReadBudget(await ctx.readBudgetKey(asSessionID(event?.sessionID)))
       return
     }
     // Tool-call denylist: bash/shell commands and write/edit

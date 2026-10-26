@@ -22,6 +22,7 @@ import {
   VERDICT_RE,
 } from "./markers.ts"
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
+import { observeEntry, wouldBlockEntry } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import {
   createToolPolicy,
@@ -206,6 +207,8 @@ export interface TurnstileContext {
   evidenceSearch(sid: string): EvidenceSearch
   /** Resolves the read-budget key (parent or self) for a session. */
   readBudgetKey(sid: string): Promise<string>
+  /** Runs the read-budget guard, suppressing a deliberate block in the observe period. */
+  handleReadBudget(key: string): void
   /** Returns the last verdict match in text for re. */
   lastMatch(text: string, re: RegExp): string
   /** Stamps a plan-reviewer verdict's approval against the plans dir. */
@@ -979,6 +982,32 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       }
     }
     return key
+  }
+
+  /**
+   * Runs the whole-file read horizon for a session with observe-mode
+   * suppression: the guard evaluation is unchanged (the same
+   * check-then-increment), and when a deliberate block fires during an
+   * observe period the `would-block` audit entry is journaled and the read
+   * proceeds instead of the block throwing. A non-BlockError failure
+   * propagates to the fail-open handler (only deliberate blocks are
+   * suppressible).
+   * @param key The session ID the read budget is keyed against (the parent,
+   *     or the session itself when the edge is genuinely absent).
+   * @throws The deliberate read-budget block error when the block is not
+   *     suppressed.
+   */
+  function handleReadBudget(key: string): void {
+    try {
+      gates.guardReadLimit(key, ledger)
+    } catch (e) {
+      if (e instanceof BlockError && observeActive(key)) {
+        const totals = ledger.noteWouldBlock(key)
+        journaler.journal(wouldBlockEntry(key, "read-budget", totals.observed, totals.wouldBlocks))
+        return
+      }
+      throw e
+    }
   }
 
   /**
@@ -1763,6 +1792,78 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * True while the session is inside its observe period: gate decisions are
+   * computed and journaled, but the deliberate block is suppressed. Reads the
+   * stored admission-phase stamp (admission is the stamping point; a mid-task
+   * read of an already-stamped session re-stamps nothing). Fail-toward-
+   * enforce: any ledger throw journals and returns false — a broken observer
+   * must not silently un-guard the pipeline (the fail-toward-strict direction
+   * this codebase takes when an auxiliary read fails).
+   * @param sessionID The session whose enforcement decision is being made.
+   * @returns True when the deliberate block should be suppressed and
+   *     journaled as a would-have-blocked event.
+   */
+  function observeActive(sessionID: string): boolean {
+    try {
+      return ledger.observePhase(sessionID).phase === "observe"
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `observe phase read: ${e}` })
+      return false
+    }
+  }
+
+  /**
+   * Names the blocking gate for a suppressed dispatch: the gate's stamped
+   * audit cause when the throw site carries one, else the dispatched agent
+   * name, else the `"gate"` fallback. Never re-parses the block message —
+   * the message is byte-identity-sensitive (goldens pin it), the cause is
+   * audit-only.
+   * @param e The deliberate block error.
+   * @param agent The dispatched agent name ("" when the host named none).
+   * @returns The audit cause for the `would-block` entry.
+   */
+  function blockCause(e: BlockError, agent: string): string {
+    return e.cause ?? (agent || "gate")
+  }
+
+  /**
+   * Settles a task-dispatch guard catch. A deliberate BlockError inside an
+   * observe period is suppressed: the `would-block` audit entry is journaled
+   * with the running totals and the dispatch is metered like any admit — the
+   * suppressed dispatch happened, so counters mean the same thing in both
+   * modes and a "would have been blocked" count is an attempt count, not a
+   * counter delta. Outside the observe period the BlockError stamps
+   * `blocked:true` (a blocked attempt draws down nothing) and is re-thrown
+   * for the fail-open wrapper; any non-BlockError is an internal error that
+   * propagates un-stamped, so the dispatch entry is never mislabeled.
+   * @param e The caught guard failure.
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param description The trace-gated dispatch description.
+   * @param waived The budget guard's admission-time waiver-exemption verdict
+   *     (false when the budget guard itself threw).
+   * @returns True when the block was suppressed (the dispatch proceeded).
+   */
+  function dispatchBlockOutcome(
+    e: unknown,
+    sessionID: string,
+    agent: string,
+    description: string,
+    waived: boolean,
+  ): boolean {
+    if (!(e instanceof BlockError)) return false
+    if (observeActive(sessionID)) {
+      const cause = blockCause(e, agent)
+      const totals = ledger.noteWouldBlock(sessionID)
+      journaler.journal(wouldBlockEntry(sessionID, cause, totals.observed, totals.wouldBlocks))
+      allowDispatch(sessionID, agent, description, waived)
+      return true
+    }
+    recordDispatch(sessionID, agent, description, true)
+    return false
+  }
+
+  /**
    * Guard-and-meter-and-journal section of a task dispatch: the per-leg
    * and total-dispatch budget guard, the plan-gate once-grant
    * short-circuit, the reviewer evidence guard, and the executor
@@ -1789,6 +1890,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // deliberate refusal — is stamped blocked and re-thrown for the
     // outer catch to turn into the BLOCKED error; any other throw is an
     // internal error that propagates un-stamped to the fail-open handler.
+    // In the observe period a deliberate block is suppressed instead:
+    // it journals a would-block entry and the dispatch is metered like
+    // any admit.
+    let waived = false
     try {
       // Per-leg loop caps + total-dispatch budget: checked first so a
       // block names its own cause (leg cap, round cap, budget). The
@@ -1800,7 +1905,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       // gate) may consume a covered unscoped waiver in between, so the
       // meter must not re-read it. Before the once-grant short-circuit:
       // a blocked dispatch must not consume the grant.
-      const waived = gates.guardDispatchBudget(sessionID, ledger, agent)
+      waived = gates.guardDispatchBudget(sessionID, ledger, agent)
       if (consumePlanGrant(sessionID, agent)) {
         allowDispatch(sessionID, agent, description, waived)
         return
@@ -1809,11 +1914,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       if (agent === config.agents.executor) await enforceExecutorGates(sessionID, prompt)
       allowDispatch(sessionID, agent, description, waived)
     } catch (e) {
-      // Only a deliberate BlockError is a real block; a non-BlockError
-      // is an internal error that propagates un-stamped to the
-      // fail-open outer handler (which journals it), so the dispatch
-      // entry is never mislabeled as blocked.
-      if (e instanceof BlockError) recordDispatch(sessionID, agent, description, true)
+      // A deliberate block in the observe period is settled by
+      // dispatchBlockOutcome (would-block entry + metered admit) and
+      // the dispatch proceeds; outside it the BlockError is stamped
+      // blocked and re-thrown for the outer catch. A non-BlockError is
+      // an internal error that propagates un-stamped to the fail-open
+      // outer handler (which journals it), so the dispatch entry is
+      // never mislabeled as blocked.
+      if (dispatchBlockOutcome(e, sessionID, agent, description, waived)) return
       throw e
     }
   }
@@ -2413,6 +2521,30 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Stamps a session's observe-mode admission phase and journals the
+   * admission entry the first time the process sees it: the phase plus the
+   * running period totals (every observe-mode entry carries both, so the
+   * last stamped line restores the whole period at replay). Repeat
+   * admissions of an already-stamped session journal nothing new.
+   * Fail-toward-enforce: any ledger throw is journaled and swallowed — a
+   * broken observer must not disturb prompt admission, and the unstamped
+   * session re-stamps (or fails the same way) on its next enforcement read,
+   * where it fails toward enforce.
+   * @param sessionID The admitted session to stamp.
+   */
+  function stampObserveAdmission(sessionID: string): void {
+    try {
+      const stamp = ledger.observePhase(sessionID)
+      if (!stamp.isNew) return
+      const phase: "observe" | "enforce" = stamp.phase === "observe" ? "observe" : "enforce"
+      const counts = ledger.observeCounts()
+      journaler.journal(observeEntry(sessionID, phase, counts.observed, counts.wouldBlocks))
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `observe admission stamp: ${e}` })
+    }
+  }
+
+  /**
    * Admits one user-authored prompt: dedupes by the shared host message id,
    * surfaces the dead-channel telemetry once, then resets prior task scope
    * (carrying restart-sticky flags when continuation carry is armed), drops all
@@ -2460,6 +2592,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       })
     }
     carryOrReset(sessionID)
+    stampObserveAdmission(sessionID)
     dropTaskScope(sessionID)
     captureWaiver(sessionID, properties)
     captureApproval(sessionID, properties)
@@ -2560,6 +2693,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     promoteOnEvidence,
     evidenceSearch,
     readBudgetKey,
+    handleReadBudget,
     lastMatch,
     stampPlanApproval,
     planApprovalStampFields,
