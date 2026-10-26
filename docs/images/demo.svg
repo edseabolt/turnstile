@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="720" viewBox="0 0 1760 720" role="img" aria-label="terminal mock: an agent claims its tests pass; turnstile blocks the reviewer dispatch until a verified GATE: PASS from a real test run, and every decision lands in turnstile.jsonl">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 1760 720" role="img" aria-label="terminal mock: an agent claims its tests pass; turnstile blocks the reviewer dispatch until a verified GATE: PASS from a real test run, and every decision lands in turnstile.jsonl">
   <defs>
     <!-- Background: deep vertical gradient with a subtle vignette (matches hero.svg) -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
