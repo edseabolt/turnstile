@@ -14,12 +14,12 @@ approval: "approved-plans.jsonl\nbound plan approvals\nname + content key + proj
   shape: cylinder
 }
 
-replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignature), hasReviewApprove,\nensemble counts\n→ replayGrace = one-prompt survival"
+replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignature), hasReviewApprove,\nensemble counts, observe period\n(last-wins)\n→ replayGrace = one-prompt survival"
 ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
 
-writers.hooks -> jsonl: "every decision,\n20 entry types"
+writers.hooks -> jsonl: "every decision,\n22 entry types\n(incl. observe / would-block)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
 approval -> ledger: "at ledger creation:\nload, last-wins per (project, plan),\nevict to cap"

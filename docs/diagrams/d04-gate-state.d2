@@ -29,7 +29,7 @@ start: "user prompt admitted\n(resetState + carry)" {
 start -> fresh
 fresh -> planning: "planner dispatch\ncap 3, budget 16 total"
 planning -> planok: "plan-reviewer APPROVE | PLAN APPROVED: | permission 'always'"
-planning -> planning: "BLOCK → revise → re-review\n(round-scoped attribution)" {
+planning -> planning: "BLOCK → revise → re-review\n(round-scoped attribution)\n[observe period: suppressed —\nwould-block journaled, the call\nproceeds metered]" {
   style.stroke-dash: 4
 }
 planok -> executor: "executor dispatch\n(## Decomposition in plans dir,\nonce-shot 'once' grant releases one)"

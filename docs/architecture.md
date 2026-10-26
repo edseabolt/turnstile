@@ -250,6 +250,30 @@ credit (a green test gate or a reviewer approval).
 | Landing            | `guardLanding`                                   | `git push` without `hasReviewApprove`                                                                                                                                                                                                                                                                                                                                                                                                                 | permission `always` / `once`                                                                                                                                               |
 | Tool policy        | `guardBash` / `guardCommitMessage` / `guardPath` | denied git operations (worktree, branch switch, merge, `gh pr`), non-conforming commit subjects (`enforce` mode)                                                                                                                                                                                                                                                                                                                                      | mode `shadow` / `off`                                                                                                                                                      |
 
+### Observe mode (adoption period)
+
+`observeSessions: N` (default `0`) suppresses the deliberate block for the
+first N admitted parent sessions — every gate above keeps evaluating
+unchanged (markers, evidence, and credit are untouched); only the throw is
+gated. A `BlockError` from a task-dispatch guard or the read-budget guard is
+caught in the hook body (`dispatchBlockOutcome` / `handleReadBudget`),
+journaled as a `would-block` entry, and the call proceeds, metered like an
+admitted dispatch (tool-policy and git-gate blocks are not suppressed —
+their own `mode` knobs govern). The phase is per session: prompt admission
+calls `stampObserveAdmission`, which reads `observePhase` — a process-new
+session increments the running `observed` total (phase `observe` while
+`observed <= N`, `enforce` past it, `off` for `N = 0`, the default path that
+stamps and journals nothing) and journals one `observe` entry per first
+admission; repeat admissions read the stored phase and journal nothing.
+`observeActive` gates the suppression and fails toward enforce: any ledger
+throw journals an `error` entry and the block proceeds normally. On the
+period-completing stamp — or at boot, when the replayed tail shows a
+completed period whose summary never surfaced — `surfaceObserveSummary`
+arms, and the first string-output delivery after it is prefixed with the
+once-per-load `[turnstile] observe:` block (`formatObserveSummary`, rendered
+from the `observeCounts()` totals at injection time) and the inert
+`kind:"summary"` marker is journaled so a restart never re-fires it.
+
 ### Key `GateState` fields (`src/types.ts`)
 
 | Field                                                                                        | Set by                                                                                                                                                                                                                             | Cleared by                                                                                                                                                  | Blocks                                                                                                                     |
@@ -280,11 +304,11 @@ credit (a green test gate or a reviewer approval).
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (20 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (22 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
   `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
-  `suppressed`). A `dispatch` entry is written at
+  `suppressed`, `observe`, `would-block`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -313,6 +337,22 @@ event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   (fail-open). It is replay-inert (a surface record, not gate state) and never
   re-journaled — the warnings themselves are journaled exactly once by the
   config layer, so this entry is a count-only audit, not a second copy.
+  The `observe` and `would-block` entries are the observe-mode records
+  (§5's adoption period): an `observe` entry stamps a session's admission
+  phase — `{type:"observe", sessionID, phase, observed, wouldBlocks}` with
+  `phase` `observe` or `enforce` — and a `would-block` entry records one
+  suppressed deliberate block — `{type:"would-block", sessionID, cause,
+observed, wouldBlocks}` with `cause` the blocking gate's audit name (its
+  stamped phrase, the dispatched agent name, `"read-budget"` for a read, or
+  the `"gate"` fallback, truncated to 200 chars). Every observe-mode entry
+  carries both running totals, so replay folds them last-wins: the last
+  stamped line restores the per-session phase map and the
+  `observed`/`wouldBlocks` totals, and the journaled session IDs rebuild the
+  admission dedup set so a restart never re-increments a counted session.
+  The end-of-period marker — `{type:"observe", kind:"summary", injected:true,
+observed, wouldBlocks}`, journaled when the `[turnstile] observe:` block
+  lands — folds inert: it only sets the pending-summary probe, proving the
+  summary surfaced so it never re-fires after a restart.
   A `marker` entry is the near-miss diagnostic for a prompt that mistypes a
   prompt-channel marker literal: at admission the text is scanned for
   marker-shaped variants (case, separator, or colon) of the configured
@@ -409,8 +449,11 @@ marker ≤ 512 chars, ensemble count an integer in
 dropped line journals one replay-drop `suppressed` entry (above). It then
 restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
-(task-result source only — streamed child verdicts never restore it), and
-ensemble counts. A plan APPROVE entry may carry the bound identity fields
+(task-result source only — streamed child verdicts never restore it),
+ensemble counts, and the observe period (per-session phase, the admission
+dedup set, and the running `observed`/`wouldBlocks` totals — last-wins; a
+`kind:"summary"` marker sets the pending-summary probe). A plan APPROVE
+entry may carry the bound identity fields
 `plan` (file name) and `planKey` (that file's content hash); a field restores
 it only in legal shape (path-free file name ≤ 128 chars; `planKey` a
 64-char lowercase sha256 hex; `plansSig` ≤ 4096 chars) — absent, non-string,
@@ -432,7 +475,10 @@ For a read-only status view: `opencode-turnstile status [--json]` aggregates
 gate/plan/verdict/dispatch/blocked/permission entries per parent session,
 walking the same all-generation tail window with the same session-ID and
 marker shape checks (observation-only, so a dropped line is silent there
-rather than journaled).
+rather than journaled). When the journal holds observe-mode entries, the
+report header adds the folded period line
+(`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
+would-blocks`); journals without them render byte-identically.
 
 ---
 
@@ -454,6 +500,7 @@ warned. Highlights:
 | Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                             | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
 | Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
 | Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                                                                                                      |
+| Observe     | `observeSessions`                                                                                                                      | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                               |
 | Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                                                                                                                |
 | Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time                                                                                       |
 | Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                       | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
