@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 1760 720" role="img" aria-label="terminal mock: an agent claims its tests pass; turnstile blocks the reviewer dispatch until a verified GATE: PASS from a real test run, and every decision lands in turnstile.jsonl">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="280" viewBox="0 0 1760 560" role="img" aria-label="terminal mock: an agent claims its tests pass; turnstile blocks the reviewer dispatch until a verified GATE: PASS from a real test run, and every decision lands in turnstile.jsonl">
   <defs>
     <!-- Background: deep vertical gradient with a subtle vignette (matches hero.svg) -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
@@ -20,35 +20,35 @@
   </defs>
 
   <!-- ======== background ======== -->
-  <rect width="1760" height="720" fill="url(#bg)"/>
-  <rect width="1760" height="720" fill="url(#vignette)"/>
+  <rect width="1760" height="560" fill="url(#bg)"/>
+  <rect width="1760" height="560" fill="url(#vignette)"/>
 
   <!-- ======== terminal window ======== -->
   <g filter="url(#cardshadow)">
-    <rect x="44" y="36" width="1672" height="648" rx="20" fill="#11111B" stroke="#CDD6F4" stroke-opacity="0.18" stroke-width="1.5"/>
+    <rect x="44" y="28" width="1672" height="508" rx="20" fill="#11111B" stroke="#CDD6F4" stroke-opacity="0.18" stroke-width="1.5"/>
   </g>
 
   <!-- title bar -->
-  <circle cx="88" cy="76" r="8" fill="#F38BA8"/>
-  <circle cx="120" cy="76" r="8" fill="#F9E2AF"/>
-  <circle cx="152" cy="76" r="8" fill="#A6E3A1"/>
-  <text x="880" y="83" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#A6ADC8" opacity="0.7">opencode</text>
-  <line x1="45" y1="112" x2="1715" y2="112" stroke="#CDD6F4" stroke-opacity="0.12" stroke-width="1.5"/>
+  <circle cx="88" cy="62" r="8" fill="#F38BA8"/>
+  <circle cx="120" cy="62" r="8" fill="#F9E2AF"/>
+  <circle cx="152" cy="62" r="8" fill="#A6E3A1"/>
+  <text x="880" y="68" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#A6ADC8" opacity="0.7">opencode</text>
+  <line x1="45" y1="92" x2="1715" y2="92" stroke="#CDD6F4" stroke-opacity="0.12" stroke-width="1.5"/>
 
   <!-- 1. the agent's claim -->
-  <text x="92" y="178" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6ADC8">$ your agent: "done — tests pass, ready to ship"</text>
+  <text x="92" y="140" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6ADC8">$ your agent: "done — tests pass, ready to ship"</text>
 
   <!-- 2. the unverified claim hits the gate -->
-  <text x="92" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" fill="#F38BA8">BLOCKED by turnstile: reviewer dispatch without gate evidence:</text>
-  <text x="92" y="300" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#F38BA8">a GATE: PASS was recorded without a journaled successful test-command execution …</text>
-  <text x="92" y="352" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6ADC8">Run the test-runner subagent first, or obtain an explicit user waiver …</text>
+  <text x="92" y="196" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" fill="#F38BA8">BLOCKED by turnstile: reviewer dispatch without gate evidence:</text>
+  <text x="92" y="242" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#F38BA8">a GATE: PASS was recorded without a journaled successful test-command execution …</text>
+  <text x="92" y="288" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6ADC8">Run the test-runner subagent first, or obtain an explicit user waiver …</text>
 
   <!-- 3. verified evidence flips it green -->
-  <text x="92" y="448" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6E3A1">test-runner ▸ npm run ci  → exit 0</text>
-  <text x="92" y="502" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" fill="#A6E3A1" filter="url(#softglow)">GATE: PASS tests=412 passed=412 failed=0</text>
-  <text x="92" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6E3A1">reviewer dispatch ✓</text>
+  <text x="92" y="360" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6E3A1">test-runner ▸ npm run ci  → exit 0</text>
+  <text x="92" y="404" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700" fill="#A6E3A1" filter="url(#softglow)">GATE: PASS tests=412 passed=412 failed=0</text>
+  <text x="92" y="448" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#A6E3A1">reviewer dispatch ✓</text>
 
   <!-- 4. footer: the journal -->
-  <line x1="92" y1="610" x2="1668" y2="610" stroke="#CBA6F7" stroke-opacity="0.3" stroke-width="1.5"/>
-  <text x="880" y="660" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="600" fill="#CBA6F7">every decision → turnstile.jsonl · opencode-turnstile status replays it after restart</text>
+  <line x1="92" y1="482" x2="1668" y2="482" stroke="#CBA6F7" stroke-opacity="0.3" stroke-width="1.5"/>
+  <text x="880" y="524" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="600" fill="#CBA6F7">every decision → turnstile.jsonl · opencode-turnstile status replays it after restart</text>
 </svg>
