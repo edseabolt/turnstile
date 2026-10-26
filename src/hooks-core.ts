@@ -1864,13 +1864,44 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * A task dispatch's pre-guard sequence: the per-leg and total-dispatch
+   * budget guard, then the plan-gate once-grant short-circuit — run
+   * before the agent-specific guards. The budget guard's
+   * waiver-exemption verdict is returned so the commit can thread it
+   * without re-reading: a later guard (the reviewer gate) may consume a
+   * covered unscoped waiver in between. A consumed once-grant is an
+   * allowed dispatch and is metered right at the short-circuit, like any
+   * other. Ordering matters: the budget guard runs before the once-grant
+   * consume, so a blocked dispatch cannot consume the grant. A BlockError
+   * from the budget guard propagates to the caller's settle, which stamps
+   * or suppresses it with the fallback verdict (the guard threw, so its
+   * verdict was never produced).
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param description The trace-gated dispatch description.
+   * @returns The budget guard's waiver-exemption verdict and whether the
+   *     once-grant released the dispatch (already metered when true).
+   */
+  function dispatchBudgetAndGrant(
+    sessionID: string,
+    agent: string,
+    description: string,
+  ): { waived: boolean; admitted: boolean } {
+    const waived = gates.guardDispatchBudget(sessionID, ledger, agent)
+    const admitted = consumePlanGrant(sessionID, agent)
+    if (admitted) allowDispatch(sessionID, agent, description, waived)
+    return { waived, admitted }
+  }
+
+  /**
    * Guard-and-meter-and-journal section of a task dispatch: the per-leg
-   * and total-dispatch budget guard, the plan-gate once-grant
-   * short-circuit, the reviewer evidence guard, and the executor
-   * plan/decomposition guards — then the counters advance and the
-   * dispatch entry is recorded at the admitted exit (a blocked attempt
-   * draws down nothing; stamped `blocked:true` only on a deliberate
-   * BlockError, which is re-thrown for the outer fail-open catch).
+   * and total-dispatch budget guard and the plan-gate once-grant
+   * short-circuit (dispatchBudgetAndGrant), the reviewer evidence guard,
+   * and the executor plan/decomposition guards — then the counters
+   * advance and the dispatch entry is recorded at the admitted exit (a
+   * blocked attempt draws down nothing; stamped `blocked:true` only on a
+   * deliberate BlockError, which is re-thrown for the outer fail-open
+   * catch).
    * @param sessionID The dispatching session ID.
    * @param agent The resolved agent name.
    * @param prompt The dispatch prompt.
@@ -1882,45 +1913,15 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     prompt: string,
     description: string,
   ): Promise<void> {
-    // Guards-then-journal: the dispatch entry is recorded at guard
-    // exit, so an allowed dispatch stays byte-identical while a
-    // deliberate block carries `blocked:true` (audit distinguishes a
-    // dispatched entry from a blocked-and-attempted one). The once-grant
-    // consume is an allowed dispatch. Only a BlockError — the guard's
-    // deliberate refusal — is stamped blocked and re-thrown for the
-    // outer catch to turn into the BLOCKED error; any other throw is an
-    // internal error that propagates un-stamped to the fail-open handler.
-    // In the observe period a deliberate block is suppressed instead:
-    // it journals a would-block entry and the dispatch is metered like
-    // any admit.
     let waived = false
     try {
-      // Per-leg loop caps + total-dispatch budget: checked first so a
-      // block names its own cause (leg cap, round cap, budget). The
-      // counters advance only at the admitted exit (allowDispatch): a
-      // blocked attempt draws down nothing, and a grant-released
-      // dispatch is admitted — and metered — there, like any other. The
-      // waiver-exemption verdict the guard returns is captured at its
-      // check and threaded to the commit: a later guard (the reviewer
-      // gate) may consume a covered unscoped waiver in between, so the
-      // meter must not re-read it. Before the once-grant short-circuit:
-      // a blocked dispatch must not consume the grant.
-      waived = gates.guardDispatchBudget(sessionID, ledger, agent)
-      if (consumePlanGrant(sessionID, agent)) {
-        allowDispatch(sessionID, agent, description, waived)
-        return
-      }
+      const outcome = dispatchBudgetAndGrant(sessionID, agent, description)
+      waived = outcome.waived
+      if (outcome.admitted) return
       if (agent === config.agents.reviewer) reviewerDecisionRecheck(sessionID)
       if (agent === config.agents.executor) await enforceExecutorGates(sessionID, prompt)
       allowDispatch(sessionID, agent, description, waived)
     } catch (e) {
-      // A deliberate block in the observe period is settled by
-      // dispatchBlockOutcome (would-block entry + metered admit) and
-      // the dispatch proceeds; outside it the BlockError is stamped
-      // blocked and re-thrown for the outer catch. A non-BlockError is
-      // an internal error that propagates un-stamped to the fail-open
-      // outer handler (which journals it), so the dispatch entry is
-      // never mislabeled as blocked.
       if (dispatchBlockOutcome(e, sessionID, agent, description, waived)) return
       throw e
     }
