@@ -14,7 +14,7 @@ preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-t
 
 permission: "permission.hook('evaluate') (hooks-permission.ts)\nnever blocks, forces 'ask'" {
   plan-arm: "action == task\nand plan gate red?"
-  landing-arm: "action == bash/shell\npush without reviewer approve?"
+  landing-arm: "action == bash/shell\npush without approve?\n(empty-diff exempt if proved)"
 }
 
 tool: "tool.hook (hooks-tool.ts)" {

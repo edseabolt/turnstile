@@ -34,6 +34,7 @@ import { formatPipelineStatus } from "./state.ts"
 import { orchestratorPolicyFor } from "./policy.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
+import { isEmptyDiffPush } from "./empty-diff.ts"
 import {
   asSessionID,
   mutateDeliveryText,
@@ -2028,12 +2029,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * credit trace (a journaled, non-refused reviewer APPROVE that a prompt
    * reset dropped the `hasReviewApprove` flag for) that guardLanding
    * consults to escalate a credited session's first push instead of throwing
-   * the first block.
+   * the first block. `isEmptyDiff` runs the static empty-diff probe against
+   * the session's project directory (lazily resolved at probe time) and is
+   * consulted by guardLanding only under `gitGates.emptyDiffExempt`; a false
+   * result or a probe failure falls through to the gate — fail-toward-strict.
    * @param st The parent's gate-state bucket.
    * @param parent The parent session (the latch's key).
+   * @param sid The session whose project directory the probe resolves.
    * @returns The landing-gate capability record.
    */
-  function landingGateHandles(st: GateState, parent: string): LandingGateCapability {
+  function landingGateHandles(st: GateState, parent: string, sid: string): LandingGateCapability {
     return {
       hasApproval: () => st.hasReviewApprove,
       hasCreditedApproval: () => ledger.hasCreditedApproval(parent),
@@ -2045,6 +2050,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         pendingLandingAsk.set(parent, Date.now())
         boundLandingAsks()
       },
+      isEmptyDiff: (command: string): boolean => isEmptyDiffPush(command, currentProjectDir(sid)),
     }
   }
 
@@ -2079,7 +2085,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     const parent = ledger.parentOf(sid)
     const st = ledger.state(parent)
     if (consumeLandingGrant(st, text)) return
-    toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent))
+    toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent, sid))
     return
   }
 

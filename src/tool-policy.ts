@@ -1,8 +1,9 @@
 /**
  * @fileoverview Tool-call policy boundary: stateless matching for the tools
  * that flow through `execute.before` — bash/shell commands (`guardBash`,
- * `guardCommitMessage`, `observeLanding`, `guardLanding`) and write/edit target
- * paths (`guardPath`) — plus non-blocking `session_move` telemetry
+ * `guardCommitMessage`, `observeLanding`, `guardLanding` — whose opt-in
+ * empty-diff exemption rides the capability's total probe) and write/edit
+ * target paths (`guardPath`) — plus non-blocking `session_move` telemetry
  * (`observeSessionMove`). The `bashDeny`/`pathDeny` denylist sources and the
  * landing/commit-format regexes compile once at creation; the hot path is a
  * cached `RegExp.test`. A match throws the same `BlockError` the gate layer
@@ -126,13 +127,13 @@ export function tokenizeWords(input: string): string[] {
  * Returns the git subcommand of one simple command's words and its token index
  * (skipping leading git global options such as `-C dir` / `--git-dir=dir`, each
  * of which may take a value in the following token), or `null` when `words` is
- * not a `git` invocation. Shared by `isPushLanding` and `analyzeCommit` so the
- * positional parse has a single source of truth (no duplicated option-skip
- * logic).
+ * not a `git` invocation. Shared by `isPushLanding`, `analyzeCommit`, and
+ * `planPushRefs` (the empty-diff probe) so the positional parse has a single
+ * source of truth (no duplicated option-skip logic).
  * @param words The tokenized words of one simple command.
  * @returns The subcommand verb and its index, or `null` for a non-git invocation.
  */
-function gitInvocation(words: string[]): { verb: string; index: number } | null {
+export function gitInvocation(words: string[]): { verb: string; index: number } | null {
   if (words.length === 0 || words[0] !== "git") return null
   let i = 1
   while (i < words.length && words[i]!.startsWith("-")) {
@@ -271,6 +272,14 @@ export interface LandingGateCapability {
   recordBlock(): void
   /** Signal the setup-side permission wiring to arm the human ask (repeat attempt). */
   escalate(): void
+  /**
+   * True when `command` is a statically-provable empty-diff push (a total
+   * probe: every refspec's branch resolves to the same commit as its
+   * upstream — ref equality, so a behind branch never qualifies; every
+   * ambiguous shape, force flags included, is `false`). Consulted only with
+   * `gitGates.emptyDiffExempt` on.
+   */
+  isEmptyDiff(command: string): boolean
 }
 
 /**
@@ -372,7 +381,11 @@ export interface ToolPolicy {
    * human ask naming the missing reviewer verdict. `shadow` journals only; `off`
    * is a no-op. Fail-toward-strict: a host `reject` leaves approval absent, so
    * the next attempt re-blocks and re-arms the ask. Fail-open on an internal
-   * error.
+   * error. With `gitGates.emptyDiffExempt` (default false), a push the
+   * capability proves statically empty against upstream is journaled
+   * `exempt:"empty-diff"` and allowed; every ambiguous shape (detached HEAD,
+   * unresolvable remote/upstream, explicit shas/ranges, `--mirror`/`--tags`,
+   * any non-empty refspec) falls through to the ladder — fail-toward-strict.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
@@ -692,7 +705,11 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * attempt is the human decision point: under `enforce` it journals a
    * `permission` ask and signals escalation, allowing `execute.before` to pass
    * so the evaluate handler forces the ask. A repeat attempt under `enforce`
-   * escalates the same way; `shadow` journals only, `off` is a no-op.
+   * escalates the same way; `shadow` journals only, `off` is a no-op. With
+   * `gitGates.emptyDiffExempt` (default false), a push the capability proves
+   * statically empty against upstream is journaled `exempt:"empty-diff"` and
+   * allowed; every ambiguous shape falls through to the ladder —
+   * fail-toward-strict.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
@@ -720,6 +737,14 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
       if (!isPushLanding(text)) return
       // Approval releases the gate: allow, no journal noise beyond telemetry.
       if (gate.hasApproval()) return
+      // Opt-in empty-diff exemption: a push the capability proves statically
+      // empty against its upstream is journaled and allowed. The probe is
+      // total (every ambiguous shape is false), so this clause can only
+      // release pushes the git state proves to land nothing.
+      if (config.gitGates.emptyDiffExempt && gate.isEmptyDiff(text)) {
+        journaler.journal({ type: "tool", sessionID, tool, landing: true, exempt: "empty-diff" })
+        return
+      }
       const prior = gate.priorBlocks()
       // A journaled credit escalates the first attempt too: the prompt reset
       // dropped the `hasReviewApprove` flag, but the session still carries a

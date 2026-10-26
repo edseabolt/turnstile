@@ -529,6 +529,7 @@ test("defaultConfig ships the gitGates defaults (shadow)", () => {
   assert.equal(cfg.gitGates.commitMessages, true)
   assert.equal(cfg.gitGates.commitFormat, DEFAULT_COMMIT_FORMAT)
   assert.equal(cfg.gitGates.landingGate, true)
+  assert.equal(cfg.gitGates.emptyDiffExempt, false)
 })
 
 /** The default commitFormat compiles as a `^…$` + `"s"` pattern. */
@@ -582,6 +583,20 @@ test("mergeConfig rejects non-boolean gitGates sub-keys", () => {
     "config: gitGates.commitMessages must be a boolean; keeping default",
     "config: gitGates.landingGate must be a boolean; keeping default",
   ])
+})
+
+/** gitGates.emptyDiffExempt defaults false and keeps the default on a non-boolean. */
+test("gitGates.emptyDiffExempt defaults false and keeps the default on a non-boolean", () => {
+  assert.equal(defaultConfig({}).gitGates.emptyDiffExempt, false)
+  const { config, warnings } = mergeConfig(defaultConfig({}), {
+    gitGates: { emptyDiffExempt: "yes" },
+  })
+  assert.equal(config.gitGates.emptyDiffExempt, false)
+  assert.ok(
+    warnings.some(
+      (w) => w === "config: gitGates.emptyDiffExempt must be a boolean; keeping default",
+    ),
+  )
 })
 
 /** A non-compiling commitFormat is dropped with a warning; the default survives. */

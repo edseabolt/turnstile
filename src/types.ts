@@ -294,6 +294,8 @@ export interface TurnstileGitGates {
   commitFormat: string
   /** Whether pushing/PR-landing is gated on a reviewer `VERDICT: APPROVE`. */
   landingGate: boolean
+  /** Whether a statically-provable empty-diff `git push` (ref-equal to upstream) skips the landing gate. */
+  emptyDiffExempt: boolean
 }
 
 /** Gate state for one parent session. */
