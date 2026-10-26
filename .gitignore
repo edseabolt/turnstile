@@ -2,3 +2,6 @@ node_modules/
 
 # Local working artifacts: session plans, spike notes, tool output.
 .opencode/
+
+# packed npm tarballs are artifacts, never checked in
+*.tgz
