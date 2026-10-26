@@ -105,6 +105,7 @@ export function defaultConfig(
     maxSessions: 64,
     readWarn: 8,
     readBlock: 15,
+    observeSessions: 0,
     waiverMarker: "USER WAIVER:",
     approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
@@ -162,7 +163,9 @@ export function defaultConfig(
  * @param value Candidate value.
  * @returns true when the value has the right type for the key: numeric keys
  *     accept positive integers only (Number.isInteger subsumes the finite
- *     check, so NaN/Infinity are rejected as non-integers).
+ *     check, so NaN/Infinity are rejected as non-integers); the one exception
+ *     is `observeSessions`, which accepts integers >= 0 so 0 can be set
+ *     explicitly to end an observe period.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "trace" || key === "continuationCarry") return typeof value === "boolean"
@@ -190,10 +193,15 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
       return false
     }
   }
+  // 0 must be settable explicitly to arm/end the observe period mid-count;
+  // every other numeric key keeps the positive-integer rule.
+  if (key === "observeSessions")
+    return typeof value === "number" && Number.isInteger(value) && value >= 0
   return typeof value === "number" && Number.isInteger(value) && value > 0
 }
 
-/** Scalar config keys whose valid values are positive integers. */
+/** Scalar config keys whose valid values are integers (positive, or
+ *  non-negative for `observeSessions`). */
 type NumericConfigKey = Extract<
   keyof TurnstileConfig,
   | "journalMaxBytes"
@@ -208,6 +216,7 @@ type NumericConfigKey = Extract<
   | "maxSessions"
   | "readWarn"
   | "readBlock"
+  | "observeSessions"
 >
 
 /**
@@ -229,6 +238,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
+  else if (key === "observeSessions") config.observeSessions = value as number
   else config[key as NumericConfigKey] = value as number
 }
 
