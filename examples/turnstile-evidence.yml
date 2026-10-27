@@ -134,7 +134,7 @@ jobs:
             const existing = comments.find(
               (c) => typeof c.body === "string" && c.body.includes(MARKER),
             );
-            if (existing !== null) {
+            if (existing !== null && existing !== undefined) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
