@@ -1,0 +1,37 @@
+{
+  "schema": "turnstile-evidence/v1",
+  "generatedAt": "1970-01-01T00:00:00.000Z",
+  "noJournal": false,
+  "noTask": false,
+  "task": "t-f3b44474",
+  "green": true,
+  "plan": {
+    "verdict": "APPROVE",
+    "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=1",
+    "at": "2026-10-26T21:19:52.810Z",
+    "source": "task-result",
+    "stale": false
+  },
+  "tests": {
+    "result": "PASS",
+    "marker": null,
+    "at": "2026-10-26T21:02:55.561Z",
+    "verified": true,
+    "mode": "enforce",
+    "exitZeroRuns": 16
+  },
+  "review": {
+    "approves": 6,
+    "expected": 4
+  },
+  "waivers": 0,
+  "blocks": 2,
+  "dispatches": 8,
+  "journal": {
+    "files": [
+      "turnstile.jsonl"
+    ],
+    "lines": 2000,
+    "head": "sha256:71d2d7d7cb2b"
+  }
+}

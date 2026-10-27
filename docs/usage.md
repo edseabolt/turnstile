@@ -287,6 +287,14 @@ version is older than the published package is reported as a warning
 (`check: outdated <dest> (installed X, package Y)`) and does not fail the
 check.
 
+The check is load-aware, not just presence-aware: after the per-entry pass
+it dynamically imports every manifest `verify` path (the installed plugin
+entry point by default) through a child `node --experimental-strip-types`,
+printing `check: loadable <file>` when the whole import graph resolves and
+failing with `check: unloadable <file> — <reason>` when it does not.
+`init` applies the same probe to what it just installed, so a missing
+module tree fails the install that caused it.
+
 ### Upgrade
 
 The plugin updates with your dependency manager (`npm upgrade
@@ -315,6 +323,11 @@ This repo is the source of truth for what lands in `~/.config/opencode`:
 the plugin and the pipeline agent definitions are installed per the manifest
 in `install.json`; unowned files in the target directories are never
 touched. Two install modes:
+
+A manifest entry may name a directory as its source (the plugin's `src/`
+tree ships this way): the directory installs file-by-file — recursive,
+sorted — so each file is individually ledger-recorded (copy) or linked
+(link), removed by uninstall, and reported by check.
 
 |                           | Symlink (default)                                   | Copy (`--copy`)                                         |
 | ------------------------- | --------------------------------------------------- | ------------------------------------------------------- |
@@ -672,6 +685,25 @@ in-memory state can be fresher (a session that has prompted since is newer
 than the journal records), so treat status as the durable state of the
 previous cycle rather than a live snapshot.
 
+### Sharing the evidence
+
+`opencode-turnstile evidence` is the sharing half of the same read-only view:
+where `status` answers "what is this session's state right now", `evidence`
+answers "what did this task earn, in a form I can publish". It folds the same
+replay-parity window with the same shape checks, then emits only derived
+counts, canonical marker lines, and shas — session IDs, prompts, dispatch
+descriptions, and bash command text are absent by construction, because the
+document is built key by key rather than filtered. A task is named by a
+one-way handle (`t-<8 hex>`), the journal by its head sha. `--format markdown`
+renders the sticky-comment body; `--out` writes `<name>.json` and the sibling
+`<name>.md`; `--validate` re-checks a committed artifact without writing. The
+`review` section reports against the ensemble bar the runtime credits at — two
+unwaived reviewer dispatches under the default `reviewEnsemble: "enforce"`, one
+under `"advise"` — not against `maxReviewerRounds`, which only caps dispatches;
+a refusal stamp keeps the section red, and a human release satisfies it, the
+same credit rule the landing gate applies. It
+is a correlated claim, not proof — say so in the comment you post.
+
 ---
 
 ## 7. Field-tested on itself
@@ -695,3 +727,9 @@ gate now releases on approvals it used to miss.
 
 Don't take this section at face value: run `npx opencode-turnstile status`
 and read the journal yourself.
+
+Publishing that record is part of the field test: this repo ships the
+evidence workflow under `.github/workflows`, so the pipeline claims a
+reviewer would otherwise take on faith are posted on the pull request
+itself — the same artifact the `evidence` command emits, validated in the
+untrusted job and published from the base-context one.

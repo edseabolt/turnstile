@@ -11,6 +11,10 @@ const ts = ["turnstile.ts", "src/markers.ts"]
   .map((f) => readFileSync(join(root, f), "utf8"))
   .join("\n")
 const readme = readFileSync(join(root, "README.md"), "utf8")
+// The standalone evidence emitter carries its own copy of the canonical marker
+// pair so it can degrade a journaled marker to null without importing TS
+// source; guard that copy against the same concrete README examples below.
+const evidence = readFileSync(join(root, "scripts", "evidence.mjs"), "utf8")
 
 function extractRegex(name) {
   const m = ts.match(new RegExp(`const ${name} = /(.+)/([a-z]*)`))
@@ -21,6 +25,12 @@ function extractRegex(name) {
 
 const gateRe = extractRegex("GATE_RE")
 const verdictRe = extractRegex("VERDICT_RE")
+
+// MARKER_OK is declared across two lines (`const MARKER_OK =` then the literal),
+// so the extraction tolerates the newline between the `=` and the `/`.
+const markerOkMatch = evidence.match(/const MARKER_OK\s*=\s*\/(.+)\/([a-z]*)/)
+if (!markerOkMatch) throw new Error("could not find MARKER_OK in scripts/evidence.mjs")
+const markerOkRe = new RegExp(markerOkMatch[1], markerOkMatch[2].replace(/g/g, ""))
 
 // Every fenced ```-block line that looks like a marker must match a regex.
 const lines = [...readme.matchAll(/```[a-z]*\n([\s\S]*?)```/g)]
@@ -33,10 +43,58 @@ if (lines.length === 0) {
 }
 
 let failed = 0
+
+// Broadening guard: the acceptance checks only prove the examples parse, so a
+// loosened regex (an extra kind alternative, a \d+ widened to \w+) would still
+// pass them all. Assert the extracted sources keep the canonical marker shape
+// — anchor, literal token, two-way kind alternation, fixed numeric fields in
+// order — by comparing the de-decorated core against the canonical core.
+const LEADING_DECORATION = "^\\s*[`>#*\\s]*"
+const CANONICAL_GATE_CORE = "GATE: (?:PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+"
+const CANONICAL_VERDICT_CORE = "VERDICT: (?:APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+"
+// Flag set after extractRegex strips `g`: multiline is load-bearing (`^`
+// must match each line), and any added flag (`i`, `s`, `u`, `y`, `d`) would
+// silently broaden or change match semantics without touching the source.
+const CANONICAL_FLAGS = "m"
+
+// Strips the ^ anchor and the leading markdown decoration class, then renders
+// the kind alternation group non-capturing so a cosmetic (PASS|FAIL) vs
+// (?:PASS|FAIL) rewrite is not reported as drift.
+function markerCore(source) {
+  const core = source.startsWith(LEADING_DECORATION)
+    ? source.slice(LEADING_DECORATION.length)
+    : source
+  return core.replace(/\(([A-Z]+(?:\|[A-Z]+)+)\)/g, "(?:$1)")
+}
+
+for (const [re, name, canonical] of [
+  [gateRe, "GATE_RE", CANONICAL_GATE_CORE],
+  [verdictRe, "VERDICT_RE", CANONICAL_VERDICT_CORE],
+]) {
+  if (markerCore(re.source) !== canonical) {
+    console.error(
+      `check-markers: ${name} source drifted from the canonical marker shape: ${re.source}`,
+    )
+    failed++
+  }
+  if (re.flags !== CANONICAL_FLAGS) {
+    console.error(
+      `check-markers: ${name} flags drifted from the canonical marker shape: /${re.source}/${re.flags}`,
+    )
+    failed++
+  }
+}
+
 for (const line of lines) {
   const ok = gateRe.test(line) || verdictRe.test(line)
   if (!ok) {
     console.error(`check-markers: README marker not accepted by parser: ${line}`)
+    failed++
+  }
+  // The evidence emitter's MARKER_OK copy must accept the same concrete
+  // examples the parser does, so a drift in that second copy fails the guard.
+  if (!markerOkRe.test(line)) {
+    console.error(`check-markers: README marker not accepted by evidence MARKER_OK: ${line}`)
     failed++
   }
 }
@@ -99,10 +157,24 @@ for (const [re, bad] of [
   }
 }
 
+// Trailing-junk probes: the canonical core must not extend past its last
+// numeric field. The sources carry no end anchor (the parser extracts the
+// matched span, so trailing prose is harmless), so the probe end-anchors the
+// same source: a regex that swallows appended fields fails here.
+for (const [re, bad] of [
+  [gateRe, "GATE: PASS tests=1 passed=1 failed=0 extra=1"],
+  [verdictRe, "VERDICT: APPROVE crit=0 high=0 med=0 low=0 extra=9"],
+]) {
+  if (new RegExp(re.source + "$").test(bad)) {
+    console.error(`check-markers: parser accepted trailing junk in marker: ${bad}`)
+    failed++
+  }
+}
+
 if (failed) {
   console.error(`check-markers: ${failed} drift finding(s)`)
   process.exit(1)
 }
 console.log(
-  `check-markers: OK (${lines.length} README examples, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser)`,
+  `check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser; parser regex sources match canonical shape)`,
 )

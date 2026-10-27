@@ -306,11 +306,11 @@ from the `observeCounts()` totals at injection time) and the inert
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (22 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (23 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
   `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
-  `suppressed`, `observe`, `would-block`). A `dispatch` entry is written at
+  `suppressed`, `observe`, `would-block`, `replay`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -333,6 +333,11 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   is audit-only, replay-inert (nothing replays against a denial or a drop),
   and the status aggregate treats it as inert.
+  A `replay` entry is the file-level audit of an unreadable journal
+  generation during the boot replay: `{ts, type:"replay", error:true}` with
+  no message — one per unreadable generation file, so the entries are
+  bounded by the generation count. It is replay-inert and status-inert, like
+  the drop entries above.
   A `config` entry is the surface audit for the once-per-load `[turnstile]
  config:` block: `{type:"config", sessionID, surfaced:true, count}` on a
   successful prepend, or `{..., surfaced:false, error}` when the prepend threw
@@ -448,7 +453,11 @@ its `sessionID` passes the replay ID-shape check (alphanumeric plus `.`, `_`,
 `-`, length 1–64) and its kind fields pass their shape guards — verdict
 marker ≤ 512 chars, ensemble count an integer in
 `[0, REVIEW_ENSEMBLE_SIZE]` (higher integers clamp, others drop) — and each
-dropped line journals one replay-drop `suppressed` entry (above). It then
+dropped line journals one replay-drop `suppressed` entry (above). An
+unreadable generation file (a directory in its place, a permission failure)
+folds nothing from its lines: it journals one message-free
+`{ts, type:"replay", error:true}` entry (bounded by the generation count) and
+the walk continues with the next-older generation. It then
 restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
 (task-result source only — streamed child verdicts never restore it),
@@ -481,6 +490,15 @@ rather than journaled). When the journal holds observe-mode entries, the
 report header adds the folded period line
 (`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
 would-blocks`); journals without them render byte-identically.
+
+`opencode-turnstile evidence [--task <session|latest>]` is the publishable
+half of that view: the same tail window and shape checks, folded to one task
+and projected key by key into `turnstile-evidence/v1` — derived counts,
+canonical marker lines, and two shas (a one-way task handle, and `sha256` of
+the last journaled line). Nothing is filtered out of a larger object: the
+document is built from whitelisted keys, so a journal field cannot leak into a
+public artifact by oversight. It adds no entry type, changes no replay rule,
+and writes nothing to the journal.
 
 ---
 

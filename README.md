@@ -47,7 +47,7 @@ session at runtime. Mechanics below the fold.
 
 ```sh
 npx opencode-turnstile init      # install the plugin + pipeline agents
-npx opencode-turnstile check     # verify the install; must exit 0
+npx opencode-turnstile check     # verify the install (incl. plugin loadability); must exit 0
 ```
 
 Then **restart OpenCode** (or `opencode service restart`) so the plugin
@@ -271,6 +271,32 @@ every key, default, and environment variable (`TURNSTILE_TRACE`,
 `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`) — is in
 [`docs/usage.md`](docs/usage.md#configuration); `schemas/turnstile.schema.json`
 ships with the package for editor completion.
+
+## Show the evidence on your PR
+
+The journal is per-machine; your teammates never see it. Turn the last task's
+evidence into a shareable artifact — derived counts, canonical marker lines,
+and shas, never session IDs, prompts, or command text:
+
+    npx opencode-turnstile evidence --task latest --out .turnstile/evidence.json
+
+That writes both the JSON and the Markdown the Action renders. Commit them and
+a GitHub Action upserts one sticky comment per PR — the badge your reviewers
+actually read, not README traffic. `evidence --validate` re-checks a committed
+artifact in CI, so the summary a reviewer trusts is the one the schema
+permits. The comment states what it is: a correlated claim, not proof, with
+the journal head sha a reader can ask you to audit. One workflow detail worth
+knowing: validation runs on the pull request itself (untrusted code, read-only
+token), while the comment is posted from a trusted `pull_request_target` run
+that never checks your branch out. GitHub asks a maintainer to approve that run
+for a first-time contributor's fork PR, so an outside contributor's first badge
+can sit pending until someone clicks — the alternative is a job that executes
+contributor code holding a write token, which is not a trade worth making.
+
+This is what the comment looks like, posted by the Action on this repo's own
+pull requests — one comment, re-edited by each push, never a second one:
+
+![turnstile evidence posted on a pull request: one sticky comment with the plan verdict, the verified test counts, and the journal head sha](docs/images/pr-evidence.png)
 
 ## What turnstile is not
 
