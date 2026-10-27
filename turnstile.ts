@@ -227,13 +227,14 @@
  *   `off` journals without the field — both documented in the README. A
  *   journal-replayed `GATE: PASS` survives the first prompt after a restart
  *   (the resume prompt) and then every later prompt starts a clean cycle.
- *   When `continuationCarry` is on (default off), a prompt re-admitted in an
+ *   When `continuationCarry` is on (default on), a prompt re-admitted in an
  *   unchanged worktree/branch carries that restart-sticky bundle across the
  *   reset via the same one-prompt replay grace the resume uses, including
  *   the waiver family (quote, scope, consumed flag, spent allowance); the
  *   fingerprint (git worktree/branch, else the project directory) is the only
  *   continuation-vs-new-task signal, so a new task on the same branch carries
- *   too — that is the reason it is opt-in. The carry is gate-scoped: it needs a
+ *   too — the tradeoff accepted by the default; set `continuationCarry: false`
+ *   to opt out. The carry is gate-scoped: it needs a
  *   prior `GATE: PASS` (a continuation before one still resets fully), and it
  *   carries flags only, never the cleared evidence/dispatch-scope maps.
  * - Loop caps: max 2 `reviewer` / 3 `planner` / 3 `plan-reviewer` / 4

@@ -97,7 +97,7 @@
     },
     "continuationCarry": {
       "type": "boolean",
-      "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default false)."
+      "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default true)."
     },
     "agents": {
       "type": "object",

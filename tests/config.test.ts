@@ -301,9 +301,9 @@ test("configDigest flips when a key value changes", () => {
   assert.notEqual(configDigest(base), configDigest(flipped))
 })
 
-/** The continuation carry is opt-in and default-off. */
-test("defaultConfig sets continuationCarry to false", () => {
-  assert.equal(defaultConfig({}).continuationCarry, false)
+/** The continuation carry carries earned flags by default. */
+test("defaultConfig sets continuationCarry to true", () => {
+  assert.equal(defaultConfig({}).continuationCarry, true)
 })
 
 /** continuationCarry runs the shared boolean scalar path: a boolean merges,
@@ -314,14 +314,14 @@ test("mergeConfig validates continuationCarry like trace", () => {
   assert.equal(ok.config.continuationCarry, true)
   assert.equal(ok.warnings.length, 0)
   const bad = mergeConfig(base, { continuationCarry: "yes" as unknown })
-  assert.equal(bad.config.continuationCarry, false)
+  assert.equal(bad.config.continuationCarry, true)
   assert.deepEqual(bad.warnings, ['config: invalid value for "continuationCarry"; keeping default'])
 })
 
 /** A boolean continuationCarry override flips the config digest. */
 test("configDigest flips on a continuationCarry override", () => {
   const base = defaultConfig({})
-  assert.notEqual(configDigest(base), configDigest({ ...base, continuationCarry: true }))
+  assert.notEqual(configDigest(base), configDigest({ ...base, continuationCarry: false }))
 })
 
 /** (f) readWarn >= readBlock clamps readWarn to readBlock-1 with exactly one warning. */

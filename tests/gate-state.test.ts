@@ -981,7 +981,10 @@ test("replayed GATE: PASS survives the first post-restart prompt", async () => {
 })
 
 /** The recovery is bounded to exactly one prompt: the second post-restart
- *  prompt full-resets, so a subsequent reviewer dispatch goes red again. */
+ *  prompt full-resets, so a subsequent reviewer dispatch goes red again.
+ *  Guards against surviving every prompt. Continuation carry is disabled so
+ *  the default-on carry (which would legitimately keep the flag on a
+ *  same-worktree second prompt) does not mask the grace bound. */
 test("replayed PASS survives exactly one prompt", async () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
@@ -989,7 +992,10 @@ test("replayed PASS survives exactly one prompt", async () => {
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, continuationCarry: false },
+  })
   const dispose = (await setup(h.host)) as () => void
   // Two prompts after replay: the grace covers only the first, so the gate is
   // red again on the second prompt. Guards against surviving every prompt.

@@ -2380,7 +2380,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // re-caps `states`, and a registered parent is never evicted,
     // so the rebuilt MRU slot stays pinned.
     ledger.markParent(sessionID)
-    // Continuation carry (opt-in): arm the same one-prompt replay grace the
+    // Continuation carry (default on): arm the same one-prompt replay grace the
     // journal uses so `resetState` carries the restart-sticky flags when this
     // prompt re-admits the SAME worktree/branch the task was earned in. The
     // git probe is total (never throws), so this stays throw-free. The
