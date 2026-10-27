@@ -97,6 +97,9 @@
  *   as a replay-inert `type:"suppressed"` audit entry. The same marker delivered
  *   authoritatively via an `execute.after` task result still flips — delivery is
  *   the recovery channel for a stream-time authority lookup failure.
+ *   An explicitly empty `agents.bareOutput` (the shipped example's shape,
+ *   which JSON cannot express any other way) is read as unset and re-derived,
+ *   so copying the example never denies all marker authority.
  * - Plan-approval gate: `task` dispatches to `executor` require a current
  *   plan approval for the plans the dispatch resolves — the
  *   prompt-referenced existing plans, else the session's bound plan, else
