@@ -176,5 +176,5 @@ if (failed) {
   process.exit(1)
 }
 console.log(
-`check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser; parser regex sources match canonical shape)`,
+  `check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser; parser regex sources match canonical shape)`,
 )
