@@ -95,3 +95,9 @@ same evidence rules it enforces on users. Hand-edits are fine for docs,
 formatting, and trivial fixes; if a change skips the pipeline, say so in the
 commit body. See the "Turnstile is built with turnstile" paragraph in the
 README for what the journal shows about this in practice.
+
+That includes published evidence: `.github/workflows/turnstile-evidence.yml`
+is a copy of `examples/turnstile-evidence.yml` with one substitution
+(`node scripts/evidence.mjs` instead of the published CLI, so the tree
+validates itself). Edit the example and re-copy it in the same change set;
+drift between the two is drift in what consumers install.
