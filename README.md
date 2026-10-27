@@ -293,6 +293,11 @@ for a first-time contributor's fork PR, so an outside contributor's first badge
 can sit pending until someone clicks — the alternative is a job that executes
 contributor code holding a write token, which is not a trade worth making.
 
+This is what the comment looks like, posted by the Action on this repo's own
+pull requests — one comment, re-edited by each push, never a second one:
+
+![turnstile evidence posted on a pull request: one sticky comment with the plan verdict, the verified test counts, and the journal head sha](docs/images/pr-evidence.png)
+
 ## What turnstile is not
 
 Turnstile is a speed bump and an audit trail, not a security boundary. A

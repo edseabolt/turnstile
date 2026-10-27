@@ -722,3 +722,9 @@ gate now releases on approvals it used to miss.
 
 Don't take this section at face value: run `npx opencode-turnstile status`
 and read the journal yourself.
+
+Publishing that record is part of the field test: this repo ships the
+evidence workflow under `.github/workflows`, so the pipeline claims a
+reviewer would otherwise take on faith are posted on the pull request
+itself — the same artifact the `evidence` command emits, validated in the
+untrusted job and published from the base-context one.
