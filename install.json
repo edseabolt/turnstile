@@ -6,6 +6,10 @@
       "dest": "~/.config/opencode/plugins/turnstile.ts"
     },
     {
+      "src": "src",
+      "dest": "~/.config/opencode/plugins/src"
+    },
+    {
       "src": "agents/plan-reviewer.md",
       "dest": "~/.config/opencode/agents/plan-reviewer.md"
     },
@@ -38,5 +42,6 @@
     {
       "dest": "~/.config/opencode/plugin/turnstile.ts"
     }
-  ]
+  ],
+  "verify": ["~/.config/opencode/plugins/turnstile.ts"]
 }

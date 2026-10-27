@@ -30,6 +30,14 @@
 //   --link/--copy  Override the mode. Resolution: CLI flag > manifest "mode"
 //                  field > auto-detect (.git present => link, else copy)
 //
+//   A manifest "links" entry may name a directory: it installs
+//                  file-by-file (recursive, sorted) so a whole module tree
+//                  ships with per-file ledger records and links. A "verify"
+//                  list of ~-paths is dynamically imported (Node with
+//                  --experimental-strip-types) after install and on every
+//                  check, so an entry point whose import graph does not
+//                  resolve fails the command instead of loading broken.
+//
 //   --print-model-config  Print a ready-to-paste {"agents": {...}} model
 //                  snippet to stdout and write nothing (short-circuits before
 //                  any manifest/install work, like --check). Repeatable
@@ -53,17 +61,20 @@ import {
   writeFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
+  statSync,
   symlink,
   unlink,
   rename,
   copyFile,
   lstat,
   realpath,
+  realpathSync,
 } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
@@ -321,22 +332,58 @@ function resolveMode(modeOverride, manifestMode) {
 }
 
 /**
- * Reads and validates the install manifest.
+ * Expands a manifest entry whose source is a directory into one entry per
+ * file beneath it, recursively and in sorted order (stable output across
+ * platforms). A file or missing source passes through untouched: the
+ * existing inspect path reports it as `invalid`.
+ * @param {{src: string, dest: string}} entry Entry with paths already joined/expanded.
+ * @returns {Array<{src: string, dest: string}>} One entry per installed file.
+ */
+function flattenEntry(entry) {
+  if (!existsSync(entry.src) || !statSync(entry.src).isDirectory()) return [entry]
+  const dir = entry.src
+  const files = readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((rel) => statSync(join(dir, rel)).isFile())
+    .sort()
+  // An existing-but-empty directory yields no files; keep the original entry
+  // (rather than dropping it) so the inspect path reports it as a missing
+  // source instead of the entry silently vanishing from the manifest.
+  if (!files.length) return [entry]
+  return files.map((rel) => ({ src: join(dir, rel), dest: join(entry.dest, rel) }))
+}
+
+/**
+ * Applies `flattenEntry` across all manifest sources, keeping entry order.
+ * @param {Array<{src: string, dest: string}>} entries Already-resolved entries.
+ * @returns {Array<{src: string, dest: string}>} Flattened entries.
+ */
+function flattenLinks(entries) {
+  return entries.flatMap(flattenEntry)
+}
+
+/**
+ * Reads and validates the install manifest. Directory link sources are
+ * flattened to one entry per file so the per-file inspect/ledger/uninstall
+ * machinery applies unchanged; `verify` lists installed entry points that
+ * check/apply load-probe after the per-entry pass.
  * @param {string} file Path to install.json.
  * @param {"link"|"copy"|null} modeOverride Mode from the command line, if any.
- * @returns {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} Validated manifest.
+ * @returns {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[], verify: string[]}} Validated manifest.
  */
 function readManifest(file, modeOverride) {
   const raw = JSON.parse(readFileSync(file, "utf8"))
   const mode = resolveMode(modeOverride, raw.mode)
-  const links = (raw.links ?? []).map((entry) => ({
-    src: join(repoRoot, entry.src),
-    dest: expand(entry.dest),
-  }))
+  const links = flattenLinks(
+    (raw.links ?? []).map((entry) => ({
+      src: join(repoRoot, entry.src),
+      dest: expand(entry.dest),
+    })),
+  )
   const retired = (raw.retired ?? []).map((entry) => expand(entry.dest ?? entry))
+  const verify = (raw.verify ?? []).map(expand)
   if (!links.length && !retired.length)
     throw new Error(`manifest declares nothing to install: ${file}`)
-  return { mode, ledgerPath: expand(raw.ledger ?? defaultLedger), links, retired }
+  return { mode, ledgerPath: expand(raw.ledger ?? defaultLedger), links, retired, verify }
 }
 
 /**
@@ -460,12 +507,26 @@ function ownedByRepo(resolved) {
 }
 
 /**
+ * True when a manifest entry's source cannot be installed as a single file:
+ * it is absent, or it is a directory that flattened to nothing (an empty
+ * directory source is reported like a missing source rather than installed as
+ * a directory). The two inspect paths share this guard so a directory source
+ * is classified identically in link and copy mode.
+ * @param {{src: string}} entry Manifest entry.
+ * @returns {boolean} Whether the source is unusable for a file install.
+ */
+function sourceNotInstallable(entry) {
+  return !existsSync(entry.src) || statSync(entry.src).isDirectory()
+}
+
+/**
  * Computes the drift of a symlink entry against the desired state.
  * @param {{src: string, dest: string}} entry Manifest link entry.
  * @returns {Promise<{code: "ok"|"stale"|"conflict"|"missing"|"invalid", detail?: string}>} Drift report.
  */
 async function inspectLink(entry) {
-  if (!existsSync(entry.src)) return { code: "invalid", detail: `source missing: ${entry.src}` }
+  if (sourceNotInstallable(entry))
+    return { code: "invalid", detail: `source missing: ${entry.src}` }
   const kind = await kindAt(entry.dest)
   if (kind === "missing") return { code: "missing" }
   if (kind === "link") {
@@ -492,7 +553,8 @@ async function inspectLink(entry) {
  * @returns {{code: "ok"|"adopt"|"stale"|"conflict"|"missing"|"invalid", detail?: string}} Drift report.
  */
 function inspectCopy(entry, ledger) {
-  if (!existsSync(entry.src)) return { code: "invalid", detail: `source missing: ${entry.src}` }
+  if (sourceNotInstallable(entry))
+    return { code: "invalid", detail: `source missing: ${entry.src}` }
   if (!existsSync(entry.dest)) return { code: "missing" }
   const srcContent = readFileSync(entry.src, "utf8")
   const record = ledger[entry.dest]
@@ -647,9 +709,14 @@ async function removeEntry(dest, mode, ledger) {
  * Runs the installer in apply mode and prints a per-target report. In
  * uninstall mode it removes repo-owned links / ledger-owned copies for every
  * manifest entry (reporting unowned ones as failures) before retiring
- * leftovers; otherwise it installs as configured. Tracks whether any change
- * was made so the caller can gate the "restart OpenCode sessions" note.
- * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
+ * leftovers — and skips the `verify` probe, since the graph is intentionally
+ * gone; otherwise it installs as configured and load-probes every `verify`
+ * path after the links pass, printing `install: loadable <file>` /
+ * `install: unloadable <file> — <reason>` (the latter failing the run), so
+ * an install that shipped an unresolvable import graph exits non-zero.
+ * Tracks whether any change was made so the caller can gate the "restart
+ * OpenCode sessions" note.
+ * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[], verify: string[]}} manifest Validated manifest.
  * @param {{check: boolean, force: boolean, uninstall: boolean, mode: "link"|"copy"|null}} args Parsed arguments.
  * @returns {Promise<{ok: boolean, changed: boolean}>} Success flag and whether anything changed.
  */
@@ -710,6 +777,7 @@ async function apply(manifest, args) {
       console.error(String(error.message ?? error))
     }
   }
+  if (!(await reportVerifyProbes(manifest.verify, "install", true))) ok = false
   for (const dest of manifest.retired) {
     const result = await removeEntry(dest, { write: true }, ledger)
     if (result.acted) {
@@ -729,9 +797,11 @@ async function apply(manifest, args) {
  * entries via the same `installLink`/`installCopy` path `apply()` uses.
  * `conflict` stays gated behind `--force`: `--repair` must never back up user
  * files unprompted, so a conflict left without `--force` is reported as
- * unrepairable and fails. Runs in apply mode; the `--check --repair` dry run
- * is handled by `check()`.
- * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
+ * unrepairable and fails. After the links pass it load-probes every `verify`
+ * path with the same fatal block as apply: a graph that will not load is
+ * exactly what `--repair` should refuse to report success for. Runs in apply
+ * mode; the `--check --repair` dry run is handled by `check()`.
+ * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[], verify: string[]}} manifest Validated manifest.
  * @param {{force: boolean, repair: boolean}} args Parsed arguments.
  * @returns {Promise<{ok: boolean, changed: boolean}>} Success flag and whether anything changed.
  */
@@ -771,44 +841,223 @@ async function repair(manifest, args) {
       console.error(String(error.message ?? error))
     }
   }
+  if (!(await reportVerifyProbes(manifest.verify, "install", true))) ok = false
   saveLedger(manifest.ledgerPath, ledger)
   return { ok, changed }
 }
 
 /**
+ * Loads an installed entry point the way the host does: a child Node with
+ * erasable-TypeScript stripping enabled dynamically imports it, so the
+ * whole (transitive) import graph must resolve. Spawned, never in-process
+ * — the probe must not warm or pollute the installer's own module graph.
+ * @param {string} file Absolute path of the entry point to load.
+ * @returns {Promise<{ok: boolean, reason: string}>} Outcome; `reason` is the child's first stderr line (or a spawn/timeout summary).
+ */
+async function probeLoad(file) {
+  const url = pathToFileURL(file).href
+  const code = `await import(${JSON.stringify(url)}).catch((error) => { console.error(error.message); process.exit(1) })`
+  const res = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "-e", code],
+    { encoding: "utf8", timeout: 30_000 },
+  )
+  if (res.error) return { ok: false, reason: `probe spawn failed (${res.error.message})` }
+  if (res.status === 0) return { ok: true, reason: "" }
+  return { ok: false, reason: firstErrorLine(res.stderr, res.status) }
+}
+
+/**
+ * Extracts the first real error line from a child loader's stderr, skipping
+ * Node's own warning lines (e.g. the type-stripping ExperimentalWarning,
+ * which leads the stream on Node versions where stripping still warns).
+ * Those warnings are not the load error, so the reported reason stays on the
+ * actual failure rather than a warning the engine prints on startup.
+ * @param {string | undefined} stderr The child's stderr.
+ * @param {number | null} status The child's exit status, used for the fallback.
+ * @returns {string} The first non-warning line, or an exit-code summary.
+ */
+function firstErrorLine(stderr, status) {
+  const line = (stderr ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l !== "" && !l.startsWith("(node:") && !l.includes("ExperimentalWarning"))
+  return line ?? `loader exited with code ${status}`
+}
+
+/**
+ * Runs the load probe over every verify path, printing one line per path —
+ * `<prefix>: loadable <file>` on success and `<prefix>: unloadable <file> —
+ * <reason>` on failure — and returns whether every path loaded. A failure is
+ * reported to stderr and clears the result when `fatal` is set (apply and
+ * repair both pass `true`: an install or repair that left an unresolvable
+ * import graph must fail the run), otherwise it is informative on stdout.
+ * @param {string[]} files The verify paths to load-probe.
+ * @param {string} prefix The verb prefix for the report lines (`install`).
+ * @param {boolean} fatal Whether an unloadable path fails the run.
+ * @returns {Promise<boolean>} True when every path loaded.
+ */
+async function reportVerifyProbes(files, prefix, fatal) {
+  let pass = true
+  for (const file of files) {
+    const probe = await probeLoad(file)
+    if (probe.ok) {
+      console.log(`${prefix}: loadable ${file}`)
+    } else {
+      const line = `${prefix}: unloadable ${file} — ${probe.reason}`
+      if (fatal) {
+        pass = false
+        console.error(line)
+      } else console.log(line)
+    }
+  }
+  return pass
+}
+
+/**
+ * True when the text references the destination path as a whole path segment
+ * (the destination itself, or a file located beneath it), not as a prefix of
+ * a sibling path (e.g. `/a/b` inside `/a/bc`). A boundary is a path
+ * separator, whitespace, a quote, or a string edge.
+ * @param {string} text The text to search (a loader error reason).
+ * @param {string} dest The installed destination path to look for.
+ * @returns {boolean} Whether the text references the destination as a path.
+ */
+function pathReferenced(text, dest) {
+  const boundary = (ch) => ch === "" || ch === "/" || ch === " " || ch === "'" || ch === '"'
+  let from = 0
+  for (;;) {
+    const idx = text.indexOf(dest, from)
+    if (idx === -1) return false
+    const before = idx > 0 ? text[idx - 1] : ""
+    const after = idx + dest.length < text.length ? text[idx + dest.length] : ""
+    if (boundary(before) && boundary(after)) return true
+    from = idx + 1
+  }
+}
+
+/**
+ * Resolves symlinks in the part of a path that exists, leaving a missing tail
+ * intact, so the result matches the canonical form Node reports in a
+ * module-not-found error (on macOS, /var resolves to /private/var). A path
+ * with no existing prefix is returned unchanged.
+ * @param {string} path The path to canonicalize.
+ * @returns {string} The canonical path, or the input when it cannot be resolved.
+ */
+function canonicalizePath(path) {
+  let dir = path
+  const tail = []
+  while (!existsSync(dir) && dir !== dirname(dir)) {
+    tail.unshift(basename(dir))
+    dir = dirname(dir)
+  }
+  let root
+  try {
+    root = realpathSync(dir)
+  } catch {
+    return path
+  }
+  return tail.length ? join(root, ...tail) : root
+}
+
+/**
+ * Decides whether a verify probe failure is plausibly caused by drift that
+ * `--repair` would fix, so the `--check --repair` dry run can report it as
+ * non-fatal (annotated `would be loadable after repair`) instead of failing.
+ * A failure is attributed to repairable drift only when the loader's reason
+ * names a path a repairable entry would restore (its dest, or a file beneath
+ * it); a broken graph whose missing module is unrelated to any repairable
+ * entry still fails the check. Each dest is matched both as given and in its
+ * symlink-resolved form so the comparison is immune to path symlinks (e.g.
+ * macOS /var -> /private/var).
+ * @param {string} reason The probe's loader error reason.
+ * @param {string[]} repairableDests Destinations of entries `--repair` would fix.
+ * @returns {boolean} Whether the failure is attributable to repairable drift.
+ */
+function reasonCausedByRepairable(reason, repairableDests) {
+  return repairableDests.some((dest) => {
+    const canonical = canonicalizePath(dest)
+    return pathReferenced(reason, dest) || pathReferenced(reason, canonical)
+  })
+}
+
+/**
+ * Reports per-entry drift for the check pass. In repair mode, repairable
+ * drift (`missing`/`stale`) is reported as `would repair` (and its dest
+ * collected so a verify failure can be attributed to drift `--repair` would
+ * fix); every other drift fails the check.
+ * @param {Array<{src: string, dest: string}>} links Manifest link entries.
+ * @param {"link"|"copy"} mode Install mode.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger.
+ * @param {string} version Current package version.
+ * @param {boolean} repairMode When true, report repairable drift as `would repair`.
+ * @returns {Promise<{ok: boolean, repairableDests: string[]}>} Whether the pass failed the check, and the dests of repairable entries.
+ */
+async function reportEntryDrift(links, mode, ledger, version, repairMode) {
+  let ok = true
+  const repairableDests = []
+  for (const entry of links) {
+    if (!existsSync(entry.src)) {
+      ok = false
+      console.error(`check: source missing: ${entry.src} (referenced by ${entry.dest})`)
+      continue
+    }
+    const report = await inspectEntry(entry, mode, ledger)
+    const record = ledger[entry.dest]
+    if (record && record.version && record.version !== version)
+      console.log(`check: outdated ${entry.dest} (installed ${record.version}, package ${version})`)
+    if (report.code === "ok") console.log(`check: OK ${entry.dest}`)
+    else if (repairMode && isRepairable(report.code)) {
+      repairableDests.push(entry.dest)
+      console.log(`install: would repair ${entry.dest} (${report.code})`)
+    } else {
+      ok = false
+      console.error(
+        `check: ${report.code} ${entry.dest}${report.detail ? ` — ${report.detail}` : ""}`,
+      )
+    }
+  }
+  return { ok, repairableDests }
+}
+
+/**
  * Runs the installer in check mode: reports drift, writes nothing.
  * A ledger record whose version is older than the current package version
- * is reported as a warning and does not fail the check. When `repairMode`
- * is set (`--check --repair`), repairable drift (`missing`/`stale`) is
- * reported as `would repair` instead of an error and does not fail the
- * check (the entry is going to be fixed); unrepairable drift still fails
- * as before. `check` alone (`repairMode` false) is byte-for-byte unchanged.
- * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[]}} manifest Validated manifest.
+ * is reported as a warning and does not fail the check. After the per-entry
+ * pass, every `verify` path is load-probed in both modes: `check: loadable
+ * <file>` on a resolving import graph, `check: unloadable <file> — <reason>`
+ * (stderr) otherwise, which fails the check. When `repairMode` is set
+ * (`--check --repair`), repairable drift (`missing`/`stale`) is reported as
+ * `would repair` instead of an error and does not fail the check (the entry
+ * is going to be fixed); unrepairable drift still fails as before. A `verify`
+ * failure in repair mode is non-fatal (stdout, annotated `would be loadable
+ * after repair`) only when the loader's reason names a path a repairable
+ * entry would restore; a broken graph unrelated to repairable drift is still
+ * fatal. The per-entry drift pass is identical in both modes — only the
+ * `verify` probe's repair-mode handling differs.
+ * @param {{mode: "link"|"copy", ledgerPath: string, links: Array<{src: string, dest: string}>, retired: string[], verify: string[]}} manifest Validated manifest.
  * @param {string} version Current package version.
  * @param {boolean} [repairMode] When true, report repairable drift as `would repair` rather than failing.
  * @returns {Promise<boolean>} True when no unrepairable drift was found.
  */
 async function check(manifest, version, repairMode = false) {
   const ledger = loadLedger(manifest.ledgerPath)
-  let ok = true
-  for (const entry of manifest.links) {
-    if (!existsSync(entry.src)) {
-      ok = false
-      console.error(`check: source missing: ${entry.src} (referenced by ${entry.dest})`)
-      continue
-    }
-    const report = await inspectEntry(entry, manifest.mode, ledger)
-    const record = ledger[entry.dest]
-    if (record && record.version && record.version !== version)
-      console.log(`check: outdated ${entry.dest} (installed ${record.version}, package ${version})`)
-    if (report.code === "ok") console.log(`check: OK ${entry.dest}`)
-    else if (repairMode && isRepairable(report.code))
-      console.log(`install: would repair ${entry.dest} (${report.code})`)
+  const { ok: driftOk, repairableDests } = await reportEntryDrift(
+    manifest.links,
+    manifest.mode,
+    ledger,
+    version,
+    repairMode,
+  )
+  let ok = driftOk
+  for (const file of manifest.verify) {
+    const probe = await probeLoad(file)
+    if (probe.ok) console.log(`check: loadable ${file}`)
+    else if (repairMode && reasonCausedByRepairable(probe.reason, repairableDests))
+      console.log(`check: unloadable ${file} — ${probe.reason} (would be loadable after repair)`)
     else {
       ok = false
-      console.error(
-        `check: ${report.code} ${entry.dest}${report.detail ? ` — ${report.detail}` : ""}`,
-      )
+      console.error(`check: unloadable ${file} — ${probe.reason}`)
     }
   }
   for (const dest of manifest.retired) {

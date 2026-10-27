@@ -47,7 +47,7 @@ session at runtime. Mechanics below the fold.
 
 ```sh
 npx opencode-turnstile init      # install the plugin + pipeline agents
-npx opencode-turnstile check     # verify the install; must exit 0
+npx opencode-turnstile check     # verify the install (incl. plugin loadability); must exit 0
 ```
 
 Then **restart OpenCode** (or `opencode service restart`) so the plugin
