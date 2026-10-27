@@ -52,6 +52,10 @@ let failed = 0
 const LEADING_DECORATION = "^\\s*[`>#*\\s]*"
 const CANONICAL_GATE_CORE = "GATE: (?:PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+"
 const CANONICAL_VERDICT_CORE = "VERDICT: (?:APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+"
+// Flag set after extractRegex strips `g`: multiline is load-bearing (`^`
+// must match each line), and any added flag (`i`, `s`, `u`, `y`, `d`) would
+// silently broaden or change match semantics without touching the source.
+const CANONICAL_FLAGS = "m"
 
 // Strips the ^ anchor and the leading markdown decoration class, then renders
 // the kind alternation group non-capturing so a cosmetic (PASS|FAIL) vs
@@ -70,6 +74,12 @@ for (const [re, name, canonical] of [
   if (markerCore(re.source) !== canonical) {
     console.error(
       `check-markers: ${name} source drifted from the canonical marker shape: ${re.source}`,
+    )
+    failed++
+  }
+  if (re.flags !== CANONICAL_FLAGS) {
+    console.error(
+      `check-markers: ${name} flags drifted from the canonical marker shape: /${re.source}/${re.flags}`,
     )
     failed++
   }
