@@ -324,6 +324,56 @@ test("replay truncates the combined tail across generations", () => {
   assert.equal(ledger.peek("pFiller")?.hasGatePass, true, "entries within the tail bound restore")
 })
 
+/** An unreadable generation (a directory squatting on the `.1` path) is
+ *  excluded from the fold without sinking the replay: the walk journals one
+ *  message-free `replay` error entry, keeps walking, and still restores from
+ *  the current file and the deeper `.2` generation. */
+test("replay isolates an unreadable generation and journals one replay error", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [gateLine("pCurrent")])
+  fs.writeFileSync(path.join(metricsDir, "turnstile.jsonl.2"), `${gateLine("pDeep")}\n`)
+  fs.mkdirSync(path.join(metricsDir, "turnstile.jsonl.1"))
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(ledger.peek("pCurrent")?.hasGatePass, true, "the current file still restores")
+  assert.equal(
+    ledger.peek("pDeep")?.hasGatePass,
+    true,
+    "the walk continues past the unreadable generation",
+  )
+  assert.equal(replayDrops(metricsDir).length, 0, "a file-level error is not a line drop")
+  const entries = fs
+    .readFileSync(journalPath, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+  const errors = entries.filter((e) => e.type === "replay")
+  assert.equal(errors.length, 1, "one replay error entry is journaled")
+  const error = errors[0]!
+  assert.equal(error.error, true, "the entry carries the error flag")
+  assert.match(
+    String(error.ts),
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+    "the entry is stamped",
+  )
+  assert.deepEqual(
+    Object.keys(error).sort(),
+    ["error", "ts", "type"],
+    "the entry carries no message or other fields",
+  )
+})
+
+/** An unreadable current file (a directory in its place) does not abort the
+ *  walk: replay starts at the first generation and still restores from it,
+ *  and the error-entry append fails open (the path is a directory). */
+test("replay walks from the first generation when the current file is unreadable", () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  fs.mkdirSync(journalPath)
+  fs.writeFileSync(path.join(metricsDir, "turnstile.jsonl.1"), `${gateLine("pGen1")}\n`)
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(ledger.peek("pGen1")?.hasGatePass, true, "the .1 generation still restores")
+})
+
 /** Drops beyond the per-boot cap journal one summary entry naming the total
  *  instead of one line each. */
 test("replay caps drop telemetry per boot with a summary overflow", () => {
