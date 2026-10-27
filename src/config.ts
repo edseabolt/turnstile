@@ -112,10 +112,10 @@ export function defaultConfig(
     approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
     trace: true,
-    // Continuation carry is opt-in (default-off): a bare prompt reset wipes the
-    // gate cycle unless enabled, so a new task on the same branch is never
-    // silently carried forward as a continuation.
-    continuationCarry: false,
+    // Continuation carry is on by default: a reviewer-approved landing prompt
+    // re-arms earned credit when the worktree/branch is unchanged; set
+    // `continuationCarry: false` to restore a clean cycle every prompt.
+    continuationCarry: true,
     agents: {
       planner: "planner",
       reviewer: "reviewer",

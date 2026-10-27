@@ -360,9 +360,11 @@ test("scoped-waiver child round-limit block keeps the allowance clause last", as
  * consecutive second prompt with no intervening dispatch frees nothing (no
  * further entry), and the previously blocked reviewer dispatch then passes —
  * the reset zeroes the metering counters but leaves the earned gate green.
+ * Continuation carry is disabled so the reset runs the plain (non-carry)
+ * path while a child is freed.
  */
 test("a parent prompt releases a cap-blocked child's counters exactly once", async () => {
-  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
+  const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag", continuationCarry: false })
   try {
     await greenGate(h, "c1")
     await seedEdge(h, metricsDir, "c1", "p1", "reviewer")

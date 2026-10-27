@@ -16,7 +16,7 @@
   "approvalMarker": "PLAN APPROVED:",
   "plansDir": ".opencode/plans",
   "trace": true,
-  "continuationCarry": false,
+  "continuationCarry": true,
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",

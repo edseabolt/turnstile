@@ -164,8 +164,10 @@ hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 | Decoding clamps        | reviewer/plan-reviewer temperature = 0; executor/test-runner/debugger ≤ 0.2                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Compaction             | Injects a "preserve verbatim" instruction, then the live gate-state snapshot — de-tokenized so it can never re-parse as a marker                                                                                                                                                                                                                                                                                                                                                             |
 
-State lifecycle: a new user prompt resets the session's gate state. Replayed
-gate state survives a restart and the next (resume) prompt, then reverts.
+State lifecycle: a new user prompt resets the session's gate state, except
+when continuation carry (default on) re-arms it for a prompt with an
+unchanged worktree/branch fingerprint and earned credit. Replayed gate state
+survives a restart and the next (resume) prompt, then reverts.
 
 ## Waivers and approvals
 
