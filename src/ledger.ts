@@ -374,7 +374,11 @@ function newReplayMaps(): ReplayMaps {
  * Walks generations newest-first (`journalPath`, then `${journalPath}.1`,
  * `.2`, …, stopping at the first missing generation — a missing current file
  * is the post-rotation state, so the walk starts at `.1`) and stops as soon
- * as the collected lines alone satisfy the tail bound. Generations are
+ * as the collected lines alone satisfy the tail bound. An unreadable
+ * generation (a directory in its place, a permission failure) folds nothing
+ * from its file: one message-free `replay` error entry is journaled (the
+ * walk is bounded by the generation count, so the entries are bounded too)
+ * and the walk continues with the next-older generation. Generations are
  * time-ordered, so latest-wins still falls out of the oldest-first result.
  * @param journalPath Absolute path of the current journal file.
  * @param tailLines The tail bound in lines (non-positive reads nothing).
@@ -387,8 +391,17 @@ function readReplayLines(journalPath: string, tailLines: number): string[] {
   for (;;) {
     const file = generation === 0 ? journalPath : `${journalPath}.${generation}`
     if (!fs.existsSync(file)) break
-    blocks.unshift(fs.readFileSync(file, "utf8").split("\n").filter(Boolean))
-    if (blocks.reduce((total, block) => total + block.length, 0) >= tailLines) break
+    let block: string[]
+    try {
+      block = fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+    } catch {
+      // One unreadable generation must not sink the replay of the rest:
+      // journal a message-free error entry, fold nothing, keep walking.
+      appendLine(journalPath, JSON.stringify({ ts: now(), type: "replay", error: true }))
+      block = []
+    }
+    blocks.unshift(block)
+    if (blocks.reduce((total, chunk) => total + chunk.length, 0) >= tailLines) break
     generation++
   }
   return blocks.flat().slice(-tailLines)
@@ -971,7 +984,10 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  * gate state after a restart. Reads the last `tailLines` lines across all
  * retained generations; drops malformed lines. Only the *last flipping*
  * gate result per session decides the restored state, mirroring the runtime
- * latest-wins rule (a trailing `GATE: FAIL` keeps the gate red). Fail-open.
+ * latest-wins rule (a trailing `GATE: FAIL` keeps the gate red). Fail-open
+ * by construction: each generation read is guarded per file (an unreadable
+ * file journals a `replay` error entry and is excluded — see
+ * `readReplayLines`), and the folds and the telemetry appends never throw.
  *
  * Replay treats the journal as untrusted input: a sessionID must match the
  * host shape or its line is dropped (never echoed back into the journal), a
@@ -1039,7 +1055,8 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  *     tail bound: the walk stops within the newest generation that alone
  *     satisfies the tail bound; worst case bounded by retained-generation
  *     sizes, never the full `journalMaxGenerations × journalMaxBytes`
- *     envelope.
+ *     envelope. An unreadable generation journals one message-free
+ *     `replay` error entry, folds nothing from it, and the walk continues.
  * @param tailLines Maximum number of combined journal lines replayed; older
  *     lines are dropped.
  * @param creditedApprovals The bucket-free credit trace to stamp with each
@@ -1056,29 +1073,25 @@ function replayGatePasses(
   creditedApprovals: Map<string, number>,
   observePeriod: ObservePeriod,
 ): void {
-  try {
-    const maps = newReplayMaps()
-    const drops: ReplayDrop[] = []
-    for (const line of readReplayLines(journalPath, tailLines)) {
-      const entry = parseReplayLine(line)
-      if (entry === null) continue
-      if (entry === "malformed") {
-        drops.push({ reason: "malformed" })
-        continue
-      }
-      const sessionID = entry.sessionID
-      if (typeof sessionID !== "string" || !REPLAY_SESSION_RE.test(sessionID)) {
-        drops.push({ reason: "session-id" })
-        continue
-      }
-      const drop = foldReplayLine(entry, maps, sessionID, observePeriod)
-      if (drop) drops.push(drop)
+  const maps = newReplayMaps()
+  const drops: ReplayDrop[] = []
+  for (const line of readReplayLines(journalPath, tailLines)) {
+    const entry = parseReplayLine(line)
+    if (entry === null) continue
+    if (entry === "malformed") {
+      drops.push({ reason: "malformed" })
+      continue
     }
-    restoreBuckets(states, maps, creditedApprovals)
-    journalReplayDrops(journalPath, drops)
-  } catch {
-    // fail-open
+    const sessionID = entry.sessionID
+    if (typeof sessionID !== "string" || !REPLAY_SESSION_RE.test(sessionID)) {
+      drops.push({ reason: "session-id" })
+      continue
+    }
+    const drop = foldReplayLine(entry, maps, sessionID, observePeriod)
+    if (drop) drops.push(drop)
   }
+  restoreBuckets(states, maps, creditedApprovals)
+  journalReplayDrops(journalPath, drops)
 }
 
 /**
