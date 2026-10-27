@@ -672,6 +672,20 @@ in-memory state can be fresher (a session that has prompted since is newer
 than the journal records), so treat status as the durable state of the
 previous cycle rather than a live snapshot.
 
+### Sharing the evidence
+
+`opencode-turnstile evidence` is the sharing half of the same read-only view:
+where `status` answers "what is this session's state right now", `evidence`
+answers "what did this task earn, in a form I can publish". It folds the same
+replay-parity window with the same shape checks, then emits only derived
+counts, canonical marker lines, and shas — session IDs, prompts, dispatch
+descriptions, and bash command text are absent by construction, because the
+document is built key by key rather than filtered. A task is named by a
+one-way handle (`t-<8 hex>`), the journal by its head sha. `--format markdown`
+renders the sticky-comment body; `--out` writes `<name>.json` and the sibling
+`<name>.md`; `--validate` re-checks a committed artifact without writing. It
+is a correlated claim, not proof — say so in the comment you post.
+
 ---
 
 ## 7. Field-tested on itself

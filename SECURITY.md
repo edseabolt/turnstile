@@ -63,6 +63,23 @@ observable. A single appended line can no longer mint a session bucket or
 flip a restored gate. Protecting the metrics directory above remains the
 actual boundary against a local writer.
 
+## The published summary
+
+`opencode-turnstile evidence` is the only path by which journal-derived data
+is meant to leave the machine, and it is a whitelist projection, not an
+excerpt: the document is assembled from permitted keys (derived counts,
+canonical `GATE:`/`VERDICT:` marker lines, a one-way task handle, and the
+sha256 of the most recent journaled line), so the fields above — session
+paths and IDs, bash command text, dispatch descriptions — are absent by
+construction rather than redacted after the fact. `evidence --validate`
+re-asserts that in CI, rejecting any artifact carrying a session-ID-shaped or
+path-shaped value.
+
+What it cannot do is make the claim true. The summary reports what the journal
+_claims_, in the same terms as the threat model above: a correlated claim, not
+proof. It carries the journal head sha precisely so a reader can ask the
+author for the raw journal and check the excerpt's tail.
+
 ## Reporting a vulnerability
 
 Open a private GitHub security advisory on this repository. Do not open a

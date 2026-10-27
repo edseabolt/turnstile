@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Thin argv router for the opencode-turnstile package. Maps the four
+// Thin argv router for the opencode-turnstile package. Maps the five
 // subcommands onto the installer scripts (spawned, not imported, so each
 // keeps its own process.exit and stdio) or prints the package version. Paths
 // are resolved against this file, not cwd, so `npx opencode-turnstile` works
@@ -9,6 +9,7 @@
 //   opencode-turnstile check      Verify artifacts against the manifest
 //   opencode-turnstile uninstall  Remove installed artifacts (manifest artifacts)
 //   opencode-turnstile status     Report gate/plan state from the JSONL journal
+//   opencode-turnstile evidence   Emit a shareable evidence summary for one task
 //   opencode-turnstile version    Print the installed package version
 //
 // `init -- --print-model-config` writes nothing: the router runs install.mjs,
@@ -26,6 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, "..")
 const installScript = join(repoRoot, "scripts/install.mjs")
 const statusScript = join(repoRoot, "scripts/status.mjs")
+const evidenceScript = join(repoRoot, "scripts/evidence.mjs")
 
 const USAGE = `Usage: opencode-turnstile <command>
 
@@ -38,6 +40,9 @@ Commands:
   uninstall Remove installed artifacts (manifest artifacts)
   status    Report per-session gate/plan state from the journal
             (status --json prints machine-readable JSON; read-only, nothing is written)
+  evidence  Emit a shareable evidence summary for one task (read-only, nothing is written)
+             (evidence --task <session|latest> --format json|markdown [--out <path>]
+              evidence --validate <path>   re-check a committed artifact, write nothing)
   version   Print the installed package version
 
 init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
@@ -108,6 +113,13 @@ async function main() {
       // with passthrough args (mirrors the init case's leading-"--" stripping).
       const statusPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
       return process.exit(await spawnInstaller(statusScript, statusPassthrough))
+    }
+    case "evidence": {
+      // Read-only evidence surface: a shareable summary of one task's journaled
+      // evidence (spawn scripts/evidence.mjs with passthrough args, same
+      // leading-"--" strip as the status case).
+      const evidencePassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      return process.exit(await spawnInstaller(evidenceScript, evidencePassthrough))
     }
     default:
       console.log(USAGE)
