@@ -145,7 +145,7 @@ function greenTask(sid: string): Entry[] {
       source: "task-result",
     }),
     line(3, { type: "ensemble", sessionID: sid, agent: "reviewer", count: 1 }),
-    line(4, { type: "ensemble", sessionID: sid, agent: "reviewer", count: 1 }),
+    line(4, { type: "ensemble", sessionID: sid, agent: "reviewer", count: 2 }),
     line(5, {
       type: "gate",
       sessionID: sid,
@@ -307,7 +307,7 @@ test("evidence: an unverified enforce-mode PASS reports red", () => {
     writeJournal(dir, "turnstile.jsonl", [
       line(1, { type: "plan", sessionID: "sp-u", result: "APPROVE", source: "session-prompt" }),
       line(2, { type: "ensemble", sessionID: "sp-u", agent: "reviewer", count: 1 }),
-      line(3, { type: "ensemble", sessionID: "sp-u", agent: "reviewer", count: 1 }),
+      line(3, { type: "ensemble", sessionID: "sp-u", agent: "reviewer", count: 2 }),
       line(4, {
         type: "gate",
         sessionID: "sp-u",
@@ -334,7 +334,7 @@ test("evidence: an unverified flag-mode PASS reports green", () => {
     writeJournal(dir, "turnstile.jsonl", [
       line(1, { type: "plan", sessionID: "sp-f", result: "APPROVE", source: "session-prompt" }),
       line(2, { type: "ensemble", sessionID: "sp-f", agent: "reviewer", count: 1 }),
-      line(3, { type: "ensemble", sessionID: "sp-f", agent: "reviewer", count: 1 }),
+      line(3, { type: "ensemble", sessionID: "sp-f", agent: "reviewer", count: 2 }),
       line(4, {
         type: "gate",
         sessionID: "sp-f",
@@ -360,7 +360,7 @@ test("evidence: a trailing GATE: FAIL keeps the gate red (last-wins)", () => {
     writeJournal(dir, "turnstile.jsonl", [
       line(1, { type: "plan", sessionID: "sp-tf", result: "APPROVE", source: "session-prompt" }),
       line(2, { type: "ensemble", sessionID: "sp-tf", agent: "reviewer", count: 1 }),
-      line(3, { type: "ensemble", sessionID: "sp-tf", agent: "reviewer", count: 1 }),
+      line(3, { type: "ensemble", sessionID: "sp-tf", agent: "reviewer", count: 2 }),
       line(4, {
         type: "gate",
         sessionID: "sp-tf",
@@ -441,9 +441,13 @@ test("evidence: exit-0 evidence entries count into exitZeroRuns", () => {
   }
 })
 
-test("evidence: the reviewer bar comes from the config maxReviewerRounds", () => {
-  // docstring: the review bar is the producer's policy, so the expected count
-  // tracks the configured maxReviewerRounds and a full ensemble is green.
+test("evidence: the reviewer bar is the ensemble size, not the dispatch cap", () => {
+  // docstring: the ensemble decides when the review requirement is satisfied —
+  // two unwaived dispatches under the default enforce mode — while
+  // `maxReviewerRounds` only bounds how many dispatches may happen. A raised
+  // cap must not turn a fully-credited ensemble red, and the fold must read
+  // the running counts last-wins (not sum them), so two dispatches report 2,
+  // never 3.
   const dir = metricsDir()
   const cfgDir = metricsDir()
   try {
@@ -452,7 +456,7 @@ test("evidence: the reviewer bar comes from the config maxReviewerRounds", () =>
     writeJournal(dir, "turnstile.jsonl", [
       line(1, { type: "plan", sessionID: "sp-r", result: "APPROVE", source: "session-prompt" }),
       line(2, { type: "ensemble", sessionID: "sp-r", agent: "reviewer", count: 1 }),
-      line(3, { type: "ensemble", sessionID: "sp-r", agent: "reviewer", count: 1 }),
+      line(3, { type: "ensemble", sessionID: "sp-r", agent: "reviewer", count: 2 }),
       line(4, {
         type: "gate",
         sessionID: "sp-r",
@@ -468,12 +472,109 @@ test("evidence: the reviewer bar comes from the config maxReviewerRounds", () =>
     })
     assert.equal(code(res), 0)
     const obj = JSON.parse(res.stdout) as EvidenceDoc
-    assert.equal(obj.review.expected, 3)
-    assert.equal(obj.review.approves, 2)
-    assert.equal(obj.green, false, "two votes against a bar of three is not complete")
+    assert.equal(obj.review.expected, 2, "the bar is the ensemble size under enforce")
+    assert.equal(obj.review.approves, 2, "running counts fold last-wins, never summed")
+    assert.equal(obj.green, true, "a fully-credited ensemble is green despite the raised cap")
   } finally {
     rmSync(dir, { recursive: true, force: true })
     rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: advise mode sets the bar at one reviewer APPROVE", () => {
+  // docstring: under `reviewEnsemble: "advise"` the runtime credits a single
+  // reviewer APPROVE, so the artifact's bar is one and a lone dispatch is green.
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(cfgPath, JSON.stringify({ reviewEnsemble: "advise" }))
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "plan", sessionID: "sp-adv", result: "APPROVE", source: "session-prompt" }),
+      line(2, { type: "ensemble", sessionID: "sp-adv", agent: "reviewer", count: 1 }),
+      line(3, {
+        type: "gate",
+        sessionID: "sp-adv",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const res = spawnSync(process.execPath, [evidenceScript, "--format", "json"], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: dir, TURNSTILE_CONFIG: cfgPath },
+      encoding: "utf8",
+    })
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as EvidenceDoc
+    assert.equal(obj.review.expected, 1)
+    assert.equal(obj.review.approves, 1)
+    assert.equal(obj.green, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a refusal stamp keeps the ensemble red; a human release clears it", () => {
+  // docstring: an APPROVE credited at an incomplete count is stamped refused
+  // and the landing gate never credits on it, so the artifact stays red even
+  // though a dispatch happened; the human always-grant writes the clearing
+  // stamp and outranks the mechanical ensemble, so the released task reads
+  // green with the bar satisfied.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "plan", sessionID: "sp-ref", result: "APPROVE", source: "session-prompt" }),
+      line(2, {
+        type: "ensemble",
+        sessionID: "sp-ref",
+        agent: "reviewer",
+        count: 1,
+        refusedApprove: true,
+      }),
+      line(3, {
+        type: "gate",
+        sessionID: "sp-ref",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const refused = JSON.parse(runEvidence(dir, ["--format", "json"]).stdout) as EvidenceDoc
+    assert.equal(refused.review.approves, 1)
+    assert.equal(refused.green, false, "a refused credit is not a satisfied ensemble")
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "plan", sessionID: "sp-hum", result: "APPROVE", source: "session-prompt" }),
+      line(2, {
+        type: "ensemble",
+        sessionID: "sp-hum",
+        agent: "reviewer",
+        count: 1,
+        refusedApprove: true,
+      }),
+      line(3, {
+        type: "ensemble",
+        sessionID: "sp-hum",
+        agent: "reviewer",
+        count: 1,
+        refusedApprove: false,
+      }),
+      line(4, {
+        type: "gate",
+        sessionID: "sp-hum",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const released = JSON.parse(runEvidence(dir, ["--format", "json"]).stdout) as EvidenceDoc
+    assert.equal(released.review.approves, 2, "the human release satisfies the bar")
+    assert.equal(released.green, true, "a human release outranks the mechanical ensemble")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 
@@ -504,7 +605,7 @@ test("evidence: a waived gate surfaces in the count and the markdown", () => {
     writeJournal(dir, "turnstile.jsonl", [
       line(1, { type: "plan", sessionID: "sp-w", result: "APPROVE", source: "session-prompt" }),
       line(2, { type: "ensemble", sessionID: "sp-w", agent: "reviewer", count: 1 }),
-      line(3, { type: "ensemble", sessionID: "sp-w", agent: "reviewer", count: 1 }),
+      line(3, { type: "ensemble", sessionID: "sp-w", agent: "reviewer", count: 2 }),
       line(4, {
         type: "gate",
         sessionID: "sp-w",
@@ -557,7 +658,7 @@ test("evidence: the red markdown variant names the failing dimension", () => {
         source: "task-result",
       }),
       line(3, { type: "ensemble", sessionID: "sp-red", agent: "reviewer", count: 1 }),
-      line(4, { type: "ensemble", sessionID: "sp-red", agent: "reviewer", count: 1 }),
+      line(4, { type: "ensemble", sessionID: "sp-red", agent: "reviewer", count: 2 }),
       line(5, { type: "plan", sessionID: "sp-red", result: "BLOCK", source: "task-result" }),
       line(6, {
         type: "verdict",
