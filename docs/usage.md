@@ -287,6 +287,14 @@ version is older than the published package is reported as a warning
 (`check: outdated <dest> (installed X, package Y)`) and does not fail the
 check.
 
+The check is load-aware, not just presence-aware: after the per-entry pass
+it dynamically imports every manifest `verify` path (the installed plugin
+entry point by default) through a child `node --experimental-strip-types`,
+printing `check: loadable <file>` when the whole import graph resolves and
+failing with `check: unloadable <file> — <reason>` when it does not.
+`init` applies the same probe to what it just installed, so a missing
+module tree fails the install that caused it.
+
 ### Upgrade
 
 The plugin updates with your dependency manager (`npm upgrade
@@ -315,6 +323,11 @@ This repo is the source of truth for what lands in `~/.config/opencode`:
 the plugin and the pipeline agent definitions are installed per the manifest
 in `install.json`; unowned files in the target directories are never
 touched. Two install modes:
+
+A manifest entry may name a directory as its source (the plugin's `src/`
+tree ships this way): the directory installs file-by-file — recursive,
+sorted — so each file is individually ledger-recorded (copy) or linked
+(link), removed by uninstall, and reported by check.
 
 |                           | Symlink (default)                                   | Copy (`--copy`)                                         |
 | ------------------------- | --------------------------------------------------- | ------------------------------------------------------- |

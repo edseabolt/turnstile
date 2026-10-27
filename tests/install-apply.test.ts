@@ -18,6 +18,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -315,4 +316,176 @@ test("real manifest smoke: install/check/uninstall/check exit 0/0/0/1 under a te
   const after = spawnInstaller(["--check"], { home })
   assert.equal(after.status, 1)
   assert.match(after.stderr, /check: missing/)
+})
+
+/** A directory manifest entry installs file-by-file in copy mode and ledger-records every file. */
+test("apply copy: a directory entry copies all files and ledger-records each", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "copy",
+    ledger: "~/ledger.json",
+    links: [{ src: "skills", dest: "~/.config/opencode/skills/tree" }],
+  })
+  const res = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(res.status, 0, res.stderr)
+  const leaf = homePath(home, ".config/opencode/skills/tree/turnstile-setup/SKILL.md")
+  assert.equal(
+    readFileSync(leaf, "utf8"),
+    readFileSync(join(repoRoot, "skills/turnstile-setup/SKILL.md"), "utf8"),
+  )
+  const record = readLedger(ledgerOf(home))?.[leaf]
+  assert.equal(record?.src, "skills/turnstile-setup/SKILL.md")
+})
+
+/** A directory entry links per file in link mode; uninstall removes them all. */
+test("apply link + uninstall: a directory entry links each file and removes them all", (t) => {
+  const home = freshScratch(t)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    links: [{ src: "skills", dest: "~/.config/opencode/skills/tree" }],
+  })
+  assert.equal(spawnInstaller(["--manifest", manifest], { home }).status, 0)
+  const leaf = homePath(home, ".config/opencode/skills/tree/turnstile-setup/SKILL.md")
+  assert.equal(realpathSync(leaf), join(repoRoot, "skills/turnstile-setup/SKILL.md"))
+  const res = spawnInstaller(["--manifest", manifest, "--uninstall"], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.equal(existsSync(leaf), false)
+})
+
+/** A missing src is still `invalid`, not a flattened empty tree. */
+test("apply: a missing directory src still reports source missing", (t) => {
+  const home = freshScratch(t)
+  const manifest = singleEntryManifest(home, "copy", "does/not/exist", DEST)
+  const res = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /source missing/)
+})
+
+/** An existing-but-empty directory source is reported, not silently dropped from the manifest. */
+test("apply: an empty directory source is reported as source missing, not dropped", (t) => {
+  const home = freshScratch(t)
+  // An empty dir under the repo root is git-invisible and removed by the
+  // cleanup hook; it gives a directory source that flattens to no files.
+  const emptyDirName = `turnstile-empty-src-${process.pid}`
+  const emptyDir = join(repoRoot, emptyDirName)
+  mkdirSync(emptyDir)
+  t.after(() => rmSync(emptyDir, { recursive: true, force: true }))
+  const manifest = writeManifest(home, {
+    mode: "copy",
+    ledger: "~/ledger.json",
+    links: [{ src: emptyDirName, dest: "~/.config/opencode/agents/tree" }],
+  })
+  const res = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(res.status, 1, res.stderr)
+  assert.match(res.stderr, /source missing/)
+})
+
+/** check imports every verify path: loadable prints, unloadable fails naming the loader error. */
+test("--check: verify paths are load-probed; a broken graph exits 1 with the loader error", (t) => {
+  const home = freshScratch(t)
+  const good = homePath(home, "ok.mjs")
+  writeFileSync(good, "export const ok = 1\n")
+  const bad = homePath(home, "bad.mjs")
+  writeFileSync(bad, 'import "./nope.mjs"\n')
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    links: [{ src: SRC, dest: DEST }],
+    verify: ["~/ok.mjs", "~/bad.mjs"],
+  })
+  // Apply first so the link is genuinely ok: it exits 1 on the broken verify
+  // entry but still creates the link, making the verify failure the sole
+  // reason the check below must fail.
+  const install = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(install.status, 1)
+  assert.match(install.stderr, /install: unloadable .*bad\.mjs — .*nope\.mjs/)
+  assert.ok(existsSync(destOf(home)), "the link itself must have been installed")
+  const res = spawnInstaller(["--manifest", manifest, "--check"], { home })
+  assert.equal(res.status, 1)
+  assert.match(res.stdout, /check: OK .*agents\/x/)
+  assert.match(res.stdout, /check: loadable .*ok\.mjs/)
+  assert.match(res.stderr, /check: unloadable .*bad\.mjs — .*nope\.mjs/)
+  // No per-entry drift accompanies the unloadable line.
+  assert.doesNotMatch(res.stderr, /check: (missing|conflict|stale|invalid|source missing)/)
+})
+
+/** init load-probes what it installed and fails the install that shipped a broken graph. */
+test("apply: verify failure reports install: unloadable and exits 1", (t) => {
+  const home = freshScratch(t)
+  const bad = homePath(home, "bad.mjs")
+  writeFileSync(bad, 'import "./nope.mjs"\n')
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    links: [{ src: SRC, dest: DEST }],
+    verify: ["~/bad.mjs"],
+  })
+  const res = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(res.status, 1)
+  assert.match(res.stdout, /install: link .*agents\/x/)
+  assert.match(res.stderr, /install: unloadable .*bad\.mjs — .*nope\.mjs/)
+})
+
+/** uninstall skips the probe: a gone graph is expected, exit stays 0. */
+test("uninstall: verify paths are not probed after removal", (t) => {
+  const home = freshScratch(t)
+  // scripts/install.mjs is import-guarded, so the probe loads it cleanly
+  // while installed; after uninstall the link is gone, so a probe would fail.
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    links: [{ src: "scripts/install.mjs", dest: DEST }],
+    verify: [DEST],
+  })
+  const install = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(install.status, 0, install.stderr)
+  assert.match(install.stdout, /install: loadable .*agents\/x/)
+  const res = spawnInstaller(["--manifest", manifest, "--uninstall"], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.doesNotMatch(res.stdout + res.stderr, /loadable|unloadable/)
+})
+
+/** The real manifest ships src/: a temp-HOME copy install leaves the entry point loadable. */
+test("real manifest copy smoke: --copy install makes the default verify path loadable", (t) => {
+  const home = freshScratch(t)
+  const install = spawnInstaller(["--copy"], { home })
+  assert.equal(install.status, 0, install.stderr)
+  assert.match(install.stdout, /install: copy .*plugins\/src\/setup\.ts/)
+  assert.match(install.stdout, /install: loadable .*plugins\/turnstile\.ts/)
+})
+
+/** --check --repair stays write-free and non-fatal: a missing installed file is reported unloadable without failing. */
+test("--check --repair: a missing installed file is reported unloadable but does not fail", (t) => {
+  const home = freshScratch(t)
+  const install = spawnInstaller(["--copy"], { home })
+  assert.equal(install.status, 0, install.stderr)
+  rmSync(homePath(home, ".config/opencode/plugins/src/setup.ts"))
+  const res = spawnInstaller(["--copy", "--check", "--repair"], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /install: would repair .*plugins\/src\/setup\.ts \(missing\)/)
+  assert.match(
+    res.stdout,
+    /check: unloadable .*plugins\/turnstile\.ts — .*setup\.ts.*\(would be loadable after repair\)/,
+  )
+})
+
+/** --check --repair stays fatal when the broken graph is unrelated to any repairable entry. */
+test("--check --repair: a broken graph unrelated to repairable entries is fatal (exit 1)", (t) => {
+  const home = freshScratch(t)
+  writeFileSync(homePath(home, "bad.mjs"), 'import "./nope.mjs"\n')
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    links: [{ src: SRC, dest: DEST }],
+    verify: ["~/bad.mjs"],
+  })
+  // The link entry is missing (repairable), but the broken verify graph
+  // references nope.mjs — neither installed nor a repairable dest — so the
+  // probe failure is not attributable to the drift and stays fatal.
+  const res = spawnInstaller(["--manifest", manifest, "--check", "--repair"], { home })
+  assert.equal(res.status, 1, res.stderr)
+  assert.match(res.stdout, /install: would repair .*agents\/x \(missing\)/)
+  assert.match(res.stderr, /check: unloadable .*bad\.mjs — .*nope\.mjs/)
+  assert.doesNotMatch(res.stdout, /would be loadable after repair/)
 })

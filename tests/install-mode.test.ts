@@ -194,6 +194,36 @@ test("repair: conflict is left untouched without --force and exits non-zero", (t
   assert.equal(readFileSync(dest, "utf8"), before, "the conflict file must be untouched")
 })
 
+/** Bare --repair is fatal (exit 1) when a verify entry's import graph does not resolve (copy mode). */
+test("repair: a broken verify graph is fatal and exits 1 (copy)", (t) => {
+  const home = freshScratch(t)
+  writeFileSync(homePath(home, "bad.mjs"), 'import "./nope.mjs"\n')
+  const manifest = writeManifest(home, {
+    mode: "copy",
+    ledger: "~/ledger.json",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+    verify: ["~/bad.mjs"],
+  })
+  const res = spawnInstaller(["--manifest", manifest, "--repair"], { home })
+  assert.equal(res.status, 1, res.stderr)
+  assert.match(res.stderr, /install: unloadable .*bad\.mjs — .*nope\.mjs/)
+})
+
+/** Bare --repair is fatal (exit 1) when a verify entry's import graph does not resolve (link mode). */
+test("repair: a broken verify graph is fatal and exits 1 (link)", (t) => {
+  const home = freshScratch(t)
+  writeFileSync(homePath(home, "bad.mjs"), 'import "./nope.mjs"\n')
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    links: [{ src: "bin/cli.mjs", dest: "~/.config/opencode/agents/x" }],
+    verify: ["~/bad.mjs"],
+  })
+  const res = spawnInstaller(["--manifest", manifest, "--repair"], { home })
+  assert.equal(res.status, 1, res.stderr)
+  assert.match(res.stderr, /install: unloadable .*bad\.mjs — .*nope\.mjs/)
+})
+
 /** --check --repair exits non-zero when a conflict is unrepairable. */
 test("--check --repair: exits non-zero when a conflict is unrepairable", (t) => {
   const home = freshScratch(t)
