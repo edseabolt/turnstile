@@ -578,6 +578,41 @@ test("evidence: a refusal stamp keeps the ensemble red; a human release clears i
   }
 })
 
+test("evidence: a later plain entry un-stamps a refusal at the full count", () => {
+  // docstring: the runtime's canonical recovery is the second reviewer
+  // dispatch writing a plain (stamp-less) count-2 entry after an earlier
+  // refusal — the absent field un-stamps the refusal, so the recovered
+  // ensemble reads green with the bar met.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "plan", sessionID: "sp-rec", result: "APPROVE", source: "session-prompt" }),
+      line(2, {
+        type: "ensemble",
+        sessionID: "sp-rec",
+        agent: "reviewer",
+        count: 1,
+        refusedApprove: true,
+      }),
+      line(3, { type: "ensemble", sessionID: "sp-rec", agent: "reviewer", count: 2 }),
+      line(4, {
+        type: "gate",
+        sessionID: "sp-rec",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const obj = JSON.parse(runEvidence(dir, ["--format", "json"]).stdout) as EvidenceDoc
+    assert.equal(obj.review.approves, 2)
+    assert.equal(obj.review.expected, 2)
+    assert.equal(obj.green, true, "the un-stamped full count credits the ensemble")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("evidence: the dispatch counter excludes blocked attempts", () => {
   // docstring: a rejected dispatch was never executed, so it is a block, not
   // a dispatch — counting both would double count the guard's own entry.

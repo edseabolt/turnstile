@@ -278,6 +278,52 @@ function greenRule(plan, tests, review) {
 }
 
 /**
+ * Folds one `ensemble` entry into the task's last-wins ensemble state, mirroring
+ * src/ledger.ts's `foldEnsemble`: `ensemble` entries carry the RUNNING
+ * unwaived-dispatch count, so the state is overwritten (never summed), the
+ * count is clamped to the reviewer bar, and the refusal stamp follows the last
+ * valid entry — an explicit `true` suppresses the credit, an explicit `false`
+ * is the human grant's clearing stamp (a release outranks the mechanical
+ * ensemble), and an absent field un-stamps a prior refusal. An invalid count
+ * is skipped (fail-open display; the ledger's replay drops it for enforcement).
+ * @param {Record<string, unknown>} entry The parsed `ensemble` journal entry.
+ * @param {number} expected The reviewer bar to clamp the count against.
+ * @param {{ count: number | null, stamp: boolean | undefined }} state The
+ *     task's running last-wins ensemble state, updated in place.
+ */
+function foldEnsembleEntry(entry, expected, state) {
+  const count = entry.count
+  if (!Number.isInteger(count) || count < 0) return
+  state.count = Math.min(count, expected)
+  if (entry.refusedApprove === true) state.stamp = true
+  else if (entry.refusedApprove === false) state.stamp = false
+  else state.stamp = undefined
+}
+
+/**
+ * The review credit, encoded in the reported approval count so the green rule
+ * stays a pure read of the document. Mirrors the runtime's own rule
+ * (src/ledger.ts `restoreHumanGrants` + the gate's ensemble check): the
+ * ensemble is satisfied at the bar with the last stamp not a refusal, or a
+ * human release cleared one — a release outranks the mechanical ensemble, so
+ * the artifact reports the review requirement as satisfied by the same
+ * decision the gate took. When credit is suppressed (a refusal stamp, or the
+ * bar unmet) the count is capped under the bar, so `approves >= expected`
+ * cannot be true.
+ * @param {{ count: number | null, stamp: boolean | undefined }} state The
+ *     task's last-wins ensemble state from `foldEnsembleEntry`.
+ * @param {number} expected The reviewer bar.
+ * @returns {number} The `review.approves` value to emit.
+ */
+function reviewCredit(state, expected) {
+  const humanRelease = state.stamp === false
+  const credited =
+    humanRelease || (state.count !== null && state.count >= expected && state.stamp !== true)
+  if (humanRelease) return expected
+  return credited ? Math.min(state.count ?? 0, expected) : Math.min(state.count ?? 0, expected - 1)
+}
+
+/**
  * Folds one task's journaled entries into the document's sections, reusing
  * status.mjs's last-wins rules: a trailing `GATE: FAIL` keeps the gate red, an
  * enforce-mode `verified:false` PASS never flips, and a plan BLOCK/STALE keeps
@@ -309,8 +355,7 @@ function foldTask(acc) {
   // restoreHumanGrants): `ensemble` entries carry the RUNNING dispatch count,
   // so last-wins — not summation — is the honest read. Summing the running
   // counts reported a two-dispatch, fully-credited ensemble as three approvals.
-  let lastEnsembleCount = null
-  let lastEnsembleStamp = undefined
+  const ensemble = { count: null, stamp: undefined }
 
   for (const e of acc.entries) {
     const type = e.type
@@ -353,17 +398,7 @@ function foldTask(acc) {
     } else if (type === "evidence") {
       if (isExitZero(e)) exitZeroRuns++
     } else if (type === "ensemble") {
-      const count = e.count
-      if (Number.isInteger(count) && count >= 0) {
-        lastEnsembleCount = Math.min(count, acc.expected)
-        // The refusal stamp follows the last valid entry: an explicit `true`
-        // suppresses the credit, an explicit `false` is the human grant's
-        // clearing stamp (a release outranks the mechanical ensemble), and an
-        // absent field un-stamps a prior refusal.
-        if (e.refusedApprove === true) lastEnsembleStamp = true
-        else if (e.refusedApprove === false) lastEnsembleStamp = false
-        else lastEnsembleStamp = undefined
-      }
+      foldEnsembleEntry(e, acc.expected, ensemble)
     }
   }
 
@@ -380,21 +415,8 @@ function foldTask(acc) {
       ? planMarker
       : null
   // The review credit is the runtime's own rule, encoded in the count so the
-  // green rule stays a pure read of the document: the ensemble is satisfied at
-  // the bar (with the last stamp not a refusal), or the human release cleared
-  // one — a release outranks the mechanical ensemble, so the artifact reports
-  // the review requirement as satisfied by the same decision the gate took.
-  // When credit is suppressed (a refusal stamp, or the bar unmet) the count is
-  // capped under the bar, so `approves >= expected` cannot be true.
-  const humanRelease = lastEnsembleStamp === false
-  const credited =
-    humanRelease ||
-    (lastEnsembleCount !== null && lastEnsembleCount >= acc.expected && lastEnsembleStamp !== true)
-  const approves = humanRelease
-    ? acc.expected
-    : credited
-      ? Math.min(lastEnsembleCount ?? 0, acc.expected)
-      : Math.min(lastEnsembleCount ?? 0, acc.expected - 1)
+  // green rule stays a pure read of the document (see reviewCredit).
+  const approves = reviewCredit(ensemble, acc.expected)
   const plan = {
     verdict: shownVerdict,
     marker: planMarkerOut,
