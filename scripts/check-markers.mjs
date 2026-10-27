@@ -11,6 +11,10 @@ const ts = ["turnstile.ts", "src/markers.ts"]
   .map((f) => readFileSync(join(root, f), "utf8"))
   .join("\n")
 const readme = readFileSync(join(root, "README.md"), "utf8")
+// The standalone evidence emitter carries its own copy of the canonical marker
+// pair so it can degrade a journaled marker to null without importing TS
+// source; guard that copy against the same concrete README examples below.
+const evidence = readFileSync(join(root, "scripts", "evidence.mjs"), "utf8")
 
 function extractRegex(name) {
   const m = ts.match(new RegExp(`const ${name} = /(.+)/([a-z]*)`))
@@ -21,6 +25,12 @@ function extractRegex(name) {
 
 const gateRe = extractRegex("GATE_RE")
 const verdictRe = extractRegex("VERDICT_RE")
+
+// MARKER_OK is declared across two lines (`const MARKER_OK =` then the literal),
+// so the extraction tolerates the newline between the `=` and the `/`.
+const markerOkMatch = evidence.match(/const MARKER_OK\s*=\s*\/(.+)\/([a-z]*)/)
+if (!markerOkMatch) throw new Error("could not find MARKER_OK in scripts/evidence.mjs")
+const markerOkRe = new RegExp(markerOkMatch[1], markerOkMatch[2].replace(/g/g, ""))
 
 // Every fenced ```-block line that looks like a marker must match a regex.
 const lines = [...readme.matchAll(/```[a-z]*\n([\s\S]*?)```/g)]
@@ -37,6 +47,12 @@ for (const line of lines) {
   const ok = gateRe.test(line) || verdictRe.test(line)
   if (!ok) {
     console.error(`check-markers: README marker not accepted by parser: ${line}`)
+    failed++
+  }
+  // The evidence emitter's MARKER_OK copy must accept the same concrete
+  // examples the parser does, so a drift in that second copy fails the guard.
+  if (!markerOkRe.test(line)) {
+    console.error(`check-markers: README marker not accepted by evidence MARKER_OK: ${line}`)
     failed++
   }
 }
@@ -104,5 +120,5 @@ if (failed) {
   process.exit(1)
 }
 console.log(
-  `check-markers: OK (${lines.length} README examples, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser)`,
+  `check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser)`,
 )

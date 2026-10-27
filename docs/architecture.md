@@ -491,6 +491,15 @@ report header adds the folded period line
 (`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
 would-blocks`); journals without them render byte-identically.
 
+`opencode-turnstile evidence [--task <session|latest>]` is the publishable
+half of that view: the same tail window and shape checks, folded to one task
+and projected key by key into `turnstile-evidence/v1` — derived counts,
+canonical marker lines, and two shas (a one-way task handle, and `sha256` of
+the last journaled line). Nothing is filtered out of a larger object: the
+document is built from whitelisted keys, so a journal field cannot leak into a
+public artifact by oversight. It adds no entry type, changes no replay rule,
+and writes nothing to the journal.
+
 ---
 
 ## 7. Configuration surface
