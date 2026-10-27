@@ -696,7 +696,12 @@ descriptions, and bash command text are absent by construction, because the
 document is built key by key rather than filtered. A task is named by a
 one-way handle (`t-<8 hex>`), the journal by its head sha. `--format markdown`
 renders the sticky-comment body; `--out` writes `<name>.json` and the sibling
-`<name>.md`; `--validate` re-checks a committed artifact without writing. It
+`<name>.md`; `--validate` re-checks a committed artifact without writing. The
+`review` section reports against the ensemble bar the runtime credits at — two
+unwaived reviewer dispatches under the default `reviewEnsemble: "enforce"`, one
+under `"advise"` — not against `maxReviewerRounds`, which only caps dispatches;
+a refusal stamp keeps the section red, and a human release satisfies it, the
+same credit rule the landing gate applies. It
 is a correlated claim, not proof — say so in the comment you post.
 
 ---

@@ -61,11 +61,19 @@ const SCHEMA = "turnstile-evidence/v1"
 const DEFAULT_REPLAY_TAIL_LINES = 2000
 
 /**
- * The default reviewer-ensemble size (config `maxReviewerRounds`, src/config.ts).
- * The standalone script cannot import TS source, so the default is copied and a
- * configured value overrides it.
+ * The reviewer-ensemble size (src/state.ts `REVIEW_ENSEMBLE_SIZE`). The
+ * standalone script cannot import TS source, so the constant is copied: under
+ * the default `enforce` mode the landing gate credits at two unwaived reviewer
+ * dispatches, so that is the bar the artifact reports against.
  */
-const DEFAULT_MAX_REVIEWER_ROUNDS = 2
+const REVIEW_ENSEMBLE_SIZE = 2
+
+/**
+ * The default `reviewEnsemble` mode (src/config.ts). `enforce` requires the
+ * full ensemble; `advise` credits a single reviewer APPROVE, so the reported
+ * bar is one.
+ */
+const DEFAULT_REVIEW_ENSEMBLE = "enforce"
 
 /**
  * Host session-ID alphabet, length-capped. Mirrors the canonical constant in
@@ -157,24 +165,39 @@ function resolveReplayTailLines(value) {
 }
 
 /**
- * Validates a configured `maxReviewerRounds`. Only an integer ≥ 0 is accepted;
- * anything else falls back to the default so the review bar degrades rather
- * than misphasing (mirrors the replay-tail junk rejection).
- * @param {unknown} value The raw `maxReviewerRounds` from the config file.
- * @returns {number} The validated reviewer-ensemble size.
+ * Validates a configured `reviewEnsemble`. Only the two mode literals are
+ * accepted; anything else falls back to the default so the review bar degrades
+ * rather than misphasing (mirrors the replay-tail junk rejection).
+ * @param {unknown} value The raw `reviewEnsemble` from the config file.
+ * @returns {"enforce" | "advise"} The validated ensemble mode.
  */
-function resolveMaxReviewerRounds(value) {
-  return Number.isInteger(value) && value >= 0 ? value : DEFAULT_MAX_REVIEWER_ROUNDS
+function resolveReviewEnsemble(value) {
+  return value === "advise" ? "advise" : DEFAULT_REVIEW_ENSEMBLE
+}
+
+/**
+ * The reviewer bar the artifact reports against: the ensemble size the
+ * runtime itself credits at, not the dispatch cap — `maxReviewerRounds` bounds
+ * how many reviewer dispatches may happen, while the ensemble decides when the
+ * review requirement is satisfied (two unwaived dispatches under `enforce`, a
+ * single reviewer APPROVE under `advise`). Deriving the bar from the cap made
+ * a fully-credited two-dispatch ensemble render `reviewer 2/4` red on any
+ * machine whose config raised the cap.
+ * @param {"enforce" | "advise"} mode The resolved ensemble mode.
+ * @returns {number} The reviewer count the green rule requires.
+ */
+function ensembleBar(mode) {
+  return mode === "advise" ? 1 : REVIEW_ENSEMBLE_SIZE
 }
 
 /**
  * Resolves the metrics directory and the two config values the evidence
  * surface uses. The config file is parsed once (silently-failing, fail-open)
- * and always supplies the tail bound and reviewer bar; the
+ * and always supplies the tail bound and the ensemble mode; the
  * TURNSTILE_METRICS_DIR env overrides only the metrics directory (precedence
  * env → file → default).
  * @param {NodeJS.ProcessEnv} env The process environment.
- * @returns {{ metricsDir: string, replayTailLines: number, maxReviewerRounds: number }} The resolved values.
+ * @returns {{ metricsDir: string, replayTailLines: number, reviewEnsemble: "enforce" | "advise" }} The resolved values.
  */
 function resolveConfig(env) {
   const config = loadConfigFile(env)
@@ -188,7 +211,7 @@ function resolveConfig(env) {
   return {
     metricsDir,
     replayTailLines: resolveReplayTailLines(config?.replayTailLines),
-    maxReviewerRounds: resolveMaxReviewerRounds(config?.maxReviewerRounds),
+    reviewEnsemble: resolveReviewEnsemble(config?.reviewEnsemble),
   }
 }
 
@@ -255,6 +278,52 @@ function greenRule(plan, tests, review) {
 }
 
 /**
+ * Folds one `ensemble` entry into the task's last-wins ensemble state, mirroring
+ * src/ledger.ts's `foldEnsemble`: `ensemble` entries carry the RUNNING
+ * unwaived-dispatch count, so the state is overwritten (never summed), the
+ * count is clamped to the reviewer bar, and the refusal stamp follows the last
+ * valid entry — an explicit `true` suppresses the credit, an explicit `false`
+ * is the human grant's clearing stamp (a release outranks the mechanical
+ * ensemble), and an absent field un-stamps a prior refusal. An invalid count
+ * is skipped (fail-open display; the ledger's replay drops it for enforcement).
+ * @param {Record<string, unknown>} entry The parsed `ensemble` journal entry.
+ * @param {number} expected The reviewer bar to clamp the count against.
+ * @param {{ count: number | null, stamp: boolean | undefined }} state The
+ *     task's running last-wins ensemble state, updated in place.
+ */
+function foldEnsembleEntry(entry, expected, state) {
+  const count = entry.count
+  if (!Number.isInteger(count) || count < 0) return
+  state.count = Math.min(count, expected)
+  if (entry.refusedApprove === true) state.stamp = true
+  else if (entry.refusedApprove === false) state.stamp = false
+  else state.stamp = undefined
+}
+
+/**
+ * The review credit, encoded in the reported approval count so the green rule
+ * stays a pure read of the document. Mirrors the runtime's own rule
+ * (src/ledger.ts `restoreHumanGrants` + the gate's ensemble check): the
+ * ensemble is satisfied at the bar with the last stamp not a refusal, or a
+ * human release cleared one — a release outranks the mechanical ensemble, so
+ * the artifact reports the review requirement as satisfied by the same
+ * decision the gate took. When credit is suppressed (a refusal stamp, or the
+ * bar unmet) the count is capped under the bar, so `approves >= expected`
+ * cannot be true.
+ * @param {{ count: number | null, stamp: boolean | undefined }} state The
+ *     task's last-wins ensemble state from `foldEnsembleEntry`.
+ * @param {number} expected The reviewer bar.
+ * @returns {number} The `review.approves` value to emit.
+ */
+function reviewCredit(state, expected) {
+  const humanRelease = state.stamp === false
+  const credited =
+    humanRelease || (state.count !== null && state.count >= expected && state.stamp !== true)
+  if (humanRelease) return expected
+  return credited ? Math.min(state.count ?? 0, expected) : Math.min(state.count ?? 0, expected - 1)
+}
+
+/**
  * Folds one task's journaled entries into the document's sections, reusing
  * status.mjs's last-wins rules: a trailing `GATE: FAIL` keeps the gate red, an
  * enforce-mode `verified:false` PASS never flips, and a plan BLOCK/STALE keeps
@@ -282,7 +351,11 @@ function foldTask(acc) {
   let blocks = 0
   let waivers = 0
   let exitZeroRuns = 0
-  let approves = 0
+  // The ensemble fold mirrors src/ledger.ts's replay (foldEnsemble +
+  // restoreHumanGrants): `ensemble` entries carry the RUNNING dispatch count,
+  // so last-wins — not summation — is the honest read. Summing the running
+  // counts reported a two-dispatch, fully-credited ensemble as three approvals.
+  const ensemble = { count: null, stamp: undefined }
 
   for (const e of acc.entries) {
     const type = e.type
@@ -325,8 +398,7 @@ function foldTask(acc) {
     } else if (type === "evidence") {
       if (isExitZero(e)) exitZeroRuns++
     } else if (type === "ensemble") {
-      const count = e.count
-      if (Number.isInteger(count) && count >= 0 && e.refusedApprove !== true) approves += count
+      foldEnsembleEntry(e, acc.expected, ensemble)
     }
   }
 
@@ -342,6 +414,9 @@ function foldTask(acc) {
     : MARKER_OK.test(planMarker)
       ? planMarker
       : null
+  // The review credit is the runtime's own rule, encoded in the count so the
+  // green rule stays a pure read of the document (see reviewCredit).
+  const approves = reviewCredit(ensemble, acc.expected)
   const plan = {
     verdict: shownVerdict,
     marker: planMarkerOut,
@@ -863,7 +938,8 @@ async function main(argv) {
     return 0
   }
 
-  const { metricsDir, replayTailLines, maxReviewerRounds } = resolveConfig(process.env)
+  const { metricsDir, replayTailLines, reviewEnsemble } = resolveConfig(process.env)
+  const bar = ensembleBar(reviewEnsemble)
 
   if (flags.validate !== null) {
     return runValidate(flags.validate)
@@ -879,7 +955,7 @@ async function main(argv) {
       files: [],
       lines: 0,
       head: null,
-      expected: maxReviewerRounds,
+      expected: bar,
     })
     return emit(flags, doc)
   }
@@ -926,7 +1002,7 @@ async function main(argv) {
         head === null
           ? null
           : "sha256:" + crypto.createHash("sha256").update(head).digest("hex").slice(0, 12),
-      expected: maxReviewerRounds,
+      expected: bar,
     })
     return emit(flags, doc)
   }
@@ -936,7 +1012,7 @@ async function main(argv) {
     {
       entries: win.entries,
       head: win.head,
-      expected: maxReviewerRounds,
+      expected: bar,
       files,
       lines: lines.length,
     },
