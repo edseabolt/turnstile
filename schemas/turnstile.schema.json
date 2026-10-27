@@ -119,7 +119,7 @@
         "bareOutput": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Agents contracted to emit GATE/VERDICT markers (unset by default; an absent or omitted value derives from the configured test-runner, reviewer, and plan-reviewer names)."
+          "description": "Agents contracted to emit GATE/VERDICT markers (unset by default; an absent, omitted, or empty value derives from the configured test-runner, reviewer, and plan-reviewer names — JSON cannot express the code's unset sentinel, so an empty list is read as unset)."
         }
       }
     },

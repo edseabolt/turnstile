@@ -70,10 +70,12 @@ export const DEFAULT_COMMIT_FORMAT =
  * Identity sentinel for "bareOutput not configured": `defaultConfig()` stores
  * this exact reference for `agents.bareOutput`, and derivation fires only when
  * the resolved list is still this reference. `mergeConfig` always stores a
- * fresh array for an explicitly configured list, so an explicit list —
- * including a user-authored empty one or a reordered copy of the default
- * names — is distinguishable from the unset default regardless of its
- * contents.
+ * fresh array for an explicitly configured list, so a non-empty explicit list
+ * — including a reordered copy of the default names — is distinguishable from
+ * the unset default regardless of its contents. An explicit empty list is not:
+ * JSON cannot express this reference, so the shipped example carries an empty
+ * one, and derivation treats an empty list as unset to keep that copy from
+ * denying every marker.
  */
 export const BARE_OUTPUT_UNSET: string[] = []
 
@@ -595,8 +597,9 @@ function warnIfBroaderMarker(
  * Defends the fully-resolved config against inter-key and path invariants that
  * no single layer validator catches, so hand-constructed configs cannot slip a
  * bad value past the merge-time checks. Mutates `config` in place (clamping
- * `readWarn` below `readBlock`, warning on a relative `metricsDir`) and
- * returns one warning string per correction.
+ * `readWarn` below `readBlock`, warning on a relative `metricsDir`, naming an
+ * explicit empty `bareOutput` about to be re-derived) and returns one warning
+ * string per correction.
  *
  * Called once at the end of `loadConfig` after every layer has merged, so the
  * defaults (8 < 15, absolute dir) never trip it and the golden digest stays
@@ -629,6 +632,11 @@ export function validateResolved(config: TurnstileConfig): string[] {
       `config: readWarn (${warn}) >= readBlock (${block}); clamping readWarn to ${config.readWarn}`,
     )
   }
+  if (config.agents.bareOutput !== BARE_OUTPUT_UNSET && config.agents.bareOutput.length === 0) {
+    warnings.push(
+      `config: agents.bareOutput is an explicit empty list; deriving from the configured agent names (an empty list would deny every child-session marker)`,
+    )
+  }
   if (!path.isAbsolute(config.metricsDir)) {
     warnings.push(
       `config: metricsDir "${config.metricsDir}" is relative; journaling resolves against the process cwd`,
@@ -656,13 +664,17 @@ export function validateResolved(config: TurnstileConfig): string[] {
  * list is still the unset sentinel (i.e. nobody configured it), so a renamed
  * agent stays bare-output-qualified automatically. Derivation keys off the
  * configured/unset distinction by reference identity, not list equality, so
- * an explicit list — reordered, default-valued, or empty — is always kept
- * verbatim and no configured name ever vanishes. Mutates `agents.bareOutput`
+ * an explicit non-empty list — reordered or default-valued — is always kept
+ * verbatim and no configured name ever vanishes. An explicit empty list is
+ * treated as unset: it has no defensible meaning beyond denying every
+ * child-session marker, and JSON cannot express the sentinel, so a config
+ * copied from the shipped example must not silently disarm marker authority.
+ * Mutates `agents.bareOutput`
  * in place (the sentinel array itself is replaced, never mutated).
  * @param agents The resolved agents block to update in place.
  */
 function deriveBareOutput(agents: TurnstileAgents): void {
-  if (agents.bareOutput !== BARE_OUTPUT_UNSET) return
+  if (agents.bareOutput !== BARE_OUTPUT_UNSET && agents.bareOutput.length > 0) return
   const derived = [agents.testRunner, agents.reviewer, agents.planReviewer].filter(
     (name): name is string => typeof name === "string" && name.trim().length > 0,
   )

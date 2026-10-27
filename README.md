@@ -249,11 +249,11 @@ Defaults live in code (`src/config.ts`); override via
 sessions to apply). Copy
 [`examples/turnstile.example.json`](examples/turnstile.example.json) as a
 starting point: every key is optional and matches the code defaults. One
-exception to know about: `agents.bareOutput` in the example is
-`[]` because JSON cannot express the "unset" sentinel the code uses — an
-explicit empty list disables the built-in derivation; delete the key to
-inherit the default. The key
-knobs most people touch:
+key needs a note: the example writes agents.bareOutput as [], because JSON
+cannot express the "unset" sentinel the code uses for the same default. The
+loader reads an explicit [] as unset and re-derives the list from the
+configured test-runner, reviewer, and plan-reviewer names, so the copy needs
+no edits. The key knobs most people touch:
 
 | Key                          | Default            | Meaning                                                                                                                     |
 | ---------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
