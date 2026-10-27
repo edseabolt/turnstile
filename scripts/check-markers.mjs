@@ -43,6 +43,48 @@ if (lines.length === 0) {
 }
 
 let failed = 0
+
+// Broadening guard: the acceptance checks only prove the examples parse, so a
+// loosened regex (an extra kind alternative, a \d+ widened to \w+) would still
+// pass them all. Assert the extracted sources keep the canonical marker shape
+// — anchor, literal token, two-way kind alternation, fixed numeric fields in
+// order — by comparing the de-decorated core against the canonical core.
+const LEADING_DECORATION = "^\\s*[`>#*\\s]*"
+const CANONICAL_GATE_CORE = "GATE: (?:PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+"
+const CANONICAL_VERDICT_CORE = "VERDICT: (?:APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+"
+// Flag set after extractRegex strips `g`: multiline is load-bearing (`^`
+// must match each line), and any added flag (`i`, `s`, `u`, `y`, `d`) would
+// silently broaden or change match semantics without touching the source.
+const CANONICAL_FLAGS = "m"
+
+// Strips the ^ anchor and the leading markdown decoration class, then renders
+// the kind alternation group non-capturing so a cosmetic (PASS|FAIL) vs
+// (?:PASS|FAIL) rewrite is not reported as drift.
+function markerCore(source) {
+  const core = source.startsWith(LEADING_DECORATION)
+    ? source.slice(LEADING_DECORATION.length)
+    : source
+  return core.replace(/\(([A-Z]+(?:\|[A-Z]+)+)\)/g, "(?:$1)")
+}
+
+for (const [re, name, canonical] of [
+  [gateRe, "GATE_RE", CANONICAL_GATE_CORE],
+  [verdictRe, "VERDICT_RE", CANONICAL_VERDICT_CORE],
+]) {
+  if (markerCore(re.source) !== canonical) {
+    console.error(
+      `check-markers: ${name} source drifted from the canonical marker shape: ${re.source}`,
+    )
+    failed++
+  }
+  if (re.flags !== CANONICAL_FLAGS) {
+    console.error(
+      `check-markers: ${name} flags drifted from the canonical marker shape: /${re.source}/${re.flags}`,
+    )
+    failed++
+  }
+}
+
 for (const line of lines) {
   const ok = gateRe.test(line) || verdictRe.test(line)
   if (!ok) {
@@ -115,10 +157,24 @@ for (const [re, bad] of [
   }
 }
 
+// Trailing-junk probes: the canonical core must not extend past its last
+// numeric field. The sources carry no end anchor (the parser extracts the
+// matched span, so trailing prose is harmless), so the probe end-anchors the
+// same source: a regex that swallows appended fields fails here.
+for (const [re, bad] of [
+  [gateRe, "GATE: PASS tests=1 passed=1 failed=0 extra=1"],
+  [verdictRe, "VERDICT: APPROVE crit=0 high=0 med=0 low=0 extra=9"],
+]) {
+  if (new RegExp(re.source + "$").test(bad)) {
+    console.error(`check-markers: parser accepted trailing junk in marker: ${bad}`)
+    failed++
+  }
+}
+
 if (failed) {
   console.error(`check-markers: ${failed} drift finding(s)`)
   process.exit(1)
 }
 console.log(
-  `check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser)`,
+  `check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser; parser regex sources match canonical shape)`,
 )
