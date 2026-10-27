@@ -949,6 +949,134 @@ test("evidence: the evidence subcommand is routed from the CLI router", () => {
   }
 })
 
+test("evidence: a hostile journaled mode/verified degrades to null, not leaked", () => {
+  // docstring: a journaled `verified`/`mode` survives only in its whitelisted
+  // shape (a boolean / a gate-evidence mode); a path-shaped mode and a string
+  // verified degrade to null just as a free-text marker does, so a hostile
+  // journal value cannot leak into the artifact.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "plan", sessionID: "sp-leak", result: "APPROVE", source: "session-prompt" }),
+      line(2, {
+        type: "gate",
+        sessionID: "sp-leak",
+        result: "PASS",
+        verified: "yes",
+        mode: "/Users/ed/secret-repo",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const out = runEvidence(dir, ["--task", "sp-leak", "--format", "json"]).stdout
+    const obj = JSON.parse(out) as EvidenceDoc
+    assert.equal(obj.tests.verified, null, "string verified degrades to null")
+    assert.equal(obj.tests.mode, null, "path-shaped mode degrades to null")
+    assert.equal(obj.tests.result, "PASS", "the gate result is preserved")
+    assert.ok(!out.includes("secret-repo"), "the hostile mode value is not leaked")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: the emitted hostile-field document passes its own --validate", () => {
+  // docstring: once the fold degrades the hostile mode/verified to null, the
+  // emitted document is self-consistent — it passes the same --validate gate a
+  // CI job runs on a committed artifact.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "plan", sessionID: "sp-rt", result: "APPROVE", source: "session-prompt" }),
+      line(2, {
+        type: "gate",
+        sessionID: "sp-rt",
+        result: "PASS",
+        verified: "yes",
+        mode: "/Users/ed/secret-repo",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const p = join(dir, "evidence.json")
+    assert.equal(code(runEvidence(dir, ["--task", "sp-rt", "--out", p])), 0)
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 0, "the self-consistent hostile-field doc validates")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a null plan/tests/review reports a named rule and does not crash", () => {
+  // docstring: a task document whose section is null is rejected with a named
+  // shape rule, not an uncaught TypeError from the green rule or the sibling
+  // render — the recompute and re-render both decline a non-object section.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-null"))
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "sp-null", "--out", p])
+    const original = readFileSync(p, "utf8")
+    for (const section of ["plan", "tests", "review"]) {
+      const tampered = JSON.parse(original)
+      tampered[section] = null
+      writeFileSync(p, JSON.stringify(tampered))
+      const res = runEvidence(dir, ["--validate", p])
+      assert.equal(code(res), 1, `${section}: null → invalid`)
+      assert.match(
+        res.stderr,
+        new RegExp(`${section}: must be a plain object`),
+        `${section}: named`,
+      )
+      assert.ok(!res.stderr.includes("TypeError"), `${section}: no uncaught TypeError`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a forged green with null sections is rejected", () => {
+  // docstring: green:true while every section is null cannot pass the
+  // validator — the null sections are each named by the shape rule, so a
+  // forged badge fails the re-check rather than the green rule crashing.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-forged"))
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "sp-forged", "--out", p])
+    const forged = JSON.parse(readFileSync(p, "utf8"))
+    forged.green = true
+    forged.plan = null
+    forged.tests = null
+    forged.review = null
+    writeFileSync(p, JSON.stringify(forged))
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 1, "a forged green with null sections is rejected")
+    assert.match(res.stderr, /plan: must be a plain object/)
+    assert.ok(!res.stderr.includes("TypeError"), "no uncaught TypeError")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: an array-typed plan section is a named violation, not accepted", () => {
+  // docstring: an array where a plain-object section belongs is not a section;
+  // the validator names it instead of reading it, so a re-typed section cannot
+  // be smuggled past the green rule.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-arr"))
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "sp-arr", "--out", p])
+    const tampered = JSON.parse(readFileSync(p, "utf8"))
+    tampered.plan = [{ note: "x" }, "y"]
+    writeFileSync(p, JSON.stringify(tampered))
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 1, "an array-typed plan is rejected")
+    assert.match(res.stderr, /plan: must be a plain object/)
+    assert.ok(!res.stderr.includes("TypeError"), "no uncaught TypeError")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /** The one-way task handle for a session ID (the pinned t-<8 hex> form). */
 function taskHandle(sessionID: string): string {
   // Reimplemented here so the test does not import the script; the handle is

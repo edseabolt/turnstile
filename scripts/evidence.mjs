@@ -353,8 +353,12 @@ function foldTask(acc) {
     result: gateResult,
     marker: MARKER_OK.test(gateMarker) ? gateMarker : null,
     at: gateTs,
-    verified: gateVerified,
-    mode: gateMode,
+    // A journaled `verified`/`mode` is emitted only when it is one of the
+    // whitelisted shapes (a boolean / a gate-evidence mode), degrading to null
+    // exactly as the markers do — a hostile string cannot leak into the
+    // artifact and fail the document's own --validate.
+    verified: typeof gateVerified === "boolean" ? gateVerified : null,
+    mode: typeof gateMode === "string" && GATE_MODE_OK.test(gateMode) ? gateMode : null,
     exitZeroRuns,
   }
   return {
@@ -515,6 +519,17 @@ function isCount(v) {
 }
 
 /**
+ * True when a value is a plain object (not null, not an array) — the shape the
+ * three evidence sections must carry for the green rule and the sibling render.
+ * `typeof null === "object"`, so the null and array cases are excluded by name.
+ * @param {unknown} v The value to check.
+ * @returns {boolean} Whether it is a plain object.
+ */
+function isPlainObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+}
+
+/**
  * Applies rules 5–7 (the per-key shape and pattern checks) to a document,
  * naming every offending key path. This is the same source of truth the
  * emitter's patterns come from, so a re-keyed leak or a smuggled value in a
@@ -526,6 +541,9 @@ function checkShapes(doc) {
   const v = []
   const str = (x) => typeof x === "string"
   const bool = (x) => typeof x === "boolean"
+  // A task document must carry all three sections; a degraded document
+  // (noTask/noJournal) is exempt from the section-shape requirement below.
+  const taskDoc = !doc.noTask && !doc.noJournal
   const TOP = new Set([
     "schema",
     "generatedAt",
@@ -553,7 +571,7 @@ function checkShapes(doc) {
     if (!isCount(doc[k])) v.push(`${k}: must be a non-negative integer`)
 
   const PLAN = new Set(["verdict", "marker", "at", "source", "stale"])
-  if (doc.plan && typeof doc.plan === "object" && !Array.isArray(doc.plan)) {
+  if (isPlainObject(doc.plan)) {
     const p = doc.plan
     for (const k of Object.keys(p)) if (!PLAN.has(k)) v.push(`plan.${k}: unknown key`)
     if (p.verdict !== null && !PLAN_VERDICT_OK.test(p.verdict))
@@ -564,10 +582,12 @@ function checkShapes(doc) {
     if (p.source !== null && !SOURCE_OK.test(p.source))
       v.push(`plan.source ${p.source}: not a provenance literal`)
     if (!bool(p.stale)) v.push("plan.stale must be a boolean")
+  } else if (taskDoc) {
+    v.push("plan: must be a plain object")
   }
 
   const TESTS = new Set(["result", "marker", "at", "verified", "mode", "exitZeroRuns"])
-  if (doc.tests && typeof doc.tests === "object" && !Array.isArray(doc.tests)) {
+  if (isPlainObject(doc.tests)) {
     const t = doc.tests
     for (const k of Object.keys(t)) if (!TESTS.has(k)) v.push(`tests.${k}: unknown key`)
     if (t.result !== null && !TEST_RESULT_OK.test(t.result))
@@ -580,13 +600,17 @@ function checkShapes(doc) {
     if (t.mode !== null && t.mode !== undefined && !GATE_MODE_OK.test(t.mode))
       v.push(`tests.mode ${t.mode}: not a gate-evidence mode`)
     if (!isCount(t.exitZeroRuns)) v.push("tests.exitZeroRuns: must be a non-negative integer")
+  } else if (taskDoc) {
+    v.push("tests: must be a plain object")
   }
 
   const REV = new Set(["approves", "expected"])
-  if (doc.review && typeof doc.review === "object" && !Array.isArray(doc.review)) {
+  if (isPlainObject(doc.review)) {
     for (const k of Object.keys(doc.review)) if (!REV.has(k)) v.push(`review.${k}: unknown key`)
     if (!isCount(doc.review.approves)) v.push("review.approves: must be a non-negative integer")
     if (!isCount(doc.review.expected)) v.push("review.expected: must be a non-negative integer")
+  } else if (taskDoc) {
+    v.push("review: must be a plain object")
   }
 
   const J = new Set(["files", "lines", "head"])
@@ -680,16 +704,17 @@ function validateDoc(doc, jsonPath) {
   }
   if (typeof doc.green !== "boolean") {
     v.push("rule4: green must be a boolean")
-  } else if (
-    !doc.noTask &&
-    !doc.noJournal &&
-    typeof doc.plan === "object" &&
-    typeof doc.tests === "object" &&
-    typeof doc.review === "object"
-  ) {
-    const re = greenRule(doc.plan, doc.tests, doc.review)
-    if (doc.green !== re)
-      v.push("rule4: green does not match the rule recomputed from the document")
+  } else if (!doc.noTask && !doc.noJournal) {
+    // The green rule reads plan.verdict / tests.result / review.approves, so it
+    // runs only when all three sections are plain objects. `typeof null ===
+    // "object"` would otherwise let a null section reach the rule and throw; a
+    // non-object section is named by rule7 (checkShapes) instead, so rule4
+    // never crashes and never silently skips on a task document.
+    if (isPlainObject(doc.plan) && isPlainObject(doc.tests) && isPlainObject(doc.review)) {
+      const re = greenRule(doc.plan, doc.tests, doc.review)
+      if (doc.green !== re)
+        v.push("rule4: green does not match the rule recomputed from the document")
+    }
   }
   const forbidden = []
   walkForbidden(doc, "", forbidden)
@@ -699,7 +724,18 @@ function validateDoc(doc, jsonPath) {
   const strayMarkers = []
   walkMarkerKeys({ ...doc, plan: undefined, tests: undefined }, "", strayMarkers)
   for (const p of strayMarkers) v.push(`rule6: ${p}`)
-  if (!doc.noTask && !doc.noJournal) v.push(...checkSiblingMd(doc, jsonPath))
+  // The sibling re-render reads plan/tests/review fields, so it runs only when
+  // those sections are plain objects; a malformed section is already named by
+  // rule7, and re-rendering it would throw rather than report.
+  if (
+    !doc.noTask &&
+    !doc.noJournal &&
+    isPlainObject(doc.plan) &&
+    isPlainObject(doc.tests) &&
+    isPlainObject(doc.review)
+  ) {
+    v.push(...checkSiblingMd(doc, jsonPath))
+  }
   return v
 }
 

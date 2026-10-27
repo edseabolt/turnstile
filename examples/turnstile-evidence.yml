@@ -122,10 +122,10 @@ jobs:
             const { owner, repo } = context.repo;
             const issueNumber = context.issue.number;
             let existing = null;
-            for await (const page of github.paginate(
+            for await (const { data: comments } of github.paginate.iterator(
               github.rest.issues.listComments({ owner, repo, issue_number: issueNumber, per_page: 100 }),
             )) {
-              for (const c of page) {
+              for (const c of comments) {
                 if (typeof c.body === "string" && c.body.includes(MARKER)) {
                   existing = c;
                   break;
