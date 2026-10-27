@@ -286,7 +286,9 @@ filesystem auto-detection, so it stays consistent across reruns.
 manifest and exits 0 (clean) or 1 (drift). A copy install whose recorded
 version is older than the published package is reported as a warning
 (`check: outdated <dest> (installed X, package Y)`) and does not fail the
-check.
+check. Running `init` on a content-identical destination refreshes the
+recorded version in place (`install: version stamp updated <dest> (was X,
+now Y)`), clearing the warning without rewriting any files.
 
 The check is load-aware, not just presence-aware: after the per-entry pass
 it dynamically imports every manifest `verify` path (the installed plugin
