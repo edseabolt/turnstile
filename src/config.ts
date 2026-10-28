@@ -112,6 +112,11 @@ export function defaultConfig(
     approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
     trace: true,
+    // Session-end summary: "quiet" prints one recap line at session.idle for
+    // sessions that did something (silent for zero-activity sessions); "on"
+    // also prints an all-gates-green line for zero-activity sessions; "off"
+    // restores pre-summary behavior exactly.
+    sessionSummary: "quiet",
     // Continuation carry is on by default: a reviewer-approved landing prompt
     // re-arms earned credit when the worktree/branch is unchanged; set
     // `continuationCarry: false` to restore a clean cycle every prompt.
@@ -177,6 +182,7 @@ export function defaultConfig(
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "trace" || key === "continuationCarry") return typeof value === "boolean"
+  if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
   if (
     key === "metricsDir" ||
     key === "waiverMarker" ||
@@ -236,6 +242,7 @@ type NumericConfigKey = Extract<
  */
 function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value: unknown): void {
   if (key === "trace") config.trace = value as boolean
+  else if (key === "sessionSummary") config.sessionSummary = value as "on" | "quiet" | "off"
   else if (key === "metricsDir") config.metricsDir = value as string
   else if (key === "waiverMarker") config.waiverMarker = value as string
   else if (key === "approvalMarker") config.approvalMarker = value as string
@@ -456,6 +463,17 @@ export function mergeConfig(
         assignScalar(config, key as keyof TurnstileConfig, value)
       } else {
         warnings.push(`config: reviewEnsemble must be "enforce" or "advise"; keeping default`)
+      }
+      continue
+    }
+    if (key === "sessionSummary") {
+      // Mirrors the gateEvidence/reviewEnsemble special case: shared
+      // validate/assign helpers, only the warning wording is special-cased
+      // to name the three accepted literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push('config: sessionSummary must be "on", "quiet", or "off"; keeping default')
       }
       continue
     }

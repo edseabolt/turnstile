@@ -432,6 +432,17 @@
  *   `~/.config/opencode/turnstile.json` ⊕ env (`TURNSTILE_TRACE`,
  *   `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`) ⊕ injected options (tests).
  *   Invalid keys are ignored and journaled (fail-open); restart to apply.
+ * - Session-end summary: at `session.idle` the plugin surfaces one line
+ *   recapping what it verified this session (gates passed, dispatches
+ *   blocked, waivers — counts derived from the session's journal entries via
+ *   `src/summary.ts`), controlled by the `sessionSummary` config key
+ *   (`"quiet"` default: silent for zero-activity sessions; `"on"` also prints
+ *   an all-gates-green line for them; `"off"` disables the surface). One
+ *   summary per session per host process (in-memory dedupe); delivered as a
+ *   `type:"session-summary"` journal entry always (the headless log) plus a
+ *   best-effort TUI toast (`tui.toast.show`, optional-chained) — a toast
+ *   failure journals and changes nothing (fail-open). The entry is
+ *   replay-inert (delivery proof, never gate state).
  * - Observe mode: with `observeSessions: N` (default 0), the first N
  *   admitted parent sessions compute and journal every gate decision but
  *   enforce nothing: a deliberate `BlockError` at the execute.before
@@ -451,6 +462,8 @@
  * the host loads, holding only the module shape and setup composition:
  * - `src/types.ts`: host wire shapes and gate-state structures.
  * - `src/journal.ts`: telemetry persistence (JSONL journal + trace).
+ * - `src/summary.ts`: session-end summary counting + one-line formatting
+ *   over parsed journal entries (pure, host-free).
  * - `src/state.ts`: per-session gate state shape, snapshot and pipeline
  *   rendering, replay-merge carry.
  * - `src/ledger.ts`: LRU session maps, child verdict store, journal replay,

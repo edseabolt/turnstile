@@ -703,6 +703,16 @@ export interface TurnstileConfig {
   /** Whether the human-readable trace file is written (JSONL journal always). */
   trace: boolean
   /**
+   * Session-end summary surface. `quiet` (default) prints one recap line at
+   * `session.idle` for sessions that did something (verified test-claims,
+   * blocked dispatches, waivers — counts derived from the journal) and is
+   * silent for zero-activity sessions; `on` additionally prints an
+   * all-gates-green line for zero-activity sessions; `off` disables the
+   * surface entirely. See `src/summary.ts` and the `session.idle` handler in
+   * `src/hooks-events.ts`.
+   */
+  sessionSummary: "on" | "quiet" | "off"
+  /**
    * When true, a prompt admitted in an unchanged worktree/branch carries the
    * current task's restart-sticky gate flags across the prompt reset instead
    * of wiping them (a continuation, not a new task). The carry is
@@ -801,6 +811,21 @@ export type Host = {
       name: string,
       callback: (event: unknown) => unknown | Promise<unknown>,
     ) => Promise<unknown>
+  }
+  /**
+   * TUI surface, when the host exposes one (verified on the TUI side as
+   * `tui.toast.show` with `message` required). Optional-chained everywhere;
+   * the toast is a best-effort delivery channel on top of the journal.
+   */
+  tui?: {
+    toast?: {
+      show?: (input: {
+        message: string
+        title?: string
+        variant?: "info" | "success" | "warning" | "error"
+        duration?: number
+      }) => Promise<unknown>
+    }
   }
 }
 

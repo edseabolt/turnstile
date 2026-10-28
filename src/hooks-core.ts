@@ -59,6 +59,9 @@ import type {
   TurnstileOptions,
 } from "./types.ts"
 
+/** The host `tui.toast.show` function, when the TUI surface exists. */
+type ToastShow = NonNullable<NonNullable<Host["tui"]>["toast"]>["show"]
+
 /**
  * TTL (ms) shared by both ask-latch maps (awaiting-plan-ask and
  * pending-landing-ask): an escalation/arm whose `permission.asked` stream
@@ -119,6 +122,8 @@ export interface TurnstileContext {
   sessionAgents: Map<string, string>
   /** Dedupe keys for admitted prompts. */
   admittedIds: Set<string>
+  /** Sessions already given their one session-end summary (per host process). */
+  summarizedSessions: Set<string>
   // ── constants ─────────────────────────────────────────────────────────────
   /** Cap on parents holding pending near-miss diagnostics. */
   maxTrackedNearMiss: number
@@ -177,6 +182,8 @@ export interface TurnstileContext {
   boundSessionAgents(): void
   /** Evicts oldest keys from admittedIds past the cap. */
   boundAdmittedIds(): void
+  /** Evicts oldest keys from summarizedSessions past the cap. */
+  boundSummarizedSessions(): void
   // ── services ──────────────────────────────────────────────────────────────
   /** Surfaces config warnings once into the first tool delivery. */
   surfaceConfigWarnings(event: ToolHookEvent): void
@@ -289,6 +296,10 @@ export interface TurnstileContext {
   // ── methods ───────────────────────────────────────────────────────────────
   /** Binds the host session API for resolveParent. */
   bindHost(session: Host["session"]): void
+  /** Bound toast deliverer (undefined when the host offers no TUI surface). */
+  toast?: (message: string, variant: "info" | "success") => Promise<void>
+  /** Binds the host toast surface for the session-end summary delivery. */
+  bindToast(show: ToastShow | undefined): void
   /** Increments the prompt-hook fire counter. */
   bumpPromptFires(): void
   /** Returns the next task-delivery sequence number. */
@@ -2366,6 +2377,40 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     evictTo(admittedIds, maxTrackedAdmittedIds)
   }
 
+  // Session-end summary dedupe: one summary per session per host process.
+  // In-memory only — after a restart the same session may re-summary once
+  // (accepted; the journaled `session-summary` entry makes it diagnosable).
+  // Bounded like the admitted-id set (cap = maxSessions, the same LRU bound
+  // the ledger uses; a session that idled once never fires again).
+  const summarizedSessions = new Set<string>()
+  /**
+   * Bounds the summarized-session dedupe set by evicting its oldest keys.
+   */
+  function boundSummarizedSessions(): void {
+    evictTo(summarizedSessions, config.maxSessions)
+  }
+
+  // Host toast surface, bound at setup time (guarded — an absent or
+  // non-function `tui.toast.show` leaves it undefined and the summary
+  // delivers journal-only, the headless path).
+  let toast: ((message: string, variant: "info" | "success") => Promise<void>) | undefined
+  /**
+   * Binds the host toast surface: stores a guarded closure over `show` so
+   * the caller (the idle handler) passes a plain (message, variant) call.
+   * The closure itself never catches — the caller wraps the invocation in
+   * its own try/catch (fail-open) so a rejecting toast journals there.
+   * @param show The host `tui.toast.show` function, or undefined when the
+   *     TUI surface is absent.
+   */
+  function bindToast(show: ToastShow | undefined): void {
+    toast =
+      typeof show === "function"
+        ? async (message: string, variant: "info" | "success"): Promise<void> => {
+            await show({ message, variant })
+          }
+        : undefined
+  }
+
   /**
    * Resets this parent's gate state for a freshly admitted prompt, carrying the
    * restart-sticky flags when continuation carry is armed and the same
@@ -2723,6 +2768,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     deltaWindows,
     sessionAgents,
     admittedIds,
+    summarizedSessions,
     // constants
     maxTrackedNearMiss,
     maxTrackedPlanAsks,
@@ -2753,6 +2799,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     boundLandingGateAsks,
     boundSessionAgents,
     boundAdmittedIds,
+    boundSummarizedSessions,
     // services
     surfaceConfigWarnings,
     surfaceObserveSummary,
@@ -2794,6 +2841,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     admitPrompt,
     // methods
     bindHost,
+    bindToast,
+    get toast(): typeof toast {
+      return toast
+    },
     bumpPromptFires,
     nextTaskDeliverySeq,
   }

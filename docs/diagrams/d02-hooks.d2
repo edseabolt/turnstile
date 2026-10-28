@@ -36,6 +36,7 @@ eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart 
   text: "message.part.updated / .ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
   inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"
+  idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"
   errors: "session.error → telemetry"
 }
 

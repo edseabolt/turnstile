@@ -17,6 +17,7 @@
   "plansDir": ".opencode/plans",
   "trace": true,
   "continuationCarry": true,
+  "sessionSummary": "quiet",
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",

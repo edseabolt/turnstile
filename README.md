@@ -262,6 +262,7 @@ no edits. The key knobs most people touch:
 | `gitGates.mode`              | `shadow`           | recommend `enforce` (blocks commit-lint + unapproved pushes; this repo runs it); the `shadow` default journals would-blocks |
 | `gateEvidence`               | `enforce`          | `flag`/`off` revert to flip-on-trust for `GATE: PASS`                                                                       |
 | `reviewEnsemble`             | `enforce`          | `advise` credits a single-reviewer APPROVE unconditionally                                                                  |
+| `sessionSummary`             | `quiet`            | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables)               |
 | `toolPolicy.bashDeny`        | `[]`               | regex denylist for `bash`/`shell` (e.g. worktree/branch/merge ops)                                                          |
 | `maxReviewerRounds` / others | 2 / 3 / 3 / 4 / 16 | per-leg and total dispatch caps per task                                                                                    |
 | `agents.*`                   | stage names        | rename recognition when you bring your own agents                                                                           |
