@@ -40,7 +40,8 @@
 //
 //   --print-model-config  Print a ready-to-paste {"agents": {...}} model
 //                  snippet to stdout and write nothing (short-circuits before
-//                  any manifest/install work, like --check). Repeatable
+//                  any manifest/install work — unlike --check, which reads the
+//                  manifest). Repeatable
 //                  --model specs seed individual agents:
 //                  --model [name=]provider/model[#variant] (bare => all six;
 //                  name= sets one; last spec wins per agent). Model ids may be
@@ -387,7 +388,8 @@ function readManifest(file, modeOverride) {
 }
 
 /**
- * Expands a leading ~ in a destination path.
+ * Expands a leading ~ in an absolute-target path (destinations, the ledger
+ * path, and the verify paths).
  * @param {string} path Destination path, possibly ~-prefixed.
  * @returns {string} Absolute path.
  */
@@ -643,7 +645,8 @@ async function installLink(entry, args, ledger) {
  * Refreshes a stale version stamp on a content-identical copy record and
  * returns the previously recorded version, or undefined when no refresh
  * applies. Called from `installCopy` when the destination already matches
- * the package source: without this the `check` outdated warning (driven by
+ * the package source, and from `repair` for content-identical copy entries.
+ * Without this the `check` outdated warning (driven by
  * `record.version !== version`) would nag forever after a release whose
  * installed files are byte-identical, because no re-copy ever rewrites the
  * stamp. Mutates `ledger` in place. Pure filesystem-free.
@@ -864,8 +867,10 @@ async function repair(manifest, args) {
       console.log(stampUpdatedLine(entry.dest, previous))
       continue
     }
-    // Conflict without --force, or an invalid (missing-source) entry, can not
+    // Without --force a conflict or an invalid (missing-source) entry can not
     // be repaired here: neither would back up user files or invent a source.
+    // Under --force an invalid entry is attempted anyway (the install throws
+    // and the failure is reported per path).
     if (!isRepairable(report.code) && !args.force) {
       ok = false
       console.error(
@@ -968,7 +973,7 @@ async function reportVerifyProbes(files, prefix, fatal) {
  * True when the text references the destination path as a whole path segment
  * (the destination itself, or a file located beneath it), not as a prefix of
  * a sibling path (e.g. `/a/b` inside `/a/bc`). A boundary is a path
- * separator, whitespace, a quote, or a string edge.
+ * separator, a space, a quote, or a string edge.
  * @param {string} text The text to search (a loader error reason).
  * @param {string} dest The installed destination path to look for.
  * @returns {boolean} Whether the text references the destination as a path.
@@ -1131,7 +1136,8 @@ async function main(argv = process.argv) {
   // --print-model-config writes nothing: it parses the requested specs,
   // optionally validates them against `opencode models`, prints a ready-to
   // paste snippet, and returns. This short-circuits before the manifest is
-  // even read (like --check), so no link/copy target or ledger entry is
+  // even read (unlike --check, which reads the manifest first), so no
+  // link/copy target or ledger entry is
   // touched.
   if (args.printModelConfig) {
     if (args.validate) {

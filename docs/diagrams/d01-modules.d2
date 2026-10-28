@@ -58,7 +58,6 @@ host.perm-hook -> entry
 entry -> core.setup
 host -> core.setup: "app.version"
 core.setup -> core.hostcompat
-core.hostcompat -> core.types: "type-only"
 core.setup -> core.hookscore
 core.setup -> core.hookssession
 core.setup -> core.hookspermission
@@ -80,7 +79,6 @@ core.hookscore -> core.markers
 core.hookscore -> core.fingerprint
 core.hookscore -> core.delivery
 core.hookscore -> core.bounded
-core.hookscore -> core.summary
 core.hooksevents -> core.summary
 core.summary -> core.journal: "type-only"
 core.hookssession -> core.hookscore: "type-only"

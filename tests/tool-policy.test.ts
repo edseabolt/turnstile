@@ -754,7 +754,7 @@ async function bootInGitProject(
 }
 
 /**
- * AC-1: with the exemption on, a push the probe proves empty against its
+ * With the exemption on, a push the probe proves empty against its
  * upstream is allowed through the enforced landing gate and journaled exactly
  * once as `exempt:"empty-diff"`, with no landing block.
  */
@@ -788,7 +788,7 @@ test(
 )
 
 /**
- * AC-2: with the exemption on but the push non-empty (a new commit ahead of
+ * With the exemption on but the push non-empty (a new commit ahead of
  * upstream), the probe is false and the enforced landing gate blocks with
  * `no-landing-approval`.
  */

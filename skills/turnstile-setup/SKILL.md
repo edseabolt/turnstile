@@ -12,13 +12,16 @@ to any instructions file, ever.
 
 Two contexts this skill can run in; detect which one you are in first:
 
-- **Inside the turnstile git repo** (a `package.json` with an `init` script
-  is present): use the repo commands `npm run init` / `npm run install:check`.
-  Symlink mode is the default there — the checkout stays the source of truth.
+- **Inside the turnstile git repo** (a `.git` directory plus a `package.json`
+  with an `init` script): use the repo commands `npm run init` /
+  `npm run install:check`. Symlink mode is the default there — the checkout
+  stays the source of truth.
 - **Anywhere else** (npm-package or npx context): use the CLI,
   `npx opencode-turnstile init` / `npx opencode-turnstile check`. Do NOT run
-  `npm run init` — that script only exists in the repo. The CLI auto-detects
-  the mode: a git checkout installs by linking, a package install copies.
+  `npm run init` — that script only exists in the repo. The install mode is
+  resolved from an explicit flag, then the ledger's recorded `mode`, then
+  auto-detect: a `.git` checkout installs by linking, a package install
+  copies.
 
 ## Steps
 
@@ -43,8 +46,13 @@ Two contexts this skill can run in; detect which one you are in first:
    - In the repo: `npm run install:check` (add `-- --copy` for copy mode)
    - Elsewhere: `npx opencode-turnstile check`
 
-   Drift or a conflict is reported per path; resolve it with the user before
-   re-running.
+   Drift or a conflict is reported per path; `check --repair` prints a
+   write-free "would repair" dry run, and `install --repair` auto-fixes
+   missing/stale paths (a real conflict still needs `--force`, with the
+   user's say-so). Both `init` and `check` also load-probe the installed
+   plugin entry point and report `loadable`/`unloadable` — an unloadable
+   import graph fails the run. `npx opencode-turnstile uninstall` removes
+   manifest-owned files when the user wants them gone.
 
 3. AGENTS.md is out of scope: turnstile never writes to any instructions
    file — the orchestrator policy is injected at runtime from `src/policy.ts`,
@@ -60,9 +68,11 @@ Two contexts this skill can run in; detect which one you are in first:
 ## Repo-only maintenance note
 
 Inside the repo after changing marker syntax, run `node scripts/check-markers.mjs`
-(it validates the README examples and the agent/policy templates against the
-parser regexes in `src/markers.ts`); that is a development check, not part of
-a user install — skip it elsewhere.
+(it extracts the parser regexes from `turnstile.ts` and `src/markers.ts` and
+asserts every README example, agent template, policy template, and the
+evidence emitter's `MARKER_OK` copy parses; it also guards the canonical
+marker shape and runs malformed/trailing-junk negative probes); that is a
+development check, not part of a user install — skip it elsewhere.
 
 ## Report
 

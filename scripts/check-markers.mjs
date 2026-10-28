@@ -1,12 +1,14 @@
-// CI guard: the marker examples in README.md must be accepted by the parser
-// regexes in turnstile.ts. Exits non-zero on drift.
+// CI guard: the marker examples in README.md, the templates in agents/*.md
+// and src/policy.ts, and the evidence emitter's MARKER_OK copy must be
+// accepted by the parser regexes in src/markers.ts. Exits non-zero on drift.
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 // The marker regex literals live in src/markers.ts (the marker boundary);
-// turnstile.ts stays in the list so older single-file layouts still guard.
+// turnstile.ts stays in the list defensively so an older single-file layout
+// (regexes declared in the entry point) would still guard.
 const ts = ["turnstile.ts", "src/markers.ts"]
   .map((f) => readFileSync(join(root, f), "utf8"))
   .join("\n")

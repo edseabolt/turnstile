@@ -9,13 +9,13 @@ surface, gate state machine, journal/replay, policy injection — see
 
 ## Contents
 
-1. [A worked session](#a-worked-session)
-2. [Waivers and approvals](#waivers-and-approvals)
-3. [Installing and maintaining](#installing-and-maintaining)
-4. [Configuration](#configuration)
-5. [Files and journals](#files-and-journals)
-6. [Status](#status)
-7. [Field-tested on itself](#field-tested-on-itself)
+1. [A worked session](#1-a-worked-session)
+2. [Waivers and approvals](#2-waivers-and-approvals)
+3. [Installing and maintaining](#3-installing-and-maintaining)
+4. [Configuration](#4-configuration)
+5. [Files and journals](#5-files-and-journals)
+6. [Status](#6-status)
+7. [Field-tested on itself](#7-field-tested-on-itself)
 
 ---
 
@@ -82,9 +82,11 @@ Had the plan not been approved, the dispatch would have failed before the
 subagent session was created:
 
 ```text
-BLOCKED by turnstile: executor dispatch requires an approved plan
-(VERDICT: APPROVE from plan-reviewer, PLAN APPROVED: in your prompt,
-or approve the permission ask)
+BLOCKED by turnstile: no plan approval for "<plan path>". Dispatch the
+plan-reviewer subagent first; proceed with executor only after the
+plan-reviewer's first line is `VERDICT: APPROVE crit=<n> high=<n> med=<n>
+low=<n>`, or obtain an explicit user waiver (a user prompt this task must
+contain the literal marker 'USER WAIVER:' followed by the user's words).
 ```
 
 — and, with no approval holding, the first executor attempt escalates to
@@ -300,7 +302,7 @@ module tree fails the install that caused it.
 
 ### Upgrade
 
-The plugin updates with your dependency manager (`npm upgrade
+The plugin updates with your dependency manager (`npm update
 opencode-turnstile`, or your registry's equivalent). Re-run `check` to see
 whether anything is outdated or drifted, then `init` to re-sync only what
 changed: `npx opencode-turnstile init --copy` for package installs,
@@ -559,9 +561,10 @@ installed package's schema file):
 }
 ```
 
-The `$schema` key is silently ignored at load (it is not a turnstile key),
-and validation itself stays in `mergeConfig` — the schema is an editor and
-documentation artifact, not a runtime validator.
+The `$schema` key is ignored at load when it is a string (a non-string
+warns; it is not a turnstile key), and validation itself stays in
+`mergeConfig` — the schema is an editor and documentation artifact, not a
+runtime validator.
 
 Precedence: defaults < config file < env. The plugin reads config once, at
 setup; restart sessions to apply. Invalid keys are ignored, journaled, and
@@ -582,7 +585,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `maxPlanReviewerRounds`                                                                                                    | 3                                                                                                                                                                            | plan-reviewer dispatches per task (waived dispatches exempt)                                                                                                                                                                                                                                                  |
 | `maxTestRunnerRounds`                                                                                                      | 4                                                                                                                                                                            | test-runner dispatches per task (waived dispatches exempt)                                                                                                                                                                                                                                                    |
 | `maxTotalDispatches`                                                                                                       | 16                                                                                                                                                                           | total task dispatches per task across every leg — the global loop backstop (waived dispatches exempt)                                                                                                                                                                                                         |
-| `maxSessions`                                                                                                              | 64                                                                                                                                                                           | LRU cap on tracked sessions (gate state, child→parent edges, verdicts); registered live parents are never evicted                                                                                                                                                                                             |
+| `maxSessions`                                                                                                              | 64                                                                                                                                                                           | LRU cap on tracked sessions (gate state, verdicts); the child→parent edge registry is capped at `max(256, 4 × maxSessions)`; registered live parents are never evicted                                                                                                                                        |
 | `readWarn` / `readBlock`                                                                                                   | 8 / 15                                                                                                                                                                       | whole-file read horizon                                                                                                                                                                                                                                                                                       |
 | `observeSessions`                                                                                                          | 0                                                                                                                                                                            | first N admitted sessions journal decisions without blocking; `0` enforces immediately                                                                                                                                                                                                                        |
 | `waiverMarker`                                                                                                             | `USER WAIVER:`                                                                                                                                                               | literal waiver marker                                                                                                                                                                                                                                                                                         |
@@ -625,8 +628,9 @@ Environment variables (override the file):
     once per `journalRotateEveryEntries` (default 512) writes under a
     lock-guarded rename, keeps `journalMaxGenerations` (default 5)
     generations; a lock left behind by a crash between create and remove of
-    `<file>.lock` is skipped (that file stops rotating) until the directory
-    is removed, and journaling keeps appending through it
+    `<file>.lock` is stolen once its age passes a staleness bound
+    (`ROTATION_LOCK_STALE_MS`, 60s) and the rotation proceeds, and journaling
+    keeps appending through fresh contention
   - `gate-events.jsonl`: human-readable
     `YYYY-MM-DD HH:MM | agent | event | detail` lines, with an optional
     trailing ` | <sessionID>` segment when the trace line is wired to a
@@ -673,14 +677,18 @@ with `--json`:
 ```
 opencode-turnstile status
 opencode-turnstile status --json
+opencode-turnstile status --check-updates
 ```
 
-It is read-only: it never writes to the journal or config. Per session it
+It is read-only: it never writes to the journal or config. The one write it
+can make is `--check-updates`' cache file (`<metricsDir>/update-check.json`,
+24h TTL) — an opt-in npm lookup for a newer turnstile, failures never cached.
+Per session it
 replays the same gate/plan last-wins rules the runtime uses (a trailing
-`GATE: FAIL` keeps the gate red; an enforce-mode `verified:false` PASS never
+`GATE: FAIL` keeps the gate red; a `verified:false` PASS never
 flips), plus last markers, waiver events (with channel; the reviewer gate's
-WAIVED entry also carries a scope, which status surfaces via the waiver
-record), and dispatch/block/permission counts. Blocked dispatches are
+WAIVED entry also carries a scope in the journal, which status does not
+currently render), and dispatch/block/permission counts. Blocked dispatches are
 journaled with a `reason` (`round-limit`, `loop-cap`, `dispatch-budget`, …)
 and every loop-cap exhaustion additionally writes a paired `escalation`
 entry, so a stuck pipeline leaves a visible trail in the journal. Blocked
@@ -728,10 +736,10 @@ commit subjects, and unapproved pushes that never landed.
 This repo now lands under `gitGates.mode: enforce`: an unapproved push is
 refused, not journaled. The flip was motivated by 54
 `no-landing-approval` would-blocks across 38 sessions — pushes the
-approved ensemble had actually earned but `shadow` only recorded. Issue
-#129 fixed the underlying credit bug (a reviewer `VERDICT: APPROVE`
-delivered without `input.agent` never credited the gate), so the enforced
-gate now releases on approvals it used to miss.
+approved ensemble had actually earned but `shadow` only recorded. A fix to
+the delivery-credit path (a reviewer `VERDICT: APPROVE` delivered without
+`input.agent` never credited the gate) landed before the flip, so the
+enforced gate releases on approvals it would otherwise have missed.
 
 Don't take this section at face value: run `npx opencode-turnstile status`
 and read the journal yourself.
