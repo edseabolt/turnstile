@@ -349,11 +349,11 @@ tools remain unguarded. The full threat model:
 
 ### OpenCode compatibility matrix
 
-| OpenCode host       | turnstile | Status                                         |
-| ------------------- | --------- | ---------------------------------------------- |
-| ≥ 2.0.22, < 3.0.0   | 0.7.x     | Supported (tested: 2.0.22, 2.0.27, 2.0.29)     |
-| ≥ 3.0.0 or < 2.0.22 | 0.7.x     | Refuses to enforce at setup; upgrade turnstile |
-| version unreadable  | 0.7.x     | Enforces; one-time journal warning             |
+| OpenCode host       | turnstile | Status                                            |
+| ------------------- | --------- | ------------------------------------------------- |
+| ≥ 2.0.22, < 3.0.0   | 0.8.x     | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0) |
+| ≥ 3.0.0 or < 2.0.22 | 0.7.x     | Refuses to enforce at setup; upgrade turnstile    |
+| version unreadable  | 0.7.x     | Enforces; one-time journal warning                |
 
 On an incompatible host turnstile toasts the upgrade instruction and
 registers no hooks (a full no-op — fail-open):
