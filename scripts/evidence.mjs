@@ -27,8 +27,10 @@
 // `--format` defaults to `json`. `--out` writes the artifact (and, for a
 // `.json` path, the sibling `.md` the Action posts) instead of stdout.
 // `--validate` re-checks a committed artifact and writes nothing. An absent
-// journal or a task not in the tail emits a `noJournal`/`noTask` document and
-// exits 0. Unknown flags and unknown task ids exit 2.
+// journal emits a `noJournal` document and exits 0; the default `latest`
+// selector with no session rows in the tail emits `noTask` and exits 0, while
+// an explicit `--task <id>` naming no session is an input error and exits 2.
+// Unknown flags exit 2.
 
 import * as crypto from "node:crypto"
 import * as fs from "node:fs"
@@ -249,7 +251,8 @@ function readJournal(journalPath, tailLines) {
 
 /**
  * True when a journal entry is exit-0 evidence: the journaled `exit` is 0
- * (numeric or the string "0", mirroring the tool hook's coercion).
+ * (numeric or the string "0", the string shape tolerating the host's
+ * payload variants).
  * @param {Record<string, unknown>} entry A parsed `evidence` journal entry.
  * @returns {boolean} Whether the entry records an exit-0 run.
  */
@@ -281,7 +284,9 @@ function greenRule(plan, tests, review) {
  * Folds one `ensemble` entry into the task's last-wins ensemble state, mirroring
  * src/ledger.ts's `foldEnsemble`: `ensemble` entries carry the RUNNING
  * unwaived-dispatch count, so the state is overwritten (never summed), the
- * count is clamped to the reviewer bar, and the refusal stamp follows the last
+ * count is clamped to the reviewer bar (the configured ensemble size — equal
+ * to ledger's REVIEW_ENSEMBLE_SIZE under the enforce default, smaller under
+ * `reviewEnsemble:"advise"`; display-only either way), and the refusal stamp follows the last
  * valid entry — an explicit `true` suppresses the credit, an explicit `false`
  * is the human grant's clearing stamp (a release outranks the mechanical
  * ensemble), and an absent field un-stamps a prior refusal. An invalid count
@@ -451,8 +456,8 @@ function foldTask(acc) {
  * Projects one task window into the `turnstile-evidence/v1` document. The
  * document is built key by key from whitelisted values, so a journal field
  * cannot leak by omission; the task is named by a one-way handle (a sha256
- * of the session ID, truncated) and the journal by the sha256 of its last
- * line.
+ * of the session ID, truncated) and the journal by the sha256 of the
+ * task's last journaled entry line.
  * @param {{ entries: Record<string, unknown>[], head: string | null, expected: number }} window
  *     The task's journaled entries, the journal-head line, and the reviewer bar.
  * @param {string} sessionID The parent session the task is named after.
@@ -605,7 +610,7 @@ function isPlainObject(v) {
 }
 
 /**
- * Applies rules 5–7 (the per-key shape and pattern checks) to a document,
+ * Applies rule 7 (the per-key shape and pattern checks) to a document,
  * naming every offending key path. This is the same source of truth the
  * emitter's patterns come from, so a re-keyed leak or a smuggled value in a
  * permitted key is caught by construction.

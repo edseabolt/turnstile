@@ -2,8 +2,9 @@
 // Read-only report of turnstile gate/plan state over the JSONL journal.
 //
 // This is the `turnstile status` surface: it reports, per parent
-// session, what the journal says a task currently is WITHOUT touching the host
-// or writing anything. It is deliberately a plain ESM script outside the 100%
+// session, what the journal says a task currently is — it never touches the
+// host, and its only write is `--check-updates`' 24h cache file. It is
+// deliberately a plain ESM script outside the 100%
 // coverage gate (bin/ and scripts/ never are), and it is exercised by
 // tests/status.test.ts via spawn rather than imported.
 //
@@ -339,7 +340,7 @@ function observeCountsOf(entry) {
 /**
  * Aggregates the journal lines into per-session status. Replays the same
  * gate/plan last-wins rules as ledger.ts's replayGatePasses: a trailing
- * `GATE: FAIL` keeps the gate red, an enforce-mode `verified:false` PASS never
+ * `GATE: FAIL` keeps the gate red, a `verified:false` PASS never
  * flips, and a `type:plan` APPROVE restores plan approval. Malformed lines are
  * skipped, and lines whose sessionID fails the replay session-ID shape check
  * are skipped before any fold, for parity with replayGatePasses (status is
@@ -386,7 +387,7 @@ function aggregate(lines) {
 
     if (type === "gate") {
       // Gate flags restored exactly like replayGatePasses: last flipping result
-      // wins; an enforce-mode unverified PASS neither flips here nor at runtime.
+      // wins; an unverified PASS neither flips here nor at runtime.
       if (result === "PASS" || result === "FAIL") {
         const flips = !(result === "PASS" && e.verified === false && e.mode !== "flag")
         if (flips) {
@@ -540,10 +541,11 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
 }
 
 /**
- * Parses the status arguments. Recognizes --json and --help; anything else is
- * an unknown flag and fails with exit code 2.
+ * Parses the status arguments. Recognizes --json, --help, and
+ * --check-updates; anything else is an unknown flag and fails with exit
+ * code 2.
  * @param {string[]} argv Arguments after the `status` subcommand.
- * @returns {{ json: boolean, help: boolean }} Parsed flags.
+ * @returns {{ json: boolean, help: boolean, checkUpdates: boolean }} Parsed flags.
  */
 function parseArgs(argv) {
   const json = argv.includes("--json")
@@ -596,7 +598,7 @@ async function main(argv) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     process.stderr.write(`${msg}\n`)
-    process.stderr.write("usage: opencode-turnstile status [--json]\n")
+    process.stderr.write("usage: opencode-turnstile status [--json] [--check-updates]\n")
     return 2
   }
   if (flags.help) {

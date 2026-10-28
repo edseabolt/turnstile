@@ -693,9 +693,8 @@ export interface TurnstileConfig {
   waiverMarker: string
   /**
    * Literal marker that releases the plan gate via an explicit human
-   * approval. Present at config resolution so the key is valid and the digest
-   * is stable; not yet consumed by the prompt-channel waiver. Defaults to
-   * `PLAN APPROVED:`.
+   * approval, captured from the user's prompt at admission and honored like
+   * a plan-reviewer verdict. Defaults to `PLAN APPROVED:`.
    */
   approvalMarker: string
   /** Project-relative directory scanned for `## Decomposition` plans. */
@@ -720,10 +719,12 @@ export interface TurnstileConfig {
    * a landing approval `hasReviewApprove`, each paired with the restart-
    * sticky ensemble count) is carried, so a continuation arriving before any
    * `GATE: PASS` or reviewer `VERDICT: APPROVE` still starts a clean cycle.
-   * Default false: every prompt starts a clean gate cycle. Opt-in because a
-   * genuinely new task on the same branch is indistinguishable from a
-   * continuation, and a carried landing approval releases pushes for that
-   * new task too until a fresh prompt resets the bucket.
+   * Default true: a reviewer-approved landing prompt re-arms earned credit
+   * when the worktree/branch is unchanged; set false to restore a clean
+   * cycle every prompt. A genuinely new task on the same branch is
+   * indistinguishable from a continuation, and a carried landing approval
+   * releases pushes for that new task too until a fresh prompt resets the
+   * bucket.
    */
   continuationCarry: boolean
   /** Agent names turnstile recognizes. */

@@ -81,8 +81,8 @@ function ensembleEntries(metricsDir: string): Array<Record<string, any>> {
   return journalEntries(metricsDir).filter((e) => e.type === "ensemble")
 }
 
-/** T1: two unwaived reviewer dispatches journal ensemble counts 1 and 2. */
-test("T1: two unwaived reviewer dispatches journal ensemble counts 1 and 2", async () => {
+/** two unwaived reviewer dispatches journal ensemble counts 1 and 2. */
+test("two unwaived reviewer dispatches journal ensemble counts 1 and 2", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
   await greenGate(h, "p1")
   await callTool(h, "execute.before", {
@@ -105,9 +105,9 @@ test("T1: two unwaived reviewer dispatches journal ensemble counts 1 and 2", asy
   dispose()
 })
 
-/** T2: a prompt-channel waiver exempts the reviewer dispatch from counting; no
+/** a prompt-channel waiver exempts the reviewer dispatch from counting; no
  *  ensemble entry is journaled and the count stays 0. */
-test("T2: a waived reviewer dispatch never counts toward the ensemble", async () => {
+test("a waived reviewer dispatch never counts toward the ensemble", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
   await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: ship it" })
   await greenGate(h, "p1")
@@ -122,13 +122,13 @@ test("T2: a waived reviewer dispatch never counts toward the ensemble", async ()
 })
 
 /**
- * T2 (cont.): a dispatched-but-never-counted task that still gets an APPROVE
+ * A dispatched-but-never-counted task that still gets an APPROVE
  * under enforce is refused: the review is not credited (no ensemble-incomplete
  * is suppressed — instead it is journaled) and the landing gate stays red, so a
  * push escalates to a human ask. Waived dispatches never satisfy the ensemble;
  * the human permission ask is the designed release.
  */
-test("T2: a credited APPROVE at ensemble count 0 is refused and arms the landing ask", async () => {
+test("a credited APPROVE at ensemble count 0 is refused and arms the landing ask", async () => {
   const { h, metricsDir, dispose } = await boot({
     gateEvidence: "flag",
     gitGates: { mode: "enforce" },
@@ -176,9 +176,9 @@ test("T2: a credited APPROVE at ensemble count 0 is refused and arms the landing
   }
 })
 
-/** T3: enforce credits only at count >= 2. A count-1 APPROVE is refused with a
+/** enforce credits only at count >= 2. A count-1 APPROVE is refused with a
  *  byte-exact refusedApprove stamp; a second dispatch + APPROVE credits. */
-test("T3: enforce credits a reviewer APPROVE only at ensemble count 2", async () => {
+test("enforce credits a reviewer APPROVE only at ensemble count 2", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
     gitGates: { mode: "enforce" },
@@ -249,8 +249,8 @@ test("T3: enforce credits a reviewer APPROVE only at ensemble count 2", async ()
   }
 })
 
-/** T4: advise mode tracks and journals the ensemble but credits unconditionally. */
-test("T4: advise mode credits a single-reviewer APPROVE yet journals the count", async () => {
+/** advise mode tracks and journals the ensemble but credits unconditionally. */
+test("advise mode credits a single-reviewer APPROVE yet journals the count", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag", reviewEnsemble: "advise" })
   await greenGate(h, "p1")
   await callTool(h, "execute.before", {
@@ -282,9 +282,9 @@ test("T4: advise mode credits a single-reviewer APPROVE yet journals the count",
   dispose()
 })
 
-/** T5: a human always-grant outranks the ensemble — no incomplete journal, a
+/** a human always-grant outranks the ensemble — no incomplete journal, a
  *  clearing refusedApprove:false entry is journaled, and the gate releases. */
-test("T5: a human always-grant releases the gate and journals a clearing entry", async () => {
+test("a human always-grant releases the gate and journals a clearing entry", async () => {
   const { h, metricsDir, dispose } = await boot({ gitGates: { mode: "enforce" } })
   try {
     await assert.rejects(() =>
@@ -329,9 +329,9 @@ test("T5: a human always-grant releases the gate and journals a clearing entry",
   }
 })
 
-/** T5b: the human grant survives restart — replay restores hasReviewApprove
+/** the human grant survives restart — replay restores hasReviewApprove
  *  from the clearing (refusedApprove:false) entry. */
-test("T5b: a human always-grant survives restart via the clearing entry", async () => {
+test("a human always-grant survives restart via the clearing entry", async () => {
   const { h, dispose, metricsDir } = await boot({ gitGates: { mode: "enforce" } })
   try {
     await assert.rejects(() =>
@@ -365,10 +365,10 @@ test("T5b: a human always-grant survives restart via the clearing entry", async 
   }
 })
 
-/** T5c: a reviewer APPROVE delivered after a human always-grant must not
+/** a reviewer APPROVE delivered after a human always-grant must not
  *  journal a refusal: the short-circuit keeps the release intact, so a fresh
  *  replay still restores hasReviewApprove. */
-test("T5c: a post-grant APPROVE delivery at a smaller count keeps the human release", async () => {
+test("a post-grant APPROVE delivery at a smaller count keeps the human release", async () => {
   const { h, metricsDir, dispose } = await boot({
     gateEvidence: "flag",
     gitGates: { mode: "enforce" },
@@ -432,9 +432,9 @@ test("T5c: a post-grant APPROVE delivery at a smaller count keeps the human rele
   }
 })
 
-/** T6: a restored flag entry plus a count-1 ensemble restores the count with
+/** a restored flag entry plus a count-1 ensemble restores the count with
  *  grace; the grace prompt carries it once, then a full reset clears it. */
-test("T6: replay restores the ensemble count with grace, carried one prompt", () => {
+test("replay restores the ensemble count with grace, carried one prompt", () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl"),
@@ -455,9 +455,9 @@ test("T6: replay restores the ensemble count with grace, carried one prompt", ()
   assert.equal(ledger.state("p1").reviewerDispatches, 0, "the count clears on a full reset")
 })
 
-/** T7: malformed ensemble entries are skipped and the last valid count wins;
+/** malformed ensemble entries are skipped and the last valid count wins;
  *  a stale-generation tail still replays. */
-test("T7: replay skips malformed ensemble entries and honors latest-wins", () => {
+test("replay skips malformed ensemble entries and honors latest-wins", () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl"),
@@ -476,9 +476,9 @@ test("T7: replay skips malformed ensemble entries and honors latest-wins", () =>
   assert.equal(s.replayGrace, true, "a restored gate still tags grace")
 })
 
-/** T7 (gen): an ensemble line in the rotated `.1` generation replays, and a
+/** an ensemble line in the rotated `.1` generation replays, and a
  *  count above the ensemble size clamps to it on restore. */
-test("T7: an ensemble entry in the .1 generation tail replays, clamped to the ensemble size", () => {
+test("an ensemble entry in the .1 generation tail replays, clamped to the ensemble size", () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl.1"),
@@ -492,9 +492,9 @@ test("T7: an ensemble entry in the .1 generation tail replays, clamped to the en
   )
 })
 
-/** T7b: a refused credit is not re-credited on restart; a count-2 APPROVE
+/** a refused credit is not re-credited on restart; a count-2 APPROVE
  *  restores, and a clearing entry un-suppresses a later verdict. */
-test("T7b: replay suppresses a refused APPROVE and restores a credited one", () => {
+test("replay suppresses a refused APPROVE and restores a credited one", () => {
   // Refused: a verdict APPROVE with a refusedApprove:true ensemble entry.
   {
     const metricsDir = tmpDir()
@@ -585,11 +585,11 @@ test("T7b: replay suppresses a refused APPROVE and restores a credited one", () 
   }
 })
 
-/** T7b2: the last-wins fold's hostile-journal boundary at the credited count
+/** the last-wins fold's hostile-journal boundary at the credited count
  *  — a verdict APPROVE whose last ensemble entry stamps
  *  `refusedApprove:true` at count-2 is still suppressed on replay, and the
  *  count itself still restores. */
-test("T7b2: a refusedApprove stamp at the credited count still suppresses the verdict", () => {
+test("a refusedApprove stamp at the credited count still suppresses the verdict", () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl"),
@@ -618,9 +618,9 @@ test("T7b2: a refusedApprove stamp at the credited count still suppresses the ve
   assert.equal(s.reviewerDispatches, 2, "the count is still restored")
 })
 
-/** T7c: an ensemble-only journal line restores the count with no grace and no
+/** an ensemble-only journal line restores the count with no grace and no
  *  grace carry. */
-test("T7c: an ensemble-only entry restores the count without grace", () => {
+test("an ensemble-only entry restores the count without grace", () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl"),
@@ -638,9 +638,9 @@ test("T7c: an ensemble-only entry restores the count without grace", () => {
   )
 })
 
-/** T8: an incomplete ensemble on the push ladder arms the human ask exactly as
+/** an incomplete ensemble on the push ladder arms the human ask exactly as
  *  an unreviewed task does — no new block surface. */
-test("T8: an incomplete ensemble arms the landing ask like an unreviewed task", async () => {
+test("an incomplete ensemble arms the landing ask like an unreviewed task", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
     gitGates: { mode: "enforce" },
@@ -690,11 +690,11 @@ test("T8: an incomplete ensemble arms the landing ask like an unreviewed task", 
 })
 
 /**
- * T9–T15 preamble (delivery-agent resolution): these cases cover a reviewer
+ * Delivery-agent resolution: these cases cover a reviewer
  * or plan-reviewer result delivered without a dispatch-input agent — the v2
  * structured / background shape — which must resolve the delivery agent
  * through the child→parent edge + host session record and credit the parent.
- * T1–T8 above keep their own configs unchanged; every case below shares
+ * The earlier cases in this file keep their own configs unchanged; every case below shares
  * DELIVER_ENFORCE — gitGates enforce (the real landing gate) and flag-mode
  * evidence (greenGate flips on a plain PASS) — so enforce assertions never
  * depend on the shadow default, and the ensemble default (enforce) is stated
@@ -740,12 +740,12 @@ async function deliverStructured(
 }
 
 /**
- * T9: a structured reviewer APPROVE with no dispatch-input agent credits the
+ * a structured reviewer APPROVE with no dispatch-input agent credits the
  * parent through the session.created edge — the child's verdict stays
  * authoritative, the credit lands on the parent bucket (replay-restored), and
  * the landing gate releases.
  */
-test("T9: a no-input structured APPROVE credits through the created edge", async () => {
+test("a no-input structured APPROVE credits through the created edge", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
   try {
     await greenGate(h, "p1")
@@ -784,12 +784,12 @@ test("T9: a no-input structured APPROVE credits through the created edge", async
 })
 
 /**
- * T10: with no session.created event, the host session record is the only
+ * with no session.created event, the host session record is the only
  * edge route — the delivery's awaited session.get resolves parent and agent,
  * the credit lands on the record's parent (never the unregistered child), and
  * nothing is suppressed (the record's agent is authoritative).
  */
-test("T10: a no-input structured APPROVE credits through the host session record", async () => {
+test("a no-input structured APPROVE credits through the host session record", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE, {
     sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
   })
@@ -817,12 +817,12 @@ test("T10: a no-input structured APPROVE credits through the host session record
 })
 
 /**
- * T11: the no-input shape is still ensemble-gated — a count-1 delivery is
+ * the no-input shape is still ensemble-gated — a count-1 delivery is
  * refused (blocked + refusedApprove stamp, gate red), and the identical
  * re-delivery after the second dispatch first-sights again (fresh
  * task-deliverySeq dedup scope) and credits.
  */
-test("T11: a no-input APPROVE is refused at count 1 and credits at count 2", async () => {
+test("a no-input APPROVE is refused at count 1 and credits at count 2", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE, {
     sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
   })
@@ -866,11 +866,11 @@ test("T11: a no-input APPROVE is refused at count 1 and credits at count 2", asy
 })
 
 /**
- * T12: a no-input delivery credit survives a journal replay and exactly one
+ * a no-input delivery credit survives a journal replay and exactly one
  * grace prompt (the restored flag is restart-sticky, like the human grant),
  * then clears on a full reset.
  */
-test("T12: a no-input delivery credit survives replay and one grace prompt", async () => {
+test("a no-input delivery credit survives replay and one grace prompt", async () => {
   const { h, metricsDir, dispose } = await boot(DELIVER_ENFORCE, {
     sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
   })
@@ -892,12 +892,12 @@ test("T12: a no-input delivery credit survives replay and one grace prompt", asy
 })
 
 /**
- * T13: the credit is delivery-attributed, not prompt-mediated: no user prompt
+ * the credit is delivery-attributed, not prompt-mediated: no user prompt
  * is admitted at any point, so the journal carries no prompt-admission
  * artifacts (child-reset / continuation) and the release is purely the
  * delivered verdict.
  */
-test("T13: a no-input delivery credit journals no prompt-admission entries", async () => {
+test("a no-input delivery credit journals no prompt-admission entries", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
   try {
     await greenGate(h, "p1")
@@ -931,11 +931,11 @@ test("T13: a no-input delivery credit journals no prompt-admission entries", asy
 })
 
 /**
- * T14: when the dispatch input names the reviewer, it outranks the agent the
+ * when the dispatch input names the reviewer, it outranks the agent the
  * created edge recorded for the child (a test-runner seed never clobbers the
  * delivery's own attribution).
  */
-test("T14: a dispatch-input agent outranks the created edge's agent", async () => {
+test("a dispatch-input agent outranks the created edge's agent", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
   try {
     await greenGate(h, "p1")
@@ -956,11 +956,11 @@ test("T14: a dispatch-input agent outranks the created edge's agent", async () =
 })
 
 /**
- * T14: a reviewer delivery carrying only a BLOCK exits the credit guard
+ * a reviewer delivery carrying only a BLOCK exits the credit guard
  * before the ensemble check — no credit, no refusal stamp, no block entry;
  * the landing gate stays red.
  */
-test("T14: a reviewer BLOCK delivery stamps no refusal and credits nothing", async () => {
+test("a reviewer BLOCK delivery stamps no refusal and credits nothing", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE)
   try {
     // Self-keyed v1 string delivery: the delivery seed makes the session's own
@@ -992,12 +992,12 @@ test("T14: a reviewer BLOCK delivery stamps no refusal and credits nothing", asy
 })
 
 /**
- * T14: a child with no edge route at all (absent session record) resolves no
+ * a child with no edge route at all (absent session record) resolves no
  * agent: its APPROVE is denied authority and journaled as a suppressed audit
  * entry with the empty emitter, never credited, and the absent record is not
  * an error.
  */
-test("T14: an unresolvable child's APPROVE is suppressed, uncredited, and error-free", async () => {
+test("an unresolvable child's APPROVE is suppressed, uncredited, and error-free", async () => {
   const { h, dispose, metricsDir } = await boot(DELIVER_ENFORCE, {
     sessionRecords: new Map<string, any>(),
   })
@@ -1020,12 +1020,12 @@ test("T14: an unresolvable child's APPROVE is suppressed, uncredited, and error-
 })
 
 /**
- * T15: the plan-verdict attribution is symmetric — a no-input plan-reviewer
+ * the plan-verdict attribution is symmetric — a no-input plan-reviewer
  * APPROVE resolves through the host session record, attributes the plan entry
  * through the child (raw = child, never the parent), and the approval
  * survives a journal replay.
  */
-test("T15: a no-input plan-reviewer APPROVE attributes through the session record", async () => {
+test("a no-input plan-reviewer APPROVE attributes through the session record", async () => {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
@@ -1062,13 +1062,13 @@ test("T15: a no-input plan-reviewer APPROVE attributes through the session recor
 })
 
 /**
- * T10: a mechanical credit outlives its own task bucket — the landing prompt
+ * a mechanical credit outlives its own task bucket — the landing prompt
  * resets `hasReviewApprove`, but the credit trace survives, so the first push
  * of the landing turn is the human decision point: no `BlockError`, exactly
  * one enforce-mode landing ask journaled, no `no-landing-approval` block, and
  * the evaluate handler forces the ask with the landing requirement message.
  */
-test("T10: a credited APPROVE arms the landing ask on the first push of the landing prompt", async () => {
+test("a credited APPROVE arms the landing ask on the first push of the landing prompt", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
     gitGates: { mode: "enforce" },
@@ -1128,11 +1128,11 @@ test("T10: a credited APPROVE arms the landing ask on the first push of the land
 })
 
 /**
- * T11: the human always-release is credit — the next prompt's reset clears
+ * the human always-release is credit — the next prompt's reset clears
  * the `hasReviewApprove` flag but not the credit trace, so the next turn's
  * first push escalates to the human ask instead of throwing the first block.
  */
-test("T11: a human always landing release arms the ask on the next turn's first push", async () => {
+test("a human always landing release arms the ask on the next turn's first push", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
     gitGates: { mode: "enforce" },

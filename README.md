@@ -21,8 +21,7 @@ open.
 
 - **Premature dispatch blocked** — an executor cannot start against an
   unreviewed plan and a reviewer cannot start on an unverified test claim;
-  blocked work says `BLOCKED by turnstile: <reason>`, never a silent
-  violation.
+  blocked work prints `BLOCKED by turnstile: <reason>`.
 - **Test claims verified** — a `GATE: PASS` greens the reviewer gate only
   when turnstile finds a journaled exit-0 test execution behind it; a bare
   claim stays unverified and the gate holds.
@@ -51,9 +50,9 @@ npx opencode-turnstile check     # verify the install (incl. plugin loadability)
 ```
 
 Then **restart OpenCode** (or `opencode service restart`) so the plugin
-loads. Prefer not to install the agent definitions? Add the plugin alone —
-the gates still enforce, but the pipeline needs agents to dispatch against,
-so run `init` (or bring your own, see
+loads. Rather skip the agent definitions? Adding just the plugin still
+enforces the gates, but the pipeline needs agents to dispatch against, so
+run `init` (or bring your own, see
 [`docs/usage.md`](docs/usage.md#customizing-the-pipeline-agents)):
 
 ```jsonc
@@ -126,7 +125,7 @@ recommended configuration and what this repo runs; the shipped default is
 `shadow`, the adoption path where the same checks are journaled rather
 than thrown.
 
-When something fires early, you see the block, not a silent violation:
+When a gate fires early, the block message names the reason:
 
 ```text
 BLOCKED by turnstile: executor dispatch requires an approved plan
@@ -171,10 +170,11 @@ survives a restart and the next (resume) prompt, then reverts.
 
 ## Waivers and approvals
 
-Turnstile reads a waiver or a human plan approval only from the user's OWN
+Turnstile reads a waiver or a human plan approval only from the user's own
 prompt — the plugin observes it at prompt admission, never from an agent's
 dispatch prompt. A marker inside an agent-composed prompt must never unlock
-a gate, so the channel is checked, not the text.
+a gate, so the plugin checks which channel the marker arrived through, not
+what the text says.
 
 - **`USER WAIVER:`** in your prompt waives gates. Naming configured agent
   stages (`planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`)
@@ -315,9 +315,9 @@ tools remain unguarded. The full threat model:
 - Fail-open by design. Every hook body is guarded; internal errors are
   journaled and the tool call proceeds. The only thrown errors are the
   deliberate `BLOCKED by turnstile:` ones.
-- The doc comment at the top of `turnstile.ts` is the authoritative summary
-  of enforced contracts; this README mirrors it and CI keeps the marker
-  examples in sync with the parser regexes.
+- `docs/architecture.md` is the authoritative reference for enforced
+  contracts; the doc comment atop `turnstile.ts` summarizes it. CI keeps
+  the marker examples in this README in sync with the parser regexes.
 - Host API is the OpenCode v2 promise-plugin shape
   (`{ tool.hook, session.hook, permission.hook, event.subscribe }` — the
   permission hook is registered when the host exposes it).

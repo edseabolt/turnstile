@@ -73,7 +73,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 | Module                    | Responsibility                                                                                                                                                                                                           |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `turnstile.ts`            | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                                                                       |
+| `turnstile.ts`            | Entry point: module shape + factory; its doc comment is a contract-level summary pointing here as the authoritative reference                                                                                            |
 | `src/setup.ts`            | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                   |
 | `src/host-compat.ts`      | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                               |
 | `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                         |
@@ -322,11 +322,12 @@ from the `observeCounts()` totals at injection time) and the inert
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (24 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (25 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
   `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
-  `suppressed`, `observe`, `would-block`, `replay`, `session-summary`). A `dispatch` entry is written at
+  `suppressed`, `observe`, `would-block`, `replay`, `session-summary`,
+  `compat`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).

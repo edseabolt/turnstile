@@ -18,7 +18,8 @@ OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
 file (`types`, `config`, `policy`, `journal`, `state`, `ledger`, `markers`,
 `evidence`, `fingerprint`, `gates`, `gates-common`, `gates-dispatch`,
-`gates-plan`, `tool-policy`, `empty-diff`, `delivery`, `hooks-core`,
+`gates-plan`, `tool-policy`, `empty-diff`, `bounded`, `summary`,
+`host-compat`, `delivery`, `hooks-core`,
 `hooks-session`, `hooks-permission`, `hooks-tool`, `hooks-events`, `setup`). It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
@@ -144,8 +145,8 @@ the deliberate `BLOCKED by turnstile:` enforcement messages.)
 Write comments only when necessary. Code should be self-explanatory through
 clear naming and structure. Comments should explain "why" not "what".
 (All functions carry Google-standard JSDoc with fully typed parameters and
-returns; the doc comment atop `turnstile.ts` documents contracts, not
-implementation.)
+returns; the doc comment atop `turnstile.ts` is a contract-level summary
+pointing at `docs/architecture.md`, the authoritative detailed reference.)
 
 Comments and docstrings must be self-contained: a reader without the plan,
 the issue, or this session's context must still understand them. Never
@@ -182,8 +183,9 @@ stated feature; devDependencies are tooling only.)
 - Host API is the v2 shape `{ tool.hook, session.hook, event.subscribe }`,
   verified against opencode v2.0.22. If hooks don't fire, check the host
   version before assuming a logic bug.
-- The doc comment at the top of `turnstile.ts` is the authoritative summary
-  of enforced contracts. Update it whenever enforcement behavior changes.
+- `docs/architecture.md` is the authoritative reference for enforced
+  contracts; the doc comment atop `turnstile.ts` is a contract-level
+  summary that points at it, and its module list must track `src/`.
 
 ## Enforcement behavior (easy to regress)
 

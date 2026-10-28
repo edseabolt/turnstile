@@ -973,11 +973,11 @@ test("each self-keyed delivery journals exactly one attribution entry", async ()
 /**
  * Structural: a self-keyed delivery that attributes never
  * journals a `{raw: sessionID}` phantom nor a BLOCK plan entry journal-wide;
- * plus the H2 hypothesis — a record present but parent-less — is diagnosable as
+ * plus the parent-less case — a record present but parent-less — is diagnosable as
  * `"no-parent-id"` in the lookup, yet still attributes from the streaming store.
  */
-test("an attributed self-keyed delivery never clobbers and H2 resolves as no-parent-id", async () => {
-  // Part A: T1 repro; assert journal-wide invariants.
+test("an attributed self-keyed delivery never clobbers and the parent-less case resolves as no-parent-id", async () => {
+  // Part A: assert journal-wide invariants.
   const { h, metricsDir, restore } = await bootWithPlan("# P", { throwingGet: true })
   try {
     await callSession(h, "prompt", { sessionID: "p1" })
@@ -1002,7 +1002,7 @@ test("an attributed self-keyed delivery never clobbers and H2 resolves as no-par
     restore()
   }
 
-  // Part B: H2 — record present but parent-less ⇒ reason "no-parent-id".
+  // Part B: record present but parent-less ⇒ reason "no-parent-id".
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
@@ -1028,7 +1028,7 @@ test("an attributed self-keyed delivery never clobbers and H2 resolves as no-par
     const ats = attribution(metricsDir2)
     assert.equal(ats.length, 1)
     assert.equal(ats[0]!.decision, "attributed")
-    // H2: the lookup records the parent-less reason.
+    // The lookup records the parent-less reason.
     assert.equal(ats[0]!.lookup.c1.reason, "no-parent-id")
     // The attribute still succeeds from the streaming store (edge-less candidate).
     const plans = planEntries(metricsDir2)

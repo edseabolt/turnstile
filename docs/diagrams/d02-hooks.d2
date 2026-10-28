@@ -22,7 +22,7 @@ tool: "tool.hook (hooks-tool.ts)" {
   after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\",\nnear-miss diagnostics → type:\"marker\")"
 }
 
-before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nplan-gate ▸ decomposition ▸ reviewer gate ▸\none-grants ▸ dispatch counted + journaled at guard exit"
+before-task: "task/subagent: once-grant short-circuit ▸\ndispatch budget ▸ per-leg caps ▸ reviewer gate ▸\nplan-gate ▸ decomposition ▸ dispatch counted +\njournaled at guard exit"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
 before-write: "write/edit: path denylist"
@@ -33,7 +33,7 @@ after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE 
 
 eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart budget)" {
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
-  text: "message.part.updated / .ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
+  text: "message.part.updated /\nsession.text.ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
   inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"
   idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"

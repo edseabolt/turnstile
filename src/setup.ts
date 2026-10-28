@@ -86,7 +86,7 @@ async function registerSessionHooks(
 }
 
 /**
- * Registers the permission-escalation hook (Phase 1): on a `task` dispatch
+ * Registers the permission-escalation hook: on a `task` dispatch
  * the host asks the plugin to evaluate whether the call should proceed. The
  * payload carries NO tool input, so escalation is driven by the parent
  * session's plan-gate state (planGateStatus), never the dispatch target.
