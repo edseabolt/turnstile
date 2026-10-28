@@ -321,6 +321,25 @@ tools remain unguarded. The full threat model:
 - Host API is the OpenCode v2 promise-plugin shape
   (`{ tool.hook, session.hook, permission.hook, event.subscribe }` — the
   permission hook is registered when the host exposes it).
+- Host compatibility is checked at setup against the shipped range
+  (`HOST_COMPAT` in `src/host-compat.ts`); see the matrix below.
+
+### OpenCode compatibility matrix
+
+| OpenCode host       | turnstile | Status                                         |
+| ------------------- | --------- | ---------------------------------------------- |
+| ≥ 2.0.22, < 3.0.0   | 0.7.x     | Supported (tested: 2.0.22, 2.0.27, 2.0.29)     |
+| ≥ 3.0.0 or < 2.0.22 | 0.7.x     | Refuses to enforce at setup; upgrade turnstile |
+| version unreadable  | 0.7.x     | Enforces; one-time journal warning             |
+
+On an incompatible host turnstile toasts the upgrade instruction and
+registers no hooks (a full no-op — fail-open):
+
+> turnstile 0.7.x expects opencode >=2.0.22,<3.0.0; you're on 3.1.0 —
+> upgrade turnstile (npm i opencode-turnstile@latest) or pin opencode
+
+`npx opencode-turnstile status --check-updates` (opt-in, network, cached 24 h)
+reports when a newer turnstile is published.
 
 ## More documentation
 

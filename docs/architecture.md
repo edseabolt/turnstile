@@ -74,7 +74,8 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | Module                    | Responsibility                                                                                                                                                                                                           |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `turnstile.ts`            | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                                                                       |
-| `src/setup.ts`            | Wiring only: hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                                  |
+| `src/setup.ts`            | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                   |
+| `src/host-compat.ts`      | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                               |
 | `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                         |
 | `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                      |
 | `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                                           |
@@ -103,7 +104,19 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ## 3. Hooks: where the plugin intercepts the host
 
-`setup(h)` registers seven interception points, each tracked for disposal and
+Before any registration, `setup(h)` runs the host-compat guard
+(`src/host-compat.ts`): the host version (`app.version`) is compared against
+the shipped range (`HOST_COMPAT`, ≥ 2.0.22 and < 3.0.0). An **incompatible**
+host is journaled (`type:"compat"`, `event:"incompatible"`), toasted with the
+upgrade instruction, and turnstile degrades to a full no-op — no hook is
+registered and the heartbeat carries `compat:"incompatible"`. An **unknown**
+host (version unreadable or unparseable) enforces as usual and journals a
+one-time `compat` warning (`event:"unknown-host"`); its heartbeat reads
+`compat:"unknown"`. A **compatible** host proceeds byte-identically to the
+pre-guard behavior with `compat:"compatible"` on the heartbeat. The guard is
+fail-open: evaluation or toast failures are journaled, never thrown.
+
+`setup(h)` then registers seven interception points, each tracked for disposal and
 counted into the load heartbeat (`type:"setup"`). The hook bodies live in the
 per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 

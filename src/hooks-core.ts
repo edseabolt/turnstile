@@ -297,7 +297,7 @@ export interface TurnstileContext {
   /** Binds the host session API for resolveParent. */
   bindHost(session: Host["session"]): void
   /** Bound toast deliverer (undefined when the host offers no TUI surface). */
-  toast?: (message: string, variant: "info" | "success") => Promise<void>
+  toast?: (message: string, variant: "info" | "success" | "warning") => Promise<void>
   /** Binds the host toast surface for the session-end summary delivery. */
   bindToast(show: ToastShow | undefined): void
   /** Increments the prompt-hook fire counter. */
@@ -2393,7 +2393,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // Host toast surface, bound at setup time (guarded — an absent or
   // non-function `tui.toast.show` leaves it undefined and the summary
   // delivers journal-only, the headless path).
-  let toast: ((message: string, variant: "info" | "success") => Promise<void>) | undefined
+  let toast:
+    ((message: string, variant: "info" | "success" | "warning") => Promise<void>) | undefined
   /**
    * Binds the host toast surface: stores a guarded closure over `show` so
    * the caller (the idle handler) passes a plain (message, variant) call.
@@ -2405,7 +2406,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   function bindToast(show: ToastShow | undefined): void {
     toast =
       typeof show === "function"
-        ? async (message: string, variant: "info" | "success"): Promise<void> => {
+        ? async (message: string, variant: "info" | "success" | "warning"): Promise<void> => {
             await show({ message, variant })
           }
         : undefined

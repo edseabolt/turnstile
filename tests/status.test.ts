@@ -24,7 +24,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -74,9 +74,9 @@ function metricsDir(): string {
  * @param args Arguments after the subcommand (e.g. `["--json"]`).
  * @returns The spawn result with stdout coerced to string.
  */
-function runStatus(dir: string, args: string[] = []) {
+function runStatus(dir: string, args: string[] = [], extraEnv: Record<string, string> = {}) {
   return spawnSync(process.execPath, [statusScript, ...args], {
-    env: { ...process.env, TURNSTILE_METRICS_DIR: dir },
+    env: { ...process.env, TURNSTILE_METRICS_DIR: dir, ...extraEnv },
     encoding: "utf8",
   })
 }
@@ -913,5 +913,195 @@ test("a journal without observe entries renders byte-identically despite a confi
   } finally {
     rmSync(dir, { recursive: true, force: true })
     rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+// ── --check-updates (opt-in registry check, 24h cache, fail-open) ───────────
+//
+// These tests run status.mjs with an async spawn (not spawnSync): the stub
+// registry server lives in this test process, and spawnSync would block the
+// event loop so the child's registry fetch could never be answered.
+
+import * as http from "node:http"
+import type { AddressInfo } from "node:net"
+import { spawn } from "node:child_process"
+
+/**
+ * Async counterpart of {@link runStatus}: spawns status.mjs and awaits its
+ * exit so the test's event loop stays free to answer the child's registry
+ * fetch from the stub server.
+ * @param dir The temp metrics directory.
+ * @param args Arguments after the subcommand.
+ * @param extraEnv Extra environment variables (e.g. TURNSTILE_UPDATE_URL).
+ * @returns The exit code plus stdout/stderr as text.
+ */
+async function runStatusAsync(
+  dir: string,
+  args: string[] = [],
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [statusScript, ...args], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: dir, ...extraEnv },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (d: Buffer) => {
+      stdout += d
+    })
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d
+    })
+    child.on("error", reject)
+    child.on("close", (status) => resolve({ status, stdout, stderr }))
+  })
+}
+
+/**
+ * Starts a local HTTP server answering with the given JSON body, so
+ * the registry lookup is stubbed without touching the network.
+ * @param body The JSON body to serve (e.g. `{ version: "9.9.9" }`).
+ * @param status The HTTP status code (defaults 200).
+ * @returns The base URL, a close function, and a request counter.
+ */
+async function serveJson(body: string, status = 200) {
+  const hits = { count: 0 }
+  const server = http.createServer((_req, res) => {
+    hits.count++
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(body)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const { port } = server.address() as AddressInfo
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    hits,
+    close: (): Promise<void> =>
+      new Promise((resolve) => {
+        server.closeAllConnections?.()
+        server.close(() => resolve())
+      }),
+  }
+}
+
+/**
+ * Seeds a fresh update-check cache (no network needed) in the given dir.
+ * @param dir The metrics directory.
+ * @param latest The cached latest version.
+ */
+function seedFreshCache(dir: string, latest: string): void {
+  writeFileSync(join(dir, "update-check.json"), JSON.stringify({ fetchedAt: Date.now(), latest }))
+}
+
+test("status --check-updates reports a newer version from the registry stub", async () => {
+  const dir = metricsDir()
+  const stub = await serveJson(JSON.stringify({ version: "9.9.9" }))
+  try {
+    const res = await runStatusAsync(dir, ["--check-updates"], { TURNSTILE_UPDATE_URL: stub.url })
+    assert.equal(res.status, 0)
+    assert.match(res.stdout, /a newer turnstile \(9\.9\.9\) is available/)
+    // Success is cached: a rerun shows the cached latest with zero fetches.
+    const res2 = await runStatusAsync(dir, ["--json", "--check-updates"], {
+      TURNSTILE_UPDATE_URL: stub.url,
+    })
+    assert.equal(res2.status, 0)
+    const parsed = JSON.parse(res2.stdout) as { update: { checked: boolean; latest: string } }
+    assert.equal(parsed.update.checked, true)
+    assert.equal(parsed.update.latest, "9.9.9")
+    assert.equal(stub.hits.count, 1)
+  } finally {
+    await stub.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status --check-updates with a fresh cache never touches the network", async () => {
+  const dir = metricsDir()
+  const stub = await serveJson(JSON.stringify({ version: "0.0.1" }))
+  try {
+    seedFreshCache(dir, "9.9.9")
+    // The stub answers a *different* version: a fresh cache must mean zero
+    // fetches, so the reported latest stays the cached 9.9.9.
+    const res = await runStatusAsync(dir, ["--json", "--check-updates"], {
+      TURNSTILE_UPDATE_URL: stub.url,
+    })
+    assert.equal(res.status, 0)
+    const parsed = JSON.parse(res.stdout) as { update: { checked: boolean; latest: string } }
+    assert.equal(parsed.update.checked, true)
+    assert.equal(parsed.update.latest, "9.9.9")
+    assert.equal(stub.hits.count, 0)
+  } finally {
+    await stub.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status --check-updates with latest <= installed renders no line", async () => {
+  const dir = metricsDir()
+  try {
+    seedFreshCache(dir, "0.1.0")
+    const res = await runStatusAsync(dir, ["--check-updates"])
+    assert.equal(res.status, 0)
+    assert.doesNotMatch(res.stdout, /newer turnstile/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status --check-updates on a registry error reports checked with no cache write", async () => {
+  const dir = metricsDir()
+  const stub = await serveJson("nope", 500)
+  try {
+    const res = await runStatusAsync(dir, ["--json", "--check-updates"], {
+      TURNSTILE_UPDATE_URL: stub.url,
+    })
+    assert.equal(res.status, 0)
+    const parsed = JSON.parse(res.stdout) as { update: { checked: boolean; error?: string } }
+    assert.equal(parsed.update.checked, true)
+    assert.ok(parsed.update.error)
+    assert.equal(existsSync(join(dir, "update-check.json")), false)
+  } finally {
+    await stub.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status --check-updates table mode appends a failure line without a trailing blank", async () => {
+  const dir = metricsDir()
+  const stub = await serveJson("nope", 500)
+  try {
+    // Table mode with sessions: the failure note renders as the last line,
+    // never a blank line dangling after it.
+    writeFileSync(
+      join(dir, "turnstile.jsonl"),
+      `${JSON.stringify({ type: "gate", result: "PASS", sessionID: "s1", mode: "flag" })}\n`,
+    )
+    const res = await runStatusAsync(dir, ["--check-updates"], {
+      TURNSTILE_UPDATE_URL: stub.url,
+    })
+    assert.equal(res.status, 0)
+    const lines = res.stdout.trimEnd().split("\n")
+    // The failure note is the last non-empty line and the trailing blank
+    // line that the old table mode emitted is gone.
+    assert.equal(lines[lines.length - 1], "update: update check failed (network or response shape)")
+    assert.ok((lines[lines.length - 2] ?? "").length > 0, "no blank line after the failure note")
+  } finally {
+    await stub.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status output without --check-updates stays byte-identical (no update block)", async () => {
+  const dir = metricsDir()
+  try {
+    const res = runStatus(dir, ["--json"])
+    assert.equal(code(res), 0)
+    const parsed = JSON.parse(res.stdout) as Record<string, unknown>
+    assert.equal("update" in parsed, false)
+    const table = runStatus(dir, [])
+    assert.doesNotMatch(table.stdout, /update:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

@@ -1413,6 +1413,9 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   assert.equal(entry.trace, true)
   assert.equal(typeof entry.agents, "object")
   assert.equal(typeof entry.metricsDir, "string")
+  // Host-compat verdict: the fake host exposes no app.version, so the field
+  // is always present and reads "unknown" here (never omitted).
+  assert.equal(entry.compat, "unknown")
   dispose()
 })
 
@@ -1434,6 +1437,8 @@ test("setup heartbeat redacts trace fields when trace is false", async () => {
   assert.equal(setups[0]?.agents, undefined)
   assert.equal(setups[0]?.metricsDir, undefined)
   assert.match(setups[0]?.digest, /^[0-9a-f]{12}$/)
+  // The compat field is always present on the heartbeat, trace or not.
+  assert.equal(setups[0]?.compat, "unknown")
   dispose()
 })
 

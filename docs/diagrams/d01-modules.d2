@@ -9,12 +9,14 @@ host: "OpenCode host\n(v2 promise-plugin API)" {
   tool-hook: "tool.hook\nexecute.before · execute.after"
   event-sub: "event.subscribe\n(stream loop)"
   perm-hook: "permission.hook('evaluate')"
+  app-version: "app.version"
 }
 
 entry: "turnstile.ts\n{ id:'turnstile', server, setup }\nthin factory — contracts in doc comment"
 
 core: "src/ — one concern per boundary" {
   setup: "setup.ts\nwiring only: hook registration, heartbeat,\nlifecycle/disposal"
+  hostcompat: "host-compat.ts\nhost version guard: semver parse/compare,\nshipped range, verdict"
   hookscore: "hooks-core.ts\nshared hook state + services:\nTurnstileContext (config, journaler, gates,\nledger, admission, marker parsing,\nverdict attribution)"
   hookssession: "hooks-session.ts\nprompt · generate · compaction bodies"
   hookspermission: "hooks-permission.ts\nevaluate body (plan/landing arms)"
@@ -54,6 +56,9 @@ host.tool-hook -> entry
 host.event-sub -> entry
 host.perm-hook -> entry
 entry -> core.setup
+host -> core.setup: "app.version"
+core.setup -> core.hostcompat
+core.hostcompat -> core.types: "type-only"
 core.setup -> core.hookscore
 core.setup -> core.hookssession
 core.setup -> core.hookspermission

@@ -62,6 +62,12 @@
  *   still lands). Nothing is written to an instructions file at install time
  *   — the AGENTS.md contract block is a historical install step, removed.
  *
+ * - Host compatibility: at setup the host version (`app.version`) is checked
+ *   against the shipped range (`src/host-compat.ts`); an incompatible host is
+ *   journaled (`type:"compat"`) and toasted, and no hooks are registered
+ *   (fail-open to a full no-op); an unreadable version enforces as usual with
+ *   a one-time `compat` warning. See README's compatibility matrix.
+ *
  * - Config warnings: surfaced into the session context once per plugin load.
  *   When the resolved config produced validation warnings (a typo'd key, a
  *   readWarn/readBlock clamp, a marker regex that differs from the default),
