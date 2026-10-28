@@ -55,6 +55,7 @@ interface StatusSession {
   blocks: number
   permissionAsks: number
   permissionDecisions: { once: number; always: number; reject: number }
+  suspended: boolean
 }
 interface StatusJSON {
   journal: string
@@ -148,6 +149,7 @@ const KEYS: Array<keyof StatusSession> = [
   "blocks",
   "permissionAsks",
   "permissionDecisions",
+  "suspended",
 ]
 
 /**
@@ -908,11 +910,66 @@ test("a journal without observe entries renders byte-identically despite a confi
     assert.equal(code(res), 0)
     const out = res.stdout.split("\n")
     assert.equal(out[0], `turnstile status — ${join(dir, "turnstile.jsonl")}`)
-    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM  SUS")
     assert.ok(!res.stdout.includes("observe:"), "no observe line renders")
   } finally {
     rmSync(dir, { recursive: true, force: true })
     rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+/** Suspension (`type:"suspended"`) folds last-wins into the per-session
+ *  `suspended` flag and the table's SUS column, mirroring ledger.ts's
+ *  foldSuspended: OFF sets, ON clears, a would-block audit folds inert, and an
+ *  unknown action folds nothing (no hostile toggle). */
+test("suspended entries fold last-wins into the suspension flag and SUS column", () => {
+  const dir = metricsDir()
+  try {
+    const journalPath = join(dir, "turnstile.jsonl")
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "suspended", sessionID: "sp-sus", action: "off" }),
+      line(2, {
+        type: "suspended",
+        sessionID: "sp-sus",
+        event: "would-block",
+        cause: "read-budget",
+      }),
+      line(3, { type: "suspended", sessionID: "sp-sus", action: "on" }),
+      line(4, { type: "suspended", sessionID: "sp-sus2", action: "off" }),
+      line(5, { type: "suspended", sessionID: "sp-sus3", action: "explode" }),
+      line(6, { type: "suspended", sessionID: "sp-sus4", action: "off", refused: true }),
+      line(7, { type: "suspended", sessionID: "sp-sus5", action: "on", refused: true }),
+    ])
+    const res = runStatus(dir, ["--json"])
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    assertReplayParity(obj, journalPath)
+    assert.equal(oSession(obj, "sp-sus").suspended, false, "the later ON clears the suspension")
+    assert.equal(oSession(obj, "sp-sus2").suspended, true, "the OFF suspends")
+    assert.equal(oSession(obj, "sp-sus3").suspended, false, "an unknown action never toggles")
+    assert.equal(
+      oSession(obj, "sp-sus4").suspended,
+      false,
+      "a refused OFF is replay-inert in the status fold",
+    )
+    assert.equal(
+      oSession(obj, "sp-sus5").suspended,
+      false,
+      "a refused ON is replay-inert in the status fold",
+    )
+    // The table renders the SUS column: OFF for the suspended session, · else.
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM  SUS")
+    assert.match(table.stdout, /sp-sus2.*OFF/)
+    const rows = out.filter((l) => l.startsWith("sp-"))
+    assert.ok(
+      rows.every((r) => r.endsWith("OFF") || r.endsWith("·")),
+      "SUS cell on every row",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

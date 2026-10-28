@@ -310,6 +310,7 @@ function freshSession() {
     blocks: 0,
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
+    suspended: false,
   }
 }
 
@@ -347,6 +348,11 @@ function observeCountsOf(entry) {
  * observation-only, so a dropped line is silent here rather than journaled).
  * Verdict markers over the replay marker bound degrade to "" (they then flow
  * into the empty-marker BLOCK fallback below). Parent-keyed.
+ *
+ * Suspension lines (`type:"suspended"`) fold last-wins like ledger.ts's
+ * foldSuspended: `action:"off"` marks the session suspended, `action:"on"`
+ * clears it, an `event:"would-block"` audit entry folds inert, and an unknown
+ * action folds nothing (a hostile action must not toggle the flag).
  *
  * Observe-mode lines fold in parallel with the ledger replay: last-wins on
  * the two running totals (every line carries both, so the last stamped line
@@ -437,6 +443,13 @@ function aggregate(lines) {
         a.planApproval.verdict = "BLOCK"
       }
       a.planApproval.source = typeof e.source === "string" ? e.source : a.planApproval.source
+    } else if (type === "suspended") {
+      // Suspension fold (see the function doc): last-wins, mirroring
+      // ledger.ts's foldSuspended — refused refusals, would-block audits,
+      // and unknown actions fold nothing.
+      if (e.event === "would-block" || e.refused === true) continue
+      if (e.action === "off") a.suspended = true
+      else if (e.action === "on") a.suspended = false
     } else if (type === "dispatch") {
       // A blocked attempt was never executed — its block is already counted by
       // the guard's `blocked` entry, so exclude the `blocked:true` stamp from
@@ -499,9 +512,10 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     bl: a.blocks,
     ask: a.permissionAsks,
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
+    sus: a.suspended ? "OFF" : "·",
   }))
 
-  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM"]
+  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "SUS"]
   const cells = [
     (r) => r.session,
     (r) => r.gate,
@@ -511,6 +525,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => String(r.dis),
     (r) => String(r.bl),
     (r) => `${r.ask}/${r.dec}`,
+    (r) => r.sus,
   ]
 
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => cells[i](r).length)))

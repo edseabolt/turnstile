@@ -36,6 +36,10 @@
     {
       "src": "skills/turnstile-setup/SKILL.md",
       "dest": "~/.config/opencode/skills/turnstile-setup/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-suspend/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-suspend/SKILL.md"
     }
   ],
   "retired": [

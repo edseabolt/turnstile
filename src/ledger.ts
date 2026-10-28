@@ -3,7 +3,9 @@
  * bookkeeping — child→parent edges, the child verdict store, and live-parent
  * eviction protection — plus journal replay so a completed task's `GATE: PASS`
  * survives restarts, the observe-mode period state (per-session admission
- * phases plus the running would-block totals) survives the same way, and a
+ * phases plus the running would-block totals) survives the same way, the
+ * session-level gate suspension map (prompt-marker suspend/resume, last-wins
+ * replay) survives the same way, and a
  * bounded durable approved-plan sidecar so a bound plan approval survives
  * replay-aging, a process restart, and a new-prompt reset. On a parent's
  * prompt reset, also releases that parent's registered children's metering
@@ -257,6 +259,34 @@ export interface GateLedger {
    * @returns The totals and the pending-summary probe.
    */
   observeCounts(): { observed: number; wouldBlocks: number; pendingSummary: boolean }
+  /**
+   * Sets (or clears) a parent session's gate suspension. When on, the
+   * session's enforcement decisions keep computing and journaling but every
+   * deliberate block is suppressed (observe-like). Keyed per parent; the map
+   * is LRU-capped at `maxSessions` like the other session maps. No-op on an
+   * empty id.
+   * @param sessionID The parent session ID.
+   * @param on True to suspend, false to resume.
+   */
+  setSuspended(sessionID: string, on: boolean): void
+  /**
+   * Whether a parent session's gate enforcement is currently suspended (with
+   * LRU promotion — the map is LRU by use).
+   * @param sessionID The parent session ID to test.
+   * @returns True when the session is suspended.
+   */
+  isSuspended(sessionID: string): boolean
+  /**
+   * Clears a session's gate state for a fresh start with NO restart-sticky
+   * carry: the delete→new→cap→release-children sequence of `resetState` with
+   * the `replayGrace` merge disabled (the suspension/resume fresh-start
+   * contract — credit earned before the clear never rehydrates, even on the
+   * grace prompt).
+   * @param sessionID The parent session ID to clear.
+   * @returns The number of registered child buckets whose metering counters
+   *     were non-fresh before clearing (0 for a no-op release).
+   */
+  clearState(sessionID: string): number
 }
 
 /**
@@ -412,7 +442,7 @@ function readReplayLines(journalPath: string, tailLines: number): string[] {
  * @param line The raw journal line.
  * @returns The parsed record when `line` is a JSON object of a replay-typed
  *     kind (`gate`, `plan`, `verdict`, `ensemble`, `observe`,
- *     `would-block`); `"malformed"` when the line does not parse to an
+ *     `would-block`, `suspended`); `"malformed"` when the line does not parse to an
  *     object record (a JSON error, a non-object, or an array); and `null`
  *     for every other, replay-inert line (any other entry type) — inert
  *     lines stay inert without telemetry, exactly as before.
@@ -432,7 +462,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "verdict" &&
     entry.type !== "ensemble" &&
     entry.type !== "observe" &&
-    entry.type !== "would-block"
+    entry.type !== "would-block" &&
+    entry.type !== "suspended"
   ) {
     return null
   }
@@ -636,6 +667,35 @@ function foldWouldBlock(
 }
 
 /**
+ * Folds a `suspended` entry into the suspension map: an `action:"off"` sets
+ * the session suspended, an `action:"on"` clears it (both last-wins, so the
+ * later marker in a restart's replay tail decides). Two flavors fold inert —
+ * they record a refusal or a suppression, never a suspension change: a
+ * `refused:true` entry (the `allowSuspend:false` refusal journal, which never
+ * touched ledger state and must not resurrect a suspension after a restart)
+ * and the `event:"would-block"` audit entry. Any other (missing or unknown)
+ * action is a shape drop: a hostile action must not silently toggle the flag.
+ * @param entry The parsed `suspended` entry.
+ * @param suspended The suspension map to fill.
+ * @param sessionID The validated session ID.
+ * @returns A shape drop for an invalid action, or `null` when folded (or the
+ *     audit flavor, which folds nothing and drops nothing).
+ */
+function foldSuspended(
+  entry: Record<string, unknown>,
+  suspended: Map<string, true>,
+  sessionID: string,
+): ReplayDrop | null {
+  if (entry.event === "would-block" || entry.refused === true) return null
+  if (entry.action !== "off" && entry.action !== "on") {
+    return { reason: "entry-shape", sessionID }
+  }
+  if (entry.action === "off") suspended.set(sessionID, true)
+  else suspended.delete(sessionID)
+  return null
+}
+
+/**
  * Dispatches a replay-typed entry to its per-kind fold.
  * @param entry The parsed replay-typed entry.
  * @param maps The last-wins maps to fill.
@@ -650,6 +710,7 @@ function foldReplayLine(
   maps: ReplayMaps,
   sessionID: string,
   period: ObservePeriod,
+  suspended: Map<string, true>,
 ): ReplayDrop | null {
   const type = entry.type
   if (type === "gate") {
@@ -668,6 +729,9 @@ function foldReplayLine(
   }
   if (type === "would-block") {
     return foldWouldBlock(entry, period, sessionID)
+  }
+  if (type === "suspended") {
+    return foldSuspended(entry, suspended, sessionID)
   }
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
@@ -1005,6 +1069,14 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  * entry (capped per boot, with a summary entry for the overflow) so
  * truncation and forgery are observable.
  *
+ * A replayed `suspended` entry restores the session's gate suspension
+ * last-wins: `action:"off"` re-suspends, `action:"on"` resumes (a restart
+ * mid-suspension stays suspended — no silent re-enforcement); the
+ * `event:"would-block"` audit flavor folds inert, and a missing or unknown
+ * action is a shape drop. The restored map is LRU-capped after replay like
+ * the other session maps.
+ * @param states The session→state map to populate.
+ *
  * A replayed green is journaled audited evidence, not runtime proof: the
  * flipping-entry filter skips enforce-mode `verified:false` PASSes (they
  * never flipped at runtime, so they must not restore), while flag-mode
@@ -1072,6 +1144,7 @@ function replayGatePasses(
   tailLines: number,
   creditedApprovals: Map<string, number>,
   observePeriod: ObservePeriod,
+  suspended: Map<string, true>,
 ): void {
   const maps = newReplayMaps()
   const drops: ReplayDrop[] = []
@@ -1087,7 +1160,7 @@ function replayGatePasses(
       drops.push({ reason: "session-id" })
       continue
     }
-    const drop = foldReplayLine(entry, maps, sessionID, observePeriod)
+    const drop = foldReplayLine(entry, maps, sessionID, observePeriod, suspended)
     if (drop) drops.push(drop)
   }
   restoreBuckets(states, maps, creditedApprovals)
@@ -1152,6 +1225,12 @@ export function createLedger(
   // Restored last-wins by the boot replay (see ObservePeriod for why it is
   // uncapped); mutated at runtime by the observe methods below.
   const observePeriod = newObservePeriod()
+  // Sessions whose gate enforcement is suspended (parent → true). LRU-capped
+  // at `maxSessions` like the other session maps; only admitted parents set
+  // it, so no extra bound is needed. Restored last-wins by the boot replay
+  // (`action:"off"|"on"` entries); a mid-suspension restart replays the flag
+  // so enforcement does not silently resume.
+  const suspended = new Map<string, true>()
   // Registry bound: 4× the states cap, floored at 256 so a small cap still
   // tracks an active fleet of registered parents.
   const maxTrackedParents = Math.max(256, maxSessions * 4)
@@ -1389,13 +1468,71 @@ export function createLedger(
     }
   }
 
+  /**
+   * The shared body of `resetState`/`clearState`: deletes the session's
+   * bucket, rebuilds it (merging the restart-sticky flags when both the
+   * merge flag and the prior bucket's `replayGrace` are set), re-caps the
+   * LRU, and releases the parent's registered children. Written once so the
+   * two callers cannot drift.
+   * @param sessionID The parent session ID to reset.
+   * @param merge Whether the rebuild may merge restart-sticky flags (only
+   *     when the prior bucket carries `replayGrace`).
+   * @returns The number of registered child buckets freed (0 for a no-op).
+   */
+  function resetBucket(sessionID: string, merge: boolean): number {
+    const prior = states.get(sessionID)
+    states.delete(sessionID)
+    states.set(sessionID, merge && prior?.replayGrace ? mergeAfterReplay(prior) : newState())
+    cap(states, isParent)
+    return releaseChildren(sessionID)
+  }
+
+  /**
+   * Sets (or clears) a parent session's gate suspension (see the interface
+   * doc). Setting is LRU-touched and capped at `maxSessions`; clearing just
+   * deletes. No-op on an empty id.
+   * @param sessionID The parent session ID.
+   * @param on True to suspend, false to resume.
+   */
+  function setSuspended(sessionID: string, on: boolean): void {
+    if (!sessionID) return
+    if (!on) {
+      suspended.delete(sessionID)
+      return
+    }
+    promote(suspended, sessionID)
+    suspended.set(sessionID, true)
+    cap(suspended)
+  }
+
+  /**
+   * Whether a parent session's gate enforcement is currently suspended, with
+   * LRU promotion (the map is LRU by use).
+   * @param sessionID The parent session ID to test.
+   * @returns True when the session is suspended.
+   */
+  function isSuspended(sessionID: string): boolean {
+    if (!suspended.has(sessionID)) return false
+    promote(suspended, sessionID)
+    return true
+  }
+
   // Replay runs before capping so the restored set honors the LRU cap too; the
   // credit trace is capped once after replay (restore marks take a boot-time
   // stamp, and the map is bounded like the other session maps). The observe
-  // period folds in online during the replay (see replayGatePasses).
-  replayGatePasses(states, journalPath, replayTailLines, creditedApprovals, observePeriod)
+  // period folds in online during the replay (see replayGatePasses), and the
+  // suspension map folds the same way (last-wins `action:"off"|"on"`).
+  replayGatePasses(
+    states,
+    journalPath,
+    replayTailLines,
+    creditedApprovals,
+    observePeriod,
+    suspended,
+  )
   cap(states, isParent)
   cap(creditedApprovals)
+  cap(suspended)
 
   return {
     childToParent,
@@ -1422,20 +1559,19 @@ export function createLedger(
       return states.get(sessionID)
     },
     resetState(sessionID: string): number {
-      // delete+set keeps the LRU MRU position and the cap, as a plain reset.
-      const prior = states.get(sessionID)
-      states.delete(sessionID)
-      states.set(sessionID, prior?.replayGrace ? mergeAfterReplay(prior) : newState())
-      cap(states, isParent)
-      // A new prompt also releases this parent's registered children: their
-      // verdict evidence is dropped and their metering counters cleared, so a
-      // marker-less re-fire can never re-attribute against a stale streamed
-      // APPROVE and a cap-exhausted child is re-dispatchable. Unresolved
-      // children (no registered edge) keep their verdicts by design — the
-      // timestamp join keeps a previous task's streamed APPROVE from approving
-      // the next task.
-      return releaseChildren(sessionID)
+      // delete+set keeps the LRU MRU position and the cap, as a plain reset;
+      // the restart-sticky merge arm carries the replayed flags through the
+      // first post-restart prompt (the one-prompt grace).
+      return resetBucket(sessionID, states.get(sessionID)?.replayGrace ?? false)
     },
+    clearState(sessionID: string): number {
+      // Fresh start: the same rebuild sequence with the merge arm disabled,
+      // so no credit (including the restart-sticky flags) rehydrates after a
+      // suspension or resume clear.
+      return resetBucket(sessionID, false)
+    },
+    setSuspended,
+    isSuspended,
     parentOf(sessionID: string | undefined): string {
       if (!sessionID) return ""
       const parent = childToParent.get(sessionID)

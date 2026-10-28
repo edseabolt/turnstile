@@ -121,6 +121,12 @@ export function defaultConfig(
     // re-arms earned credit when the worktree/branch is unchanged; set
     // `continuationCarry: false` to restore a clean cycle every prompt.
     continuationCarry: true,
+    // Session-level gate suspend/resume: while suspended, decisions compute and
+    // journal but never throw `BLOCKED`; the resume marker starts from fresh
+    // state with no rehydrated credit. `allowSuspend: false` refuses both.
+    suspendMarker: "TURNSTILE OFF:",
+    resumeMarker: "TURNSTILE ON:",
+    allowSuspend: true,
     agents: {
       planner: "planner",
       reviewer: "reviewer",
@@ -181,12 +187,15 @@ export function defaultConfig(
  *     explicitly to end an observe period.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (key === "trace" || key === "continuationCarry") return typeof value === "boolean"
+  if (key === "trace" || key === "continuationCarry" || key === "allowSuspend")
+    return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
   if (
     key === "metricsDir" ||
     key === "waiverMarker" ||
     key === "approvalMarker" ||
+    key === "suspendMarker" ||
+    key === "resumeMarker" ||
     key === "plansDir"
   ) {
     if (key === "metricsDir") {
@@ -253,6 +262,9 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
+  else if (key === "suspendMarker") config.suspendMarker = value as string
+  else if (key === "resumeMarker") config.resumeMarker = value as string
+  else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
   else config[key as NumericConfigKey] = value as number
 }

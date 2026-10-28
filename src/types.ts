@@ -727,6 +727,28 @@ export interface TurnstileConfig {
    * bucket.
    */
   continuationCarry: boolean
+  /**
+   * Literal marker that, appearing in the user's own prompt, suspends gate
+   * blocking for the session: enforcement decisions keep computing and
+   * journaling (observe-like) but never throw `BLOCKED` while suspended, and
+   * the session's gate state is cleared fresh. Not agent-dispatchable: only
+   * admitted user prompts are scanned. Default `TURNSTILE OFF:`.
+   */
+  suspendMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, resumes
+   * enforcement after a suspension with fresh task state: no credit earned
+   * while suspended rehydrates. Default `TURNSTILE ON:`.
+   */
+  resumeMarker: string
+  /**
+   * Whether the suspend/resume markers are honored at all. When false, an
+   * OFF or ON marker is refused: the refusal is journaled (`refused:true`
+   * with the marker's `action`) and surfaced as a marker-style diagnostic,
+   * and no state changes (the refused entry folds replay-inert). Default
+   * true.
+   */
+  allowSuspend: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */
