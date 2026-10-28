@@ -9,12 +9,14 @@ host: "OpenCode host\n(v2 promise-plugin API)" {
   tool-hook: "tool.hook\nexecute.before · execute.after"
   event-sub: "event.subscribe\n(stream loop)"
   perm-hook: "permission.hook('evaluate')"
+  app-version: "app.version"
 }
 
 entry: "turnstile.ts\n{ id:'turnstile', server, setup }\nthin factory — contracts in doc comment"
 
 core: "src/ — one concern per boundary" {
   setup: "setup.ts\nwiring only: hook registration, heartbeat,\nlifecycle/disposal"
+  hostcompat: "host-compat.ts\nhost version guard: semver parse/compare,\nshipped range, verdict"
   hookscore: "hooks-core.ts\nshared hook state + services:\nTurnstileContext (config, journaler, gates,\nledger, admission, marker parsing,\nverdict attribution)"
   hookssession: "hooks-session.ts\nprompt · generate · compaction bodies"
   hookspermission: "hooks-permission.ts\nevaluate body (plan/landing arms)"
@@ -34,7 +36,8 @@ core: "src/ — one concern per boundary" {
   evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
   bounded: "bounded.ts\nbounded-map FIFO eviction"
-  journal: "journal.ts\nturnstile.jsonl + trace, rotation, fail-open appends"
+  journal: "journal.ts\nturnstile.jsonl + trace, rotation, fail-open appends,\nfail-open journal reader (readJournalEntries)"
+  summary: "summary.ts\nsession-end summary counting + one-line\nformatting over parsed entries (pure)"
   policy: "policy.ts\norchestratorPolicyFor prose\nbuilt from resolved config"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
 }
@@ -53,6 +56,8 @@ host.tool-hook -> entry
 host.event-sub -> entry
 host.perm-hook -> entry
 entry -> core.setup
+host -> core.setup: "app.version"
+core.setup -> core.hostcompat
 core.setup -> core.hookscore
 core.setup -> core.hookssession
 core.setup -> core.hookspermission
@@ -74,6 +79,8 @@ core.hookscore -> core.markers
 core.hookscore -> core.fingerprint
 core.hookscore -> core.delivery
 core.hookscore -> core.bounded
+core.hooksevents -> core.summary
+core.summary -> core.journal: "type-only"
 core.hookssession -> core.hookscore: "type-only"
 core.hookssession -> core.delivery
 core.hookssession -> core.state

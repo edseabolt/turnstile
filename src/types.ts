@@ -693,15 +693,24 @@ export interface TurnstileConfig {
   waiverMarker: string
   /**
    * Literal marker that releases the plan gate via an explicit human
-   * approval. Present at config resolution so the key is valid and the digest
-   * is stable; not yet consumed by the prompt-channel waiver. Defaults to
-   * `PLAN APPROVED:`.
+   * approval, captured from the user's prompt at admission and honored like
+   * a plan-reviewer verdict. Defaults to `PLAN APPROVED:`.
    */
   approvalMarker: string
   /** Project-relative directory scanned for `## Decomposition` plans. */
   plansDir: string
   /** Whether the human-readable trace file is written (JSONL journal always). */
   trace: boolean
+  /**
+   * Session-end summary surface. `quiet` (default) prints one recap line at
+   * `session.idle` for sessions that did something (verified test-claims,
+   * blocked dispatches, waivers — counts derived from the journal) and is
+   * silent for zero-activity sessions; `on` additionally prints an
+   * all-gates-green line for zero-activity sessions; `off` disables the
+   * surface entirely. See `src/summary.ts` and the `session.idle` handler in
+   * `src/hooks-events.ts`.
+   */
+  sessionSummary: "on" | "quiet" | "off"
   /**
    * When true, a prompt admitted in an unchanged worktree/branch carries the
    * current task's restart-sticky gate flags across the prompt reset instead
@@ -710,12 +719,36 @@ export interface TurnstileConfig {
    * a landing approval `hasReviewApprove`, each paired with the restart-
    * sticky ensemble count) is carried, so a continuation arriving before any
    * `GATE: PASS` or reviewer `VERDICT: APPROVE` still starts a clean cycle.
-   * Default false: every prompt starts a clean gate cycle. Opt-in because a
-   * genuinely new task on the same branch is indistinguishable from a
-   * continuation, and a carried landing approval releases pushes for that
-   * new task too until a fresh prompt resets the bucket.
+   * Default true: a reviewer-approved landing prompt re-arms earned credit
+   * when the worktree/branch is unchanged; set false to restore a clean
+   * cycle every prompt. A genuinely new task on the same branch is
+   * indistinguishable from a continuation, and a carried landing approval
+   * releases pushes for that new task too until a fresh prompt resets the
+   * bucket.
    */
   continuationCarry: boolean
+  /**
+   * Literal marker that, appearing in the user's own prompt, suspends gate
+   * blocking for the session: enforcement decisions keep computing and
+   * journaling (observe-like) but never throw `BLOCKED` while suspended, and
+   * the session's gate state is cleared fresh. Not agent-dispatchable: only
+   * admitted user prompts are scanned. Default `TURNSTILE OFF:`.
+   */
+  suspendMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, resumes
+   * enforcement after a suspension with fresh task state: no credit earned
+   * while suspended rehydrates. Default `TURNSTILE ON:`.
+   */
+  resumeMarker: string
+  /**
+   * Whether the suspend/resume markers are honored at all. When false, an
+   * OFF or ON marker is refused: the refusal is journaled (`refused:true`
+   * with the marker's `action`) and surfaced as a marker-style diagnostic,
+   * and no state changes (the refused entry folds replay-inert). Default
+   * true.
+   */
+  allowSuspend: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */
@@ -801,6 +834,26 @@ export type Host = {
       name: string,
       callback: (event: unknown) => unknown | Promise<unknown>,
     ) => Promise<unknown>
+  }
+  /**
+   * Host identity block (v2 Context.app). Optional; the version feeds the
+   * host-compat guard only — never enforcement.
+   */
+  app?: { name?: unknown; version?: unknown }
+  /**
+   * TUI surface, when the host exposes one (verified on the TUI side as
+   * `tui.toast.show` with `message` required). Optional-chained everywhere;
+   * the toast is a best-effort delivery channel on top of the journal.
+   */
+  tui?: {
+    toast?: {
+      show?: (input: {
+        message: string
+        title?: string
+        variant?: "info" | "success" | "warning" | "error"
+        duration?: number
+      }) => Promise<unknown>
+    }
   }
 }
 

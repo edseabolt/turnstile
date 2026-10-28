@@ -39,8 +39,11 @@ Commands:
              writing nothing — a dry run of the --repair apply mode)
   uninstall Remove installed artifacts (manifest artifacts)
   status    Report per-session gate/plan state from the journal
-            (status --json prints machine-readable JSON; read-only, nothing is written)
-  evidence  Emit a shareable evidence summary for one task (read-only, nothing is written)
+            (status --json prints machine-readable JSON; read-only; --check-updates
+             writes a 24h cache file)
+            (status --check-updates checks npm for a newer turnstile; network, cached)
+  evidence  Emit a shareable evidence summary for one task (read-only; writes
+             nothing to the journal — --out writes the artifact files)
              (evidence --task <session|latest> --format json|markdown [--out <path>]
               evidence --validate <path>   re-check a committed artifact, write nothing)
   version   Print the installed package version
@@ -80,7 +83,7 @@ async function main() {
     case "init": {
       // Full install: manifest artifacts (plugin + agents) via a single
       // install.mjs spawn. This installer never writes to AGENTS.md — the
-      // legacy contract-block installer was deleted (R1); any pre-existing
+      // legacy contract-block installer was deleted; any pre-existing
       // block is removed by hand by the user, not by npm/init.
       //
       // Printer-mode short-circuit: --print-model-config makes init write
@@ -109,7 +112,8 @@ async function main() {
       console.log(JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version)
       return
     case "status": {
-      // Read-only status surface over the JSONL journal: spawn scripts/status.mjs
+      // Read-only status surface over the JSONL journal (the only write is
+      // --check-updates' 24h cache file): spawn scripts/status.mjs
       // with passthrough args (mirrors the init case's leading-"--" stripping).
       const statusPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
       return process.exit(await spawnInstaller(statusScript, statusPassthrough))

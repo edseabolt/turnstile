@@ -301,9 +301,9 @@ test("configDigest flips when a key value changes", () => {
   assert.notEqual(configDigest(base), configDigest(flipped))
 })
 
-/** The continuation carry is opt-in and default-off. */
-test("defaultConfig sets continuationCarry to false", () => {
-  assert.equal(defaultConfig({}).continuationCarry, false)
+/** The continuation carry carries earned flags by default. */
+test("defaultConfig sets continuationCarry to true", () => {
+  assert.equal(defaultConfig({}).continuationCarry, true)
 })
 
 /** continuationCarry runs the shared boolean scalar path: a boolean merges,
@@ -314,14 +314,14 @@ test("mergeConfig validates continuationCarry like trace", () => {
   assert.equal(ok.config.continuationCarry, true)
   assert.equal(ok.warnings.length, 0)
   const bad = mergeConfig(base, { continuationCarry: "yes" as unknown })
-  assert.equal(bad.config.continuationCarry, false)
+  assert.equal(bad.config.continuationCarry, true)
   assert.deepEqual(bad.warnings, ['config: invalid value for "continuationCarry"; keeping default'])
 })
 
 /** A boolean continuationCarry override flips the config digest. */
 test("configDigest flips on a continuationCarry override", () => {
   const base = defaultConfig({})
-  assert.notEqual(configDigest(base), configDigest({ ...base, continuationCarry: true }))
+  assert.notEqual(configDigest(base), configDigest({ ...base, continuationCarry: false }))
 })
 
 /** (f) readWarn >= readBlock clamps readWarn to readBlock-1 with exactly one warning. */
@@ -456,14 +456,36 @@ test("loadConfig keeps a reordered default-valued bareOutput verbatim", () => {
   assert.deepEqual(config.agents.bareOutput, ["reviewer", "test-runner", "plan-reviewer"])
 })
 
-/** (o) a config copied from the shipped example (bareOutput: []) is an
- *  explicit empty list, not the unset default: no derivation from the agent
- *  names occurs. */
-test("loadConfig treats an explicit empty bareOutput as configured, not unset", () => {
+/** (o) a config copied from the shipped example (bareOutput: []) is read as
+ *  unset: the loader re-derives the list from the agent names and surfaces one
+ *  warning naming the key. */
+test("loadConfig re-derives an explicit empty bareOutput (the shipped example's shape)", () => {
   const file = path.join(xdgTmp, "explicit-empty.json")
   fs.writeFileSync(file, JSON.stringify({ agents: { testRunner: "ci-bot", bareOutput: [] } }))
-  const { config } = loadConfig({ [ENV_KEYS.config]: file })
+  const { config, warnings } = loadConfig({ [ENV_KEYS.config]: file })
+  assert.deepEqual(config.agents.bareOutput, ["ci-bot", "reviewer", "plan-reviewer"])
+  assert.equal(warnings.filter((w) => w.includes("bareOutput")).length, 1)
+})
+
+/** (o) an explicit empty bareOutput arriving via the injected override layer
+ *  (the config a setup injects) is re-derived the same way. */
+test("loadConfig re-derives an explicit empty bareOutput from the override layer", () => {
+  const { config, warnings } = loadConfig(
+    { [ENV_KEYS.metricsDir]: xdgTmp },
+    { agents: { ...defaultConfig({}).agents, reviewer: "qc-reviewer", bareOutput: [] } },
+  )
+  assert.deepEqual(config.agents.bareOutput, ["test-runner", "qc-reviewer", "plan-reviewer"])
+  assert.ok(
+    warnings.some((w) => w.startsWith("config: agents.bareOutput is an explicit empty list")),
+  )
+})
+
+/** (o) mergeConfig keeps its verbatim contract: an explicit empty list is
+ *  stored as-is with no warning; only resolution re-derives it. */
+test("mergeConfig stores an explicit empty bareOutput verbatim, deriving only at resolution", () => {
+  const { config, warnings } = mergeConfig(defaultConfig({}), { agents: { bareOutput: [] } })
   assert.deepEqual(config.agents.bareOutput, [])
+  assert.equal(warnings.length, 0)
 })
 
 /** an invalid gateEvidence value keeps the default, names the key, and warns once. */
@@ -796,6 +818,35 @@ test("configDigest flips on reviewEnsemble overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, reviewEnsemble: "advise" }))
 })
 
+/** sessionSummary defaults to quiet and validates its three literals. */
+test("sessionSummary defaults to quiet and accepts on/quiet/off", () => {
+  assert.equal(defaultConfig({}).sessionSummary, "quiet")
+  for (const mode of ["on", "quiet", "off"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { sessionSummary: mode })
+    assert.equal(config.sessionSummary, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** An invalid sessionSummary value keeps the quiet default and names the
+ *  three accepted literals; a non-string rejects the same way. */
+test("mergeConfig rejects an invalid sessionSummary and keeps the quiet default", () => {
+  const base = defaultConfig({})
+  for (const bad of ["loud", 42, true]) {
+    const { config, warnings } = mergeConfig(base, { sessionSummary: bad })
+    assert.equal(config.sessionSummary, "quiet")
+    assert.deepEqual(warnings, [
+      'config: sessionSummary must be "on", "quiet", or "off"; keeping default',
+    ])
+  }
+})
+
+/** The digest flips when sessionSummary overrides the quiet default. */
+test("configDigest flips on sessionSummary overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, sessionSummary: "on" }))
+})
+
 /** Enforce mode plus maxReviewerRounds: 1 warns that a second reviewer
  *  dispatch will be capped; the resolved count is left as configured. */
 test("loadConfig warns when enforce reviewEnsemble needs maxReviewerRounds >= 2", () => {
@@ -1027,6 +1078,14 @@ test("validateResolved stays silent for the default and narrower marker sources"
     !narrowerWarnings.some((w) => w.includes("gateMarker") || w.includes("verdictMarker")),
     "a source that matches no more than the default stays silent",
   )
+})
+
+/** An explicit non-empty bareOutput list is left alone by validateResolved: no
+ *  empty-list warning is emitted for it. */
+test("validateResolved stays silent for an explicit non-empty bareOutput", () => {
+  const cfg = defaultConfig({})
+  cfg.agents.bareOutput = ["reviewer"]
+  assert.equal(validateResolved(cfg).filter((w) => w.includes("bareOutput")).length, 0)
 })
 
 /** (3) A gateMarker source without the ^ start anchor is broader: it matches a

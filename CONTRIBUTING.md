@@ -81,6 +81,12 @@ the real metrics directory. When changing behavior, update the goldens in
 `tests/default-golden.test.ts` deliberately: they pin journal entry shapes,
 trace format, and the exact block messages.
 
+## Release checklist
+
+- At release: bump `HOST_COMPAT` in `src/host-compat.ts` when a new opencode
+  was tested, update the README compatibility matrix (including the tested
+  list), and run `npm run ci`.
+
 ## Commit style
 
 Conventional messages (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`).
@@ -93,11 +99,12 @@ to run through the plugin's own pipeline (planner → plan-reviewer → executor
 → test-runner → reviewer) with the gates and journal on, and to land via the
 same evidence rules it enforces on users. Hand-edits are fine for docs,
 formatting, and trivial fixes; if a change skips the pipeline, say so in the
-commit body. See the "Turnstile is built with turnstile" paragraph in the
-README for what the journal shows about this in practice.
+commit body. The §7 statistics in `docs/usage.md` ("Field-tested on
+itself") show what the journal records about this in practice.
 
 That includes published evidence: `.github/workflows/turnstile-evidence.yml`
-is a copy of `examples/turnstile-evidence.yml` with one substitution
-(`node scripts/evidence.mjs` instead of the published CLI, so the tree
-validates itself). Edit the example and re-copy it in the same change set;
+is a copy of `examples/turnstile-evidence.yml` with two deltas — the
+substitution (`node scripts/evidence.mjs` instead of the published CLI, so
+the tree validates itself) and an added header comment explaining the
+copy. Edit the example and re-copy it in the same change set;
 drift between the two is drift in what consumers install.

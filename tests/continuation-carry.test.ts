@@ -269,12 +269,15 @@ test("a same-worktree continuation prompt carries an earned gate across the rese
 })
 
 /**
- * With continuation carry off (the default), a prompt reset wipes an earned
+ * With continuation carry explicitly disabled, a prompt reset wipes an earned
  * gate exactly like any other prompt: the reviewer dispatch is blocked with
  * the exact no-gate-pass message and no `continuation` entry is journaled.
  */
-test("a continuation prompt with continuation carry off resets the gate like any prompt", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan({ gateEvidence: "flag" })
+test("a continuation prompt with continuation carry disabled resets the gate like any prompt", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan({
+    continuationCarry: false,
+    gateEvidence: "flag",
+  })
   try {
     await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
     await earnGate(h, "p1")
@@ -490,13 +493,16 @@ test("a same-worktree continuation carries a landing approval whose gate went re
 })
 
 /**
- * The same sequence with continuation carry off (the default): no
+ * The same sequence with continuation carry explicitly disabled: no
  * `continuation` entry is journaled and the snapshot renders
  * `reviewer: PENDING dispatches=0` — the approval dies with the reset, like
  * any other prompt.
  */
-test("a continuation with continuation carry off resets the landing approval like any prompt", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan({ gateEvidence: "flag" })
+test("a continuation with continuation carry disabled resets the landing approval like any prompt", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan({
+    continuationCarry: false,
+    gateEvidence: "flag",
+  })
   try {
     await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
     await earnGate(h, "p1")
@@ -518,6 +524,70 @@ test("a continuation with continuation carry off resets the landing approval lik
     assert.ok(!journalEntries(metricsDir).some((l) => l.type === "continuation"))
     const system = await compact(h, "p1")
     assert.match(snapshotOf(system), /- reviewer: PENDING dispatches=0 /)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * With the default config (continuation carry on), a same-worktree landing
+ * prompt after a credited reviewer APPROVE journals a `continuation` entry
+ * and the snapshot still renders `reviewer: APPROVED dispatches=2` — the
+ * earned approval carries across the reset without an explicit config key.
+ */
+test("a default-config continuation carries a landing approval across the reset", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan({ gateEvidence: "flag" })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
+    await earnGate(h, "p1")
+    await reviewerDispatch(h, "p1")
+    await reviewerDispatch(h, "p1")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
+    await callSession(h, "prompt", { sessionID: "p1", text: "now open the PR" })
+    assert.ok(
+      journalEntries(metricsDir).some((l) => l.type === "continuation" && l.sessionID === "p1"),
+    )
+    const system = await compact(h, "p1")
+    assert.match(snapshotOf(system), /- reviewer: APPROVED dispatches=2 /)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * With the default config, a continuation prompt that re-admits in a foreign
+ * worktree still resets fully: the fingerprint mismatch defeats the carry, so
+ * the reviewer dispatch is blocked with the exact no-gate-pass message and no
+ * `continuation` entry is journaled.
+ */
+test("a default-config continuation in a changed worktree resets the gate like any prompt", async () => {
+  const { h, metricsDir, restore } = await bootWithPlan({ gateEvidence: "flag" })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "please start the task" })
+    await earnGate(h, "p1")
+    // A root session.created carrying a foreign directory re-seeds the
+    // session's cached directory to a different worktree; the companion error
+    // deterministically signals the event loop consumed the created event.
+    const otherDir = tmpDir("turnstile-mismatch-")
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "p1", location: { directory: otherDir } },
+    })
+    h.pushEvent({ type: "session.error", data: { sessionID: "p1", error: "dir-change" } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "error" && l.error === "dir-change"),
+    )
+    await callSession(h, "prompt", { sessionID: "p1", text: "please also run lint" })
+    await assert.rejects(
+      reviewerDispatch(h, "p1"),
+      (e: Error) => e.message === NO_GATE_MESSAGE && e instanceof BlockError,
+    )
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "continuation"))
   } finally {
     restore()
   }

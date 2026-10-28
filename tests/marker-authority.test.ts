@@ -417,6 +417,26 @@ test("wiring: a renamed test-runner agent gates for that name only", async () =>
   }
 })
 
+/** A config shaped like the shipped example (an explicit empty bareOutput) is
+ *  re-derived at load, so a test-runner GATE: PASS is credited as a gate entry
+ *  instead of being journaled as suppressed. */
+test("wiring: the example's empty bareOutput derives, so a test-runner GATE: PASS is credited", async () => {
+  const { h, metricsDir, dispose } = await boot({ agents: { bareOutput: [] } })
+  try {
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+    })
+    await h.pushEvent({ type: "session.text.ended", data: { sessionID: "c1", text: GATE_PASS } })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((e) => e.type === "gate" && e.result === "PASS"),
+    )
+    assert.equal(journalEntries(metricsDir).filter((e) => e.type === "suppressed").length, 0)
+  } finally {
+    dispose()
+  }
+})
+
 /** Inertness: replay over a journal carrying only suppressed entries restores
  *  no gate state (the replay filter only reads gate/plan entries). */
 test("inertness: replay over suppressed-only journal restores nothing", () => {

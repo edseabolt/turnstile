@@ -22,7 +22,14 @@ import {
   PLAN_ASK_MESSAGE_PREFIX,
 } from "./delivery.ts"
 import { decisionEntry, reviewerEnsembleEntry } from "./gates-common.ts"
+import { readJournalEntries } from "./journal.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
+import {
+  countSessionActivity,
+  formatAllGreenLine,
+  formatSessionSummary,
+  isInactive,
+} from "./summary.ts"
 import type { EventProperties, StreamEvent } from "./types.ts"
 
 /** A consume() exit: the stream was torn down by an abort, or it completed cleanly. */
@@ -396,6 +403,58 @@ export function startEventStream(
       ctx.admitPrompt(sid, { sessionID: sid, text }, inboxID)
     }
   }
+  /** Delivery-proof journal entry bound: 300 chars, like the trace's bound. */
+  const SUMMARY_TEXT_BOUND = 300
+  /**
+   * Best-effort toast delivery of the session-end summary: a rejecting or
+   * throwing toast journals an `error` entry and changes nothing else
+   * (fail-open) — the journal entry is the headless log line either way.
+   * @param line The summary line to toast.
+   */
+  const deliverToast = async (line: string): Promise<void> => {
+    if (!ctx.toast) return
+    try {
+      await ctx.toast(line, "success")
+    } catch (e) {
+      ctx.journaler.journal({ type: "error", error: `session-summary toast: ${e}` })
+    }
+  }
+  /**
+   * Handles a session.idle event: surfaces the once-per-session summary line
+   * per the `sessionSummary` config. "off" is silent; a zero-activity session
+   * is silent under "quiet" and prints the all-green line under "on"; an
+   * active session prints the recap line (verified test-claims, premature
+   * dispatches blocked, waivers — counts derived from this session's journal
+   * entries via `countSessionActivity`). Delivery: journaled always as a
+   * `type:"session-summary"` delivery-proof entry (the headless log),
+   * toasted best-effort when the host offers `tui.toast` — a toast failure
+   * journals and changes nothing else (fail-open). Deduped per session via
+   * the bounded `ctx.summarizedSessions` set, so one summary per session per
+   * host process; a host restart may re-summary a still-idle session once
+   * (accepted; the journal entry makes it diagnosable). Fail-open — the
+   * outer loop journals any throw.
+   * @param properties The resolved event properties.
+   */
+  const handleSessionIdle = async (properties: EventProperties): Promise<void> => {
+    const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+    if (sid === "" || ctx.summarizedSessions.has(sid)) return
+    if (ctx.config.sessionSummary === "off") return
+    ctx.summarizedSessions.add(sid)
+    ctx.boundSummarizedSessions()
+    const counts = countSessionActivity(readJournalEntries(ctx.journaler.journalPath), sid)
+    const inactive = isInactive(counts)
+    if (inactive && ctx.config.sessionSummary === "quiet") return
+    const line = inactive
+      ? formatAllGreenLine(ctx.journaler.journalPath)
+      : formatSessionSummary(counts, ctx.journaler.journalPath)
+    ctx.journaler.journal({
+      type: "session-summary",
+      sessionID: sid,
+      ...counts,
+      text: line.slice(0, SUMMARY_TEXT_BOUND),
+    })
+    await deliverToast(line)
+  }
   /** The event-type → handler dispatch table, in stream source order. */
   const handlers: Record<string, EventHandler> = {
     "session.created": handleSessionCreated,
@@ -406,6 +465,7 @@ export function startEventStream(
     "permission.asked": handlePermissionAsked,
     "permission.replied": handlePermissionReplied,
     "session.inbox.enqueued": handleInboxEnqueued,
+    "session.idle": handleSessionIdle,
   }
   /**
    * Consumes the host event stream until aborted, dispatching each event

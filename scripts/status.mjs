@@ -2,8 +2,9 @@
 // Read-only report of turnstile gate/plan state over the JSONL journal.
 //
 // This is the `turnstile status` surface: it reports, per parent
-// session, what the journal says a task currently is WITHOUT touching the host
-// or writing anything. It is deliberately a plain ESM script outside the 100%
+// session, what the journal says a task currently is — it never touches the
+// host, and its only write is `--check-updates`' 24h cache file. It is
+// deliberately a plain ESM script outside the 100%
 // coverage gate (bin/ and scripts/ never are), and it is exercised by
 // tests/status.test.ts via spawn rather than imported.
 //
@@ -17,20 +18,27 @@
 //   opencode-turnstile status            Human-readable table.
 //   opencode-turnstile status --json     Machine-readable JSON.
 //   opencode-turnstile status --help     This usage. Unknown flags exit 2.
+//
+// `--check-updates` (opt-in) checks npm for a newer turnstile: the installed
+// version comes from the script's own package.json; the registry lookup is
+// cached at `<metricsDir>/update-check.json` for 24h so repeated runs stay
+// network-free, and failures are never cached.
 
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { fileURLToPath } from "node:url"
 
-const USAGE = `Usage: opencode-turnstile status [--json]
+const USAGE = `Usage: opencode-turnstile status [--json] [--check-updates]
 
 Reports turnstile gate and plan state per parent session, read from the
 JSONL journal. Read-only: nothing is written. The journal reflects the last
 prompt-cycle; in-memory state can be fresher.
 
 Options:
-  --json    Print machine-readable JSON instead of the table
-  --help    Show this help`
+  --json            Print machine-readable JSON instead of the table
+  --check-updates   Check npm for a newer turnstile (network, cached 24h)
+  --help            Show this help`
 
 /**
  * Resolves the default metrics directory (copy of the journaler default so the
@@ -52,6 +60,113 @@ function defaultMetricsDir(env) {
  * `replayTailLines` in the config file overrides it.
  */
 const DEFAULT_REPLAY_TAIL_LINES = 2000
+
+/** Age (ms) a cached update-check result stays fresh (24h). */
+const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+
+/** Default npm registry URL for the latest-turnstile lookup (tests override via TURNSTILE_UPDATE_URL). */
+const DEFAULT_UPDATE_URL = "https://registry.npmjs.org/opencode-turnstile/latest"
+
+/**
+ * Local semver subset for the update comparison (standalone-script copy; see
+ * the REPLAY_SESSION_RE precedent — this script cannot import TS source).
+ * @param {string} s Version string to parse.
+ * @returns {{ major: number, minor: number, patch: number } | null} Parsed
+ *     core fields, or null when not a strict `major.minor.patch`.
+ */
+function parseSemverJs(s) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(s ?? ""))
+  return m ? { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) } : null
+}
+
+/**
+ * Numeric three-field compare of two already-parsed semver cores.
+ * @param {{ major: number, minor: number, patch: number }} a Left side.
+ * @param {{ major: number, minor: number, patch: number }} b Right side.
+ * @returns {number} Negative / zero / positive as a <, ==, > b.
+ */
+function compareCores(a, b) {
+  for (const k of ["major", "minor", "patch"]) {
+    if (a[k] !== b[k]) return a[k] - b[k]
+  }
+  return 0
+}
+
+/**
+ * Reads the installed turnstile version from the script's own package.json.
+ * @returns {string | null} The version, or null when unreadable.
+ */
+function installedVersion() {
+  try {
+    const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json")
+    return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reads the cached update-check result, tolerating missing/malformed files.
+ * @param {string} metricsDir The metrics directory holding the cache file.
+ * @returns {{ fetchedAt: number, latest: string } | null} The cache, or null.
+ */
+function readUpdateCache(metricsDir) {
+  try {
+    const c = JSON.parse(fs.readFileSync(path.join(metricsDir, "update-check.json"), "utf8"))
+    return typeof c.fetchedAt === "number" && typeof c.latest === "string"
+      ? { fetchedAt: c.fetchedAt, latest: c.latest }
+      : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetches the latest published turnstile version (fail-open: any network or
+ * shape failure returns null and nothing is cached).
+ * @param {NodeJS.ProcessEnv} env Environment; TURNSTILE_UPDATE_URL overrides
+ *     the registry endpoint (tests stub it with a local server).
+ * @returns {Promise<string | null>} The latest version string, or null.
+ */
+async function fetchLatest(env) {
+  try {
+    const res = await fetch(env.TURNSTILE_UPDATE_URL || DEFAULT_UPDATE_URL)
+    if (!res.ok) return null
+    const json = await res.json()
+    return typeof json.version === "string" ? json.version : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Runs the opt-in update check: a fresh cache short-circuits the network;
+ * otherwise the registry is fetched and a success rewrites the cache
+ * (failures are never cached).
+ * @param {NodeJS.ProcessEnv} env Environment for the registry URL.
+ * @param {string} metricsDir The metrics directory holding the cache file.
+ * @returns {Promise<{ checked: boolean, latest?: string, error?: string }>}
+ *     The update-check result block for the status output.
+ */
+async function resolveUpdateCheck(env, metricsDir) {
+  const cached = readUpdateCache(metricsDir)
+  const fresh = cached && Date.now() - cached.fetchedAt < UPDATE_CACHE_TTL_MS
+  const latest = fresh ? cached.latest : await fetchLatest(env)
+  if (!fresh && !latest) {
+    return { checked: true, error: "update check failed (network or response shape)" }
+  }
+  if (!fresh && latest) {
+    try {
+      fs.writeFileSync(
+        path.join(metricsDir, "update-check.json"),
+        JSON.stringify({ fetchedAt: Date.now(), latest }),
+      )
+    } catch {
+      // an unwritable cache is inert — the check still reports this run
+    }
+  }
+  return { checked: true, latest }
+}
 
 /**
  * Host session-ID alphabet, length-capped. Mirrors the canonical constant in
@@ -195,6 +310,7 @@ function freshSession() {
     blocks: 0,
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
+    suspended: false,
   }
 }
 
@@ -225,13 +341,18 @@ function observeCountsOf(entry) {
 /**
  * Aggregates the journal lines into per-session status. Replays the same
  * gate/plan last-wins rules as ledger.ts's replayGatePasses: a trailing
- * `GATE: FAIL` keeps the gate red, an enforce-mode `verified:false` PASS never
+ * `GATE: FAIL` keeps the gate red, a `verified:false` PASS never
  * flips, and a `type:plan` APPROVE restores plan approval. Malformed lines are
  * skipped, and lines whose sessionID fails the replay session-ID shape check
  * are skipped before any fold, for parity with replayGatePasses (status is
  * observation-only, so a dropped line is silent here rather than journaled).
  * Verdict markers over the replay marker bound degrade to "" (they then flow
  * into the empty-marker BLOCK fallback below). Parent-keyed.
+ *
+ * Suspension lines (`type:"suspended"`) fold last-wins like ledger.ts's
+ * foldSuspended: `action:"off"` marks the session suspended, `action:"on"`
+ * clears it, an `event:"would-block"` audit entry folds inert, and an unknown
+ * action folds nothing (a hostile action must not toggle the flag).
  *
  * Observe-mode lines fold in parallel with the ledger replay: last-wins on
  * the two running totals (every line carries both, so the last stamped line
@@ -272,7 +393,7 @@ function aggregate(lines) {
 
     if (type === "gate") {
       // Gate flags restored exactly like replayGatePasses: last flipping result
-      // wins; an enforce-mode unverified PASS neither flips here nor at runtime.
+      // wins; an unverified PASS neither flips here nor at runtime.
       if (result === "PASS" || result === "FAIL") {
         const flips = !(result === "PASS" && e.verified === false && e.mode !== "flag")
         if (flips) {
@@ -322,6 +443,13 @@ function aggregate(lines) {
         a.planApproval.verdict = "BLOCK"
       }
       a.planApproval.source = typeof e.source === "string" ? e.source : a.planApproval.source
+    } else if (type === "suspended") {
+      // Suspension fold (see the function doc): last-wins, mirroring
+      // ledger.ts's foldSuspended — refused refusals, would-block audits,
+      // and unknown actions fold nothing.
+      if (e.event === "would-block" || e.refused === true) continue
+      if (e.action === "off") a.suspended = true
+      else if (e.action === "on") a.suspended = false
     } else if (type === "dispatch") {
       // A blocked attempt was never executed — its block is already counted by
       // the guard's `blocked` entry, so exclude the `blocked:true` stamp from
@@ -384,9 +512,10 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     bl: a.blocks,
     ask: a.permissionAsks,
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
+    sus: a.suspended ? "OFF" : "·",
   }))
 
-  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM"]
+  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "SUS"]
   const cells = [
     (r) => r.session,
     (r) => r.gate,
@@ -396,6 +525,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => String(r.dis),
     (r) => String(r.bl),
     (r) => `${r.ask}/${r.dec}`,
+    (r) => r.sus,
   ]
 
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => cells[i](r).length)))
@@ -426,19 +556,49 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
 }
 
 /**
- * Parses the status arguments. Recognizes --json and --help; anything else is
- * an unknown flag and fails with exit code 2.
+ * Parses the status arguments. Recognizes --json, --help, and
+ * --check-updates; anything else is an unknown flag and fails with exit
+ * code 2.
  * @param {string[]} argv Arguments after the `status` subcommand.
- * @returns {{ json: boolean, help: boolean }} Parsed flags.
+ * @returns {{ json: boolean, help: boolean, checkUpdates: boolean }} Parsed flags.
  */
 function parseArgs(argv) {
   const json = argv.includes("--json")
   const help = argv.includes("--help")
+  const checkUpdates = argv.includes("--check-updates")
   for (const a of argv) {
-    if (a === "--json" || a === "--help") continue
+    if (a === "--json" || a === "--help" || a === "--check-updates") continue
     throw new Error(`unknown argument "${a}"`)
   }
-  return { json, help }
+  return { json, help, checkUpdates }
+}
+
+/**
+ * Builds the human-readable update line for the table output. Reports a newer
+ * published turnstile when one exists, or a one-line failure note when the
+ * check failed; anything else (installed is current or unparsable) renders
+ * nothing — the default output without the flag stays byte-identical.
+ * @param {{ checked: boolean, latest?: string, error?: string }} update The
+ *     update-check result block.
+ * @returns {string} The update line, or "" when there is nothing to report.
+ */
+function updateLineText(update) {
+  if (update?.error) return `update: ${update.error}`
+  const installed = parseSemverJs(installedVersion())
+  const latest = parseSemverJs(update?.latest)
+  if (!installed || !latest || compareCores(latest, installed) <= 0) return ""
+  return `update: a newer turnstile (${update.latest}) is available — npm i opencode-turnstile@latest`
+}
+
+/**
+ * Async wrapper producing the table-mode update line for the empty-journal
+ * path (the check must run before the line can render).
+ * @param {string} metricsDir The metrics directory holding the cache file.
+ * @returns {Promise<string>} The update line, or "".
+ */
+async function updateLine(metricsDir) {
+  const update = await resolveUpdateCheck(process.env, metricsDir)
+  return updateLineText(update)
 }
 
 /**
@@ -453,7 +613,7 @@ async function main(argv) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     process.stderr.write(`${msg}\n`)
-    process.stderr.write("usage: opencode-turnstile status [--json]\n")
+    process.stderr.write("usage: opencode-turnstile status [--json] [--check-updates]\n")
     return 2
   }
   if (flags.help) {
@@ -475,9 +635,16 @@ async function main(argv) {
   if (files.length === 0) {
     // Read-only no-op: nothing recorded yet.
     if (flags.json) {
-      process.stdout.write(`${JSON.stringify(base, null, 2)}\n`)
+      const update = flags.checkUpdates
+        ? await resolveUpdateCheck(process.env, metricsDir)
+        : undefined
+      process.stdout.write(
+        `${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`,
+      )
     } else {
-      process.stdout.write(`No turnstile journal yet at ${journalPath} — nothing to report.\n`)
+      let text = `No turnstile journal yet at ${journalPath} — nothing to report.\n`
+      if (flags.checkUpdates) text += `${await updateLine(metricsDir)}\n`
+      process.stdout.write(text)
     }
     return 0
   }
@@ -487,10 +654,16 @@ async function main(argv) {
     base.sessions[id] = a
   }
 
+  const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
   if (flags.json) {
-    process.stdout.write(`${JSON.stringify(base, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`)
   } else {
-    process.stdout.write(`${renderTable(sessions, journalPath, observe, observeSessions)}\n`)
+    let table = renderTable(sessions, journalPath, observe, observeSessions)
+    if (update) {
+      const line = updateLineText(update)
+      if (line) table += `\n${line}`
+    }
+    process.stdout.write(`${table}\n`)
   }
   return 0
 }

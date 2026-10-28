@@ -5,8 +5,8 @@
  * `hasPlanVerdict`, the read counter, or `policyInjected`) can be evicted mid
  * session by churn from dozens of unrelated child sessions, so a later
  * reviewer/executor dispatch re-mints an empty bucket and blocks despite green
- * evidence. These tests cover the ledger-level protection (T1) and the two
- * AC regressions — a gate flag (T2) and a plan approval (T3) surviving past
+ * evidence. These tests cover the ledger-level protection and the two
+ * regression cases: a gate flag and a plan approval surviving past
  * 64 noisy unregistered children.
  */
 
@@ -100,11 +100,11 @@ const created = (h: FakeHost, properties: Record<string, unknown>): Promise<void
 const delta = (h: FakeHost, sessionID: string, chunk: string): Promise<void> =>
   h.pushEvent({ type: "session.text.delta", properties: { sessionID, delta: chunk } })
 
-/** T1 — ledger unit: a registered parent bucket is never evicted while it
+/** Ledger unit: a registered parent bucket is never evicted while it
  *  stays registered; sibling churn still evicts unrelated buckets; once the
  *  registration ages out of the bounded registry, the bucket is evictable
  *  again. Establishes the cap's protect-predicate behavior in isolation. */
-test("T1: a registered parent bucket survives unrelated churn and un-registering restores eviction", async () => {
+test("a registered parent bucket survives unrelated churn and un-registering restores eviction", async () => {
   // maxSessions=8 keeps the run tiny; maxTrackedParents = max(256, 8*4)=256.
   const ledger = createLedger(path.join(tmpDir(), "unused.jsonl"), 8, 2000)
 
@@ -135,10 +135,11 @@ test("T1: a registered parent bucket survives unrelated churn and un-registering
   assert.equal(ledger.peek("p"), undefined, "an unregistered parent is evictable again")
 })
 
-/** T2 — AC-B: a registered parent's GATE: PASS survives past 64 noisy
+/** A registered parent's GATE: PASS survives past 64 noisy
  *  unregistered children streaming markers; the reviewer dispatch is not
- *  blocked. On HEAD the 64th noise bucket evicts p1 and re-mints it empty. */
-test("T2: a registered parents GATE: PASS survives >64 noisy unregistered children", async () => {
+ *  blocked. Unprotected, the 64th noise bucket evicts p1 and re-mints it
+ *  empty. */
+test("a registered parents GATE: PASS survives >64 noisy unregistered children", async () => {
   const { h, dispose, metricsDir } = await boot({ gateEvidence: "flag" })
   try {
     // Flip p1's gate via a test-runner task-result delivery. The execute.after
@@ -176,11 +177,11 @@ test("T2: a registered parents GATE: PASS survives >64 noisy unregistered childr
   }
 })
 
-/** T3 — AC-C: a registered parent's plan approval (VERDICT: APPROVE) survives
+/** A registered parent's plan approval (VERDICT: APPROVE) survives
  *  past 64 noisy unregistered children; the executor dispatch is not blocked
  *  with `no-plan-verdict`. Also asserts the gates still fire for an
  *  unregistered pressure session, so protection is selective, not "never evict". */
-test("T3: a registered parents plan approval survives >64 noisy children and protection is selective", async () => {
+test("a registered parents plan approval survives >64 noisy children and protection is selective", async () => {
   const { h, metricsDir, restore } = await bootWithPlan()
   try {
     // Register the edge c1 -> p1 via a created event, then have c1 stream an

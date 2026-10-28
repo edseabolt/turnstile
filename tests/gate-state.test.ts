@@ -981,7 +981,10 @@ test("replayed GATE: PASS survives the first post-restart prompt", async () => {
 })
 
 /** The recovery is bounded to exactly one prompt: the second post-restart
- *  prompt full-resets, so a subsequent reviewer dispatch goes red again. */
+ *  prompt full-resets, so a subsequent reviewer dispatch goes red again.
+ *  Guards against surviving every prompt. Continuation carry is disabled so
+ *  the default-on carry (which would legitimately keep the flag on a
+ *  same-worktree second prompt) does not mask the grace bound. */
 test("replayed PASS survives exactly one prompt", async () => {
   const metricsDir = tmpDir()
   fs.writeFileSync(
@@ -989,7 +992,10 @@ test("replayed PASS survives exactly one prompt", async () => {
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, continuationCarry: false },
+  })
   const dispose = (await setup(h.host)) as () => void
   // Two prompts after replay: the grace covers only the first, so the gate is
   // red again on the second prompt. Guards against surviving every prompt.
@@ -1407,6 +1413,9 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   assert.equal(entry.trace, true)
   assert.equal(typeof entry.agents, "object")
   assert.equal(typeof entry.metricsDir, "string")
+  // Host-compat verdict: the fake host exposes no app.version, so the field
+  // is always present and reads "unknown" here (never omitted).
+  assert.equal(entry.compat, "unknown")
   dispose()
 })
 
@@ -1428,6 +1437,8 @@ test("setup heartbeat redacts trace fields when trace is false", async () => {
   assert.equal(setups[0]?.agents, undefined)
   assert.equal(setups[0]?.metricsDir, undefined)
   assert.match(setups[0]?.digest, /^[0-9a-f]{12}$/)
+  // The compat field is always present on the heartbeat, trace or not.
+  assert.equal(setups[0]?.compat, "unknown")
   dispose()
 })
 

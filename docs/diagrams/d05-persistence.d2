@@ -14,12 +14,12 @@ approval: "approved-plans.jsonl\nbound plan approvals\nname + content key + proj
   shape: cylinder
 }
 
-replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignature), hasReviewApprove,\nensemble counts, observe period\n(last-wins)\n→ replayGrace = one-prompt survival"
+replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignature), hasReviewApprove,\nensemble counts, observe period,\ngate suspension (action:off|on,\nlast-wins)\n→ replayGrace = one-prompt survival"
 ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
 
-writers.hooks -> jsonl: "every decision,\n22 entry types\n(incl. observe / would-block)"
+writers.hooks -> jsonl: "every decision,\n26 entry types\n(incl. observe / would-block /\nsuspended / session-summary)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
 approval -> ledger: "at ledger creation:\nload, last-wins per (project, plan),\nevict to cap"
@@ -27,3 +27,5 @@ jsonl -> replay: "at ledger creation:\nreplayTailLines (2000) newest,\nwalking a
 replay -> ledger
 ledger -> enforce
 jsonl -> cli
+jsonl -> summary: "readJournalEntries\n(current file only — rotation\nstraddles undercount visibly)"
+summary: "countSessionActivity\n→ session-summary entry\n(+ toast when the host\noffers tui.toast)"

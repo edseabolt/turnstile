@@ -71,38 +71,52 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ![Module map](images/d01-modules.svg)
 
-| Module                    | Responsibility                                                                                                                                                                                                        |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turnstile.ts`            | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                                                                    |
-| `src/setup.ts`            | Wiring only: hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                               |
-| `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                      |
-| `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                   |
-| `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                                        |
-| `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                   |
-| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, re-subscription under a throw-only restart budget                                        |
-| `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                |
-| `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                                     |
-| `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                            |
-| `src/ledger.ts`           | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                                                                          |
-| `src/markers.ts`          | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                                                                |
-| `src/gates.ts`            | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                    |
-| `src/gates-dispatch.ts`   | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                                                                |
-| `src/gates-plan.ts`       | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                                                                          |
-| `src/gates-common.ts`     | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                      |
-| `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                                                                           |
-| `src/empty-diff.ts`       | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true) |
-| `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                 |
-| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                         |
-| `src/bounded.ts`          | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                            |
-| `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                                                                              |
-| `src/policy.ts`           | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers)          |
-| `src/types.ts`            | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                      |
+| Module                    | Responsibility                                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `turnstile.ts`            | Entry point: module shape + factory; its doc comment is a contract-level summary pointing here as the authoritative reference                                                                                            |
+| `src/setup.ts`            | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                   |
+| `src/host-compat.ts`      | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                               |
+| `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                         |
+| `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                      |
+| `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                                           |
+| `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                      |
+| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, the session-end summary (`session.idle`), re-subscription under a throw-only restart budget |
+| `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                   |
+| `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                                        |
+| `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                               |
+| `src/ledger.ts`           | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                                                                             |
+| `src/markers.ts`          | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                                                                   |
+| `src/gates.ts`            | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                       |
+| `src/gates-dispatch.ts`   | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                                                                   |
+| `src/gates-plan.ts`       | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                                                                             |
+| `src/gates-common.ts`     | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                         |
+| `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                                                                              |
+| `src/empty-diff.ts`       | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true)    |
+| `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                    |
+| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                            |
+| `src/bounded.ts`          | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                               |
+| `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends, the fail-open journal reader (`readJournalEntries`)                            |
+| `src/policy.ts`           | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers)             |
+| `src/summary.ts`          | Session-end summary counting + one-line formatting over parsed journal entries (`countSessionActivity`, `formatSessionSummary`, `formatAllGreenLine`) — pure and host-free, shared with the observe-period summary       |
+| `src/types.ts`            | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                         |
 
 ---
 
 ## 3. Hooks: where the plugin intercepts the host
 
-`setup(h)` registers seven interception points, each tracked for disposal and
+Before any registration, `setup(h)` runs the host-compat guard
+(`src/host-compat.ts`): the host version (`app.version`) is compared against
+the shipped range (`HOST_COMPAT`, ≥ 2.0.22 and < 3.0.0). An **incompatible**
+host is journaled (`type:"compat"`, `event:"incompatible"`), toasted with the
+upgrade instruction, and turnstile degrades to a full no-op — no hook is
+registered and the heartbeat carries `compat:"incompatible"`. An **unknown**
+host (version unreadable or unparseable) enforces as usual and journals a
+one-time `compat` warning (`event:"unknown-host"`); its heartbeat reads
+`compat:"unknown"`. A **compatible** host proceeds byte-identically to the
+pre-guard behavior with `compat:"compatible"` on the heartbeat. The guard is
+fail-open: evaluation or toast failures are journaled, never thrown.
+
+`setup(h)` then registers seven interception points, each tracked for disposal and
 counted into the load heartbeat (`type:"setup"`). The hook bodies live in the
 per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 
@@ -119,7 +133,21 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   and latches, and captures `USER WAIVER:` / `PLAN APPROVED:`
   literals — a waiver capture also parses its scope, the configured agent
   names named in the waiver text (`parseWaiverScope` in `src/markers.ts`),
-  into `userWaiverScope`. It also scans the text for marker-shaped near misses
+  into `userWaiverScope`. It also captures the gate suspend/resume markers
+  (`captureSuspend`): the configured `suspendMarker` / `resumeMarker`
+  literals (defaults `TURNSTILE OFF:` / `TURNSTILE ON:`) are scanned by strict
+  `indexOf`, the later-occurring marker wins, and the winning action is
+  journaled `type:"suspended"` — an OFF suspends enforcement for the session
+  (fresh-start state clear via `clearState`, no restart-sticky merge) and an
+  ON resumes it (also fresh — no credit earned while suspended rehydrates).
+  When `allowSuspend:false`, both markers are refused: journaled
+  `refused:true` (with the refused marker's `action`) plus a parked
+  marker-style diagnostic; no state changes, and the refused entry folds
+  replay-inert (a refusal can never resurrect a suspension after a restart). When an allowed OFF shares the
+  prompt with `PLAN APPROVED:` or `USER WAIVER:`, the
+  waiver/approval is captured first and then wiped by the fresh-start clear
+  (the clear is authoritative), with a skip notice journaled. It also scans the
+  text for marker-shaped near misses
   of the two literals (case, separator, or colon variants) — diagnostic-only:
   the strict
   literal capture is untouched, the hits are journaled `type:"marker"` and
@@ -147,6 +175,12 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   exemption, default on — ref-equality with upstream, force pushes always gate; `false` opts out).
 - `write`/`edit`: path denylist.
 
+  The deliberate blocks above (bash denylist, commit lint, landing gate) all
+  rethrow through the same `guardedToolBefore` choke point in `setup.ts`,
+  which is also where a session's gate suspension takes them: while
+  suspended, the BlockError is journaled (`type:"suspended"`,
+  `event:"would-block"`) and the tool call proceeds (§5).
+
 **`tool.hook("execute.after")`** (`hooks-tool.ts`) — observation only, never blocks: first surfaces any
 config-validation warnings once per load (a `[turnstile] config:` block
 prepended to the first string-output result, journaled `type:"config"`), then
@@ -171,7 +205,12 @@ bounded to the parent's current task window (stamped at prompt admission).
 a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
 `ask` to the user. Replies are matched to recorded ask request-IDs only:
 `always` stands a verdict/approval, `once` releases exactly one dispatch/push,
-`reject` keeps the gate red.
+`reject` keeps the gate red. Both arms are inert while the parent's gate
+enforcement is suspended (§5's suspension overlay): the task arm returns
+before the ask and its latch, and the landing arm returns after deleting the
+parent's armed `pendingLandingAsk` latch (the one-shot consume), so a latch
+armed before the suspension cannot fire a mislabeled landing ask after a
+`TURNSTILE ON:` resume — the guard re-arms on a fresh repeat attempt.
 
 **`event.subscribe` loop** (`hooks-events.ts`) — child→parent edges (`session.created`), marker
 parsing from streamed child text (`message.part.updated`,
@@ -182,7 +221,9 @@ contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
 `suppressed` rather than flipping state, permission ask/reply bookkeeping,
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29 — an
 additive channel the host publishes immediately after the prompt hook fires,
-deduped against the hook path on the shared host message id), and error
+deduped against the hook path on the shared host message id), the
+session-end summary (`session.idle` — one recap line per session, see §6's
+`session-summary` entry kind), and error
 telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
 across `session.text.delta` chunks is reassembled and re-parsed so a completed
@@ -232,8 +273,8 @@ A typical enforced run:
 ## 5. Gate state machine
 
 All state is keyed per parent session. `replayGrace` gives restart-restored
-flags a one-prompt survival window; `continuationCarry` re-arms it when a
-continuing prompt has an unchanged worktree fingerprint and earned
+flags a one-prompt survival window; continuation carry (default on) re-arms
+it when a continuing prompt has an unchanged worktree fingerprint and earned
 credit (a green test gate or a reviewer approval).
 
 ![Gate state machine](images/d04-gate-state.svg)
@@ -276,6 +317,30 @@ once-per-load `[turnstile] observe:` block (`formatObserveSummary`, rendered
 from the `observeCounts()` totals at injection time) and the inert
 `kind:"summary"` marker is journaled so a restart never re-fires it.
 
+### Gate suspension overlay
+
+A user-typed `TURNSTILE OFF:` prompt marker (the `suspendMarker` literal,
+honored only from admitted user prompts — never agent-dispatchable) suspends
+gate enforcement for the session as an overlay on the state machine, exactly
+like the observe period but session-scoped instead of adoption-scoped: gate
+decisions keep computing and journaling; only the deliberate block (and the
+permission asks) are suppressed. The flag lives in the ledger's suspension
+map (outside the per-prompt bucket, like the observe period), keyed per
+parent — children draw on the parent's suspension via `ledger.parentOf`. At
+each deliberate-block site (`dispatchBlockOutcome`, `handleReadBudget`, and
+the `guardedToolBefore` choke via `suspendBlock`) the suspension predicate ORs
+with `observeActive`, and the observe branch wins the flavor: a suppression
+during an observe period journals under the observe totals, otherwise a
+`suspended` / `event:"would-block"` audit entry is journaled and the call
+proceeds (metered like an admit on the dispatch path). Suspension clears the
+session's gate state fresh (`clearState`, the shared reset body with the
+`replayGrace` merge disabled) both on OFF and ON, so no credit earned before
+or during the suspension rehydrates; a suspension survives a restart (the
+journal tail replays it, §6), and `TURNSTILE ON:` (the `resumeMarker`
+literal) resumes enforcement with the same fresh start. `allowSuspend:false`
+disables the markers: an OFF or ON is refused (`refused:true` journaled + a
+parked `[turnstile] marker:` diagnostic) with no state change.
+
 ### Key `GateState` fields (`src/types.ts`)
 
 | Field                                                                                        | Set by                                                                                                                                                                                                                             | Cleared by                                                                                                                                                  | Blocks                                                                                                                     |
@@ -295,7 +360,7 @@ from the `observeCounts()` totals at injection time) and the inert
 | `reads`                                                                                      | `execute.before` increments; `execute.after` corrects a failed read                                                                                                                                                                | prompt reset                                                                                                                                                | warn once at 8 / block 15                                                                                                  |
 | `readWarned`                                                                                 | first string-output read at-or-past `readWarn`                                                                                                                                                                                     | prompt reset                                                                                                                                                | read-budget warn injection (once per task)                                                                                 |
 | `replayGrace`                                                                                | journal replay; continuation-carry re-arm                                                                                                                                                                                          | consumed by first `resetState`                                                                                                                              | one-prompt survival of restored flags                                                                                      |
-| `taskFingerprint`                                                                            | stamped when `continuationCarry` on                                                                                                                                                                                                | new stamp                                                                                                                                                   | identity signal for carry                                                                                                  |
+| `taskFingerprint`                                                                            | stamped when continuation carry is enabled (default on)                                                                                                                                                                            | new stamp                                                                                                                                                   | identity signal for carry                                                                                                  |
 | `lastGateMarker`, `lastVerdictMarker`                                                        | stamped at first-sight `GATE:`/`VERDICT:` (de-tokenized, so they cannot re-parse)                                                                                                                                                  | prompt reset                                                                                                                                                | rendered into the compaction snapshot; display only, never enforces                                                        |
 
 ---
@@ -306,11 +371,12 @@ from the `observeCounts()` totals at injection time) and the inert
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (23 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (26 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
   `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
-  `suppressed`, `observe`, `would-block`, `replay`). A `dispatch` entry is written at
+  `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
+  `session-summary`, `compat`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -360,6 +426,20 @@ observed, wouldBlocks}` with `cause` the blocking gate's audit name (its
 observed, wouldBlocks}`, journaled when the `[turnstile] observe:` block
   lands — folds inert: it only sets the pending-summary probe, proving the
   summary surfaced so it never re-fires after a restart.
+  A `suspended` entry is the gate-suspension record (§5's overlay): the state
+  flavor is `{type:"suspended", sessionID, action:"off"|"on"}` (plus
+  `refused:true` when `allowSuspend:false` refused the marker) — replay folds
+  an unrefused entry last-wins into the ledger's suspension map, so a restart
+  mid-suspension stays suspended and an ON resumes; a `refused:true` entry
+  folds inert (a refusal records a refusal, never a suspension change, so the
+  kill switch cannot be defeated by replaying a refusal), a missing or
+  unknown `action` is an `entry-shape` replay drop. The audit flavor is
+  `{type:"suspended", sessionID, event:"would-block", cause}` — one entry per
+  deliberate block suppressed by the suspension (cause truncated to 200
+  chars, like `would-block`); it folds inert, recording a suppression but
+  never a state change. The state flavor is status-visible (the status
+  aggregate folds the same last-wins suspension state); the audit flavor is
+  status-inert.
   A `marker` entry is the near-miss diagnostic for a prompt that mistypes a
   prompt-channel marker literal: at admission the text is scanned for
   marker-shaped variants (case, separator, or colon) of the configured
@@ -400,6 +480,14 @@ reason:"landing", event:"forced"}`) stamps the evaluate landing arm's
   PERM-ask and PERM-decision counters (which key off those fields) leave the
   human table untouched, and all three are replay-inert (the ledger never
   replays `permission` rows).
+  A `session-summary` entry is the delivery proof for the session-end
+  summary: `{type:"session-summary", sessionID, verified, blockedDispatches,
+waivers, text}` — the counts mirror the recap line (`text`, bounded to 300
+  chars), which is shown as a TUI toast when the host offers `tui.toast.show`
+  and delivered journal-only otherwise (the headless log). One per session
+  per host process (an in-memory dedupe set; a restarted host may re-summary
+  a still-idle session once). It is audit-only, replay-inert (an unknown
+  replay type folds nothing), and status-inert.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `journalRotateEveryEntries` appends (default 512), only
@@ -461,9 +549,12 @@ the walk continues with the next-older generation. It then
 restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
 (task-result source only — streamed child verdicts never restore it),
-ensemble counts, and the observe period (per-session phase, the admission
+ensemble counts, the observe period (per-session phase, the admission
 dedup set, and the running `observed`/`wouldBlocks` totals — last-wins; a
-`kind:"summary"` marker sets the pending-summary probe). A plan APPROVE
+`kind:"summary"` marker sets the pending-summary probe), and the gate
+suspension map (last-wins `action:"off"` / `action:"on"` — a restart
+mid-suspension stays suspended; the `refused:true` refusal flavor and the
+`event:"would-block"` audit flavor fold inert). A plan APPROVE
 entry may carry the bound identity fields
 `plan` (file name) and `planKey` (that file's content hash); a field restores
 it only in legal shape (path-free file name ≤ 128 chars; `planKey` a
@@ -483,10 +574,16 @@ is fail-open. The window bounds only the live approval: bound approvals
 older than it stay exempt through the durable approved-plan store above.
 
 For a read-only status view: `opencode-turnstile status [--json]` aggregates
-gate/plan/verdict/dispatch/blocked/permission entries per parent session,
-walking the same all-generation tail window with the same session-ID and
+gate/plan/verdict/dispatch/blocked/permission/suspension entries per parent
+session, walking the same all-generation tail window with the same
+session-ID and
 marker shape checks (observation-only, so a dropped line is silent there
-rather than journaled). When the journal holds observe-mode entries, the
+rather than journaled). Suspension folds last-wins like the ledger's
+`foldSuspended` (an OFF marks, an ON clears, a `refused:true` refusal, an
+`event:"would-block"` audit, and an unknown action fold nothing) and surfaces
+per session as the `suspended`
+JSON field and the table's SUS column. When the journal holds observe-mode
+entries, the
 report header adds the folded period line
 (`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
 would-blocks`); journals without them render byte-identically.
@@ -515,16 +612,16 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                             | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
-| Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                                                                                                      |
-| Observe     | `observeSessions`                                                                                                                      | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                               |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                                                                                                                |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `false`, `.opencode/plans`; `metricsDir` is computed at load time                                                                                       |
-| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                       | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
-| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                | mode ships `shadow` — the adoption path; `enforce` is recommended, and this repo runs it                                                                                              |
+| Group       | Keys                                                                                                                                                                     | Defaults worth knowing                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                                                               | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                             | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
+| Reads       | `readWarn`, `readBlock`                                                                                                                                                  | 8 / 15 (clamped)                                                                                                                                                                      |
+| Observe     | `observeSessions`                                                                                                                                                        | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                               |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `evidencePattern`                                                      | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`                                        |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `plansDir`, `allowSuspend`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `.opencode/plans`, `true`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers)            |
+| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                                                         | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
+| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                                                  | mode ships `shadow` — the adoption path; `enforce` is recommended, and this repo runs it                                                                                              |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically

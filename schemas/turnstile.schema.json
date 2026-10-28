@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/edseabolt/turnstile/schemas/turnstile.schema.json",
   "title": "OpenCode turnstile configuration",
-  "description": "Schema for ~/.config/opencode/turnstile.json. Every key is optional and falls back to the code defaults in src/config.ts; a missing key is never an error. The $schema key itself is silently ignored at load (it is the editor convention pointing at this file). Markers and regex sources (gateMarker, verdictMarker, evidencePattern, the toolPolicy/gitGates regex lists, commitFormat) are strings; evidencePattern, the denylists, and commitFormat are compiled and checked at merge time, gateMarker/verdictMarker compile at setup with a journaled fallback on a bad source — none are validated here.",
+  "description": "Schema for ~/.config/opencode/turnstile.json. Every key is optional and falls back to the code defaults in src/config.ts; a missing key is never an error. The $schema key itself is ignored at load when it is a string (a non-string warns); it is the editor convention pointing at this file. Markers and regex sources (gateMarker, verdictMarker, evidencePattern, the toolPolicy/gitGates regex lists, commitFormat) are strings; evidencePattern, the denylists, and commitFormat are compile-checked at merge time and compiled at setup, gateMarker/verdictMarker compile at setup with a journaled fallback on a bad source — none are validated here.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "Editor convention pointing at this file; silently ignored at load (not a turnstile key)."
+      "description": "Editor convention pointing at this file; ignored at load when a string (not a turnstile key)."
     },
     "metricsDir": {
       "type": "string",
@@ -32,7 +32,7 @@
     "replayTailLines": {
       "type": "integer",
       "minimum": 1,
-      "description": "Journal lines replayed per boot from the current + .1 generations (default 2000)."
+      "description": "Journal lines replayed per boot, walked newest-first across all retained generations, stopping early once the bound is met (default 2000)."
     },
     "maxReviewerRounds": {
       "type": "integer",
@@ -97,7 +97,24 @@
     },
     "continuationCarry": {
       "type": "boolean",
-      "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default false)."
+      "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default true)."
+    },
+    "suspendMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, suspends gate blocking for the session (decisions keep journaling, nothing blocks; state cleared fresh) (default TURNSTILE OFF:). Never agent-dispatchable; ignored when allowSuspend is false."
+    },
+    "resumeMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, resumes enforcement with fresh task state — no credit earned while suspended survives (default TURNSTILE ON:). Never agent-dispatchable."
+    },
+    "allowSuspend": {
+      "type": "boolean",
+      "description": "Whether the suspend/resume markers are honored; false refuses an OFF marker with a journaled refused:true entry and a surfaced diagnostic (default true)."
+    },
+    "sessionSummary": {
+      "type": "string",
+      "enum": ["on", "quiet", "off"],
+      "description": "Session-end summary surface: quiet (default) prints one recap line at session.idle for sessions that did something (silent for zero-activity sessions); on also prints an all-gates-green line for zero-activity sessions; off disables the surface entirely."
     },
     "agents": {
       "type": "object",
@@ -118,8 +135,8 @@
         "debugger": { "type": "string", "description": "Debugger agent name (default debugger)." },
         "bareOutput": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Agents contracted to emit GATE/VERDICT markers (unset by default; an absent or omitted value derives from the configured test-runner, reviewer, and plan-reviewer names)."
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Agents contracted to emit GATE/VERDICT markers (unset by default; an absent, omitted, or empty value derives from the configured test-runner, reviewer, and plan-reviewer names — JSON cannot express the code's unset sentinel, so an empty list is read as unset)."
         }
       }
     },
@@ -157,12 +174,12 @@
         },
         "bashDeny": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": { "type": "string", "minLength": 1 },
           "description": "Case-insensitive regex sources matched against bash/shell commands (default empty)."
         },
         "pathDeny": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": { "type": "string", "minLength": 1 },
           "description": "Case-insensitive regex sources matched against write/edit target paths (default empty)."
         },
         "observeSessionMove": {
@@ -195,7 +212,6 @@
         },
         "emptyDiffExempt": {
           "type": "boolean",
-          "default": true,
           "description": "Whether a statically-provable empty-diff git push (every refspec ref-equal to its upstream; no force flags) skips the landing gate (default true; false is the strict opt-out)."
         }
       }

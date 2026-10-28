@@ -70,10 +70,12 @@ export const DEFAULT_COMMIT_FORMAT =
  * Identity sentinel for "bareOutput not configured": `defaultConfig()` stores
  * this exact reference for `agents.bareOutput`, and derivation fires only when
  * the resolved list is still this reference. `mergeConfig` always stores a
- * fresh array for an explicitly configured list, so an explicit list —
- * including a user-authored empty one or a reordered copy of the default
- * names — is distinguishable from the unset default regardless of its
- * contents.
+ * fresh array for an explicitly configured list, so a non-empty explicit list
+ * — including a reordered copy of the default names — is distinguishable from
+ * the unset default regardless of its contents. An explicit empty list is not:
+ * JSON cannot express this reference, so the shipped example carries an empty
+ * one, and derivation treats an empty list as unset to keep that copy from
+ * denying every marker.
  */
 export const BARE_OUTPUT_UNSET: string[] = []
 
@@ -110,10 +112,21 @@ export function defaultConfig(
     approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
     trace: true,
-    // Continuation carry is opt-in (default-off): a bare prompt reset wipes the
-    // gate cycle unless enabled, so a new task on the same branch is never
-    // silently carried forward as a continuation.
-    continuationCarry: false,
+    // Session-end summary: "quiet" prints one recap line at session.idle for
+    // sessions that did something (silent for zero-activity sessions); "on"
+    // also prints an all-gates-green line for zero-activity sessions; "off"
+    // restores pre-summary behavior exactly.
+    sessionSummary: "quiet",
+    // Continuation carry is on by default: a reviewer-approved landing prompt
+    // re-arms earned credit when the worktree/branch is unchanged; set
+    // `continuationCarry: false` to restore a clean cycle every prompt.
+    continuationCarry: true,
+    // Session-level gate suspend/resume: while suspended, decisions compute and
+    // journal but never throw `BLOCKED`; the resume marker starts from fresh
+    // state with no rehydrated credit. `allowSuspend: false` refuses both.
+    suspendMarker: "TURNSTILE OFF:",
+    resumeMarker: "TURNSTILE ON:",
+    allowSuspend: true,
     agents: {
       planner: "planner",
       reviewer: "reviewer",
@@ -174,11 +187,15 @@ export function defaultConfig(
  *     explicitly to end an observe period.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (key === "trace" || key === "continuationCarry") return typeof value === "boolean"
+  if (key === "trace" || key === "continuationCarry" || key === "allowSuspend")
+    return typeof value === "boolean"
+  if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
   if (
     key === "metricsDir" ||
     key === "waiverMarker" ||
     key === "approvalMarker" ||
+    key === "suspendMarker" ||
+    key === "resumeMarker" ||
     key === "plansDir"
   ) {
     if (key === "metricsDir") {
@@ -234,6 +251,7 @@ type NumericConfigKey = Extract<
  */
 function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value: unknown): void {
   if (key === "trace") config.trace = value as boolean
+  else if (key === "sessionSummary") config.sessionSummary = value as "on" | "quiet" | "off"
   else if (key === "metricsDir") config.metricsDir = value as string
   else if (key === "waiverMarker") config.waiverMarker = value as string
   else if (key === "approvalMarker") config.approvalMarker = value as string
@@ -244,6 +262,9 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
+  else if (key === "suspendMarker") config.suspendMarker = value as string
+  else if (key === "resumeMarker") config.resumeMarker = value as string
+  else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
   else config[key as NumericConfigKey] = value as number
 }
@@ -457,6 +478,17 @@ export function mergeConfig(
       }
       continue
     }
+    if (key === "sessionSummary") {
+      // Mirrors the gateEvidence/reviewEnsemble special case: shared
+      // validate/assign helpers, only the warning wording is special-cased
+      // to name the three accepted literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push('config: sessionSummary must be "on", "quiet", or "off"; keeping default')
+      }
+      continue
+    }
     if (isValidScalar(key as keyof TurnstileConfig, value)) {
       assignScalar(config, key as keyof TurnstileConfig, value)
     } else {
@@ -595,8 +627,9 @@ function warnIfBroaderMarker(
  * Defends the fully-resolved config against inter-key and path invariants that
  * no single layer validator catches, so hand-constructed configs cannot slip a
  * bad value past the merge-time checks. Mutates `config` in place (clamping
- * `readWarn` below `readBlock`, warning on a relative `metricsDir`) and
- * returns one warning string per correction.
+ * `readWarn` below `readBlock`, warning on a relative `metricsDir`, naming an
+ * explicit empty `bareOutput` about to be re-derived) and returns one warning
+ * string per correction.
  *
  * Called once at the end of `loadConfig` after every layer has merged, so the
  * defaults (8 < 15, absolute dir) never trip it and the golden digest stays
@@ -629,6 +662,11 @@ export function validateResolved(config: TurnstileConfig): string[] {
       `config: readWarn (${warn}) >= readBlock (${block}); clamping readWarn to ${config.readWarn}`,
     )
   }
+  if (config.agents.bareOutput !== BARE_OUTPUT_UNSET && config.agents.bareOutput.length === 0) {
+    warnings.push(
+      `config: agents.bareOutput is an explicit empty list; deriving from the configured agent names (an empty list would deny every child-session marker)`,
+    )
+  }
   if (!path.isAbsolute(config.metricsDir)) {
     warnings.push(
       `config: metricsDir "${config.metricsDir}" is relative; journaling resolves against the process cwd`,
@@ -656,13 +694,17 @@ export function validateResolved(config: TurnstileConfig): string[] {
  * list is still the unset sentinel (i.e. nobody configured it), so a renamed
  * agent stays bare-output-qualified automatically. Derivation keys off the
  * configured/unset distinction by reference identity, not list equality, so
- * an explicit list — reordered, default-valued, or empty — is always kept
- * verbatim and no configured name ever vanishes. Mutates `agents.bareOutput`
+ * an explicit non-empty list — reordered or default-valued — is always kept
+ * verbatim and no configured name ever vanishes. An explicit empty list is
+ * treated as unset: it has no defensible meaning beyond denying every
+ * child-session marker, and JSON cannot express the sentinel, so a config
+ * copied from the shipped example must not silently disarm marker authority.
+ * Mutates `agents.bareOutput`
  * in place (the sentinel array itself is replaced, never mutated).
  * @param agents The resolved agents block to update in place.
  */
 function deriveBareOutput(agents: TurnstileAgents): void {
-  if (agents.bareOutput !== BARE_OUTPUT_UNSET) return
+  if (agents.bareOutput !== BARE_OUTPUT_UNSET && agents.bareOutput.length > 0) return
   const derived = [agents.testRunner, agents.reviewer, agents.planReviewer].filter(
     (name): name is string => typeof name === "string" && name.trim().length > 0,
   )

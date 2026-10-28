@@ -33,6 +33,8 @@ export interface FakeHost {
    * does not need that ordering.
    */
   pushEvent: (event: { type: string; data?: unknown; properties?: unknown }) => Promise<void>
+  /** Recorded toast calls (`tui.toast.show`), in delivery order. */
+  toasts: Array<{ message: string; variant?: string }>
 }
 
 /** A promise with externally held settlement controls. */
@@ -187,6 +189,19 @@ export function makeFakeHost(opts?: {
    * to model a host without tool hooks (the `g_tool` degradation path).
    */
   tool?: boolean
+  /**
+   * Whether the fake host exposes the `tui.toast` surface (default false).
+   * The recorded calls land in the returned `toasts`; `toastReject` makes
+   * each `show` reject so the failure path is testable.
+   */
+  tui?: boolean
+  /** When set (with `tui`), every toast `show` rejects with an Error. */
+  toastReject?: boolean
+  /**
+   * When set, the fake host exposes `app` (v2 Context.app identity block)
+   * carrying this version string; feeds the host-compat guard at setup.
+   */
+  appVersion?: string
 }): FakeHost {
   const withPermission = opts?.permission ?? true
   const withSession = opts?.session ?? true
@@ -196,6 +211,7 @@ export function makeFakeHost(opts?: {
   const permissionHooks: Record<string, (event: any) => Promise<void> | void> = {}
   const sessionRecords = opts?.sessionRecords
   const { push, subscribe } = makeEventBus()
+  const toasts: Array<{ message: string; variant?: string }> = []
   const host: Host = {
     ...(withTool
       ? {
@@ -232,6 +248,22 @@ export function makeFakeHost(opts?: {
         }
       : {}),
     event: { subscribe },
+    ...(opts?.tui
+      ? {
+          tui: {
+            toast: {
+              show: async (input: { message: string; variant?: string }): Promise<unknown> => {
+                if (opts?.toastReject) throw new Error("toast failed")
+                toasts.push(input)
+                return undefined
+              },
+            },
+          },
+        }
+      : {}),
+    ...(opts?.appVersion !== undefined
+      ? { app: { name: "opencode", version: opts.appVersion } }
+      : {}),
     ...(withPermission
       ? {
           permission: {
@@ -243,7 +275,7 @@ export function makeFakeHost(opts?: {
         }
       : {}),
   }
-  return { host, toolHooks, sessionHooks, permissionHooks, pushEvent: push }
+  return { host, toolHooks, sessionHooks, permissionHooks, pushEvent: push, toasts }
 }
 
 /**

@@ -46,6 +46,10 @@ export function createPermissionHooks(ctx: TurnstileContext): {
       // escalation is driven purely by the parent's plan-gate state.
       if (pe?.action === "task") {
         const parent = ctx.ledger.parentOf(sessionID)
+        // Gate suspension: both evaluate arms are inert while the parent is
+        // suspended — the dispatch guards already computed and journaled the
+        // red status upstream, so no ask and no latch here.
+        if (ctx.ledger.isSuspended(parent)) return
         const status = ctx.gates.planGateStatus(ctx.currentProjectDir(parent), ctx.ledger, parent)
         if (!status.red) return
         // Red ⇒ summary is present by construction (planGateStatus builds
@@ -96,6 +100,15 @@ export function createPermissionHooks(ctx: TurnstileContext): {
       // unrelated command with the push/PR ask inside the TTL window.
       if (pe?.action === "bash" || pe?.action === "shell") {
         const parent = ctx.ledger.parentOf(sessionID)
+        // Gate suspension: inert, and the armed landing latch is deleted (the
+        // one-shot consume, mirroring the forced ask below) so a latch armed
+        // before the suspension cannot fire a mislabeled landing ask after
+        // `TURNSTILE ON:` — the guard re-arms on a fresh repeat attempt, so
+        // no enforcement is lost.
+        if (ctx.ledger.isSuspended(parent)) {
+          ctx.pendingLandingAsk.delete(parent)
+          return
+        }
         const st = ctx.ledger.state(parent)
         if (st.hasReviewApprove) return
         if (!ctx.hasLiveLandingAsk(parent)) return

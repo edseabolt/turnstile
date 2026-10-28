@@ -40,7 +40,8 @@
 //
 //   --print-model-config  Print a ready-to-paste {"agents": {...}} model
 //                  snippet to stdout and write nothing (short-circuits before
-//                  any manifest/install work, like --check). Repeatable
+//                  any manifest/install work — unlike --check, which reads the
+//                  manifest). Repeatable
 //                  --model specs seed individual agents:
 //                  --model [name=]provider/model[#variant] (bare => all six;
 //                  name= sets one; last spec wins per agent). Model ids may be
@@ -387,7 +388,8 @@ function readManifest(file, modeOverride) {
 }
 
 /**
- * Expands a leading ~ in a destination path.
+ * Expands a leading ~ in an absolute-target path (destinations, the ledger
+ * path, and the verify paths).
  * @param {string} path Destination path, possibly ~-prefixed.
  * @returns {string} Absolute path.
  */
@@ -640,18 +642,59 @@ async function installLink(entry, args, ledger) {
 }
 
 /**
- * Installs one entry as a copy, recording ownership in the ledger.
+ * Refreshes a stale version stamp on a content-identical copy record and
+ * returns the previously recorded version, or undefined when no refresh
+ * applies. Called from `installCopy` when the destination already matches
+ * the package source, and from `repair` for content-identical copy entries.
+ * Without this the `check` outdated warning (driven by
+ * `record.version !== version`) would nag forever after a release whose
+ * installed files are byte-identical, because no re-copy ever rewrites the
+ * stamp. Mutates `ledger` in place. Pure filesystem-free.
+ * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger, mutated on refresh.
+ * @param {string} dest Destination key of the record to refresh.
+ * @param {string} version Current package version to stamp in.
+ * @returns {string | null | undefined} The replaced version (`null` when the
+ *   record had none, i.e. a legacy unset stamp), or `undefined` when no
+ *   refresh applies — call sites must treat `undefined` as the no-op
+ *   sentinel and must not collapse it with the legacy-`null` case.
+ */
+function refreshVersionStamp(ledger, dest, version) {
+  const record = ledger[dest]
+  if (!record || record.version === version) return undefined
+  const previous = record.version
+  record.version = version
+  return previous
+}
+
+/**
+ * Formats the `version stamp updated` report line shared by apply and repair.
+ * @param {string} dest Destination whose stamp was refreshed.
+ * @param {string | null} previous The replaced version, or null when the record had none.
+ * @returns {string} e.g. `install: version stamp updated <dest> (was 0.6.1, now 0.7.0)`.
+ */
+function stampUpdatedLine(dest, previous) {
+  return `install: version stamp updated ${dest} (was ${previous ?? "unset"}, now ${pkgVersion})`
+}
+
+/**
+ * Installs one entry as a copy, recording ownership in the ledger. A
+ * content-identical destination with a stale version stamp updates the
+ * stamp in place (no file write) and reports the previous version via
+ * `refreshed`.
  * @param {{src: string, dest: string}} entry Manifest link entry.
  * @param {{force: boolean}} args Parsed arguments.
  * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger, mutated on success.
  * @param {string} version Current package version, recorded for the `check` stale report.
  * @param {"link"|"copy"} mode Install mode this record was written under.
- * @returns {Promise<{acted: boolean, note?: string}>} Whether a change was made.
+ * @returns {Promise<{acted: boolean, note?: string, refreshed?: string | null}>} Whether a change was made; `refreshed` carries the replaced version stamp (`null` for a legacy unset stamp) when a content-identical run refreshed it.
  */
 async function installCopy(entry, args, ledger, version, mode) {
   const report = inspectCopy(entry, ledger)
   if (report.code === "invalid") throw new Error(`install: ${entry.dest} — ${report.detail}`)
-  if (report.code === "ok") return { acted: false }
+  if (report.code === "ok") {
+    const previous = refreshVersionStamp(ledger, entry.dest, version)
+    return previous === undefined ? { acted: false } : { acted: false, refreshed: previous }
+  }
   if (report.code === "conflict" && !args.force) {
     throw new Error(
       `install: ${entry.dest} — conflict (${report.detail}). Re-run with --force to back it up and replace, after reviewing.`,
@@ -771,7 +814,9 @@ async function apply(manifest, args) {
         console.log(
           `install: ${manifest.mode} ${entry.dest}${result.note ? ` (${result.note})` : ""}`,
         )
-      } else console.log(`install: up to date ${entry.dest}`)
+      } else if (result.refreshed !== undefined)
+        console.log(stampUpdatedLine(entry.dest, result.refreshed))
+      else console.log(`install: up to date ${entry.dest}`)
     } catch (error) {
       ok = false
       console.error(String(error.message ?? error))
@@ -813,11 +858,19 @@ async function repair(manifest, args) {
   for (const entry of manifest.links) {
     const report = await inspectEntry(entry, manifest.mode, ledger)
     if (report.code === "ok") {
-      console.log(`install: up to date ${entry.dest}`)
+      const previous =
+        manifest.mode === "copy" ? refreshVersionStamp(ledger, entry.dest, pkgVersion) : undefined
+      if (previous === undefined) {
+        console.log(`install: up to date ${entry.dest}`)
+        continue
+      }
+      console.log(stampUpdatedLine(entry.dest, previous))
       continue
     }
-    // Conflict without --force, or an invalid (missing-source) entry, can not
+    // Without --force a conflict or an invalid (missing-source) entry can not
     // be repaired here: neither would back up user files or invent a source.
+    // Under --force an invalid entry is attempted anyway (the install throws
+    // and the failure is reported per path).
     if (!isRepairable(report.code) && !args.force) {
       ok = false
       console.error(
@@ -835,7 +888,9 @@ async function repair(manifest, args) {
       if (result.acted) {
         changed = true
         console.log(`install: repair ${entry.dest} (${report.code})`)
-      } else console.log(`install: up to date ${entry.dest}`)
+      } else if (result.refreshed !== undefined)
+        console.log(stampUpdatedLine(entry.dest, result.refreshed))
+      else console.log(`install: up to date ${entry.dest}`)
     } catch (error) {
       ok = false
       console.error(String(error.message ?? error))
@@ -918,7 +973,7 @@ async function reportVerifyProbes(files, prefix, fatal) {
  * True when the text references the destination path as a whole path segment
  * (the destination itself, or a file located beneath it), not as a prefix of
  * a sibling path (e.g. `/a/b` inside `/a/bc`). A boundary is a path
- * separator, whitespace, a quote, or a string edge.
+ * separator, a space, a quote, or a string edge.
  * @param {string} text The text to search (a loader error reason).
  * @param {string} dest The installed destination path to look for.
  * @returns {boolean} Whether the text references the destination as a path.
@@ -985,7 +1040,9 @@ function reasonCausedByRepairable(reason, repairableDests) {
  * Reports per-entry drift for the check pass. In repair mode, repairable
  * drift (`missing`/`stale`) is reported as `would repair` (and its dest
  * collected so a verify failure can be attributed to drift `--repair` would
- * fix); every other drift fails the check.
+ * fix); every other drift fails the check. The version-drift warning shown
+ * here is cleared by apply/repair runs that refresh the stamp on a
+ * content-identical destination.
  * @param {Array<{src: string, dest: string}>} links Manifest link entries.
  * @param {"link"|"copy"} mode Install mode.
  * @param {Record<string, {src: string, hash: string, version: string | null, mode: "link" | "copy"}>} ledger Ownership ledger.
@@ -1023,7 +1080,10 @@ async function reportEntryDrift(links, mode, ledger, version, repairMode) {
 /**
  * Runs the installer in check mode: reports drift, writes nothing.
  * A ledger record whose version is older than the current package version
- * is reported as a warning and does not fail the check. After the per-entry
+ * is reported as a warning and does not fail the check. The stamp is
+ * refreshed by apply and repair runs on a content-identical destination,
+ * so the warning clears on the next `install` instead of nagging forever.
+ * After the per-entry
  * pass, every `verify` path is load-probed in both modes: `check: loadable
  * <file>` on a resolving import graph, `check: unloadable <file> — <reason>`
  * (stderr) otherwise, which fails the check. When `repairMode` is set
@@ -1076,7 +1136,8 @@ async function main(argv = process.argv) {
   // --print-model-config writes nothing: it parses the requested specs,
   // optionally validates them against `opencode models`, prints a ready-to
   // paste snippet, and returns. This short-circuits before the manifest is
-  // even read (like --check), so no link/copy target or ledger entry is
+  // even read (unlike --check, which reads the manifest first), so no
+  // link/copy target or ledger entry is
   // touched.
   if (args.printModelConfig) {
     if (args.validate) {

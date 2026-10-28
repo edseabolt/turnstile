@@ -21,8 +21,7 @@ open.
 
 - **Premature dispatch blocked** — an executor cannot start against an
   unreviewed plan and a reviewer cannot start on an unverified test claim;
-  blocked work says `BLOCKED by turnstile: <reason>`, never a silent
-  violation.
+  blocked work prints `BLOCKED by turnstile: <reason>`.
 - **Test claims verified** — a `GATE: PASS` greens the reviewer gate only
   when turnstile finds a journaled exit-0 test execution behind it; a bare
   claim stays unverified and the gate holds.
@@ -51,9 +50,9 @@ npx opencode-turnstile check     # verify the install (incl. plugin loadability)
 ```
 
 Then **restart OpenCode** (or `opencode service restart`) so the plugin
-loads. Prefer not to install the agent definitions? Add the plugin alone —
-the gates still enforce, but the pipeline needs agents to dispatch against,
-so run `init` (or bring your own, see
+loads. Rather skip the agent definitions? Adding just the plugin still
+enforces the gates, but the pipeline needs agents to dispatch against, so
+run `init` (or bring your own, see
 [`docs/usage.md`](docs/usage.md#customizing-the-pipeline-agents)):
 
 ```jsonc
@@ -126,12 +125,14 @@ recommended configuration and what this repo runs; the shipped default is
 `shadow`, the adoption path where the same checks are journaled rather
 than thrown.
 
-When something fires early, you see the block, not a silent violation:
+When a gate fires early, the block message names the reason:
 
 ```text
-BLOCKED by turnstile: executor dispatch requires an approved plan
-(VERDICT: APPROVE from plan-reviewer, PLAN APPROVED: in your prompt,
-or approve the permission ask)
+BLOCKED by turnstile: no plan approval for "<plan path>". Dispatch the
+plan-reviewer subagent first; proceed with executor only after the
+plan-reviewer's first line is `VERDICT: APPROVE crit=<n> high=<n> med=<n>
+low=<n>`, or obtain an explicit user waiver (a user prompt this task must
+contain the literal marker 'USER WAIVER:' followed by the user's words).
 ```
 
 Every block, verdict, and gate flip is appended to the journal —
@@ -164,15 +165,18 @@ hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 | Decoding clamps        | reviewer/plan-reviewer temperature = 0; executor/test-runner/debugger ≤ 0.2                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Compaction             | Injects a "preserve verbatim" instruction, then the live gate-state snapshot — de-tokenized so it can never re-parse as a marker                                                                                                                                                                                                                                                                                                                                                             |
 
-State lifecycle: a new user prompt resets the session's gate state. Replayed
-gate state survives a restart and the next (resume) prompt, then reverts.
+State lifecycle: a new user prompt resets the session's gate state, except
+when continuation carry (default on) re-arms it for a prompt with an
+unchanged worktree/branch fingerprint and earned credit. Replayed gate state
+survives a restart and the next (resume) prompt, then reverts.
 
 ## Waivers and approvals
 
-Turnstile reads a waiver or a human plan approval only from the user's OWN
+Turnstile reads a waiver or a human plan approval only from the user's own
 prompt — the plugin observes it at prompt admission, never from an agent's
 dispatch prompt. A marker inside an agent-composed prompt must never unlock
-a gate, so the channel is checked, not the text.
+a gate, so the plugin checks which channel the marker arrived through, not
+what the text says.
 
 - **`USER WAIVER:`** in your prompt waives gates. Naming configured agent
   stages (`planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`)
@@ -188,6 +192,27 @@ Do not create, paste, or relay a `USER WAIVER:` / `PLAN APPROVED:` marker to
 open a gate — only the user's own prompt carries a real waiver or approval.
 Full lifecycle semantics (waiver allowances, ensemble interaction, prompt
 channels): [`docs/usage.md`](docs/usage.md#waivers-and-approvals).
+
+## Suspend and resume
+
+You can pause turnstile's gate enforcement for the whole session with two
+prompt markers, read only from your own prompt (never from an agent's
+dispatch prompt — there is no agent-dispatchable off switch):
+
+- **`TURNSTILE OFF:`** suspends blocking for the session: enforcement
+  decisions keep computing and journaling (every block that would have fired
+  is journaled as a `would-block` audit entry), but nothing throws `BLOCKED`
+  and no permission ask is forced. The session's gate state is cleared fresh
+  and stays suspended across a restart (replayed from the journal tail).
+- **`TURNSTILE ON:`** resumes enforcement with fresh task state — no credit
+  earned while suspended rehydrates.
+
+When both markers appear in one prompt, the one occurring later wins. Config:
+`suspendMarker` / `resumeMarker` rename the literals (defaults
+`TURNSTILE OFF:` / `TURNSTILE ON:`), and `allowSuspend: false` disables both
+(an OFF is refused with a journaled `refused:true` entry and a surfaced
+diagnostic — the ON marker likewise). Inspect the live state with
+`node bin/cli.mjs status` (in-repo) or `npx opencode-turnstile status`.
 
 ## Markers
 
@@ -249,17 +274,18 @@ Defaults live in code (`src/config.ts`); override via
 sessions to apply). Copy
 [`examples/turnstile.example.json`](examples/turnstile.example.json) as a
 starting point: every key is optional and matches the code defaults. One
-exception to know about: `agents.bareOutput` in the example is
-`[]` because JSON cannot express the "unset" sentinel the code uses — an
-explicit empty list disables the built-in derivation; delete the key to
-inherit the default. The key
-knobs most people touch:
+key needs a note: the example writes agents.bareOutput as [], because JSON
+cannot express the "unset" sentinel the code uses for the same default. The
+loader reads an explicit [] as unset and re-derives the list from the
+configured test-runner, reviewer, and plan-reviewer names, so the copy needs
+no edits. The key knobs most people touch:
 
 | Key                          | Default            | Meaning                                                                                                                     |
 | ---------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `gitGates.mode`              | `shadow`           | recommend `enforce` (blocks commit-lint + unapproved pushes; this repo runs it); the `shadow` default journals would-blocks |
 | `gateEvidence`               | `enforce`          | `flag`/`off` revert to flip-on-trust for `GATE: PASS`                                                                       |
 | `reviewEnsemble`             | `enforce`          | `advise` credits a single-reviewer APPROVE unconditionally                                                                  |
+| `sessionSummary`             | `quiet`            | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables)               |
 | `toolPolicy.bashDeny`        | `[]`               | regex denylist for `bash`/`shell` (e.g. worktree/branch/merge ops)                                                          |
 | `maxReviewerRounds` / others | 2 / 3 / 3 / 4 / 16 | per-leg and total dispatch caps per task                                                                                    |
 | `agents.*`                   | stage names        | rename recognition when you bring your own agents                                                                           |
@@ -312,12 +338,31 @@ tools remain unguarded. The full threat model:
 - Fail-open by design. Every hook body is guarded; internal errors are
   journaled and the tool call proceeds. The only thrown errors are the
   deliberate `BLOCKED by turnstile:` ones.
-- The doc comment at the top of `turnstile.ts` is the authoritative summary
-  of enforced contracts; this README mirrors it and CI keeps the marker
-  examples in sync with the parser regexes.
+- `docs/architecture.md` is the authoritative reference for enforced
+  contracts; the doc comment atop `turnstile.ts` summarizes it. CI keeps
+  the marker examples in this README in sync with the parser regexes.
 - Host API is the OpenCode v2 promise-plugin shape
   (`{ tool.hook, session.hook, permission.hook, event.subscribe }` — the
   permission hook is registered when the host exposes it).
+- Host compatibility is checked at setup against the shipped range
+  (`HOST_COMPAT` in `src/host-compat.ts`); see the matrix below.
+
+### OpenCode compatibility matrix
+
+| OpenCode host       | turnstile | Status                                            |
+| ------------------- | --------- | ------------------------------------------------- |
+| ≥ 2.0.22, < 3.0.0   | 0.8.x     | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0) |
+| ≥ 3.0.0 or < 2.0.22 | 0.7.x     | Refuses to enforce at setup; upgrade turnstile    |
+| version unreadable  | 0.7.x     | Enforces; one-time journal warning                |
+
+On an incompatible host turnstile toasts the upgrade instruction and
+registers no hooks (a full no-op — fail-open):
+
+> turnstile 0.7.x expects opencode >=2.0.22,<3.0.0; you're on 3.1.0 —
+> upgrade turnstile (npm i opencode-turnstile@latest) or pin opencode
+
+`npx opencode-turnstile status --check-updates` (opt-in, network, cached 24 h)
+reports when a newer turnstile is published.
 
 ## More documentation
 
