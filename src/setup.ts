@@ -55,6 +55,7 @@ function disposeAll(cleanups: Array<() => void>): () => void {
     }
   }
 }
+
 /**
  * Registers the three session hooks (prompt, generate, compaction). Each
  * registration is independent: a failure journals and skips that hook only.
@@ -355,18 +356,6 @@ export function readPluginVersion(pkgPath?: string): string | null {
 }
 
 /**
- * Builds the plugin factory: on each setup call it assembles the per-setup
- * shared context via createHooksCore (config, journaler, gates, ledger,
- * maps, services), then returns the async setup function that registers
- * every hook. All shared state is per-setup: a host calling setup() twice
- * gets fresh dedupe/metering state; the one-setup-per-load lifecycle makes
- * this unobservable.
- * @param _host The host context; unused at build time (hooks receive the
- *     live host at setup). Kept for factory-shape compatibility.
- * @param opts Injected config/env overrides (tests); defaults to env.
- * @returns The plugin setup function; resolves to a cleanup disposer.
- */
-/**
  * Registers every hook surface and returns the total count. Each registration
  * is independent (a failure journals and skips only that hook). The count
  * feeds the load heartbeat (7 on a full host: 3 session + 1 permission + 2
@@ -444,6 +433,18 @@ async function runSetup(
   return disposeAll(cleanups)
 }
 
+/**
+ * Builds the plugin factory: on each setup call it assembles the per-setup
+ * shared context via createHooksCore (config, journaler, gates, ledger,
+ * maps, services), then returns the async setup function that registers
+ * every hook. All shared state is per-setup: a host calling setup() twice
+ * gets fresh dedupe/metering state; the one-setup-per-load lifecycle makes
+ * this unobservable.
+ * @param _host The host context; unused at build time (hooks receive the
+ *     live host at setup). Kept for factory-shape compatibility.
+ * @param opts Injected config/env overrides (tests); defaults to env.
+ * @returns The plugin setup function; resolves to a cleanup disposer.
+ */
 export function createTurnstile(
   _host: Host | undefined | null,
   opts: TurnstileOptions = {},

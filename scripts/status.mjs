@@ -576,12 +576,11 @@ function updateLineText(update) {
 /**
  * Async wrapper producing the table-mode update line for the empty-journal
  * path (the check must run before the line can render).
- * @param {NodeJS.ProcessEnv} env Environment for the registry URL.
  * @param {string} metricsDir The metrics directory holding the cache file.
  * @returns {Promise<string>} The update line, or "".
  */
-async function updateLine(env, metricsDir) {
-  const update = await resolveUpdateCheck(env, metricsDir)
+async function updateLine(metricsDir) {
+  const update = await resolveUpdateCheck(process.env, metricsDir)
   return updateLineText(update)
 }
 
@@ -627,7 +626,7 @@ async function main(argv) {
       )
     } else {
       let text = `No turnstile journal yet at ${journalPath} — nothing to report.\n`
-      if (flags.checkUpdates) text += await updateLine(process.env, metricsDir)
+      if (flags.checkUpdates) text += `${await updateLine(metricsDir)}\n`
       process.stdout.write(text)
     }
     return 0
