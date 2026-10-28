@@ -170,6 +170,16 @@ when continuation carry (default on) re-arms it for a prompt with an
 unchanged worktree/branch fingerprint and earned credit. Replayed gate state
 survives a restart and the next (resume) prompt, then reverts.
 
+**Parent hands-on edits.** Parent sessions dispatch work through the
+pipeline; direct `write`/`edit` calls in the parent are gated by
+`handsOnGate`. Under `enforce` the first parent edit per task throws
+`BLOCKED by turnstile:`; a repeat attempt escalates to a human permission
+ask — `always` releases the rest of the task, `once` releases one edit,
+`reject` re-blocks and re-arms on the next attempt. An executor-scoped
+`USER WAIVER:` also releases it, but plan approval alone does not. Under
+the shipped `shadow` default the block is journaled audit-only; a new user
+prompt resets the block count and any release.
+
 ## Waivers and approvals
 
 Turnstile reads a waiver or a human plan approval only from the user's own
@@ -289,17 +299,18 @@ loader reads an explicit [] as unset and re-derives the list from the
 configured test-runner, reviewer, and plan-reviewer names, so the copy needs
 no edits. The key knobs most people touch:
 
-| Key                          | Default            | Meaning                                                                                                                     |
-| ---------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `gitGates.mode`              | `shadow`           | recommend `enforce` (blocks commit-lint + unapproved pushes; this repo runs it); the `shadow` default journals would-blocks |
-| `gateEvidence`               | `enforce`          | `flag`/`off` revert to flip-on-trust for `GATE: PASS`                                                                       |
-| `reviewEnsemble`             | `enforce`          | `advise` credits a single-reviewer APPROVE unconditionally                                                                  |
+| Key              | Default   | Meaning                                                                                                                                                                                                                                             |
+| ---------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gitGates.mode`  | `shadow`  | recommend `enforce` (blocks commit-lint + unapproved pushes; this repo runs it); the `shadow` default journals would-blocks                                                                                                                         |
+| `gateEvidence`   | `enforce` | `flag`/`off` revert to flip-on-trust for `GATE: PASS`                                                                                                                                                                                               |
+| `reviewEnsemble` | `enforce` | `advise` credits a single-reviewer APPROVE unconditionally                                                                                                                                                                                          |
+| `handsOnGate`    | `shadow`  | parent-session `write`/`edit` gate: `enforce` blocks the first parent edit per task and offers a human permission ask on repeat (`always` releases for the task, `once` for one edit, `reject` re-blocks); accepted values `enforce`/`shadow`/`off` |
 
-| `sessionSummary`             | `quiet`            | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables)               |
-| `toolPolicy.bashDeny`        | `[]`               | regex denylist for `bash`/`shell` (e.g. worktree/branch/merge ops)                                                          |
-| `maxReviewerRounds` / others | 2 / 3 / 3 / 4 / 16 | per-leg and total dispatch caps per task                                                                                    |
-| `agents.*`                   | stage names        | rename recognition when you bring your own agents                                                                           |
-| `plansDir`                   | `.opencode/plans`  | where the decomposition scan looks                                                                                          |
+| `sessionSummary` | `quiet` | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables) |
+| `toolPolicy.bashDeny` | `[]` | regex denylist for `bash`/`shell` (e.g. worktree/branch/merge ops) |
+| `maxReviewerRounds` / others | 2 / 3 / 3 / 4 / 16 | per-leg and total dispatch caps per task |
+| `agents.*` | stage names | rename recognition when you bring your own agents |
+| `plansDir` | `.opencode/plans` | where the decomposition scan looks |
 
 Invalid keys are ignored, journaled, and summarized once into the session
 context; a malformed config file never breaks the host. The full table —

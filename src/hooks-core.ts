@@ -23,10 +23,12 @@ import {
 } from "./markers.ts"
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
 import { observeEntry, observeSummaryEntry, wouldBlockEntry } from "./gates-common.ts"
+import { waiverCovers } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import {
   createToolPolicy,
   isPushLanding,
+  type HandsOnGateCapability,
   type LandingGateCapability,
   type ToolPolicy,
 } from "./tool-policy.ts"
@@ -112,8 +114,12 @@ export interface TurnstileContext {
   awaitingPlanAsk: Map<string, number>
   /** Parents armed for a landing ask, awaiting the stream event. */
   pendingLandingAsk: Map<string, number>
+  /** Parents armed for a hands-on ask, awaiting the stream event. */
+  pendingHandsOnAsk: Map<string, number>
   /** Landing-gate permission asks, keyed by host request id. */
   landingGateAsks: Map<string, { sessionID: string; recordedAt: number }>
+  /** Hands-on-gate permission asks, keyed by host request id. */
+  handsOnGateAsks: Map<string, { sessionID: string; recordedAt: number }>
   /** Last-known project directory per session. */
   sessionDirs: Map<string, string>
   /** Per-session sliding window of streamed child text. */
@@ -135,8 +141,14 @@ export interface TurnstileContext {
   maxTrackedLandingAsks: number
   /** Latch TTL for pending-landing-ask arms. */
   pendingLandingAskTtlMs: number
+  /** Cap on tracked pending-hands-on-ask arms. */
+  maxTrackedHandsOnAsks: number
+  /** Latch TTL for pending-hands-on-ask arms. */
+  pendingHandsOnAskTtlMs: number
   /** Cap on tracked landing-gate asks. */
   maxTrackedLandingGateAsks: number
+  /** Cap on tracked hands-on-gate asks. */
+  maxTrackedHandsOnGateAsks: number
   /** Max parent-lookup retries per session. */
   maxLookupAttempts: number
   /** Cap on tracked failed-lookup sessions. */
@@ -176,8 +188,12 @@ export interface TurnstileContext {
   boundAwaitingAsks(): void
   /** Evicts oldest entries from pendingLandingAsk past the cap. */
   boundLandingAsks(): void
+  /** Evicts oldest entries from pendingHandsOnAsk past the cap. */
+  boundHandsOnAsks(): void
   /** Evicts oldest entries from landingGateAsks past the cap. */
   boundLandingGateAsks(): void
+  /** Evicts oldest entries from handsOnGateAsks past the cap. */
+  boundHandsOnGateAsks(): void
   /** Evicts oldest entries from sessionAgents past the cap. */
   boundSessionAgents(): void
   /** Evicts oldest keys from admittedIds past the cap. */
@@ -205,6 +221,8 @@ export interface TurnstileContext {
   hasLiveAwaitingAsk(sid: string): boolean
   /** True when a live (unexpired) pending-landing-ask latch exists. */
   hasLiveLandingAsk(sid: string): boolean
+  /** True when a live (unexpired) pending-hands-on-ask latch exists. */
+  hasLiveHandsOnAsk(sid: string): boolean
   /** Returns the last-known project directory for a session. */
   currentProjectDir(sessionID: string): string
   /** Resolves the project directory via session.get, caching per session. */
@@ -287,6 +305,10 @@ export interface TurnstileContext {
   ): Promise<void>
   /** Handles a bash/shell tool call. */
   handleBashDispatch(event: ToolHookEvent, tool: "bash" | "shell"): void
+  /** Consumes the hands-on once-grant when one is pending; true = released. */
+  consumeHandsOnGrant(st: GateState): boolean
+  /** Handles a parent-session write/edit tool call (denylist + hands-on gate). */
+  handleWriteEditDispatch(event: ToolHookEvent, tool: "write" | "edit"): void
   /**
    * Swallows a deliberate BlockError at the catch-all execute.before choke
    * point while a user-typed gate suspension is active for the event's
@@ -641,6 +663,26 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // Bounded: evict oldest past the cap.
   const landingGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
   const maxTrackedLandingGateAsks = 50
+  // Parents whose evaluate handler has been armed to force a hands-on ask
+  // (the guard sets this under `handsOnGate: enforce` on a repeat parent
+  // write/edit attempt: no release AND >= 1 prior hands-on block). Parent →
+  // arm time. Bounded by boundHandsOnAsks; expires like the other latches so
+  // a lost stream event cannot latch a parent indefinitely.
+  const pendingHandsOnAsk = new Map<string, number>()
+  const maxTrackedHandsOnAsks = 50
+  // The hands-on arm shares the ask-latch TTL: same fail-toward-strict
+  // expiry, single-sourced at module scope (`askLatchTtlMs`).
+  const pendingHandsOnAskTtlMs = askLatchTtlMs
+  // Hands-on-gate permission asks, keyed by host request id → the parent
+  // session the ask was raised for + when it was recorded. Only asks by the
+  // evaluate handler's hands-on arm (message prefixed
+  // `turnstile: hands-on edits …`) are recorded, so a reply to an unrelated
+  // permission ask can never match or release the hands-on gate; per-reason
+  // keying keeps a hands-on `once` grant from ever being consumed by a
+  // plan-gate (task) dispatch or a landing push and vice versa. Bounded: evict
+  // oldest past the cap.
+  const handsOnGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+  const maxTrackedHandsOnGateAsks = 50
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -756,6 +798,22 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Bounds the pending-hands-on-ask map (parent → arm time), evicting its
+   * oldest entries.
+   */
+  function boundHandsOnAsks(): void {
+    evictTo(pendingHandsOnAsk, maxTrackedHandsOnAsks)
+  }
+
+  /**
+   * Bounds the hands-on-gate ask map (requestID → parent + record time),
+   * evicting its oldest entries.
+   */
+  function boundHandsOnGateAsks(): void {
+    evictTo(handsOnGateAsks, maxTrackedHandsOnGateAsks)
+  }
+
+  /**
    * Bounds the landing-gate ask map (requestID → parent + record time),
    * evicting its oldest entries.
    */
@@ -840,6 +898,25 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     if (at === undefined) return false
     if (Date.now() - at > pendingLandingAskTtlMs) {
       pendingLandingAsk.delete(sid)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Reads (and expires) the pending-hands-on-ask latch for a session: an arm
+   * older than the TTL is dropped and reported as absent. Fail-toward-strict:
+   * an expired latch arms nothing, so a later ask is inert and the hands-on
+   * gate re-blocks. Only armed under `handsOnGate: enforce` on a repeat
+   * attempt, so shadow/off never ask.
+   * @param sid The parent session whose latch is consulted.
+   * @returns Whether a live (unexpired) latch exists for the session.
+   */
+  function hasLiveHandsOnAsk(sid: string): boolean {
+    const at = pendingHandsOnAsk.get(sid)
+    if (at === undefined) return false
+    if (Date.now() - at > pendingHandsOnAskTtlMs) {
+      pendingHandsOnAsk.delete(sid)
       return false
     }
     return true
@@ -2181,6 +2258,79 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Consumes the hands-on once-grant when one is pending and reports whether
+   * the parent write/edit is thereby released. A hands-on once-grant (from a
+   * `permission.replied` `once` for a hands-on ask) releases exactly ONE
+   * parent edit, consumed before the gate decides, so a stale grant cannot
+   * outlive the single edit it was given for. Every write/edit is a hands-on
+   * candidate, so no command-shape predicate is needed (unlike the landing
+   * grant). Keyed per-reason (`.handsOn`), so it can never be consumed by a
+   * plan-gate (task) dispatch or a landing push and vice versa.
+   * @param st The parent's gate-state bucket (mutated on consume).
+   * @returns True when the hands-on once-grant was consumed (the edit is
+   *     released by it).
+   */
+  function consumeHandsOnGrant(st: GateState): boolean {
+    if (st.pendingOnceGrant.handsOn === "") return false
+    st.pendingOnceGrant.handsOn = ""
+    return true
+  }
+
+  /**
+   * The stateful hands-on-gate capability handed to `toolPolicy.guardHandsOn`
+   * (mirrors landingGateHandles): only a shaped capability crosses the
+   * boundary. `escalate` arms the pending-hands-on-ask latch (the evaluate
+   * handler forces the human ask off it) and is called by guardHandsOn only
+   * under `enforce` on a repeat attempt (no release, >= 1 prior block);
+   * fail-toward-strict — a host reject leaves the gate red, so the next
+   * attempt re-blocks and re-arms.
+   * @param st The parent's gate-state bucket.
+   * @param parent The parent session (the latch's key).
+   * @returns The hands-on-gate capability record.
+   */
+  function handsOnGateHandles(st: GateState, parent: string): HandsOnGateCapability {
+    return {
+      hasRelease: () => st.handsOnRelease,
+      hasWaiver: () => waiverCovers(st, ["executor"]),
+      priorBlocks: () => st.handsOnBlocks,
+      recordBlock: () => {
+        st.handsOnBlocks += 1
+      },
+      escalate: () => {
+        pendingHandsOnAsk.set(parent, Date.now())
+        boundHandsOnAsks()
+      },
+    }
+  }
+
+  /**
+   * Handles a parent-session `write`/`edit` tool call: the path denylist
+   * guard first (a configured `pathDeny` wins outright and the two journal
+   * reasons stay disjoint — the same denylist-before-gate ordering the bash
+   * path uses), then the parent-only hands-on gate. A registered pipeline
+   * child's write/edit is the executor's own work and never gates: the
+   * `childToParent` edge is the same one the read budget and landing gate key
+   * off, and `ledger.parentOf` self-keys an unregistered session, so
+   * unregistered sessions count as parents (gated). A hands-on block throws
+   * BlockError (re-thrown by the outer catch); shadow journals only.
+   * @param event The execute.before tool event (write/edit shape).
+   * @param tool The narrowed tool name (`"write"` or `"edit"`).
+   */
+  function handleWriteEditDispatch(event: ToolHookEvent, tool: "write" | "edit"): void {
+    const sid = asSessionID(event?.sessionID)
+    const filePath = event.input?.filePath ?? event.input?.path
+    // Denylist first: a configured pathDeny wins and the journal reasons stay
+    // disjoint (mirrors the bash denylist-before-landing-gate ordering).
+    toolPolicy.guardPath(tool, filePath, sid)
+    // Hands-on gate: parent sessions only.
+    if (ledger.childToParent.has(sid)) return
+    const parent = ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
+    const st = ledger.state(parent)
+    if (consumeHandsOnGrant(st)) return // once-grant: released for this one edit
+    toolPolicy.guardHandsOn(tool, filePath, sid, handsOnGateHandles(st, parent))
+  }
+
+  /**
    * Handles a `session_move` tool call: journals the dispatched move
    * (telemetry only, never blocks) and invalidates the per-session
    * directory cache for the session and its parent so the next
@@ -2580,6 +2730,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // to the previous task scope too: a new prompt drops it, so the new
     // task starts from a pure first block again.
     pendingLandingAsk.delete(sessionID)
+    // A hands-on-ask arm belongs to the previous task scope the same way:
+    // a new prompt drops it, so the new task starts from a pure first block.
+    pendingHandsOnAsk.delete(sessionID)
     // A prompt reset also drops undelivered near-miss diagnostics: they
     // belong to the previous task scope. The scan below re-seeds within the
     // same admission, so a new prompt's own near misses still surface.
@@ -2980,7 +3133,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     planGateAsks,
     awaitingPlanAsk,
     pendingLandingAsk,
+    pendingHandsOnAsk,
     landingGateAsks,
+    handsOnGateAsks,
     sessionDirs,
     deltaWindows,
     sessionAgents,
@@ -2992,7 +3147,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     awaitingPlanAskTtlMs,
     maxTrackedLandingAsks,
     pendingLandingAskTtlMs,
+    maxTrackedHandsOnAsks,
+    pendingHandsOnAskTtlMs,
     maxTrackedLandingGateAsks,
+    maxTrackedHandsOnGateAsks,
     maxLookupAttempts,
     maxTrackedLookups,
     maxTrackedSessionDirs,
@@ -3013,7 +3171,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     boundPlanAsks,
     boundAwaitingAsks,
     boundLandingAsks,
+    boundHandsOnAsks,
     boundLandingGateAsks,
+    boundHandsOnGateAsks,
     boundSessionAgents,
     boundAdmittedIds,
     boundSummarizedSessions,
@@ -3028,6 +3188,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     markerKindAllowed,
     hasLiveAwaitingAsk,
     hasLiveLandingAsk,
+    hasLiveHandsOnAsk,
     currentProjectDir,
     resolveProjectDir,
     resolveParent,
@@ -3053,6 +3214,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     handleTaskDispatch,
     guardedTaskDispatch,
     handleBashDispatch,
+    consumeHandsOnGrant,
+    handleWriteEditDispatch,
     handleSessionMove,
     suspendBlock,
     parseMarkers,

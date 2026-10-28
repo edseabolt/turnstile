@@ -427,6 +427,11 @@ test("suspend: permission evaluate arms are inert while suspended", async () => 
     const landing: any = { action: "bash", sessionID: "p1" }
     evaluate(landing)
     assert.equal(landing.effect, "ask", "an armed landing latch forces the ask when enforcing")
+    // Hands-on arm control: an armed latch forces the hands-on ask.
+    ctx.pendingHandsOnAsk.set("p1", armedAt)
+    const handsOn: any = { action: "write", sessionID: "p1" }
+    evaluate(handsOn)
+    assert.equal(handsOn.effect, "ask", "an armed hands-on latch forces the ask when enforcing")
     // Suspend and re-evaluate both arms: inert, and the landing latch is
     // consumed (deleted) rather than left to fire after a resume.
     ctx.admitPrompt("p1", { text: `${OFF} pause` }, "")
@@ -441,6 +446,17 @@ test("suspend: permission evaluate arms are inert while suspended", async () => 
       ctx.pendingLandingAsk.has("p1"),
       false,
       "the armed landing latch is deleted while suspended",
+    )
+    // Suspended: inert, and the hands-on latch is consumed (deleted) rather
+    // than left to fire after a resume.
+    ctx.pendingHandsOnAsk.set("p1", armedAt)
+    const handsOnSuspended: any = { action: "edit", sessionID: "p1" }
+    evaluate(handsOnSuspended)
+    assert.equal(handsOnSuspended.effect, undefined, "the hands-on arm is inert while suspended")
+    assert.equal(
+      ctx.pendingHandsOnAsk.has("p1"),
+      false,
+      "the armed hands-on latch is deleted while suspended",
     )
   } finally {
     process.chdir(prev)

@@ -110,7 +110,7 @@ test("formatGateSnapshot renders a fresh bucket", () => {
   assert.match(lines[3]!, /^- reviewer: PENDING dispatches=0 last=none$/)
   assert.match(lines[4]!, /^- waiver: none human: none$/)
   assert.match(lines[5]!, /^- rounds: planner=0 plan-reviewer=0 test-runner=0 reviewer=0 total=0$/)
-  assert.match(lines[6]!, /^- landing: blocks=0 reads=0$/)
+  assert.match(lines[6]!, /^- landing: blocks=0 reads=0 hands-on blocks=0$/)
   assert.match(lines[7]!, /^- task: unstamped$/)
 })
 
@@ -136,6 +136,7 @@ test("formatGateSnapshot renders a populated bucket", () => {
     reviewRounds: 5,
     totalDispatches: 12,
     landingBlocks: 2,
+    handsOnBlocks: 3,
     reads: 7,
     taskFingerprint: "wt:main",
   }).split("\n")
@@ -151,7 +152,7 @@ test("formatGateSnapshot renders a populated bucket", () => {
   )
   assert.match(lines[4]!, /^- waiver: ACTIVE human: APPROVED$/)
   assert.match(lines[5]!, /^- rounds: planner=1 plan-reviewer=2 test-runner=4 reviewer=5 total=12$/)
-  assert.match(lines[6]!, /^- landing: blocks=2 reads=7$/)
+  assert.match(lines[6]!, /^- landing: blocks=2 reads=7 hands-on blocks=3$/)
   assert.match(lines[7]!, /^- task: wt:main$/)
 })
 

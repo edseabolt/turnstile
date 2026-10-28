@@ -18,6 +18,7 @@ import {
   asSessionID,
   readRecordString,
   DIRECTORY_KEYS,
+  HANDSON_ASK_MESSAGE_PREFIX,
   LANDING_ASK_MESSAGE_PREFIX,
   PLAN_ASK_MESSAGE_PREFIX,
 } from "./delivery.ts"
@@ -185,6 +186,19 @@ export function startEventStream(
     ctx.boundLandingGateAsks()
   }
   /**
+   * Records a hands-on-gate ask under the host request id, keyed to the
+   * ask's parent session so replies apply per-session and concurrent
+   * sessions cannot cross-apply; bounds the ask table. Mirrors
+   * recordAskedLanding; the disjoint message prefixes keep a hands-on
+   * approval from ever releasing the plan or landing gate (and vice versa).
+   * @param id The host request id of the ask.
+   * @param parent The parent session the ask belongs to.
+   */
+  const recordAskedHandsOn = (id: string, parent: string): void => {
+    ctx.handsOnGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+    ctx.boundHandsOnGateAsks()
+  }
+  /**
    * Records a plan-gate ask: when the message carries the plan-ask prefix
    * (the evaluate echo) or when the session is live-latched and the ask
    * carries no message of its own (the escalated echo). A non-empty
@@ -250,7 +264,14 @@ export function startEventStream(
       // a plan ask (different prefix), so an approval of one never
       // releases the other.
       if (message.startsWith(LANDING_ASK_MESSAGE_PREFIX)) {
+        // Landing-gate ask: message carries the landing-ask prefix
+        // (the evaluate handler's echo). A landing ask is disjoint from
+        // a plan ask (different prefix), so an approval of one never
+        // releases the other.
         recordAskedLanding(id, ctx.ledger.parentOf(sid))
+      } else if (message.startsWith(HANDSON_ASK_MESSAGE_PREFIX)) {
+        // Hands-on-gate ask: same prefix-dispatch contract.
+        recordAskedHandsOn(id, ctx.ledger.parentOf(sid))
       } else {
         recordAskedPlan(id, sid, message)
       }
@@ -335,6 +356,38 @@ export function startEventStream(
     }
   }
   /**
+   * Applies a human reply to a RECORDED hands-on-gate ask (the dispatcher's
+   * falsy-record guard guarantees the record exists): "always" releases the
+   * hands-on gate for the rest of the task (task-scoped, dropped by the next
+   * prompt); "once" stamps a single-edit grant consumed by exactly one parent
+   * write/edit; any other reply leaves the gate red — the next parent edit
+   * re-blocks and re-arms. The record is consumed (deleted) on every path.
+   * @param rid The host request id matching the recorded ask.
+   * @param reply The human reply ("once" / "always" / "reject").
+   */
+  const applyHandsOnGrant = (rid: string, reply: unknown): void => {
+    const handsOnRecord = ctx.handsOnGateAsks.get(rid)!
+    ctx.handsOnGateAsks.delete(rid)
+    const parent = handsOnRecord.sessionID
+    const s = ctx.ledger.state(parent)
+    if (reply === "always") {
+      // A standing human approval releases the rest of this task's parent
+      // edits (the guard sees handsOnRelease and allows every write/edit).
+      s.handsOnRelease = true
+      ctx.journaler.journal(decisionEntry(parent, "always"))
+    } else if (reply === "once") {
+      // A hands-on-gate single-edit grant: consumed by exactly one parent
+      // write/edit in execute.before (the .handsOn short-circuit), so a
+      // stale grant cannot outlive that single edit.
+      s.pendingOnceGrant.handsOn = rid
+      ctx.journaler.journal(decisionEntry(parent, "once"))
+    } else {
+      // reject (or any non-allow reply) leaves the gate red: the next
+      // parent edit re-blocks and re-arms the ask.
+      ctx.journaler.journal(decisionEntry(parent, "reject"))
+    }
+  }
+  /**
    * Journals a permission reply whose non-empty requestID matches no
    * recorded ask: the inert no-op is diagnosable, and the entry carries
    * no action/decision (the human PERM table is untouched and it is
@@ -369,6 +422,8 @@ export function startEventStream(
       applyPlanGrant(rid, reply)
     } else if (ctx.landingGateAsks.get(rid)) {
       applyLandingGrant(rid, reply)
+    } else if (ctx.handsOnGateAsks.get(rid)) {
+      applyHandsOnGrant(rid, reply)
     } else if (rid !== "") {
       noteUnrecordedReply(rid, asSessionID(properties.sessionID))
     }

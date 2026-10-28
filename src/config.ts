@@ -140,6 +140,11 @@ export function defaultConfig(
     verdictMarker: VERDICT_RE.source,
     gateEvidence: "enforce",
     reviewEnsemble: "enforce",
+    // Parent hands-on gate ships in `shadow` (audit-only) mirroring the
+    // gitGates adoption path: parent write/edit is journaled but never
+    // blocked until a user flips the key to `enforce` (the block-then-ask
+    // ladder); `off` is a no-op.
+    handsOnGate: "shadow",
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
     toolPolicy: {
       mode: "enforce",
@@ -207,6 +212,7 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "gateEvidence" && (value === "enforce" || value === "flag" || value === "off"))
     return true
   if (key === "reviewEnsemble" && (value === "enforce" || value === "advise")) return true
+  if (key === "handsOnGate") return value === "enforce" || value === "shadow" || value === "off"
   if (key === "evidencePattern" && typeof value === "string") {
     // A non-compiling pattern is rejected so `new RegExp` never throws later.
     try {
@@ -260,6 +266,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "verdictMarker") config.verdictMarker = value as string
   else if (key === "gateEvidence") config.gateEvidence = value as GateEvidenceMode
   else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
+  else if (key === "handsOnGate") config.handsOnGate = value as ToolPolicyMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
   else if (key === "suspendMarker") config.suspendMarker = value as string
@@ -486,6 +493,17 @@ export function mergeConfig(
         assignScalar(config, key as keyof TurnstileConfig, value)
       } else {
         warnings.push('config: sessionSummary must be "on", "quiet", or "off"; keeping default')
+      }
+      continue
+    }
+    if (key === "handsOnGate") {
+      // Mirrors the gateEvidence/reviewEnsemble special case: shared
+      // validate/assign helpers, only the warning wording is special-cased
+      // to name the three accepted literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push('config: handsOnGate must be "enforce", "shadow", or "off"; keeping default')
       }
       continue
     }

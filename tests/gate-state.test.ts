@@ -1946,7 +1946,7 @@ test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defau
   assert.equal(s.userWaiverConsumed, false, "a fresh waiver is not consumed")
   assert.equal(s.reviewWaiverRounds, 0, "a fresh task has spent no waiver allowance")
   assert.equal(s.humanApproval, false)
-  assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "" })
+  assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "", handsOn: "" })
 })
 
 /** The landing-gate primitives start at their task-scoped defaults: no
@@ -1955,6 +1955,14 @@ test("newState initializes hasReviewApprove and landingBlocks defaults", () => {
   const s = newState()
   assert.equal(s.hasReviewApprove, false)
   assert.equal(s.landingBlocks, 0)
+})
+
+/** The hands-on-gate primitives start at their task-scoped defaults: a zero
+ *  parent hands-on block counter and no standing release. */
+test("newState initializes handsOnBlocks and handsOnRelease defaults", () => {
+  const s = newState()
+  assert.equal(s.handsOnBlocks, 0)
+  assert.equal(s.handsOnRelease, false)
 })
 
 /** The dispatch loop caps start fresh: every per-leg round counter and the
@@ -2249,7 +2257,7 @@ test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => 
   s.userWaiverConsumed = true
   s.reviewWaiverRounds = 1
   s.humanApproval = true
-  s.pendingOnceGrant = { plan: "req-42", landing: "req-9" }
+  s.pendingOnceGrant = { plan: "req-42", landing: "req-9", handsOn: "" }
   ledger.resetState("p1")
   const cur = ledger.state("p1")
   assert.equal(cur.userWaiver, "", "userWaiver clears on reset")
@@ -2258,7 +2266,7 @@ test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => 
   assert.equal(cur.reviewWaiverRounds, 0, "reviewWaiverRounds clears on reset")
   assert.deepEqual(
     cur.pendingOnceGrant,
-    { plan: "", landing: "" },
+    { plan: "", landing: "", handsOn: "" },
     "pendingOnceGrant clears on reset",
   )
   assert.equal(cur.humanApproval, false, "humanApproval resets on prompt")
@@ -2288,7 +2296,7 @@ test("grace prompt carries restored humanApproval and the waiver family forward,
   s.userWaiverScope = ["reviewer"]
   s.userWaiverConsumed = true
   s.reviewWaiverRounds = 1
-  s.pendingOnceGrant = { plan: "req-keep", landing: "" }
+  s.pendingOnceGrant = { plan: "req-keep", landing: "", handsOn: "" }
   // Grace prompt: mergeAfterReplay carries the restart-sticky flag and the
   // waiver family forward, never wipes them; the once-grants drop.
   ledger.resetState("p1")
@@ -2306,7 +2314,7 @@ test("grace prompt carries restored humanApproval and the waiver family forward,
   assert.equal(afterGrace.reviewWaiverRounds, 1, "reviewWaiverRounds carried by grace")
   assert.deepEqual(
     afterGrace.pendingOnceGrant,
-    { plan: "", landing: "" },
+    { plan: "", landing: "", handsOn: "" },
     "pendingOnceGrant never carried through merge",
   )
   // Second prompt: a full reset clears everything.
@@ -3564,6 +3572,7 @@ type MeteringCounterKey =
   | "testRunnerRounds"
   | "totalDispatches"
   | "landingBlocks"
+  | "handsOnBlocks"
   | "reads"
 
 /** A freshly-built bucket with every metering counter at its fresh value, for
@@ -3577,6 +3586,7 @@ function freshCounters(s: GateState): Record<MeteringCounterKey, number> {
     testRunnerRounds: s.testRunnerRounds,
     totalDispatches: s.totalDispatches,
     landingBlocks: s.landingBlocks,
+    handsOnBlocks: s.handsOnBlocks,
     reads: s.reads,
   }
 }
@@ -3596,6 +3606,7 @@ test("clearMeteringCounters returns true iff a metering counter was non-fresh", 
     "testRunnerRounds",
     "totalDispatches",
     "landingBlocks",
+    "handsOnBlocks",
     "reads",
   ]
   for (const key of counterKeys) {

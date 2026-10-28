@@ -408,6 +408,8 @@ export interface GateState {
     plan: string
     /** Landing-gate once grant: the matched requestID, or "" when none. */
     landing: string
+    /** Hands-on-gate once grant: the matched requestID, or "" when none. */
+    handsOn: string
   }
   /**
    * True once this task's first parent task/subagent result delivery has
@@ -483,6 +485,23 @@ export interface GateState {
    * `mergeAfterReplay`.
    */
   landingBlocks: number
+  /**
+   * Task-scoped count of parent hands-on (write/edit) blocks this task under
+   * the hands-on gate — arms the permission-ask escalation on a repeat
+   * attempt. Task-scoped: fresh `0` on each prompt reset and never carried
+   * through `mergeAfterReplay`. A restart mid-task drops it (never
+   * replay-restored), so the ladder re-blocks and re-arms — the
+   * fail-toward-strict direction.
+   */
+  handsOnBlocks: number
+  /**
+   * Task-scoped standing release from a human `always` reply to a hands-on
+   * ask: the rest of this task's parent write/edit calls are allowed. Fresh
+   * `false` on every prompt reset, never carried through
+   * `mergeAfterReplay`, never replay-restored — a restart mid-task drops
+   * it and the ladder re-blocks (fail-toward-strict by design).
+   */
+  handsOnRelease: boolean
   reads: number
   /**
    * True once this task's read-budget warning prefix has been injected into a
@@ -772,6 +791,17 @@ export interface TurnstileConfig {
    * (`config.validateResolved`).
    */
   reviewEnsemble: ReviewEnsembleMode
+  /**
+   * Parent hands-on gate mode: gates `write`/`edit` calls made by the parent
+   * session itself (a registered pipeline child's own edits never gate).
+   * `shadow` (default) audits parent hands-on edits journal-only, mirroring
+   * the gitGates adoption path; `enforce` runs the block-then-ask ladder —
+   * the first parent write/edit per task blocks, a repeat attempt escalates
+   * to a human permission ask (`always` releases for the task, `once` for
+   * one edit, `reject` re-blocks); `off` is a no-op. See
+   * `src/tool-policy.ts` (guardHandsOn).
+   */
+  handsOnGate: ToolPolicyMode
   /**
    * Case-insensitive regex source a successful (exit-0) bash/shell command
    * must match to count as test execution. Overridable for non-JS/other
