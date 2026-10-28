@@ -128,9 +128,11 @@ than thrown.
 When a gate fires early, the block message names the reason:
 
 ```text
-BLOCKED by turnstile: executor dispatch requires an approved plan
-(VERDICT: APPROVE from plan-reviewer, PLAN APPROVED: in your prompt,
-or approve the permission ask)
+BLOCKED by turnstile: no plan approval for "<plan path>". Dispatch the
+plan-reviewer subagent first; proceed with executor only after the
+plan-reviewer's first line is `VERDICT: APPROVE crit=<n> high=<n> med=<n>
+low=<n>`, or obtain an explicit user waiver (a user prompt this task must
+contain the literal marker 'USER WAIVER:' followed by the user's words).
 ```
 
 Every block, verdict, and gate flip is appended to the journal —
