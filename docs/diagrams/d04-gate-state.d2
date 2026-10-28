@@ -41,6 +41,23 @@ green -> reviewed: "reviewer APPROVE ×2 (reviewEnsemble=enforce) | permission l
 reviewed -> reviewed: "git push allowed"
 green -> end
 
+suspend: "Suspended\n(TURNSTILE OFF:)\ndecisions computed + journaled,\nno BLOCKED, no permission ask" {
+  shape: oval
+  style.stroke: "#c33"
+}
+suspend -> suspend: "would-block + suppressed\naudit entries journaled" {
+  style.stroke-dash: 4
+}
+start -> suspend: "TURNSTILE OFF: in the user prompt\n(clearState fresh; survives restart via replay)"
+suspend -> start: "TURNSTILE ON: (fresh start again)"
+refused-note: "allowSuspend:false refuses an OFF marker\n(journaled refused:true + surfaced diagnostic;\nno state change)." {
+  style.stroke-dash: 4
+  shape: parallelogram
+}
+refused-note -> suspend: "" {
+  style.opacity: 0
+}
+
 planok-note: "bound approval (dispatch-named plan):\nname + per-file key;\nbound-plan edit/removal ⇒ plan-edited / plan-missing STALE;\nunbound approval: path-free plansSignature;\nplans-dir change ⇒ signature-mismatch STALE ⇒ re-review." {
   style.stroke-dash: 4
   shape: parallelogram

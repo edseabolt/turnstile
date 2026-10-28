@@ -20,7 +20,11 @@
  *   emitter is journaled `suppressed` and flips nothing.
  * - Prompt-channel provenance: `USER WAIVER:` and `PLAN APPROVED:` are
  *   honored only from the user's own prompt at admission, never from an
- *   agent-composed dispatch prompt.
+ *   agent-composed dispatch prompt. The same channel carries the session
+ *   suspend/resume markers (`TURNSTILE OFF:` / `TURNSTILE ON:` by default,
+ *   kill-switched by `allowSuspend`): while suspended, decisions keep
+ *   computing and journaling but nothing throws `BLOCKED`, and a resume
+ *   starts from fresh state — journaled and replay-safe across restarts.
  * - Orchestration prose is injected at runtime, not installed to a file:
  *   the `execute.after` body prepends the policy head (`src/policy.ts`)
  *   once per task and appends a per-delivery `PIPELINE:` status tail to

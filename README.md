@@ -193,6 +193,27 @@ open a gate — only the user's own prompt carries a real waiver or approval.
 Full lifecycle semantics (waiver allowances, ensemble interaction, prompt
 channels): [`docs/usage.md`](docs/usage.md#waivers-and-approvals).
 
+## Suspend and resume
+
+You can pause turnstile's gate enforcement for the whole session with two
+prompt markers, read only from your own prompt (never from an agent's
+dispatch prompt — there is no agent-dispatchable off switch):
+
+- **`TURNSTILE OFF:`** suspends blocking for the session: enforcement
+  decisions keep computing and journaling (every block that would have fired
+  is journaled as a `would-block` audit entry), but nothing throws `BLOCKED`
+  and no permission ask is forced. The session's gate state is cleared fresh
+  and stays suspended across a restart (replayed from the journal tail).
+- **`TURNSTILE ON:`** resumes enforcement with fresh task state — no credit
+  earned while suspended rehydrates.
+
+When both markers appear in one prompt, the one occurring later wins. Config:
+`suspendMarker` / `resumeMarker` rename the literals (defaults
+`TURNSTILE OFF:` / `TURNSTILE ON:`), and `allowSuspend: false` disables both
+(an OFF is refused with a journaled `refused:true` entry and a surfaced
+diagnostic). Inspect the live state with
+`node bin/cli.mjs status` (in-repo) or `npx opencode-turnstile status`.
+
 ## Markers
 
 Subagents must emit these as the first line of their output. These examples

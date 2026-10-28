@@ -99,6 +99,18 @@
       "type": "boolean",
       "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default true)."
     },
+    "suspendMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, suspends gate blocking for the session (decisions keep journaling, nothing blocks; state cleared fresh) (default TURNSTILE OFF:). Never agent-dispatchable; ignored when allowSuspend is false."
+    },
+    "resumeMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, resumes enforcement with fresh task state — no credit earned while suspended survives (default TURNSTILE ON:). Never agent-dispatchable."
+    },
+    "allowSuspend": {
+      "type": "boolean",
+      "description": "Whether the suspend/resume markers are honored; false refuses an OFF marker with a journaled refused:true entry and a surfaced diagnostic (default true)."
+    },
     "sessionSummary": {
       "type": "string",
       "enum": ["on", "quiet", "off"],

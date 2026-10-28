@@ -287,6 +287,12 @@ export interface TurnstileContext {
   ): Promise<void>
   /** Handles a bash/shell tool call. */
   handleBashDispatch(event: ToolHookEvent, tool: "bash" | "shell"): void
+  /**
+   * Swallows a deliberate BlockError at the catch-all execute.before choke
+   * point while a user-typed gate suspension is active for the event's
+   * parent (journaled, tool proceeds); false when no suspension is active.
+   */
+  suspendBlock(event: ToolHookEvent, e: BlockError): boolean
   /** Handles a session_move tool call. */
   handleSessionMove(event: ToolHookEvent): void
   /** Parses markers out of assistant text and journals first-sight events. */
@@ -1067,7 +1073,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * whereas a suppressed dispatch journals no `blocked` stamp at all (its
    * catch branch skips it). A suppressed read therefore co-journals both that
    * `blocked` line and the `would-block` audit entry; the dispatch path
-   * journals the `would-block` entry alone.
+   * journals the `would-block` entry alone. The same suppression applies
+   * when a user-typed gate suspension is active (keyed on the same budget
+   * key): the `suspended` audit flavor is journaled and the read proceeds.
    * @param key The session ID the read budget is keyed against (the parent,
    *     or the session itself when the edge is genuinely absent).
    * @throws The deliberate read-budget block error when the block is not
@@ -1080,6 +1088,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       if (e instanceof BlockError && observeActive(key)) {
         const totals = ledger.noteWouldBlock(key)
         journaler.journal(wouldBlockEntry(key, "read-budget", totals.observed, totals.wouldBlocks))
+        return
+      }
+      if (e instanceof BlockError && suspendSuppressionActive(key)) {
+        journalSuspendedWouldBlock(key, "read-budget")
         return
       }
       throw e
@@ -1889,6 +1901,70 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Whether gate enforcement is suspended for the session's parent: the
+   * session-level `TURNSTILE OFF:` state (decisions keep computing and
+   * journaling, but deliberate blocks are suppressed). Children draw on the
+   * parent's suspension via `ledger.parentOf`, matching the per-parent
+   * state rule. Fail-open: any ledger throw journals and returns false —
+   * a broken suspension read must not silently un-guard the pipeline.
+   * @param sessionID The session whose enforcement decision is being made.
+   * @returns True when enforcement is suspended for the session's parent.
+   */
+  function suspendSuppressionActive(sessionID: string): boolean {
+    try {
+      return ledger.isSuspended(ledger.parentOf(sessionID))
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `suspension read: ${e}` })
+      return false
+    }
+  }
+
+  /**
+   * Journals one replay-inert `suspended` audit entry for a block suppressed
+   * by an active gate suspension: the parent-keyed session, the
+   * `event:"would-block"` audit flavor, and the blocking gate's audit cause
+   * truncated to 200 characters. One entry per suppressed deliberate block;
+   * replay folds it inert (it records a suppression, never a state change).
+   * @param sessionID The session the entry is keyed on (the parent).
+   * @param cause The blocking gate's audit cause.
+   */
+  function journalSuspendedWouldBlock(sessionID: string, cause: string): void {
+    journaler.journal({
+      type: "suspended",
+      sessionID,
+      event: "would-block",
+      cause: cause.slice(0, 200),
+    })
+  }
+
+  /**
+   * Settles a task-dispatch guard catch under an active gate suspension
+   * (the observe arm above wins the flavor when both are active): the
+   * `suspended` audit entry is journaled and the dispatch is metered like
+   * any admit. Returns false when the suspension is not the active
+   * suppressor, so the caller keeps its ordinary blocked-stamp path.
+   * @param e The caught guard failure (an already-checked BlockError).
+   * @param sessionID The dispatching session ID.
+   * @param agent The resolved agent name.
+   * @param description The trace-gated dispatch description.
+   * @param waived The budget guard's admission-time waiver-exemption verdict.
+   * @returns True when the suspension suppressed the block (dispatch
+   *     proceeded, metered).
+   */
+  function suspendDispatchOutcome(
+    e: BlockError,
+    sessionID: string,
+    agent: string,
+    description: string,
+    waived: boolean,
+  ): boolean {
+    if (!suspendSuppressionActive(sessionID)) return false
+    journalSuspendedWouldBlock(sessionID, blockCause(e, agent))
+    allowDispatch(sessionID, agent, description, waived)
+    return true
+  }
+
+  /**
    * Names the blocking gate for a suppressed dispatch: the gate's stamped
    * audit cause when the throw site carries one, else the dispatched agent
    * name, else the `"gate"` fallback. Never re-parses the block message —
@@ -1908,7 +1984,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * with the running totals and the dispatch is metered like any admit — the
    * suppressed dispatch happened, so counters mean the same thing in both
    * modes and a "would have been blocked" count is an attempt count, not a
-   * counter delta. Outside the observe period the BlockError stamps
+   * counter delta. The same applies when a user-typed gate suspension is
+   * active (the observe arm wins the flavor when both are active): the
+   * `suspended` audit entry is journaled instead. Outside both suppression
+   * modes the BlockError stamps
    * `blocked:true` (a blocked attempt draws down nothing) and is re-thrown
    * for the fail-open wrapper; any non-BlockError is an internal error that
    * propagates un-stamped, so the dispatch entry is never mislabeled.
@@ -1935,6 +2014,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       allowDispatch(sessionID, agent, description, waived)
       return true
     }
+    if (suspendDispatchOutcome(e, sessionID, agent, description, waived)) return true
     recordDispatch(sessionID, agent, description, true)
     return false
   }
@@ -2121,6 +2201,24 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     sessionDirs.delete(sid)
     sessionDirs.delete(ledger.parentOf(sid))
     return
+  }
+
+  /**
+   * Swallows a deliberate BlockError thrown at the catch-all
+   * `execute.before` choke point (bash denylist, commit lint, landing gate)
+   * while a user-typed gate suspension is active for the event's parent:
+   * the `suspended` audit entry is journaled (cause from the block, bounded)
+   * and the tool call proceeds. Returns false when no suspension is active,
+   * so the caller rethrows (the ordinary enforce path).
+   * @param event The execute.before tool event.
+   * @param e The deliberate block error (an already-checked BlockError).
+   * @returns True when the suspension suppressed the block.
+   */
+  function suspendBlock(event: ToolHookEvent, e: BlockError): boolean {
+    const parent = ledger.parentOf(asSessionID(event?.sessionID))
+    if (!suspendSuppressionActive(parent)) return false
+    journalSuspendedWouldBlock(parent, blockCause(e, ""))
+    return true
   }
 
   /**
@@ -2565,6 +2663,83 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Gate suspend/resume capture (prompt channel): scans the user's own prompt
+   * for the configured `TURNSTILE OFF:` / `TURNSTILE ON:` literals (strict
+   * `indexOf`, no near-miss admission) and applies the later-occurring
+   * marker's action (last-wins). An OFF suspends enforcement for the session
+   * (decisions keep computing and journaling, but deliberate blocks are
+   * suppressed) and clears the gate state fresh; an ON resumes enforcement
+   * and clears the state fresh too — no credit earned while suspended
+   * rehydrates. An OFF is refused when `allowSuspend` is false: the refusal
+   * is journaled and a marker-style diagnostic is parked for surfacing, and
+   * no state changes. Both markers are plain prompt literals, never
+   * agent-relayed: only admitted user prompts reach this scanner.
+   *
+   * Capture ordering contract: this runs AFTER waiver/approval capture, so a
+   * `PLAN APPROVED:` in the same prompt as an allowed OFF is captured and
+   * then wiped by the fresh-start clear (the clear is authoritative). To keep
+   * the journal honest (no captured-then-discarded approval row going
+   * unexplained), the allowed-OFF branch journals a skip notice when the
+   * prompt also carried the approval literal.
+   *
+   * Fail-open: a coercion that throws is journaled under the distinct
+   * `suspend capture:` key and swallowed — never thrown at the host.
+   * @param sessionID The parent session the markers are captured for.
+   * @param properties The prompt payload to scan.
+   */
+  function captureSuspend(sessionID: string, properties: PromptHookProperties): void {
+    try {
+      const text = promptTextOf(properties)
+      const atOff = text.indexOf(config.suspendMarker)
+      const atOn = text.indexOf(config.resumeMarker)
+      if (atOff === -1 && atOn === -1) return
+      // Last-wins: the marker occurring later in the prompt decides.
+      const resume = atOn !== -1 && (atOff === -1 || atOn > atOff)
+      if (resume) {
+        journaler.journal({ type: "suspended", sessionID, action: "on" })
+        ledger.setSuspended(sessionID, false)
+        // Fresh start: admission's `carryOrReset` already released the
+        // registered children (and journaled any child-reset), so this clear
+        // only wipes the bucket credit — no counter can free here.
+        ledger.clearState(sessionID)
+        return
+      }
+      if (!config.allowSuspend) {
+        journaler.journal({ type: "suspended", sessionID, action: "off", refused: true })
+        const pending = nearMissPending.get(sessionID) ?? []
+        pending.push({
+          label: "suspend",
+          // The seen token minus its trailing colon — the same colon-stripped
+          // shape the near-miss scanner reports (the OFF marker itself is
+          // config-controlled, so a custom literal surfaces its own core).
+          found: config.suspendMarker.replace(/:$/, ""),
+          literal: config.suspendMarker,
+        })
+        nearMissPending.set(sessionID, pending)
+        boundNearMissPending()
+        return
+      }
+      journaler.journal({ type: "suspended", sessionID, action: "off" })
+      if (text.indexOf(config.approvalMarker) !== -1) {
+        journaler.journal({
+          type: "error",
+          sessionID,
+          error: "approval capture skipped: prompt also suspended the gate",
+        })
+      }
+      ledger.markParent(sessionID)
+      // Fresh start: the clear is authoritative over the captures above
+      // (same admission — `carryOrReset` already released the registered
+      // children, so this clear only wipes the bucket credit).
+      ledger.clearState(sessionID)
+      ledger.setSuspended(sessionID, true)
+    } catch (e) {
+      // Fail-open: suspend capture never blocks a prompt.
+      journaler.journal({ type: "error", error: `suspend capture: ${e}` })
+    }
+  }
+
+  /**
    * Near-miss marker scan (diagnostic-only): a prompt that mistypes the
    * waiver/approval literal (case, separator, or colon variant) admits nothing
    * — the strict `indexOf` capture is untouched — but is journaled as a
@@ -2671,7 +2846,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * surfaces the dead-channel telemetry once, then resets prior task scope
    * (carrying restart-sticky flags when continuation carry is armed), drops all
    * task-scoped dispatch state, and captures a waiver and/or approval marker
-   * plus the unresolvable-text telemetry. This is the single admission body,
+   * plus the gate suspend/resume markers (`TURNSTILE OFF:` / `TURNSTILE ON:`,
+   * later-occurrence-wins) and the unresolvable-text telemetry. This is the single admission body,
    * reached either through the session prompt hook or the correlated inbox
    * stream; the caller dedupes by the shared host message id so one prompt is
    * admitted exactly once regardless of which signal arrives first. Reads only
@@ -2718,6 +2894,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     dropTaskScope(sessionID)
     captureWaiver(sessionID, properties)
     captureApproval(sessionID, properties)
+    captureSuspend(sessionID, properties)
     scanNearMisses(sessionID, properties)
     surfaceKeylessPrompt(sessionID, properties)
   }
@@ -2838,6 +3015,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     guardedTaskDispatch,
     handleBashDispatch,
     handleSessionMove,
+    suspendBlock,
     parseMarkers,
     admitPrompt,
     // methods

@@ -18,6 +18,9 @@
   "trace": true,
   "sessionSummary": "quiet",
   "continuationCarry": true,
+  "suspendMarker": "TURNSTILE OFF:",
+  "resumeMarker": "TURNSTILE ON:",
+  "allowSuspend": true,
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",

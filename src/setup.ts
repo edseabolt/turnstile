@@ -116,7 +116,9 @@ async function registerPermissionHook(
 /**
  * Builds the `execute.before` hook body: the only hook whose throw is
  * sanctioned — the gate layer's deliberate BlockError is rethrown to the
- * host; every other failure journals (fail-open).
+ * host (unless a user-typed gate suspension is active, in which case it is
+ * journaled and swallowed — see `suspendBlock`); every other failure
+ * journals (fail-open).
  * @param ctx The per-setup shared context (journaler).
  * @param before The gate-layer before hook to guard.
  * @returns The guarded before hook body.
@@ -129,7 +131,12 @@ function guardedToolBefore(
     try {
       await before(event)
     } catch (e) {
-      if (e instanceof BlockError) throw e
+      if (e instanceof BlockError) {
+        // Gate suspension: a user-typed `TURNSTILE OFF:` suppresses every
+        // deliberate block (journaled, tool proceeds); otherwise rethrow.
+        if (ctx.suspendBlock(event, e)) return
+        throw e
+      }
       ctx.journaler.journal({ type: "error", error: `tool.execute.before: ${e}` })
     }
   }
