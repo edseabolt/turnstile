@@ -6,7 +6,7 @@
 [![deps](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/npm/l/opencode-turnstile)](LICENSE)
 
-![turnstile verifies what your agents claim: unverified claims hit a red gate, verified evidence flips it green, every decision lands in the journal](docs/images/demo.svg)
+![turnstile runs the ensemble end to end: planner → plan-reviewer → executor → test-runner → reviewer, with blocked dispatches (red) until VERDICT: APPROVE and verified GATE: PASS evidence flip each gate green, and every decision lands in turnstile.jsonl](docs/images/demo.svg)
 
 **Verify what your agents claim.** An agent that says "tests pass" is asking
 you to trust it. Turnstile checks instead: a reviewer dispatch stays blocked
