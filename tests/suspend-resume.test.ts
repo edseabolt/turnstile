@@ -18,6 +18,7 @@ import { BlockError, createGates } from "../src/gates.ts"
 import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
 import { createPermissionHooks } from "../src/hooks-permission.ts"
 import { createLedger } from "../src/ledger.ts"
+import { worktreeFingerprint } from "../src/fingerprint.ts"
 import { defaultConfig, mergeConfig } from "../src/config.ts"
 import type { TurnstileConfig } from "../src/types.ts"
 import { turnstile } from "../turnstile.ts"
@@ -235,6 +236,50 @@ test("suspend: PLAN APPROVED + OFF in one prompt clears last, no credit survives
   const s = ctx.ledger.peek("p1")
   assert.ok(s, "the cleared bucket is rebuilt")
   assert.equal(s!.hasPlanVerdict, false, "no approval credit survives the clear")
+  assert.equal(ctx.ledger.isSuspended("p1"), true, "the OFF still suspends")
+})
+
+/** `allowSuspend:false` refuses the ON marker too: the refusal is journaled
+ *  (`refused:true`, `action:"on"`), a marker-style diagnostic naming the ON
+ *  literal is parked, and ledger state is untouched — earned credit (carried
+ *  across the prompt reset by continuation carry) survives. */
+test("suspend: allowSuspend:false refuses the ON marker without touching ledger state", () => {
+  const { ctx, metricsDir } = coreWith({ allowSuspend: false })
+  // Mint credit the way a completed task leaves it: a gate pass bound to the
+  // current worktree fingerprint, so the admission's continuation carry keeps
+  // it across the prompt reset — the only reason the refused ON's ledger
+  // untouched-ness is observable at all.
+  const fingerprint = worktreeFingerprint(process.cwd())
+  ctx.ledger.markParent("p1")
+  ctx.ledger.state("p1").hasGatePass = true
+  ctx.ledger.state("p1").taskFingerprint = fingerprint
+  ctx.admitPrompt("p1", { text: `${ON} back to work` }, "")
+  assert.equal(ctx.ledger.isSuspended("p1"), false, "no suspension change")
+  const s = ctx.ledger.peek("p1")
+  assert.equal(s?.hasGatePass, true, "earned credit survives the refused ON")
+  assert.deepEqual(entriesOf(metricsDir, "suspended"), [
+    { type: "suspended", sessionID: "p1", action: "on", refused: true },
+  ])
+  const pending = ctx.nearMissPending.get("p1") ?? []
+  assert.equal(pending.length, 1, "the refused ON parks one diagnostic")
+  assert.equal(pending[0]!.literal, ON)
+})
+
+/** A `USER WAIVER:` sharing the prompt with an allowed OFF is captured and
+ *  then wiped by the fresh-start clear: the journal carries the waiver row,
+ *  the `action:"off"` entry, and a waiver skip notice (the marker-agnostic
+ *  extension of the approval skip notice), and no waiver credit survives. */
+test("suspend: USER WAIVER + OFF in one prompt clears last, skip notice journaled", () => {
+  const { ctx } = coreWith({})
+  ctx.admitPrompt("p1", { text: `USER WAIVER: my call\n${OFF} go manual` }, "")
+  const dir = path.dirname(ctx.journaler.journalPath)
+  const errors = journalEntries(dir).filter((e) => e.type === "error")
+  assert.ok(
+    errors.some((e) => e.error === "waiver capture skipped: prompt also suspended the gate"),
+    "the waiver skip notice is journaled",
+  )
+  const s = ctx.ledger.peek("p1")
+  assert.equal(s?.userWaiver, "", "no waiver credit survives the clear")
   assert.equal(ctx.ledger.isSuspended("p1"), true, "the OFF still suspends")
 })
 

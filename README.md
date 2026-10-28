@@ -211,7 +211,7 @@ When both markers appear in one prompt, the one occurring later wins. Config:
 `suspendMarker` / `resumeMarker` rename the literals (defaults
 `TURNSTILE OFF:` / `TURNSTILE ON:`), and `allowSuspend: false` disables both
 (an OFF is refused with a journaled `refused:true` entry and a surfaced
-diagnostic). Inspect the live state with
+diagnostic — the ON marker likewise). Inspect the live state with
 `node bin/cli.mjs status` (in-repo) or `npx opencode-turnstile status`.
 
 ## Markers

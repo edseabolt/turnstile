@@ -140,10 +140,11 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   journaled `type:"suspended"` — an OFF suspends enforcement for the session
   (fresh-start state clear via `clearState`, no restart-sticky merge) and an
   ON resumes it (also fresh — no credit earned while suspended rehydrates).
-  When `allowSuspend:false`, an OFF is refused: journaled
-  `action:"off", refused:true` plus a parked marker-style diagnostic; no
-  state changes. When an allowed OFF shares the prompt with `PLAN APPROVED:`,
-  the approval is captured first and then wiped by the fresh-start clear
+  When `allowSuspend:false`, both markers are refused: journaled
+  `refused:true` (with the refused marker's `action`) plus a parked
+  marker-style diagnostic; no state changes. When an allowed OFF shares the
+  prompt with `PLAN APPROVED:` or `USER WAIVER:`, the
+  waiver/approval is captured first and then wiped by the fresh-start clear
   (the clear is authoritative), with a skip notice journaled. It also scans the
   text for marker-shaped near misses
   of the two literals (case, separator, or colon variants) — diagnostic-only:
@@ -426,15 +427,16 @@ observed, wouldBlocks}`, journaled when the `[turnstile] observe:` block
   summary surfaced so it never re-fires after a restart.
   A `suspended` entry is the gate-suspension record (§5's overlay): the state
   flavor is `{type:"suspended", sessionID, action:"off"|"on"}` (plus
-  `refused:true` when `allowSuspend:false` refused an OFF) — replay folds it
+  `refused:true` when `allowSuspend:false` refused the marker) — replay folds it
   last-wins into the ledger's suspension map, so a restart mid-suspension
   stays suspended and an ON resumes; a missing or unknown `action` is an
   `entry-shape` replay drop. The audit flavor is
   `{type:"suspended", sessionID, event:"would-block", cause}` — one entry per
   deliberate block suppressed by the suspension (cause truncated to 200
   chars, like `would-block`); it folds inert, recording a suppression but
-  never a state change. Both flavors are status-inert (the status
-  aggregate's type chain ignores unknown kinds).
+  never a state change. The state flavor is status-visible (the status
+  aggregate folds the same last-wins suspension state); the audit flavor is
+  status-inert.
   A `marker` entry is the near-miss diagnostic for a prompt that mistypes a
   prompt-channel marker literal: at admission the text is scanned for
   marker-shaped variants (case, separator, or colon) of the configured
@@ -569,10 +571,15 @@ is fail-open. The window bounds only the live approval: bound approvals
 older than it stay exempt through the durable approved-plan store above.
 
 For a read-only status view: `opencode-turnstile status [--json]` aggregates
-gate/plan/verdict/dispatch/blocked/permission entries per parent session,
-walking the same all-generation tail window with the same session-ID and
+gate/plan/verdict/dispatch/blocked/permission/suspension entries per parent
+session, walking the same all-generation tail window with the same
+session-ID and
 marker shape checks (observation-only, so a dropped line is silent there
-rather than journaled). When the journal holds observe-mode entries, the
+rather than journaled). Suspension folds last-wins like the ledger's
+`foldSuspended` (an OFF marks, an ON clears, an `event:"would-block"` audit
+and an unknown action fold nothing) and surfaces per session as the `suspended`
+JSON field and the table's SUS column. When the journal holds observe-mode
+entries, the
 report header adds the folded period line
 (`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
 would-blocks`); journals without them render byte-identically.

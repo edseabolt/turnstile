@@ -2670,17 +2670,19 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * (decisions keep computing and journaling, but deliberate blocks are
    * suppressed) and clears the gate state fresh; an ON resumes enforcement
    * and clears the state fresh too — no credit earned while suspended
-   * rehydrates. An OFF is refused when `allowSuspend` is false: the refusal
+   * rehydrates. A marker is refused when `allowSuspend` is false — BOTH the
+   * OFF and the ON marker: the refusal
    * is journaled and a marker-style diagnostic is parked for surfacing, and
    * no state changes. Both markers are plain prompt literals, never
    * agent-relayed: only admitted user prompts reach this scanner.
    *
    * Capture ordering contract: this runs AFTER waiver/approval capture, so a
-   * `PLAN APPROVED:` in the same prompt as an allowed OFF is captured and
+   * `PLAN APPROVED:` or `USER WAIVER:` in the same prompt as an allowed OFF
+   * is captured and
    * then wiped by the fresh-start clear (the clear is authoritative). To keep
-   * the journal honest (no captured-then-discarded approval row going
+   * the journal honest (no captured-then-discarded waiver/approval row going
    * unexplained), the allowed-OFF branch journals a skip notice when the
-   * prompt also carried the approval literal.
+   * prompt also carried the waiver or approval literal.
    *
    * Fail-open: a coercion that throws is journaled under the distinct
    * `suspend capture:` key and swallowed — never thrown at the host.
@@ -2695,6 +2697,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       if (atOff === -1 && atOn === -1) return
       // Last-wins: the marker occurring later in the prompt decides.
       const resume = atOn !== -1 && (atOff === -1 || atOn > atOff)
+      if (!config.allowSuspend) {
+        refuseSuspend(
+          sessionID,
+          resume ? "on" : "off",
+          resume ? config.resumeMarker : config.suspendMarker,
+        )
+        return
+      }
       if (resume) {
         journaler.journal({ type: "suspended", sessionID, action: "on" })
         ledger.setSuspended(sessionID, false)
@@ -2704,39 +2714,70 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         ledger.clearState(sessionID)
         return
       }
-      if (!config.allowSuspend) {
-        journaler.journal({ type: "suspended", sessionID, action: "off", refused: true })
-        const pending = nearMissPending.get(sessionID) ?? []
-        pending.push({
-          label: "suspend",
-          // The seen token minus its trailing colon — the same colon-stripped
-          // shape the near-miss scanner reports (the OFF marker itself is
-          // config-controlled, so a custom literal surfaces its own core).
-          found: config.suspendMarker.replace(/:$/, ""),
-          literal: config.suspendMarker,
-        })
-        nearMissPending.set(sessionID, pending)
-        boundNearMissPending()
-        return
-      }
-      journaler.journal({ type: "suspended", sessionID, action: "off" })
-      if (text.indexOf(config.approvalMarker) !== -1) {
-        journaler.journal({
-          type: "error",
-          sessionID,
-          error: "approval capture skipped: prompt also suspended the gate",
-        })
-      }
-      ledger.markParent(sessionID)
-      // Fresh start: the clear is authoritative over the captures above
-      // (same admission — `carryOrReset` already released the registered
-      // children, so this clear only wipes the bucket credit).
-      ledger.clearState(sessionID)
-      ledger.setSuspended(sessionID, true)
+      applySuspendOff(sessionID, text)
     } catch (e) {
       // Fail-open: suspend capture never blocks a prompt.
-      journaler.journal({ type: "error", error: `suspend capture: ${e}` })
+      journaler.journal({ type: "error", sessionID, error: `suspend capture: ${e}` })
     }
+  }
+
+  /**
+   * Refuses a suspend/resume marker under `allowSuspend:false`: journals the
+   * refused entry (`refused:true`) and parks the marker-style near-miss
+   * diagnostic for surfacing (the same diagnostic shape and channel as the
+   * near-miss scanner) so the user learns the literal is disabled. Never
+   * touches ledger state — a refused capture cannot wipe earned credit.
+   * @param sessionID The parent session the marker was typed in.
+   * @param action The refused action (`"off"` for the suspend marker, `"on"`
+   *     for the resume marker).
+   * @param marker The configured literal that was refused (surfaces in the
+   *     diagnostic).
+   */
+  function refuseSuspend(sessionID: string, action: "off" | "on", marker: string): void {
+    journaler.journal({ type: "suspended", sessionID, action, refused: true })
+    const pending = nearMissPending.get(sessionID) ?? []
+    pending.push({
+      label: "suspend",
+      // The seen token minus its trailing colon — the same colon-stripped
+      // shape the near-miss scanner reports (the marker itself is
+      // config-controlled, so a custom literal surfaces its own core).
+      found: marker.replace(/:$/, ""),
+      literal: marker,
+    })
+    nearMissPending.set(sessionID, pending)
+    boundNearMissPending()
+  }
+
+  /**
+   * Applies an allowed OFF: journals the suspension, marks the parent a live
+   * parent, and clears the bucket state fresh (the clear is authoritative
+   * over the waiver/approval captures above — same admission). For journal
+   * honesty, a waiver or approval literal sharing the prompt is reported as a
+   * skip notice: its capture was wiped by the clear, so the captured row must
+   * not read as earned credit.
+   * @param sessionID The parent session suspending.
+   * @param text The prompt text (scanned for co-present waiver/approval
+   *     literals).
+   */
+  function applySuspendOff(sessionID: string, text: string): void {
+    journaler.journal({ type: "suspended", sessionID, action: "off" })
+    for (const [marker, kind] of [
+      [config.waiverMarker, "waiver"],
+      [config.approvalMarker, "approval"],
+    ] as const) {
+      if (text.indexOf(marker) === -1) continue
+      journaler.journal({
+        type: "error",
+        sessionID,
+        error: `${kind} capture skipped: prompt also suspended the gate`,
+      })
+    }
+    ledger.markParent(sessionID)
+    // Fresh start: the clear is authoritative over the captures above
+    // (same admission — `carryOrReset` already released the registered
+    // children, so this clear only wipes the bucket credit).
+    ledger.clearState(sessionID)
+    ledger.setSuspended(sessionID, true)
   }
 
   /**

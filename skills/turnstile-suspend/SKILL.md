@@ -49,7 +49,7 @@ When both markers appear in one prompt, the one occurring later wins.
 
 - `suspendMarker` / `resumeMarker` (defaults `TURNSTILE OFF:` /
   `TURNSTILE ON:`) let a custom setup rename the literals.
-- `allowSuspend: false` (the kill switch) disables both markers: an OFF
+- `allowSuspend: false` (the kill switch) disables both markers: an OFF or ON
   marker is refused with a journaled `refused:true` entry and a surfaced
   diagnostic, and no state changes.
 
