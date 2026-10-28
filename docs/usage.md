@@ -192,7 +192,10 @@ waiver is out of scope or consumed.
 A waiver-admitted reviewer dispatch never counts toward the reviewer
 ensemble: under `reviewEnsemble: enforce` a fully waived review leaves the
 landing gate red — it is released only by the human permission ask, never by
-the waived verdict.
+the waived verdict. The landing gate is never waiver-released at all: a
+`USER WAIVER:` in your prompt covers the dispatch gates but does not release
+`git push` — only the credited reviewer verdict or your permission reply
+does (a waiver aimed at landing is captured at admission and inert there).
 
 Only the reviewer stage meters waiver exemptions; a waiver covering another
 stage exempts that leg's loop cap and the total dispatch budget without
@@ -211,6 +214,15 @@ When no approval holds, the first executor dispatch escalates to you through
 OpenCode's permission surface, naming the plan file and its head. Reply
 `always` (approved for the task), `once` (one dispatch), or `reject` (gate
 stays red).
+
+> **Warning — auto-accept voids the human decision point.** If the host
+> answers permission asks automatically (`session.permissions:
+"autoaccept"` in `~/.config/opencode/cli.json`), the plan-gate escalation,
+> the landing gate's human release, and the ensemble's human release are all
+> answered without you: `gitGates.landingGate: enforce` degrades to a
+> two-push delay and the plan gate degrades to a one-block delay. Turnstile
+> assumes a human actually answers; `opencode-turnstile status` prints an
+> advisory when it detects the setting.
 
 ### How the plugin sees your prompt
 

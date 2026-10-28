@@ -650,7 +650,11 @@ probe; a disjoint custom syntax stays silent).
   stays live until that stage's waiver allowance is spent, metered separately
   from the ordinary dispatch caps. The family rides the same one-prompt
   replay grace (a restart resume or a `continuationCarry` re-admission) and
-  is otherwise dropped on a new prompt.
+  is otherwise dropped on a new prompt. One exception to "covers every
+  gate": the landing gate never consults the waiver — `git push` is released
+  only by the credited reviewer `VERDICT: APPROVE` or the human permission
+  ask, so a waiver aimed at landing is captured at admission and inert at
+  that gate.
 - **Latest-wins markers.** A `GATE: FAIL` un-greens an earlier PASS, within
   and across texts; dedup is per parent with first-sight provenance;
   cross-child duplicate observations are suppressed (counted, not silently

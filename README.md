@@ -182,11 +182,20 @@ what the text says.
   stages (`planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`)
   scopes it; unscoped covers every gate, but the reviewer gate consumes an
   unscoped waiver on the first dispatch it unlocks. A new prompt drops it.
+  The landing gate is **not** waiver-released: `git push` on this task always
+  needs the credited reviewer verdict or your permission reply, so an
+  unscoped waiver expresses nothing there.
 - **`PLAN APPROVED:`** in your prompt approves the plan like a reviewer
   verdict, with human provenance; it replays across restart.
 - **Permission escalation.** When no approval holds, the first executor
   dispatch escalates to you through OpenCode's permission surface — reply
   `always` (approved for the task), `once` (one dispatch), or `reject`.
+  Turnstile assumes a human actually answers these asks. If the host answers
+  them automatically (`session.permissions: "autoaccept"` in
+  `~/.config/opencode/cli.json`), the landing gate's human decision point,
+  the plan-gate escalation, and the ensemble's human release are all
+  rubber-stamped and those gates degrade to delays. `opencode-turnstile
+status` prints an advisory when it detects the setting.
 
 Do not create, paste, or relay a `USER WAIVER:` / `PLAN APPROVED:` marker to
 open a gate — only the user's own prompt carries a real waiver or approval.
@@ -285,6 +294,7 @@ no edits. The key knobs most people touch:
 | `gitGates.mode`              | `shadow`           | recommend `enforce` (blocks commit-lint + unapproved pushes; this repo runs it); the `shadow` default journals would-blocks |
 | `gateEvidence`               | `enforce`          | `flag`/`off` revert to flip-on-trust for `GATE: PASS`                                                                       |
 | `reviewEnsemble`             | `enforce`          | `advise` credits a single-reviewer APPROVE unconditionally                                                                  |
+
 | `sessionSummary`             | `quiet`            | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables)               |
 | `toolPolicy.bashDeny`        | `[]`               | regex denylist for `bash`/`shell` (e.g. worktree/branch/merge ops)                                                          |
 | `maxReviewerRounds` / others | 2 / 3 / 3 / 4 / 16 | per-leg and total dispatch caps per task                                                                                    |

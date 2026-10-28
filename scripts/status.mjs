@@ -602,6 +602,35 @@ async function updateLine(metricsDir) {
 }
 
 /**
+ * Detects a host CLI config that auto-answers permission asks. Reads
+ * `~/.config/opencode/cli.json` (read-only, fail-open like every other read
+ * here) and reports when `session.permissions` is `"autoaccept"` — with that
+ * setting the human decision points turnstile's permission-ask gates rely on
+ * are rubber-stamped (the landing gate's human release, the plan-gate
+ * escalation, the ensemble's human release), degrading those gates to
+ * delays. Missing or malformed config reports nothing.
+ * @param {Record<string, string | undefined>} env The process environment.
+ * @returns {string} The advisory line, or "" when nothing is detected.
+ */
+function autoacceptAdvisory(env) {
+  const configPath =
+    typeof env.TURNSTILE_CLI_CONFIG === "string" && env.TURNSTILE_CLI_CONFIG
+      ? env.TURNSTILE_CLI_CONFIG
+      : path.join(os.homedir(), ".config", "opencode", "cli.json")
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    if (cfg?.session?.permissions !== "autoaccept") return ""
+    return (
+      `advisory: session.permissions is "autoaccept" in ${configPath} — permission asks are ` +
+      `answered automatically, so the landing gate's human release, the plan-gate escalation, ` +
+      `and the ensemble's human release are rubber-stamped; those gates degrade to delays`
+    )
+  } catch {
+    return "" // missing/unreadable/malformed host config: nothing to report.
+  }
+}
+
+/**
  * Entry point. Parses args, resolves the journal, aggregates, and prints.
  * @param {string[]} argv Arguments after the `status` subcommand.
  * @returns {Promise<number>} The process exit code.
@@ -632,6 +661,8 @@ async function main(argv) {
     sessions: {},
   }
 
+  const advisory = autoacceptAdvisory(process.env)
+
   if (files.length === 0) {
     // Read-only no-op: nothing recorded yet.
     if (flags.json) {
@@ -639,11 +670,12 @@ async function main(argv) {
         ? await resolveUpdateCheck(process.env, metricsDir)
         : undefined
       process.stdout.write(
-        `${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`,
+        `${JSON.stringify({ ...base, ...(update ? { update } : {}), ...(advisory ? { advisories: [advisory] } : {}) }, null, 2)}\n`,
       )
     } else {
       let text = `No turnstile journal yet at ${journalPath} — nothing to report.\n`
       if (flags.checkUpdates) text += `${await updateLine(metricsDir)}\n`
+      if (advisory) text += `${advisory}\n`
       process.stdout.write(text)
     }
     return 0
@@ -656,13 +688,16 @@ async function main(argv) {
 
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
   if (flags.json) {
-    process.stdout.write(`${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`)
+    process.stdout.write(
+      `${JSON.stringify({ ...base, ...(update ? { update } : {}), ...(advisory ? { advisories: [advisory] } : {}) }, null, 2)}\n`,
+    )
   } else {
     let table = renderTable(sessions, journalPath, observe, observeSessions)
     if (update) {
       const line = updateLineText(update)
       if (line) table += `\n${line}`
     }
+    if (advisory) table += `\n${advisory}`
     process.stdout.write(`${table}\n`)
   }
   return 0
