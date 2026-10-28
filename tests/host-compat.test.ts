@@ -72,6 +72,14 @@ test("evaluateHostCompat flags below-min and at-or-above-max as incompatible", (
   assert.match(above.message, /turnstile \(unknown\) expects/)
 })
 
+test("evaluateHostCompat treats a pre-release of the max version as compatible", () => {
+  // Standard semver: 3.0.0-nightly < 3.0.0 (pre-release sorts before the
+  // release), and it clears the 2.0.22 floor — so it stays inside the range.
+  const r = evaluateHostCompat("3.0.0-nightly", "0.7.0", HOST_COMPAT)
+  assert.equal(r.verdict, "compatible")
+  assert.equal(r.message, "")
+})
+
 test("evaluateHostCompat accepts the floor, interior, and tested versions", () => {
   for (const v of ["2.0.22", "2.0.27", "2.0.29", "2.5.3"]) {
     const r = evaluateHostCompat(v, "0.7.0", HOST_COMPAT)

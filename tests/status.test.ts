@@ -1067,6 +1067,31 @@ test("status --check-updates on a registry error reports checked with no cache w
   }
 })
 
+test("status --check-updates table mode appends a failure line without a trailing blank", async () => {
+  const dir = metricsDir()
+  const stub = await serveJson("nope", 500)
+  try {
+    // Table mode with sessions: the failure note renders as the last line,
+    // never a blank line dangling after it.
+    writeFileSync(
+      join(dir, "turnstile.jsonl"),
+      `${JSON.stringify({ type: "gate", result: "PASS", sessionID: "s1", mode: "flag" })}\n`,
+    )
+    const res = await runStatusAsync(dir, ["--check-updates"], {
+      TURNSTILE_UPDATE_URL: stub.url,
+    })
+    assert.equal(res.status, 0)
+    const lines = res.stdout.trimEnd().split("\n")
+    // The failure note is the last non-empty line and the trailing blank
+    // line that the old table mode emitted is gone.
+    assert.equal(lines[lines.length - 1], "update: update check failed (network or response shape)")
+    assert.ok((lines[lines.length - 2] ?? "").length > 0, "no blank line after the failure note")
+  } finally {
+    await stub.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("status output without --check-updates stays byte-identical (no update block)", async () => {
   const dir = metricsDir()
   try {

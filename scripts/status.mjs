@@ -26,6 +26,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { fileURLToPath } from "node:url"
 
 const USAGE = `Usage: opencode-turnstile status [--json] [--check-updates]
 
@@ -96,7 +97,7 @@ function compareCores(a, b) {
  */
 function installedVersion() {
   try {
-    const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "package.json")
+    const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json")
     return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? null
   } catch {
     return null
@@ -557,18 +558,17 @@ function parseArgs(argv) {
 
 /**
  * Builds the human-readable update line for the table output. Reports a newer
- * published turnstile only; anything else (installed is current, unparsable,
- * or the check failed) renders nothing — the default output without the flag
- * stays byte-identical.
- * @param {NodeJS.ProcessEnv} env Environment (unused; kept for symmetry).
+ * published turnstile when one exists, or a one-line failure note when the
+ * check failed; anything else (installed is current or unparsable) renders
+ * nothing — the default output without the flag stays byte-identical.
  * @param {{ checked: boolean, latest?: string, error?: string }} update The
  *     update-check result block.
- * @param {string} metricsDir Metrics directory (unused; kept for symmetry).
  * @returns {string} The update line, or "" when there is nothing to report.
  */
-function updateLineText(env, update) {
+function updateLineText(update) {
+  if (update?.error) return `update: ${update.error}`
   const installed = parseSemverJs(installedVersion())
-  const latest = parseSemverJs(update.latest)
+  const latest = parseSemverJs(update?.latest)
   if (!installed || !latest || compareCores(latest, installed) <= 0) return ""
   return `update: a newer turnstile (${update.latest}) is available — npm i opencode-turnstile@latest`
 }
@@ -582,7 +582,7 @@ function updateLineText(env, update) {
  */
 async function updateLine(env, metricsDir) {
   const update = await resolveUpdateCheck(env, metricsDir)
-  return updateLineText(env, update)
+  return updateLineText(update)
 }
 
 /**
@@ -643,7 +643,10 @@ async function main(argv) {
     process.stdout.write(`${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`)
   } else {
     let table = renderTable(sessions, journalPath, observe, observeSessions)
-    if (update) table += `\n${updateLineText(process.env, update)}`
+    if (update) {
+      const line = updateLineText(update)
+      if (line) table += `\n${line}`
+    }
     process.stdout.write(`${table}\n`)
   }
   return 0
