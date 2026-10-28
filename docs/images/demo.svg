@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="1120" viewBox="0 0 1760 1120" role="img" aria-label="terminal transcript of a real turnstile run: the orchestrator dispatches planner, plan-reviewer, executor, test-runner, and reviewer in sequence; an early executor dispatch and an unverified reviewer dispatch are blocked in red; GATE: PASS and VERDICT: APPROVE markers flip each gate green; every decision lands in turnstile.jsonl">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="560" viewBox="0 0 1760 1120" role="img" aria-label="terminal transcript of a real turnstile run: the orchestrator dispatches planner, plan-reviewer, executor, test-runner, and reviewer in sequence; an early executor dispatch and an unverified reviewer dispatch are blocked in red; GATE: PASS and VERDICT: APPROVE markers flip each gate green; every decision lands in turnstile.jsonl">
   <defs>
     <!-- Background: deep vertical gradient with a subtle vignette (matches hero.svg) -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
