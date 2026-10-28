@@ -113,6 +113,28 @@ async function registerPermissionHook(
 }
 
 /**
+ * Builds the `execute.before` hook body: the only hook whose throw is
+ * sanctioned — the gate layer's deliberate BlockError is rethrown to the
+ * host; every other failure journals (fail-open).
+ * @param ctx The per-setup shared context (journaler).
+ * @param before The gate-layer before hook to guard.
+ * @returns The guarded before hook body.
+ */
+function guardedToolBefore(
+  ctx: TurnstileContext,
+  before: (event: ToolHookEvent) => Promise<void>,
+): (event: ToolHookEvent) => Promise<void> {
+  return async (event: ToolHookEvent): Promise<void> => {
+    try {
+      await before(event)
+    } catch (e) {
+      if (e instanceof BlockError) throw e
+      ctx.journaler.journal({ type: "error", error: `tool.execute.before: ${e}` })
+    }
+  }
+}
+
+/**
  * Registers the tool-level gate hooks (execute.before with the sanctioned
  * BlockError rethrow, and execute.after for trace).
  * @param h The live host context.
@@ -128,17 +150,7 @@ async function registerToolHooks(
   if (typeof h.tool?.hook !== "function") return 0
   const toolHook = h.tool.hook
   const toolHooks = createToolHooks(ctx)
-  // execute.before is the only hook body whose throw is sanctioned: the gate
-  // layer's deliberate BlockError is rethrown to the host; every other
-  // failure journals (fail-open).
-  const before = async (event: ToolHookEvent): Promise<void> => {
-    try {
-      await toolHooks.before(event)
-    } catch (e) {
-      if (e instanceof BlockError) throw e
-      ctx.journaler.journal({ type: "error", error: `tool.execute.before: ${e}` })
-    }
-  }
+  const before = guardedToolBefore(ctx, toolHooks.before)
   let count = 0
   const beforeOk = await registerHostHook(
     () => toolHook("execute.before", before),
@@ -265,15 +277,46 @@ async function evaluateCompatGuard(
     compat = { verdict: "unknown", hostVersion: "", message: "" }
   }
   if (compat.verdict === "unknown") {
-    ctx.journaler.journal({
-      type: "compat",
-      event: "unknown-host",
-      host: compat.hostVersion,
-      plugin: version,
-    })
+    journalUnknownCompat(ctx, compat, version)
     return "unknown"
   }
   if (compat.verdict !== "incompatible") return "compatible"
+  await handleIncompatibleHost(ctx, compat, version)
+  return "incompatible"
+}
+
+/**
+ * Journals the one-time `compat` warning for an unreadable host version.
+ * @param ctx The per-setup shared context (journaler).
+ * @param compat The evaluated compat result (verdict `unknown`).
+ * @param version The plugin version string (or null when unreadable).
+ */
+function journalUnknownCompat(
+  ctx: TurnstileContext,
+  compat: CompatResult,
+  version: string | null,
+): void {
+  ctx.journaler.journal({
+    type: "compat",
+    event: "unknown-host",
+    host: compat.hostVersion,
+    plugin: version,
+  })
+}
+
+/**
+ * Journals and toasts the incompatible-host leg: records the host version and
+ * the accepted range, then delivers the compat message as a warning toast.
+ * A broken toast is journaled (fail-open) and never blocks setup.
+ * @param ctx The per-setup shared context (journaler, toast).
+ * @param compat The evaluated compat result (verdict `incompatible`).
+ * @param version The plugin version string (or null when unreadable).
+ */
+async function handleIncompatibleHost(
+  ctx: TurnstileContext,
+  compat: CompatResult,
+  version: string | null,
+): Promise<void> {
   ctx.journaler.journal({
     type: "compat",
     event: "incompatible",
@@ -287,7 +330,6 @@ async function evaluateCompatGuard(
   } catch (e) {
     ctx.journaler.journal({ type: "error", error: `compat toast: ${e}` })
   }
-  return "incompatible"
 }
 
 /**
@@ -313,7 +355,7 @@ export function readPluginVersion(pkgPath?: string): string | null {
 }
 
 /**
- * Reads the plugin version from package.json for the load heartbeat.
+ * Builds the plugin factory: on each setup call it assembles the per-setup
  * shared context via createHooksCore (config, journaler, gates, ledger,
  * maps, services), then returns the async setup function that registers
  * every hook. All shared state is per-setup: a host calling setup() twice
@@ -324,6 +366,84 @@ export function readPluginVersion(pkgPath?: string): string | null {
  * @param opts Injected config/env overrides (tests); defaults to env.
  * @returns The plugin setup function; resolves to a cleanup disposer.
  */
+/**
+ * Registers every hook surface and returns the total count. Each registration
+ * is independent (a failure journals and skips only that hook). The count
+ * feeds the load heartbeat (7 on a full host: 3 session + 1 permission + 2
+ * tool + 1 event subscriber).
+ * @param h The live host context.
+ * @param ctx The per-setup shared context.
+ * @param cleanups Disposal list for successful registrations.
+ * @returns The number of hooks successfully registered.
+ */
+async function registerAllHooks(
+  h: Host,
+  ctx: TurnstileContext,
+  cleanups: Array<() => void>,
+): Promise<number> {
+  return (
+    (await registerSessionHooks(h, ctx, cleanups)) +
+    (await registerPermissionHook(h, ctx, cleanups)) +
+    (await registerToolHooks(h, ctx, cleanups)) +
+    registerEventStream(h, ctx, cleanups)
+  )
+}
+
+/**
+ * Binds the host surfaces the shared context needs up front: the session API
+ * for the shared `resolveParent` helper (hooks already fire post-setup) and
+ * the toast surface (optional-chained — an absent or broken `tui.toast.show`
+ * is a no-op binder, so the session-end summary then delivers journal-only,
+ * the headless path).
+ * @param ctx The per-setup shared context.
+ * @param h The live host context.
+ */
+function bindHostSurfaces(ctx: TurnstileContext, h: Host): void {
+  ctx.bindHost(h.session)
+  ctx.bindToast(h.tui?.toast?.show)
+}
+
+/**
+ * The per-setup body: builds the shared context, applies the host-compat
+ * guard, registers every hook surface, and returns a disposer that unwinds
+ * them all.
+ * @param h The live OpenCode host context.
+ * @param fallbackHost The factory-time host context, used as a fallback for
+ *     the compat version read.
+ * @param opts Injected config/env overrides (tests); defaults to env.
+ * @param version The plugin version string for the heartbeat (or null).
+ * @returns A disposer that disposes every registration; failures inert.
+ */
+async function runSetup(
+  h: Host,
+  fallbackHost: Host | undefined | null,
+  opts: TurnstileOptions,
+  version: string | null,
+): Promise<(() => void) | void> {
+  const ctx = createHooksCore(opts)
+  bindHostSurfaces(ctx, h)
+
+  // Host-compat guard: an incompatible host is journaled, toasted, and
+  // left hookless (fail-open to a full no-op); an unreadable version
+  // enforces as usual with a one-time `compat` warning.
+  const compat = await evaluateCompatGuard(
+    ctx,
+    () => h?.app?.version ?? fallbackHost?.app?.version,
+    version,
+  )
+  if (compat === "incompatible") {
+    writeSetupHeartbeat(ctx, version, compat)
+    return () => {}
+  }
+
+  const cleanups: Array<() => void> = []
+  // Load heartbeat: one entry per host-session boot, emitted after every
+  // registration so `hooks` is accurate. Telemetry only — it never blocks.
+  const hooks = await registerAllHooks(h, ctx, cleanups)
+  writeSetupHeartbeat(ctx, version, compat, hooks)
+  return disposeAll(cleanups)
+}
+
 export function createTurnstile(
   _host: Host | undefined | null,
   opts: TurnstileOptions = {},
@@ -339,43 +459,6 @@ export function createTurnstile(
    * @returns A disposer that disposes every registration; failures inert.
    */
   return async function setup(h: Host): Promise<(() => void) | void> {
-    const ctx = createHooksCore(opts)
-
-    // Bind the host session API for the shared `resolveParent` helper (hooks
-    // already fire post-setup).
-    ctx.bindHost(h.session)
-    // Bind the host toast surface (optional-chained): an absent or broken
-    // `tui.toast.show` is a no-op binder — the session-end summary then
-    // delivers journal-only (the headless path).
-    ctx.bindToast(h.tui?.toast?.show)
-
-    // Host-compat guard: an incompatible host is journaled, toasted, and
-    // left hookless (fail-open to a full no-op); an unreadable version
-    // enforces as usual with a one-time `compat` warning.
-    const compat = await evaluateCompatGuard(
-      ctx,
-      () => h?.app?.version ?? _host?.app?.version,
-      version,
-    )
-    if (compat === "incompatible") {
-      writeSetupHeartbeat(ctx, version, compat)
-      return () => {}
-    }
-
-    // Register every hook surface; each registration is independent (a
-    // failure journals and skips only that hook). The count feeds the load
-    // heartbeat (7 on a full host: 3 session + 1 permission + 2 tool + 1
-    // event subscriber).
-    const cleanups: Array<() => void> = []
-    const hooks =
-      (await registerSessionHooks(h, ctx, cleanups)) +
-      (await registerPermissionHook(h, ctx, cleanups)) +
-      (await registerToolHooks(h, ctx, cleanups)) +
-      registerEventStream(h, ctx, cleanups)
-
-    // Load heartbeat: one entry per host-session boot, emitted after every
-    // registration so `hooks` is accurate. Telemetry only — it never blocks.
-    writeSetupHeartbeat(ctx, version, compat, hooks)
-    return disposeAll(cleanups)
+    return runSetup(h, _host, opts, version)
   }
 }
