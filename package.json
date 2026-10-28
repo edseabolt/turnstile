@@ -1,7 +1,25 @@
 {
   "name": "opencode-turnstile",
   "version": "0.7.0",
-  "description": "OpenCode plugin that mechanically enforces an agent pipeline (planner → plan-reviewer → executor → test-runner → reviewer) for OpenCode",
+  "description": "OpenCode promise plugin enforcing a verified agent pipeline with dispatch-blocking gates and journaled evidence",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "ai-agent",
+    "pipeline",
+    "orchestrator",
+    "subagents",
+    "gates",
+    "enforcement",
+    "agent-pipeline",
+    "code-review",
+    "verification",
+    "evidence",
+    "plan-reviewer",
+    "executor",
+    "test-runner",
+    "reviewer"
+  ],
   "type": "module",
   "license": "MIT",
   "bin": {
