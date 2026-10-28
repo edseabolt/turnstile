@@ -669,10 +669,12 @@ function foldWouldBlock(
 /**
  * Folds a `suspended` entry into the suspension map: an `action:"off"` sets
  * the session suspended, an `action:"on"` clears it (both last-wins, so the
- * later marker in a restart's replay tail decides). An
- * `event:"would-block"` audit entry folds inert — it records a suppressed
- * block, never a suspension change. Any other (missing or unknown) action is
- * a shape drop: a hostile action must not silently toggle the flag.
+ * later marker in a restart's replay tail decides). Two flavors fold inert —
+ * they record a refusal or a suppression, never a suspension change: a
+ * `refused:true` entry (the `allowSuspend:false` refusal journal, which never
+ * touched ledger state and must not resurrect a suspension after a restart)
+ * and the `event:"would-block"` audit entry. Any other (missing or unknown)
+ * action is a shape drop: a hostile action must not silently toggle the flag.
  * @param entry The parsed `suspended` entry.
  * @param suspended The suspension map to fill.
  * @param sessionID The validated session ID.
@@ -684,7 +686,7 @@ function foldSuspended(
   suspended: Map<string, true>,
   sessionID: string,
 ): ReplayDrop | null {
-  if (entry.event === "would-block") return null
+  if (entry.event === "would-block" || entry.refused === true) return null
   if (entry.action !== "off" && entry.action !== "on") {
     return { reason: "entry-shape", sessionID }
   }

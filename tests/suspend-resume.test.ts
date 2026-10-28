@@ -376,6 +376,31 @@ test("suspend: replay restores suspension across a fresh ledger boot", () => {
   assert.equal(ledger2.isSuspended("s1"), true, "the later action wins")
 })
 
+/** Refused suspend entries are replay-inert: a `refused:true` OFF or ON in
+ *  the journal tail must not restore a suspension on restart (the
+ *  `allowSuspend:false` refusal never touched ledger state live, so replay
+ *  must not resurrect one — otherwise the kill switch is defeated after a
+ *  restart with no live path to resume). */
+test("suspend: replay of refused OFF/ON entries never restores a suspension", () => {
+  const metricsDir = tmpDir()
+  const ledger = createLedger(
+    writeJournal(metricsDir, [
+      suspendedLine("s1", { action: "off", refused: true }),
+      suspendedLine("s2", { action: "on", refused: true }),
+      // A refused entry sandwiched around a real OFF: the real state change
+      // still folds (refusal inertness must not shadow a genuine marker).
+      suspendedLine("s3", { action: "off", refused: true }),
+      suspendedLine("s3", { action: "off" }),
+    ]),
+    64,
+    2000,
+  )
+  assert.equal(ledger.isSuspended("s1"), false, "a refused OFF never re-suspends")
+  assert.equal(ledger.isSuspended("s2"), false, "a refused ON clears nothing (stays false)")
+  assert.equal(ledger.isSuspended("s3"), true, "a real OFF around a refusal still suspends")
+  assert.equal(replayDrops(metricsDir).length, 0, "a refused entry is inert, not a drop")
+})
+
 /** Both permission-evaluate arms are inert while suspended: the task arm
  *  returns before the ask and its latch, and the landing arm deletes the
  *  armed latch (no mislabeled landing ask after a resume). */

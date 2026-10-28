@@ -445,9 +445,9 @@ function aggregate(lines) {
       a.planApproval.source = typeof e.source === "string" ? e.source : a.planApproval.source
     } else if (type === "suspended") {
       // Suspension fold (see the function doc): last-wins, mirroring
-      // ledger.ts's foldSuspended — would-block audits and unknown actions
-      // fold nothing.
-      if (e.event === "would-block") continue
+      // ledger.ts's foldSuspended — refused refusals, would-block audits,
+      // and unknown actions fold nothing.
+      if (e.event === "would-block" || e.refused === true) continue
       if (e.action === "off") a.suspended = true
       else if (e.action === "on") a.suspended = false
     } else if (type === "dispatch") {

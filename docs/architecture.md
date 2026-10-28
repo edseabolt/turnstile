@@ -142,7 +142,8 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   ON resumes it (also fresh — no credit earned while suspended rehydrates).
   When `allowSuspend:false`, both markers are refused: journaled
   `refused:true` (with the refused marker's `action`) plus a parked
-  marker-style diagnostic; no state changes. When an allowed OFF shares the
+  marker-style diagnostic; no state changes, and the refused entry folds
+  replay-inert (a refusal can never resurrect a suspension after a restart). When an allowed OFF shares the
   prompt with `PLAN APPROVED:` or `USER WAIVER:`, the
   waiver/approval is captured first and then wiped by the fresh-start clear
   (the clear is authoritative), with a skip notice journaled. It also scans the
@@ -337,8 +338,8 @@ session's gate state fresh (`clearState`, the shared reset body with the
 or during the suspension rehydrates; a suspension survives a restart (the
 journal tail replays it, §6), and `TURNSTILE ON:` (the `resumeMarker`
 literal) resumes enforcement with the same fresh start. `allowSuspend:false`
-disables the markers: an OFF is refused (`refused:true` journaled + a parked
-`[turnstile] marker:` diagnostic) with no state change.
+disables the markers: an OFF or ON is refused (`refused:true` journaled + a
+parked `[turnstile] marker:` diagnostic) with no state change.
 
 ### Key `GateState` fields (`src/types.ts`)
 
@@ -427,10 +428,12 @@ observed, wouldBlocks}`, journaled when the `[turnstile] observe:` block
   summary surfaced so it never re-fires after a restart.
   A `suspended` entry is the gate-suspension record (§5's overlay): the state
   flavor is `{type:"suspended", sessionID, action:"off"|"on"}` (plus
-  `refused:true` when `allowSuspend:false` refused the marker) — replay folds it
-  last-wins into the ledger's suspension map, so a restart mid-suspension
-  stays suspended and an ON resumes; a missing or unknown `action` is an
-  `entry-shape` replay drop. The audit flavor is
+  `refused:true` when `allowSuspend:false` refused the marker) — replay folds
+  an unrefused entry last-wins into the ledger's suspension map, so a restart
+  mid-suspension stays suspended and an ON resumes; a `refused:true` entry
+  folds inert (a refusal records a refusal, never a suspension change, so the
+  kill switch cannot be defeated by replaying a refusal), a missing or
+  unknown `action` is an `entry-shape` replay drop. The audit flavor is
   `{type:"suspended", sessionID, event:"would-block", cause}` — one entry per
   deliberate block suppressed by the suspension (cause truncated to 200
   chars, like `would-block`); it folds inert, recording a suppression but
@@ -550,8 +553,8 @@ ensemble counts, the observe period (per-session phase, the admission
 dedup set, and the running `observed`/`wouldBlocks` totals — last-wins; a
 `kind:"summary"` marker sets the pending-summary probe), and the gate
 suspension map (last-wins `action:"off"` / `action:"on"` — a restart
-mid-suspension stays suspended; the `event:"would-block"` audit flavor folds
-inert). A plan APPROVE
+mid-suspension stays suspended; the `refused:true` refusal flavor and the
+`event:"would-block"` audit flavor fold inert). A plan APPROVE
 entry may carry the bound identity fields
 `plan` (file name) and `planKey` (that file's content hash); a field restores
 it only in legal shape (path-free file name ≤ 128 chars; `planKey` a
@@ -576,8 +579,9 @@ session, walking the same all-generation tail window with the same
 session-ID and
 marker shape checks (observation-only, so a dropped line is silent there
 rather than journaled). Suspension folds last-wins like the ledger's
-`foldSuspended` (an OFF marks, an ON clears, an `event:"would-block"` audit
-and an unknown action fold nothing) and surfaces per session as the `suspended`
+`foldSuspended` (an OFF marks, an ON clears, a `refused:true` refusal, an
+`event:"would-block"` audit, and an unknown action fold nothing) and surfaces
+per session as the `suspended`
 JSON field and the table's SUS column. When the journal holds observe-mode
 entries, the
 report header adds the folded period line

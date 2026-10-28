@@ -743,9 +743,10 @@ export interface TurnstileConfig {
   resumeMarker: string
   /**
    * Whether the suspend/resume markers are honored at all. When false, an
-   * OFF marker is refused: the refusal is journaled (`action:"off",
-   * refused:true`) and surfaced as a marker-style diagnostic, and no state
-   * changes. Default true.
+   * OFF or ON marker is refused: the refusal is journaled (`refused:true`
+   * with the marker's `action`) and surfaced as a marker-style diagnostic,
+   * and no state changes (the refused entry folds replay-inert). Default
+   * true.
    */
   allowSuspend: boolean
   /** Agent names turnstile recognizes. */

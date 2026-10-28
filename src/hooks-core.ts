@@ -2697,12 +2697,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       if (atOff === -1 && atOn === -1) return
       // Last-wins: the marker occurring later in the prompt decides.
       const resume = atOn !== -1 && (atOff === -1 || atOn > atOff)
+      const action = resume ? "on" : "off"
+      const marker = resume ? config.resumeMarker : config.suspendMarker
       if (!config.allowSuspend) {
-        refuseSuspend(
-          sessionID,
-          resume ? "on" : "off",
-          resume ? config.resumeMarker : config.suspendMarker,
-        )
+        refuseSuspend(sessionID, action, marker)
         return
       }
       if (resume) {

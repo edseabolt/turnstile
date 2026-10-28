@@ -937,6 +937,8 @@ test("suspended entries fold last-wins into the suspension flag and SUS column",
       line(3, { type: "suspended", sessionID: "sp-sus", action: "on" }),
       line(4, { type: "suspended", sessionID: "sp-sus2", action: "off" }),
       line(5, { type: "suspended", sessionID: "sp-sus3", action: "explode" }),
+      line(6, { type: "suspended", sessionID: "sp-sus4", action: "off", refused: true }),
+      line(7, { type: "suspended", sessionID: "sp-sus5", action: "on", refused: true }),
     ])
     const res = runStatus(dir, ["--json"])
     assert.equal(code(res), 0)
@@ -945,6 +947,16 @@ test("suspended entries fold last-wins into the suspension flag and SUS column",
     assert.equal(oSession(obj, "sp-sus").suspended, false, "the later ON clears the suspension")
     assert.equal(oSession(obj, "sp-sus2").suspended, true, "the OFF suspends")
     assert.equal(oSession(obj, "sp-sus3").suspended, false, "an unknown action never toggles")
+    assert.equal(
+      oSession(obj, "sp-sus4").suspended,
+      false,
+      "a refused OFF is replay-inert in the status fold",
+    )
+    assert.equal(
+      oSession(obj, "sp-sus5").suspended,
+      false,
+      "a refused ON is replay-inert in the status fold",
+    )
     // The table renders the SUS column: OFF for the suspended session, · else.
     const table = runStatus(dir, [])
     assert.equal(code(table), 0)
