@@ -1368,7 +1368,7 @@ test("trace file rotates with the same bound as the journal", async () => {
       input: { agent: "test-runner", prompt: `run tests ${i}` },
     }).catch(() => {})
   }
-  const tracePath = path.join(metricsDir, "gate-events.jsonl")
+  const tracePath = path.join(metricsDir, "gate-events.log")
   const gens = [1, 2].filter((g) => fs.existsSync(`${tracePath}.${g}`))
   assert.ok(gens.length >= 1, "expected at least one rotated trace generation")
   dispose()

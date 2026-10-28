@@ -361,7 +361,7 @@ export async function callPermission(h: FakeHost, name: string, event: unknown):
  * @returns Trace file contents, or "" when the file does not exist.
  */
 export function traceText(metricsDir: string): string {
-  const p = path.join(metricsDir, "gate-events.jsonl")
+  const p = path.join(metricsDir, "gate-events.log")
   return fs.existsSync(p) ? fs.readFileSync(p, "utf8") : ""
 }
 

@@ -670,7 +670,7 @@ Environment variables (override the file):
     `<file>.lock` is stolen once its age passes a staleness bound
     (`ROTATION_LOCK_STALE_MS`, 60s) and the rotation proceeds, and journaling
     keeps appending through fresh contention
-  - `gate-events.jsonl`: human-readable
+  - `gate-events.log`: human-readable
     `YYYY-MM-DD HH:MM | agent | event | detail` lines, with an optional
     trailing ` | <sessionID>` segment when the trace line is wired to a
     session (the first four segments are unchanged when it is absent);

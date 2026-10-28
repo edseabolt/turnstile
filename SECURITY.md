@@ -35,13 +35,13 @@ The plugin writes telemetry outside the repo at
 - `turnstile.jsonl`: dispatch descriptions, gate/verdict markers, bash
   command text (up to 500 chars, only when `trace` is enabled — otherwise
   journaled as `"<redacted>"`), read counts, errors
-- `gate-events.jsonl`: human-readable event lines
+- `gate-events.log`: human-readable event lines
 
 Both files default to world-readable permissions implied by the directory
 (0755/0644). Bash commands and dispatch descriptions can contain secrets,
 hostnames, and paths. Retention is bounded at ~30 MB per journal
 (1 current + 5 rotated generations × 5 MB), ~60 MB worst case across the
-two files. `gate-events.jsonl` only exists while `trace: true` (the
+two files. `gate-events.log` only exists while `trace: true` (the
 default) and rotates on the same bounds, so `trace: false` roughly halves
 the footprint.
 

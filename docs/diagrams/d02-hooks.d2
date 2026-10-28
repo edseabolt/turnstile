@@ -36,7 +36,7 @@ eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart 
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
   text: "message.part.updated /\nsession.text.ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan, landing & hands-on\nask bookkeeping"
-  inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"
+  inbox: "session.inbox.enqueued\n→ prompt admission (≥ 2.0.29)"
   idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"
   errors: "session.error → telemetry"
 }
