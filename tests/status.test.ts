@@ -77,7 +77,14 @@ function metricsDir(): string {
  */
 function runStatus(dir: string, args: string[] = [], extraEnv: Record<string, string> = {}) {
   return spawnSync(process.execPath, [statusScript, ...args], {
-    env: { ...process.env, TURNSTILE_METRICS_DIR: dir, ...extraEnv },
+    env: {
+      ...process.env,
+      TURNSTILE_METRICS_DIR: dir,
+      // Pin the host-config probe off the real ~/.config/opencode/cli.json so
+      // the autoaccept advisory never leaks into an assertion unexpectedly.
+      TURNSTILE_CLI_CONFIG: join(dir, "absent-cli.json"),
+      ...extraEnv,
+    },
     encoding: "utf8",
   })
 }
@@ -999,7 +1006,13 @@ async function runStatusAsync(
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [statusScript, ...args], {
-      env: { ...process.env, TURNSTILE_METRICS_DIR: dir, ...extraEnv },
+      env: {
+        ...process.env,
+        TURNSTILE_METRICS_DIR: dir,
+        // Same host-config pin as the sync helper above.
+        TURNSTILE_CLI_CONFIG: join(dir, "absent-cli.json"),
+        ...extraEnv,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     })
     let stdout = ""
@@ -1158,6 +1171,59 @@ test("status output without --check-updates stays byte-identical (no update bloc
     assert.equal("update" in parsed, false)
     const table = runStatus(dir, [])
     assert.doesNotMatch(table.stdout, /update:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status reports the autoaccept advisory in JSON and table modes when the host config sets it", () => {
+  const dir = metricsDir()
+  try {
+    const cliConfig = join(dir, "cli.json")
+    writeFileSync(cliConfig, `${JSON.stringify({ session: { permissions: "autoaccept" } })}\n`)
+    const json = runStatus(dir, ["--json"], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.equal(code(json), 0)
+    const parsed = JSON.parse(json.stdout) as Record<string, unknown>
+    const advisories = parsed.advisories as string[]
+    assert.ok(Array.isArray(advisories) && advisories.length === 1, "one advisory entry")
+    assert.match(advisories[0] as string, /autoaccept/)
+    assert.match(advisories[0] as string, /degrade to delays/)
+    const table = runStatus(dir, [], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.match(table.stdout, /advisory: session\.permissions is "autoaccept"/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status omits the autoaccept advisory when the host config does not set it", () => {
+  const dir = metricsDir()
+  try {
+    const cliConfig = join(dir, "cli.json")
+    writeFileSync(cliConfig, `${JSON.stringify({ session: { permissions: "ask" } })}\n`)
+    const json = runStatus(dir, ["--json"], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.equal(code(json), 0)
+    const parsed = JSON.parse(json.stdout) as Record<string, unknown>
+    assert.equal("advisories" in parsed, false)
+    const table = runStatus(dir, [], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.doesNotMatch(table.stdout, /advisory:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status omits the autoaccept advisory when the host config is missing or malformed", () => {
+  const dir = metricsDir()
+  try {
+    const cliConfig = join(dir, "cli.json")
+    writeFileSync(cliConfig, "{not json")
+    const malformed = runStatus(dir, ["--json"], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.equal(code(malformed), 0)
+    assert.equal("advisories" in JSON.parse(malformed.stdout), false)
+    const missing = runStatus(dir, ["--json"], {
+      TURNSTILE_CLI_CONFIG: join(dir, "absent.json"),
+    })
+    assert.equal(code(missing), 0)
+    assert.equal("advisories" in JSON.parse(missing.stdout), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -32,9 +32,9 @@ export function newState(): GateState {
     userWaiverConsumed: false,
     reviewWaiverRounds: 0,
     humanApproval: false,
-    // Per-reason single-dispatch grants (plan / landing): fresh "" on every
-    // task reset, task-scoped, never carried through mergeAfterReplay.
-    pendingOnceGrant: { plan: "", landing: "" },
+    // Per-reason single-dispatch grants (plan / landing / hands-on): fresh ""
+    // on every task reset, task-scoped, never carried through mergeAfterReplay.
+    pendingOnceGrant: { plan: "", landing: "", handsOn: "" },
     policyInjected: false,
     seenFrom: new Map(),
     suppressedPending: 0,
@@ -53,6 +53,15 @@ export function newState(): GateState {
     // Task-scoped landing-gate block counter: fresh 0 on every prompt reset.
     // Restored by journal replay across a restart.
     landingBlocks: 0,
+    // Task-scoped parent hands-on (write/edit) block counter: arms the
+    // permission-ask escalation on a repeat attempt. Fresh 0 on every prompt
+    // reset, never carried through mergeAfterReplay and never replay-restored
+    // (a restart mid-task drops it; the ladder re-blocks and re-arms).
+    handsOnBlocks: 0,
+    // Task-scoped standing release from a human `always` reply to a hands-on
+    // ask. Fresh false on every prompt reset; never carried through
+    // mergeAfterReplay (a restart mid-task drops it — fail-toward-strict).
+    handsOnRelease: false,
     reads: 0,
     readWarned: false,
     seen: new Set(),
@@ -75,8 +84,9 @@ export function newState(): GateState {
  * Clears the metering counters on a gate state bucket so its dispatches are
  * re-admitted: the round and dispatch counters (`reviewRounds`,
  * `reviewWaiverRounds`, `plannerRounds`, `planReviewerRounds`,
- * `testRunnerRounds`, `totalDispatches`, `landingBlocks`, `reads`), the read
- * warning flag, and any pending unverified gate-refusal claim. Earned credit
+ * `testRunnerRounds`, `totalDispatches`, `landingBlocks`, `handsOnBlocks`,
+ * `reads`), the read warning flag, and any pending unverified gate-refusal
+ * claim. Earned credit
  * (the gate/plan/review flags, the ensemble dispatch count, approvals, and
  * waivers) is untouched — clearing a counter never withdraws credit already
  * granted. The unverified-claim reset is the fail-open direction: it drops a
@@ -95,6 +105,7 @@ export function clearMeteringCounters(s: GateState): boolean {
     s.testRunnerRounds !== 0 ||
     s.totalDispatches !== 0 ||
     s.landingBlocks !== 0 ||
+    s.handsOnBlocks !== 0 ||
     s.reads !== 0
   s.reviewRounds = 0
   s.reviewWaiverRounds = 0
@@ -103,6 +114,7 @@ export function clearMeteringCounters(s: GateState): boolean {
   s.testRunnerRounds = 0
   s.totalDispatches = 0
   s.landingBlocks = 0
+  s.handsOnBlocks = 0
   s.reads = 0
   s.readWarned = false
   s.unverifiedPass = ""
@@ -112,9 +124,9 @@ export function clearMeteringCounters(s: GateState): boolean {
 /**
  * Projects a live ledger bucket into the system-block turnstile appends at
  * compaction: the concrete gate state (last GATE/VERDICT markers, plan and
- * reviewer approval, round/dispatch counts, waiver/human flags, landing and
- * read counts, task fingerprint) rather than merely demanding markers the
- * orchestrator may no longer remember. A pure read of `GateState` — it never
+ * reviewer approval, round/dispatch counts, waiver/human flags, landing,
+ * hands-on, and read counts, task fingerprint) rather than merely demanding
+ * markers the orchestrator may no longer remember. A pure read of `GateState` — it never
  * journals, mints, or throws, so it is safe on the compaction hook — and a
  * restart-restored bucket still renders `GREEN`/`APPROVED` with `last=none`
  * because replay restores the flags (journaled) but not the raw marker text.
@@ -143,7 +155,7 @@ export function formatGateSnapshot(s: GateState): string {
     `- reviewer: ${s.hasReviewApprove ? "APPROVED" : "PENDING"} dispatches=${s.reviewerDispatches} last=${s.lastVerdictMarker || "none"}`,
     `- waiver: ${waiverStatus} human: ${s.humanApproval ? "APPROVED" : "none"}`,
     `- rounds: planner=${s.plannerRounds} plan-reviewer=${s.planReviewerRounds} test-runner=${s.testRunnerRounds} reviewer=${s.reviewRounds} total=${s.totalDispatches}`,
-    `- landing: blocks=${s.landingBlocks} reads=${s.reads}`,
+    `- landing: blocks=${s.landingBlocks} reads=${s.reads} hands-on blocks=${s.handsOnBlocks}`,
     `- task: ${s.taskFingerprint || "unstamped"}`,
   ].join("\n")
 }
@@ -268,8 +280,8 @@ export function formatPipelineStatus(
  * `pendingOnceGrant` must not outlive its single dispatch, `policyInjected`
  * is per-task policy re-supply, the loop-cap counters (`reviewRounds`,
  * `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`,
- * `totalDispatches`, `landingBlocks`) intentionally re-arm on every fresh
- * prompt cycle, and the dedup/telemetry/fingerprint fields
+ * `totalDispatches`, `landingBlocks`, `handsOnBlocks`) intentionally re-arm
+ * on every fresh prompt cycle, and the dedup/telemetry/fingerprint fields
  * (`seenFrom`, `suppressedPending`, `reads`, `readWarned`, `seen`,
  * `replayGrace`, `taskFingerprint`) are intrinsic to this bucket —
  * `replayGrace` is consumed by design and `taskFingerprint` is re-stamped

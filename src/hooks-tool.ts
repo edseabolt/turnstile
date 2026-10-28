@@ -35,9 +35,10 @@ export function createToolHooks(ctx: TurnstileContext): {
    * loop caps, waivers); read draws down the parent's read budget (keyed
    * off the parent session — a subagent's reads consume the parent's
    * budget, not a per-child one); bash/shell runs the command denylist +
-   * landing guard; write/edit the path denylist; session_move the
-   * worktree-move guard. A blocked call throws the deliberate BlockError;
-   * shadow mode journals only; off is a no-op.
+   * landing guard; write/edit the path denylist then the parent-only
+   * hands-on gate; session_move the worktree-move guard. A blocked call
+   * throws the deliberate BlockError; shadow mode journals only; off is a
+   * no-op.
    * @param event The host execute.before tool-hook payload.
    * @throws The deliberate gate block error when a guard rejects the call.
    */
@@ -63,11 +64,10 @@ export function createToolHooks(ctx: TurnstileContext): {
       return
     }
     if (event?.tool === "write" || event?.tool === "edit") {
-      ctx.toolPolicy.guardPath(
-        event.tool,
-        event.input?.filePath ?? event.input?.path,
-        asSessionID(event?.sessionID),
-      )
+      // Path denylist first, then the parent-only hands-on gate (see
+      // handleWriteEditDispatch — a registered pipeline child's own write/
+      // edit is the executor's work and never gates).
+      ctx.handleWriteEditDispatch(event, event.tool)
       return
     }
     if (event?.tool === "session_move") {

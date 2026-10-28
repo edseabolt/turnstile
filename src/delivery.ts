@@ -248,6 +248,17 @@ export const PLAN_ASK_MESSAGE_PREFIX = "turnstile: plan approval required"
 export const LANDING_ASK_MESSAGE_PREFIX = "turnstile: push/PR requires a reviewer"
 
 /**
+ * Message prefix the evaluate handler stamps on every hands-on-gate ask, so
+ * the stream consumer can recognize a hands-on ask (even when the host omits
+ * the session id) and route its reply to the hands-on gate. It is the opening
+ * of HANDSON_REQUIREMENT (the ask message is `turnstile: ${HANDSON_REQUIREMENT}`),
+ * and it is disjoint from the plan and landing prefixes, so an approval of one
+ * never releases another.
+ */
+export const HANDSON_ASK_MESSAGE_PREFIX =
+  "turnstile: parent-session write/edit requires the pipeline"
+
+/**
  * Candidate keys for the parent id on a session record, in priority order,
  * dotted paths supported. The single source for the parent-id read so
  * `resolveParent` and `readRecordString` share one extraction rule.

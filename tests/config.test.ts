@@ -818,6 +818,30 @@ test("configDigest flips on reviewEnsemble overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, reviewEnsemble: "advise" }))
 })
 
+/** The hands-on gate defaults to shadow and validates its three literals
+ *  ("enforce", "shadow", "off") with no warning per accepted literal. */
+test("handsOnGate defaults to shadow and accepts enforce/shadow/off", () => {
+  assert.equal(defaultConfig({}).handsOnGate, "shadow")
+  for (const mode of ["enforce", "shadow", "off"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { handsOnGate: mode })
+    assert.equal(config.handsOnGate, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** An invalid handsOnGate value keeps the shadow default and names the three
+ *  accepted literals; a non-string rejects the same way. */
+test("mergeConfig rejects an invalid handsOnGate and keeps the shadow default", () => {
+  const base = defaultConfig({})
+  for (const bad of ["yes", 1, null]) {
+    const { config, warnings } = mergeConfig(base, { handsOnGate: bad })
+    assert.equal(config.handsOnGate, "shadow")
+    assert.deepEqual(warnings, [
+      'config: handsOnGate must be "enforce", "shadow", or "off"; keeping default',
+    ])
+  }
+})
+
 /** sessionSummary defaults to quiet and validates its three literals. */
 test("sessionSummary defaults to quiet and accepts on/quiet/off", () => {
   assert.equal(defaultConfig({}).sessionSummary, "quiet")

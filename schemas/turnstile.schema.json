@@ -158,6 +158,11 @@
       "enum": ["enforce", "advise"],
       "description": "Enforcement mode for the reviewer ensemble (default enforce)."
     },
+    "handsOnGate": {
+      "type": "string",
+      "enum": ["enforce", "shadow", "off"],
+      "description": "Parent hands-on gate mode: gates write/edit by the parent session (default shadow)."
+    },
     "evidencePattern": {
       "type": "string",
       "description": "Case-insensitive regex source matched against bash/shell commands to count as test-execution evidence."
