@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url"
 
 import { configDigest } from "./config.ts"
 import { BlockError } from "./gates.ts"
+import { evaluateHostCompat, HOST_COMPAT } from "./host-compat.ts"
 import { createHooksCore } from "./hooks-core.ts"
 import { startEventStream } from "./hooks-events.ts"
 import { createPermissionHooks } from "./hooks-permission.ts"
@@ -93,6 +94,52 @@ export function createTurnstile(
     // `tui.toast.show` is a no-op binder — the session-end summary then
     // delivers journal-only (the headless path).
     ctx.bindToast(h.tui?.toast?.show)
+
+    // Host-compat guard: an incompatible host is journaled, toasted, and
+    // left hookless (fail-open to a full no-op); an unreadable version
+    // enforces as usual with a one-time `compat` warning.
+    let compat: ReturnType<typeof evaluateHostCompat>
+    try {
+      compat = evaluateHostCompat(h?.app?.version ?? _host?.app?.version, version, HOST_COMPAT)
+    } catch (e) {
+      ctx.journaler.journal({ type: "error", error: `compat evaluation: ${e}` })
+      compat = { verdict: "unknown", hostVersion: "", message: "" }
+    }
+    if (compat.verdict === "incompatible") {
+      ctx.journaler.journal({
+        type: "compat",
+        event: "incompatible",
+        host: compat.hostVersion,
+        plugin: version,
+        min: HOST_COMPAT.minInclusive,
+        max: HOST_COMPAT.maxExclusive,
+      })
+      try {
+        await ctx.toast?.(compat.message, "warning")
+      } catch (e) {
+        ctx.journaler.journal({ type: "error", error: `compat toast: ${e}` })
+      }
+      ctx.journaler.journal({
+        type: "setup",
+        version,
+        digest: configDigest(ctx.config),
+        hooks: 0,
+        compat: "incompatible",
+        ...(ctx.config.trace
+          ? { trace: true, agents: ctx.config.agents, metricsDir: ctx.config.metricsDir }
+          : {}),
+      })
+      return () => {}
+    }
+    if (compat.verdict === "unknown") {
+      ctx.journaler.journal({
+        type: "compat",
+        event: "unknown-host",
+        host: compat.hostVersion,
+        plugin: version,
+      })
+    }
+
     const cleanups: Array<() => void> = []
     // Count of successfully registered hooks (3 session + 1 permission + 2 tool
     // + 1 event subscriber = 7 on a full host); feeds the load heartbeat below.
@@ -219,6 +266,7 @@ export function createTurnstile(
       version,
       digest: configDigest(ctx.config),
       hooks,
+      compat: compat.verdict === "compatible" ? "compatible" : "unknown",
       ...(ctx.config.trace
         ? { trace: true, agents: ctx.config.agents, metricsDir: ctx.config.metricsDir }
         : {}),

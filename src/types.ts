@@ -813,6 +813,11 @@ export type Host = {
     ) => Promise<unknown>
   }
   /**
+   * Host identity block (v2 Context.app). Optional; the version feeds the
+   * host-compat guard only — never enforcement.
+   */
+  app?: { name?: unknown; version?: unknown }
+  /**
    * TUI surface, when the host exposes one (verified on the TUI side as
    * `tui.toast.show` with `message` required). Optional-chained everywhere;
    * the toast is a best-effort delivery channel on top of the journal.

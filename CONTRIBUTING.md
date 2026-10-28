@@ -81,6 +81,12 @@ the real metrics directory. When changing behavior, update the goldens in
 `tests/default-golden.test.ts` deliberately: they pin journal entry shapes,
 trace format, and the exact block messages.
 
+## Release checklist
+
+- At release: bump `HOST_COMPAT` in `src/host-compat.ts` when a new opencode
+  was tested, update the README compatibility matrix (including the tested
+  list), and run `npm run ci`.
+
 ## Commit style
 
 Conventional messages (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`).

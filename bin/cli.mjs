@@ -40,6 +40,7 @@ Commands:
   uninstall Remove installed artifacts (manifest artifacts)
   status    Report per-session gate/plan state from the journal
             (status --json prints machine-readable JSON; read-only, nothing is written)
+            (status --check-updates checks npm for a newer turnstile; network, cached)
   evidence  Emit a shareable evidence summary for one task (read-only, nothing is written)
              (evidence --task <session|latest> --format json|markdown [--out <path>]
               evidence --validate <path>   re-check a committed artifact, write nothing)

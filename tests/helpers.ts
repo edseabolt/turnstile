@@ -197,6 +197,11 @@ export function makeFakeHost(opts?: {
   tui?: boolean
   /** When set (with `tui`), every toast `show` rejects with an Error. */
   toastReject?: boolean
+  /**
+   * When set, the fake host exposes `app` (v2 Context.app identity block)
+   * carrying this version string; feeds the host-compat guard at setup.
+   */
+  appVersion?: string
 }): FakeHost {
   const withPermission = opts?.permission ?? true
   const withSession = opts?.session ?? true
@@ -255,6 +260,9 @@ export function makeFakeHost(opts?: {
             },
           },
         }
+      : {}),
+    ...(opts?.appVersion !== undefined
+      ? { app: { name: "opencode", version: opts.appVersion } }
       : {}),
     ...(withPermission
       ? {
