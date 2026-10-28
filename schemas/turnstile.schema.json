@@ -99,6 +99,11 @@
       "type": "boolean",
       "description": "Carry the task's gate flags across a prompt reset when the worktree/branch is unchanged, instead of starting a clean cycle (default true)."
     },
+    "sessionSummary": {
+      "type": "string",
+      "enum": ["on", "quiet", "off"],
+      "description": "Session-end summary surface: quiet (default) prints one recap line at session.idle for sessions that did something (silent for zero-activity sessions); on also prints an all-gates-green line for zero-activity sessions; off disables the surface entirely."
+    },
     "agents": {
       "type": "object",
       "additionalProperties": false,

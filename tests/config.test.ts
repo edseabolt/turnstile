@@ -818,6 +818,35 @@ test("configDigest flips on reviewEnsemble overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, reviewEnsemble: "advise" }))
 })
 
+/** sessionSummary defaults to quiet and validates its three literals. */
+test("sessionSummary defaults to quiet and accepts on/quiet/off", () => {
+  assert.equal(defaultConfig({}).sessionSummary, "quiet")
+  for (const mode of ["on", "quiet", "off"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { sessionSummary: mode })
+    assert.equal(config.sessionSummary, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** An invalid sessionSummary value keeps the quiet default and names the
+ *  three accepted literals; a non-string rejects the same way. */
+test("mergeConfig rejects an invalid sessionSummary and keeps the quiet default", () => {
+  const base = defaultConfig({})
+  for (const bad of ["loud", 42, true]) {
+    const { config, warnings } = mergeConfig(base, { sessionSummary: bad })
+    assert.equal(config.sessionSummary, "quiet")
+    assert.deepEqual(warnings, [
+      'config: sessionSummary must be "on", "quiet", or "off"; keeping default',
+    ])
+  }
+})
+
+/** The digest flips when sessionSummary overrides the quiet default. */
+test("configDigest flips on sessionSummary overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, sessionSummary: "on" }))
+})
+
 /** Enforce mode plus maxReviewerRounds: 1 warns that a second reviewer
  *  dispatch will be capped; the resolved count is left as configured. */
 test("loadConfig warns when enforce reviewEnsemble needs maxReviewerRounds >= 2", () => {

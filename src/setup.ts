@@ -89,6 +89,10 @@ export function createTurnstile(
     // Bind the host session API for the shared `resolveParent` helper (hooks
     // already fire post-setup).
     ctx.bindHost(h.session)
+    // Bind the host toast surface (optional-chained): an absent or broken
+    // `tui.toast.show` is a no-op binder — the session-end summary then
+    // delivers journal-only (the headless path).
+    ctx.bindToast(h.tui?.toast?.show)
     const cleanups: Array<() => void> = []
     // Count of successfully registered hooks (3 session + 1 permission + 2 tool
     // + 1 event subscriber = 7 on a full host); feeds the load heartbeat below.

@@ -151,6 +151,27 @@ test("replay restores well-shaped replay-typed entries without telemetry", () =>
   assert.equal(replayDrops(metricsDir).length, 0, "a clean tail journals no drop")
 })
 
+/** The session-summary delivery-proof entry is replay-inert: an unknown
+ *  replay type folds nothing, mints no bucket, and journals no drop. */
+test("replay treats a session-summary entry as inert without telemetry", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    JSON.stringify({
+      ts: "t",
+      type: "session-summary",
+      sessionID: "p1",
+      verified: 2,
+      blockedDispatches: 1,
+      waivers: 1,
+      text: "turnstile: 2 test-claims verified · …",
+    }),
+    gateLine("p1"),
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(ledger.peek("p1")?.hasGatePass, true, "the gate entry beside the summary restores")
+  assert.equal(replayDrops(metricsDir).length, 0, "an inert entry journals no drop")
+})
+
 /** Lines whose sessionID fails the host shape are dropped one-for-one with
  *  telemetry, mint no bucket, and never echo the hostile bytes. */
 test("replay drops hostile session IDs without minting buckets or echoing them", () => {

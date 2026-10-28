@@ -71,32 +71,33 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ![Module map](images/d01-modules.svg)
 
-| Module                    | Responsibility                                                                                                                                                                                                        |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turnstile.ts`            | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                                                                    |
-| `src/setup.ts`            | Wiring only: hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                               |
-| `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                      |
-| `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                   |
-| `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                                        |
-| `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                   |
-| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, re-subscription under a throw-only restart budget                                        |
-| `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                |
-| `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                                     |
-| `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                            |
-| `src/ledger.ts`           | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                                                                          |
-| `src/markers.ts`          | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                                                                |
-| `src/gates.ts`            | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                    |
-| `src/gates-dispatch.ts`   | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                                                                |
-| `src/gates-plan.ts`       | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                                                                          |
-| `src/gates-common.ts`     | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                      |
-| `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                                                                           |
-| `src/empty-diff.ts`       | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true) |
-| `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                 |
-| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                         |
-| `src/bounded.ts`          | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                            |
-| `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends                                                                              |
-| `src/policy.ts`           | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers)          |
-| `src/types.ts`            | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                      |
+| Module                    | Responsibility                                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `turnstile.ts`            | Entry point: module shape + factory; the doc comment atop it is the authoritative contract summary                                                                                                                       |
+| `src/setup.ts`            | Wiring only: hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                                  |
+| `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                         |
+| `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                      |
+| `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                                           |
+| `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                      |
+| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, the session-end summary (`session.idle`), re-subscription under a throw-only restart budget |
+| `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                   |
+| `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                                        |
+| `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                               |
+| `src/ledger.ts`           | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                                                                             |
+| `src/markers.ts`          | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                                                                   |
+| `src/gates.ts`            | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                       |
+| `src/gates-dispatch.ts`   | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                                                                   |
+| `src/gates-plan.ts`       | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                                                                             |
+| `src/gates-common.ts`     | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                         |
+| `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                                                                              |
+| `src/empty-diff.ts`       | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true)    |
+| `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                    |
+| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                            |
+| `src/bounded.ts`          | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                               |
+| `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends, the fail-open journal reader (`readJournalEntries`)                            |
+| `src/policy.ts`           | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers)             |
+| `src/summary.ts`          | Session-end summary counting + one-line formatting over parsed journal entries (`countSessionActivity`, `formatSessionSummary`, `formatAllGreenLine`) — pure and host-free, shared with the observe-period summary       |
+| `src/types.ts`            | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                         |
 
 ---
 
@@ -182,7 +183,9 @@ contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
 `suppressed` rather than flipping state, permission ask/reply bookkeeping,
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29 — an
 additive channel the host publishes immediately after the prompt hook fires,
-deduped against the hook path on the shared host message id), and error
+deduped against the hook path on the shared host message id), the
+session-end summary (`session.idle` — one recap line per session, see §6's
+`session-summary` entry kind), and error
 telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
 across `session.text.delta` chunks is reassembled and re-parsed so a completed
@@ -306,11 +309,11 @@ from the `observeCounts()` totals at injection time) and the inert
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (23 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (24 entry types:
   `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
   `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
-  `suppressed`, `observe`, `would-block`, `replay`). A `dispatch` entry is written at
+  `suppressed`, `observe`, `would-block`, `replay`, `session-summary`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -400,6 +403,14 @@ reason:"landing", event:"forced"}`) stamps the evaluate landing arm's
   PERM-ask and PERM-decision counters (which key off those fields) leave the
   human table untouched, and all three are replay-inert (the ledger never
   replays `permission` rows).
+  A `session-summary` entry is the delivery proof for the session-end
+  summary: `{type:"session-summary", sessionID, verified, blockedDispatches,
+waivers, text}` — the counts mirror the recap line (`text`, bounded to 300
+  chars), which is shown as a TUI toast when the host offers `tui.toast.show`
+  and delivered journal-only otherwise (the headless log). One per session
+  per host process (an in-memory dedupe set; a restarted host may re-summary
+  a still-idle session once). It is audit-only, replay-inert (an unknown
+  replay type folds nothing), and status-inert.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `journalRotateEveryEntries` appends (default 512), only
@@ -515,16 +526,16 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                   | Defaults worth knowing                                                                                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                             | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`           | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
-| Reads       | `readWarn`, `readBlock`                                                                                                                | 8 / 15 (clamped)                                                                                                                                                                      |
-| Observe     | `observeSessions`                                                                                                                      | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                               |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                     | built-in regexes; custom sources must compile or fall back (journaled)                                                                                                                |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `.opencode/plans`; `metricsDir` is computed at load time                                                                                        |
-| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                       | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
-| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                | mode ships `shadow` — the adoption path; `enforce` is recommended, and this repo runs it                                                                                              |
+| Group       | Keys                                                                                                                                                     | Defaults worth knowing                                                                                                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                                               | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                             | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
+| Reads       | `readWarn`, `readBlock`                                                                                                                                  | 8 / 15 (clamped)                                                                                                                                                                      |
+| Observe     | `observeSessions`                                                                                                                                        | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                               |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `evidencePattern`                                                                       | built-in regexes; custom sources must compile or fall back (journaled)                                                                                                                |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `plansDir`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `.opencode/plans`; `metricsDir` is computed at load time                                                                               |
+| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                                         | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
+| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                                  | mode ships `shadow` — the adoption path; `enforce` is recommended, and this repo runs it                                                                                              |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically

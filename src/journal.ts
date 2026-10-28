@@ -124,6 +124,45 @@ export function appendLine(file: string, text: string): void {
   }
 }
 
+/** One parsed journal entry (a JSON object line). */
+export type JournalEntry = Record<string, unknown>
+
+/**
+ * Reads the current journal file and returns its parsed object entries,
+ * oldest-first. Fail-open: any read or parse problem yields the entries
+ * parsed so far (an unreadable or missing file yields []); a malformed
+ * non-object line is skipped and the rest of the file still parses.
+ * Rotation generations are NOT walked — only the current file is read — so
+ * a count that straddles a rotation undercounts visibly in the summary
+ * line, which is acceptable for a display-only surface (the reader feeds
+ * the session-end summary; see `src/summary.ts`).
+ * @param journalPath Absolute path of the current JSONL journal file.
+ * @returns The parsed entries, oldest-first.
+ */
+export function readJournalEntries(journalPath: string): JournalEntry[] {
+  let text: string
+  try {
+    text = fs.readFileSync(journalPath, "utf8")
+  } catch {
+    // missing or unreadable journal: nothing to count
+    return []
+  }
+  const entries: JournalEntry[] = []
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue
+    try {
+      const parsed: unknown = JSON.parse(line)
+      // Plain objects only: arrays and JSON scalars are not entry shapes.
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        entries.push(parsed as JournalEntry)
+      }
+    } catch {
+      // malformed line: skip, keep the rest
+    }
+  }
+  return entries
+}
+
 /** Telemetry writer injected into the state, gate, and wiring layers. */
 export interface Journaler {
   /** Absolute path of the JSONL journal file. */
