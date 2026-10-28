@@ -121,7 +121,7 @@ test("traceEvent without a session ID omits the trailing segment", () => {
     rotateEveryEntries: 512,
   })
   j.traceEvent("agent", "event", "detail")
-  const line = fs.readFileSync(path.join(metricsDir, "gate-events.jsonl"), "utf8").trim()
+  const line = fs.readFileSync(path.join(metricsDir, "gate-events.log"), "utf8").trim()
   assert.equal(line.split("|").length, 4)
 })
 

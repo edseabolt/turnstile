@@ -519,7 +519,7 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   generations, so such an entry simply joins the tail window when it is
   read back (the window is small and clock-free).
   Rotates at 5 MB, 5 generations.
-- **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
+- **`gate-events.log`** — human-readable trace, only when `trace:true`.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope

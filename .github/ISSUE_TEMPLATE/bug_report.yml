@@ -34,5 +34,5 @@ body:
     attributes:
       label: Trace excerpt
       description: >
-        relevant `gate-events.jsonl` lines. Redact anything sensitive
+        relevant `gate-events.log` lines. Redact anything sensitive
         before posting; treat journals as sensitive data (SECURITY.md).

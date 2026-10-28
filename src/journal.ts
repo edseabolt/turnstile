@@ -198,7 +198,7 @@ export interface Journaler {
  *     and rotation run once per this many appends (documented in the
  *     rotation-bound comment above). Entries between the check and the
  *     rename are the bounded overshoot.
- * @returns A Journaler writing `turnstile.jsonl` and `gate-events.jsonl`
+ * @returns A Journaler writing `turnstile.jsonl` and `gate-events.log`
  *     under `options.metricsDir`.
  */
 export function createJournaler(options: {
@@ -209,7 +209,7 @@ export function createJournaler(options: {
   rotateEveryEntries: number
 }): Journaler {
   const journalPath = path.join(options.metricsDir, "turnstile.jsonl")
-  const tracePath = path.join(options.metricsDir, "gate-events.jsonl")
+  const tracePath = path.join(options.metricsDir, "gate-events.log")
   // Counter per file, never shared: the journal and the trace file each rotate
   // on their own schedule (a trace-off journal still counts its own ticks).
   const journalTick = { n: 0 }
