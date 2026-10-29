@@ -174,7 +174,7 @@ test("agent-name precedence exempts an edge-less pipeline child's write-shaped b
   }
 })
 
-test("an edge-present child with an unknown agent still fails closed on write/edit and bash", async () => {
+test("an edge-present child with an unknown agent still fails closed on write/edit", async () => {
   const { h, dispose, metricsDir } = await boot()
   try {
     await seedEdge(h, metricsDir, "c2", "p1")
@@ -186,6 +186,15 @@ test("an edge-present child with an unknown agent still fails closed on write/ed
         input: { filePath: "/repo/notes.md" },
       })
     })
+  } finally {
+    dispose()
+  }
+})
+
+test("an edge-present child with an unknown agent still fails closed on write-shaped bash", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await seedEdge(h, metricsDir, "c2", "p1")
     await blocksHandsOn(async () => {
       await callTool(h, "execute.before", {
         tool: "bash",
@@ -194,7 +203,16 @@ test("an edge-present child with an unknown agent still fails closed on write/ed
         input: { command: "cat > notes.md" },
       })
     })
+  } finally {
+    dispose()
+  }
+})
+
+test("an edge-present child with no agent name anywhere still fails closed", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
     // Edge present but no agent name anywhere and no emitter seed: unknown.
+    await seedEdge(h, metricsDir, "c2", "p1")
     await blocksHandsOn(async () => {
       await callTool(h, "execute.before", {
         tool: "write",
@@ -207,7 +225,7 @@ test("an edge-present child with an unknown agent still fails closed on write/ed
   }
 })
 
-test("a parent dispatch with no agent name still blocks (unaffected)", async () => {
+test("a parent dispatch with no agent name still blocks on write/edit (unaffected)", async () => {
   const { h, dispose } = await boot()
   try {
     await blocksHandsOn(async () => {
@@ -217,6 +235,14 @@ test("a parent dispatch with no agent name still blocks (unaffected)", async () 
         input: { filePath: "/repo/README.md" },
       })
     })
+  } finally {
+    dispose()
+  }
+})
+
+test("a parent dispatch with no agent name still blocks on write-shaped bash (unaffected)", async () => {
+  const { h, dispose } = await boot()
+  try {
     await blocksHandsOn(async () => {
       await callTool(h, "execute.before", {
         tool: "bash",

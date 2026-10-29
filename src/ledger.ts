@@ -20,6 +20,7 @@ import { evictTo } from "./bounded.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE, clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
+import type { StickyReleaseKind } from "./gates-common.ts"
 
 /**
  * The observe-mode admission phase of a session: `observe` (gate decisions
@@ -369,6 +370,23 @@ interface ReplayMaps {
   lastRefusedApprove: Map<string, boolean>
   /** Restored child→parent edges (last-wins per child), for the setup re-seed. */
   childEdges: Map<string, { parent: string; agent: string }>
+  /** Sticky human releases (last-wins per session), for the sticky-decision
+   *  restore: the session's LAST sticky decision row decides. */
+  lastStickyDecision: Map<string, StickyDecisionRow>
+}
+
+/**
+ * One folded sticky decision row: a task-scoped standing human release
+ * journaled through the decision-row family. `stages` is present only for
+ * waiver rows (the parsed waiver stage scope; empty = unscoped).
+ */
+interface StickyDecisionRow {
+  /** The decision kind: `always` (a gate ask) or `waiver` (prompt capture). */
+  decision: "always" | "waiver"
+  /** The released surface: `plan`, `landing`, `hands-on`, or `waiver`. */
+  kind: StickyReleaseKind
+  /** Waiver stage scope (agent names); empty array = unscoped. */
+  stages: string[]
 }
 
 /**
@@ -426,6 +444,7 @@ function newReplayMaps(): ReplayMaps {
     lastEnsemble: new Map(),
     lastRefusedApprove: new Map(),
     childEdges: new Map(),
+    lastStickyDecision: new Map(),
   }
 }
 
@@ -472,10 +491,13 @@ function readReplayLines(journalPath: string, tailLines: number): string[] {
  * @param line The raw journal line.
  * @returns The parsed record when `line` is a JSON object of a replay-typed
  *     kind (`gate`, `plan`, `verdict`, `ensemble`, `observe`,
- *     `would-block`, `suspended`); `"malformed"` when the line does not parse to an
- *     object record (a JSON error, a non-object, or an array); and `null`
- *     for every other, replay-inert line (any other entry type) — inert
- *     lines stay inert without telemetry, exactly as before.
+ *     `would-block`, `suspended`, `child-edge`, `permission`); `"malformed"` when
+ *     the line does not parse to an object record (a JSON error, a
+ *     non-object, or an array); and `null` for every other, replay-inert
+ *     line (any other entry type) — inert lines stay inert without
+ *     telemetry, exactly as before. `permission` rows are admitted for the
+ *     sticky-decision fold only (see {@link foldStickyDecision}); ask rows,
+ *     forced-ask consumes, and other `permission` audit flavors fold inert.
  */
 function parseReplayLine(line: string): Record<string, unknown> | "malformed" | null {
   let parsed: unknown
@@ -494,7 +516,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "observe" &&
     entry.type !== "would-block" &&
     entry.type !== "suspended" &&
-    entry.type !== "child-edge"
+    entry.type !== "child-edge" &&
+    entry.type !== "permission"
   ) {
     return null
   }
@@ -726,6 +749,71 @@ function foldSuspended(
   return null
 }
 
+/** Upper bound on a replayed sticky decision row's stage list (a real
+ *  waiver scope names a handful of pipeline stages; anything longer is
+ *  hostile padding). */
+const MAX_REPLAY_STAGES = 16
+
+/**
+ * Sanitizes a replayed waiver stage list: an array of bounded strings. Any
+ * non-array shape, a non-string element, or an over-length element degrades
+ * the whole scope to unscoped (the consumer's `waiverCovers` treats an
+ * empty scope as covering every stage, so a degraded restore stays a live
+ * release — fail-open in the release direction, which is what the human
+ * granted; the stage names are never an enforcement input beyond matching).
+ * @param stages The raw `stages` field of a sticky waiver row.
+ * @returns The sanitized stage names (empty when unscoped or degraded).
+ */
+function sanitizeStickyStages(stages: unknown): string[] {
+  if (!Array.isArray(stages)) return []
+  const names: string[] = []
+  for (const stage of stages) {
+    if (typeof stage !== "string" || stage.length < 1 || stage.length > MAX_REPLAY_AGENT_LEN) {
+      return []
+    }
+    names.push(stage)
+  }
+  return names.slice(0, MAX_REPLAY_STAGES)
+}
+
+/**
+ * Folds a `permission` decision row into the sticky-release map (last-wins
+ * per session). Three flavors fold inert without a drop: any row carrying
+ * `action` (an ask row) or `event` (a forced-ask consume, a latch-steal, a
+ * suspicion, an unrecorded reply) — audit rows, never decisions — and a
+ * legacy decision row without `scope` (pre-sticky rows stay replay-inert,
+ * exactly as before this fold existed). A row with `scope:"task"` and a
+ * valid decision/kind pair folds; anything else (a non-allowlisted
+ * decision, a bad kind, a wrong scope) is a shape drop — a hostile row
+ * must not silently decide a release.
+ * @param entry The parsed `permission` entry.
+ * @param maps The last-wins maps to fill.
+ * @param sessionID The validated session ID.
+ * @returns A shape drop for an invalid sticky row, or `null` when folded or
+ *     inert.
+ */
+function foldStickyDecision(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  if (entry.action !== undefined || entry.event !== undefined) return null
+  if (entry.scope === undefined) return null // legacy decision row: replay-inert as before
+  if (entry.scope !== "task") return { reason: "entry-shape", sessionID }
+  const decision = entry.decision
+  if (decision !== "always" && decision !== "waiver") return { reason: "entry-shape", sessionID }
+  const kind = entry.kind
+  if (kind !== "plan" && kind !== "landing" && kind !== "hands-on" && kind !== "waiver") {
+    return { reason: "entry-shape", sessionID }
+  }
+  maps.lastStickyDecision.set(sessionID, {
+    decision,
+    kind,
+    stages: decision === "waiver" ? sanitizeStickyStages(entry.stages) : [],
+  })
+  return null
+}
+
 /**
  * Folds a `child-edge` entry into the re-seed edge map (last-wins per child).
  * The parent ID must pass the host session-ID shape (a hostile parent is a
@@ -794,6 +882,9 @@ function foldReplayLine(
   }
   if (type === "child-edge") {
     return foldChildEdge(entry, maps, sessionID)
+  }
+  if (type === "permission") {
+    return foldStickyDecision(entry, maps, sessionID)
   }
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
@@ -942,6 +1033,50 @@ function restoreHumanGrants(
 }
 
 /**
+ * Restores the sticky human releases per session from the last-wins
+ * sticky-decision map: the session's LAST sticky row decides (last-wins, so
+ * a later non-sticky decision row — a `once` or `reject` written by the
+ * legacy shape — never appears here, and a later sticky row replaces an
+ * earlier one). Each released surface's flag is stamped to mirror its
+ * runtime grant path exactly: a `plan` grant stamps the plan-gate release
+ * pair (`hasPlanVerdict` + the `humanApproval` provenance), a `landing`
+ * grant stamps `hasReviewApprove` and credits the bucket-free credit trace
+ * (escalation provenance, mirroring the live reply path), a `hands-on`
+ * grant stamps `handsOnRelease`, and a `waiver` stamps the waiver family
+ * (`userWaiver` as the redacted presence marker, the sanitized stage scope,
+ * and the `stickyRelease` provenance). Buckets ride the same replay-grace
+ * window as the other restore loops.
+ * @param states The session→state map to populate.
+ * @param maps The filled replay maps.
+ * @param creditedApprovals The bucket-free credit trace stamped by the
+ *     landing sticky grant (its provenance for escalation).
+ */
+function restoreStickyReleases(
+  states: Map<string, GateState>,
+  maps: ReplayMaps,
+  creditedApprovals: Map<string, number>,
+): void {
+  for (const [sessionID, row] of maps.lastStickyDecision) {
+    const s = graceBucket(states, sessionID)
+    if (row.decision === "waiver") {
+      s.userWaiver = "<present>"
+      s.userWaiverScope = row.stages
+      s.stickyRelease = true
+      continue
+    }
+    if (row.kind === "plan") {
+      s.hasPlanVerdict = true
+      s.humanApproval = true
+    } else if (row.kind === "landing") {
+      s.hasReviewApprove = true
+      creditedApprovals.set(sessionID, Date.now())
+    } else if (row.kind === "hands-on") {
+      s.handsOnRelease = true
+    }
+  }
+}
+
+/**
  * Restores the last ensemble count per session (already clamped to the
  * ensemble size at fold time). A session that also had a flag restored
  * carries replay grace from the loops above, so it survives the grace prompt
@@ -962,8 +1097,8 @@ function restoreEnsembleCounts(
 }
 
 /**
- * Runs the five restore loops in order (gate, plan, verdict, human-grant,
- * ensemble) over the replayed last-wins maps.
+ * Runs the restore loops in order (gate, plan, verdict, human-grant,
+ * sticky-release, ensemble) over the replayed last-wins maps.
  * @param states The session→state map to populate.
  * @param maps The filled replay maps.
  * @param creditedApprovals The bucket-free credit trace stamped by the
@@ -978,6 +1113,7 @@ function restoreBuckets(
   restorePlanVerdicts(states, maps.lastPlanResult)
   restoreReviewApprovals(states, maps.lastReviewVerdict, maps.lastRefusedApprove, creditedApprovals)
   restoreHumanGrants(states, maps.lastRefusedApprove, creditedApprovals)
+  restoreStickyReleases(states, maps, creditedApprovals)
   restoreEnsembleCounts(states, maps.lastEnsemble)
 }
 

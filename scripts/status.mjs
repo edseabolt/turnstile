@@ -310,6 +310,7 @@ function freshSession() {
     blocks: 0,
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
+    stickyRelease: null,
     suspended: false,
   }
 }
@@ -463,6 +464,17 @@ function aggregate(lines) {
       } else if (e.decision === "once" || e.decision === "always" || e.decision === "reject") {
         a.permissionDecisions[e.decision]++
       }
+      // Sticky-decision fold, mirroring ledger.ts's foldStickyDecision:
+      // only scope:"task" decision rows (standing `always` grants, waiver
+      // captures) participate, last-wins per session; ask rows (`action`),
+      // audit rows (`event`), and legacy scope-less rows fold nothing.
+      if (e.action === undefined && e.event === undefined && e.scope === "task") {
+        if (e.decision === "always" || e.decision === "waiver") {
+          a.stickyRelease = e.decision === "waiver" ? "waiver" : (e.kind ?? "")
+        } else if (e.decision === "once" || e.decision === "reject") {
+          a.stickyRelease = null
+        }
+      }
     } else if (type === "observe" || type === "would-block") {
       // Observe-mode fold (see the function doc): the line is present no
       // matter which counter checks pass, so `seen` marks the header line;
@@ -490,7 +502,9 @@ function fmtSession(id) {
 }
 
 /**
- * Renders the human-readable table. When the journal holds observe-mode
+ * Renders the human-readable table. The REL column surfaces the folded
+ * sticky-release state (the last-wins sticky decision row: `plan`,
+ * `landing`, `hands-on`, `waiver`, or `·` when none). When the journal holds observe-mode
  * entries, the report gains one extra line right below the header line with
  * the folded phase and running period totals — journals without observe
  * entries render byte-identically to before (the observe argument carries
@@ -512,10 +526,11 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     bl: a.blocks,
     ask: a.permissionAsks,
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
+    rel: a.stickyRelease === null ? "·" : String(a.stickyRelease),
     sus: a.suspended ? "OFF" : "·",
   }))
 
-  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "SUS"]
+  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "REL", "SUS"]
   const cells = [
     (r) => r.session,
     (r) => r.gate,
@@ -525,6 +540,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => String(r.dis),
     (r) => String(r.bl),
     (r) => `${r.ask}/${r.dec}`,
+    (r) => r.rel,
     (r) => r.sus,
   ]
 

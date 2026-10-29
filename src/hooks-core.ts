@@ -22,7 +22,12 @@ import {
   VERDICT_RE,
 } from "./markers.ts"
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
-import { observeEntry, observeSummaryEntry, wouldBlockEntry } from "./gates-common.ts"
+import {
+  decisionEntry,
+  observeEntry,
+  observeSummaryEntry,
+  wouldBlockEntry,
+} from "./gates-common.ts"
 import { waiverCovers } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import {
@@ -3076,6 +3081,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         // stored quote may be "<present>", but the scope needs the words.
         const scope = parseWaiverScope(waiverText.slice(at), Object.values(config.agents))
         s.userWaiverScope = scope
+        // Task-scoped standing release: the waiver joins the sticky
+        // decision-row family (no separate journal type), so the boot
+        // replay restores it through the same fold as ask `always`
+        // grants. `stickyRelease` is provenance; the gates keep reading
+        // the waiver family itself.
+        s.stickyRelease = true
+        journaler.journal(decisionEntry(sessionID, "waiver", { kind: "waiver", stages: scope }))
       }
     } catch (e) {
       // Fail-open: capture never blocks a prompt.

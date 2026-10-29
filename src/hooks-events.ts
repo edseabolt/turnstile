@@ -41,6 +41,15 @@ type StopReason = "aborted" | "budget"
 type EventHandler = (properties: EventProperties) => void | Promise<void>
 
 /**
+ * Reply latency under which a human could not plausibly have read and
+ * answered the ask: a release reply arriving faster than this journals a
+ * provenance suspicion. Heuristic only — the release still applies and the
+ * row gates nothing; the journal keeps the audit trail honest about replies
+ * that look machine-generated (a non-interactive client auto-answering).
+ */
+const FAST_REPLY_MS = 1000
+
+/**
  * Starts the event stream for one setup: subscribes to the host stream
  * and supervises re-subscription. Only a thrown subscription/iterator
  * death burns the restart budget (one `event subscription:` journal per
@@ -278,6 +287,30 @@ export function startEventStream(
     }
   }
   /**
+   * Journals a fast-reply provenance suspicion when a recorded ask was
+   * answered faster than a human could plausibly read it (see
+   * {@link FAST_REPLY_MS}). Journal-only: the suspicion never gates, and the
+   * release the reply carries still applies — the row keeps the audit trail
+   * honest about machine-looking replies (a non-interactive client
+   * auto-answering) without inventing a host signal that does not exist.
+   * @param ctxRecordedAt The ask's `permission.asked` arrival time.
+   * @param parent The parent session the ask belongs to.
+   * @param decision The reply being applied (`"always"` / `"once"`).
+   */
+  const noteFastReply = (ctxRecordedAt: number, parent: string, decision: string): void => {
+    if (Date.now() - ctxRecordedAt >= FAST_REPLY_MS) return
+    ctx.journaler.journal({
+      type: "permission",
+      sessionID: parent,
+      event: "suspicion",
+      reason: "no-interactive-human",
+      // `reply`, deliberately NOT `decision`: the row must stay outside the
+      // decision family (status.mjs's PERM counts and any journal tail
+      // scanning on `decision` must not read a suspicion as a decision).
+      reply: decision,
+    })
+  }
+  /**
    * Applies a human reply to a RECORDED plan-gate ask (the dispatcher's
    * falsy-record guard guarantees the record exists): "always" releases
    * the plan gate for the rest of the task and records provenance; "once"
@@ -293,16 +326,20 @@ export function startEventStream(
     const s = ctx.ledger.state(parent)
     if (reply === "always") {
       // A standing human approval releases the plan gate for the
-      // rest of the task and records provenance.
+      // rest of the task and records provenance. The sticky row
+      // (scope/kind) is what the boot replay folds back into a
+      // restored standing release after a restart.
       s.humanApproval = true
       s.hasPlanVerdict = true
-      ctx.journaler.journal(decisionEntry(parent, "always"))
+      noteFastReply(planRecord.recordedAt, parent, "always")
+      ctx.journaler.journal(decisionEntry(parent, "always", { kind: "plan" }))
     } else if (reply === "once") {
       // A plan-gate single-dispatch grant: consumed by exactly one
       // executor dispatch in execute.before (the .plan
       // short-circuit), so a stale grant cannot outlive that
       // single dispatch.
       s.pendingOnceGrant.plan = rid
+      noteFastReply(planRecord.recordedAt, parent, "once")
       ctx.journaler.journal(decisionEntry(parent, "once"))
     } else {
       // reject (or any non-allow reply) leaves the gate red: the
@@ -338,16 +375,18 @@ export function startEventStream(
       // restart behavior identical and lets the landing gate escalate the
       // next turn's first push instead of throwing.
       ctx.ledger.markCreditedApproval(parent)
+      noteFastReply(landingRecord.recordedAt, parent, "always")
       ctx.journaler.journal(
         reviewerEnsembleEntry(parent, ctx.config.agents.reviewer, s.reviewerDispatches, false),
       )
-      ctx.journaler.journal(decisionEntry(parent, "always"))
+      ctx.journaler.journal(decisionEntry(parent, "always", { kind: "landing" }))
     } else if (reply === "once") {
       // A landing-gate single-dispatch push grant: consumed by
       // exactly one bash dispatch in execute.before (the
       // .landing short-circuit), so a stale grant cannot outlive
       // that single push.
       s.pendingOnceGrant.landing = rid
+      noteFastReply(landingRecord.recordedAt, parent, "once")
       ctx.journaler.journal(decisionEntry(parent, "once"))
     } else {
       // reject (or any non-allow reply) leaves the gate red: the
@@ -374,12 +413,14 @@ export function startEventStream(
       // A standing human approval releases the rest of this task's parent
       // edits (the guard sees handsOnRelease and allows every write/edit).
       s.handsOnRelease = true
-      ctx.journaler.journal(decisionEntry(parent, "always"))
+      noteFastReply(handsOnRecord.recordedAt, parent, "always")
+      ctx.journaler.journal(decisionEntry(parent, "always", { kind: "hands-on" }))
     } else if (reply === "once") {
       // A hands-on-gate single-edit grant: consumed by exactly one parent
       // write/edit in execute.before (the .handsOn short-circuit), so a
       // stale grant cannot outlive that single edit.
       s.pendingOnceGrant.handsOn = rid
+      noteFastReply(handsOnRecord.recordedAt, parent, "once")
       ctx.journaler.journal(decisionEntry(parent, "once"))
     } else {
       // reject (or any non-allow reply) leaves the gate red: the next

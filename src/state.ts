@@ -59,9 +59,15 @@ export function newState(): GateState {
     // (a restart mid-task drops it; the ladder re-blocks and re-arms).
     handsOnBlocks: 0,
     // Task-scoped standing release from a human `always` reply to a hands-on
-    // ask. Fresh false on every prompt reset; never carried through
-    // mergeAfterReplay (a restart mid-task drops it — fail-toward-strict).
+    // ask. Fresh false on every prompt reset; restart-restored by the
+    // sticky-decision replay (a replayed `always` hands-on decision row
+    // re-stamps it) and carried through mergeAfterReplay like the other
+    // standing releases — a restart mid-task keeps the release (#228.2).
     handsOnRelease: false,
+    // Task-scoped standing human release provenance (waiver captured through
+    // the sticky decision-row family, or restored by replay). Fresh false;
+    // restart-sticky.
+    stickyRelease: false,
     reads: 0,
     readWarned: false,
     seen: new Set(),
@@ -263,7 +269,8 @@ export function formatPipelineStatus(
  * prior bucket's current flag _values_ forward — not provenance — so a live
  * `GATE: FAIL` after replay is never resurrected. The carry set is the
  * restart-sticky bundle: `hasGatePass`, `hasPlanVerdict`, `humanApproval`,
- * `hasReviewApprove`, `reviewerDispatches`, and the fields paired with
+ * `hasReviewApprove`, `handsOnRelease`, `stickyRelease`,
+ * `reviewerDispatches`, and the fields paired with
  * `hasPlanVerdict` — the `plansSignature` stamp and the bound plan identity
  * (`approvedPlan`/`approvedPlanKey`) — carried only while `hasPlanVerdict`
  * itself survives. The waiver family (`userWaiver`, `userWaiverScope`,
@@ -300,6 +307,12 @@ export function mergeAfterReplay(prior: GateState): GateState {
   // hasPlanVerdict: a reviewer APPROVE restored by replay survives the first
   // post-restart prompt (and the reset below clears it on the next prompt).
   s.hasReviewApprove = prior.hasReviewApprove
+  // Standing releases are restart-sticky like the flags above: a hands-on
+  // `always` release restored by the sticky-decision replay (and the waiver
+  // sticky-release provenance) survives the first post-restart prompt — the
+  // task-scoped human release must not be dropped by a restart.
+  s.handsOnRelease = prior.handsOnRelease
+  s.stickyRelease = prior.stickyRelease
   // The ensemble count is restart-sticky *paired with* hasReviewApprove: journaled
   // dispatches and the credited review must agree across a restart, so the grace
   // prompt carries the carried-together count too.

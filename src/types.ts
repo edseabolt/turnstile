@@ -493,11 +493,21 @@ export interface GateState {
   /**
    * Task-scoped standing release from a human `always` reply to a hands-on
    * ask: the rest of this task's parent write/edit calls are allowed. Fresh
-   * `false` on every prompt reset, never carried through
-   * `mergeAfterReplay`, never replay-restored — a restart mid-task drops
-   * it and the ladder re-blocks (fail-toward-strict by design).
+   * `false` on every prompt reset; restart-restored by the sticky-decision
+   * replay (a replayed `always` hands-on decision row re-stamps it) and
+   * carried through `mergeAfterReplay` like the other standing releases —
+   * a restart mid-task keeps the release (task-scoped human releases).
    */
   handsOnRelease: boolean
+  /**
+   * Task-scoped standing human release provenance: true once this task's
+   * waiver was journaled through the sticky decision-row family (capture)
+   * or restored by it (replay). Provenance/status only — the gates keep
+   * reading the waiver family itself (`userWaiver`/`userWaiverScope`), so
+   * each surface keeps exactly one release source of truth. Fresh `false`;
+   * restart-sticky through `mergeAfterReplay`.
+   */
+  stickyRelease: boolean
   reads: number
   /**
    * True once this task's read-budget warning prefix has been injected into a
@@ -728,13 +738,15 @@ export interface TurnstileConfig {
   sessionSummary: "on" | "quiet" | "off"
   /**
    * Repeat-attempt escalation mode for the landing and hands-on gates.
-   * "block" (default): a retried attempt re-throws `BLOCKED by turnstile:`
-   * and never raises a permission ask — the gate releases only via a
-   * user-authored waiver/approval prompt marker, an earned reviewer
-   * verdict, or a hands-on `always` release carried over from a prior
-   * "ask" session. "ask": the repeat attempt arms a one-shot latch and
-   * forces the host permission ask (interactive hosts; under an
-   * auto-accepting host the ask tier collapses to allow).
+   * Both modes are ask-first since Phase 2 (chunk-3): an armed repeat
+   * attempt arms the one-shot ask latch and forces the host permission ask
+   * (the block-throw fires only when the latch cannot be armed — a
+   * within-window duplicate arm — or the host never surfaces the ask). The
+   * mode still distinguishes the *first* attempt: under "ask" (default
+   * behavior on the plan-gate arm until chunk-5) escalation may surface
+   * before a recorded block, while "block" keeps the deliberate first
+   * block-throw. Retained as a config key for the plan-gate arm and the
+   * blocked-message vocabulary.
    */
   escalation: "ask" | "block"
   /**
