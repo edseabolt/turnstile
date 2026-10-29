@@ -96,6 +96,24 @@ test("setParent journals once for an unchanged re-set and again on change", () =
   assert.equal(rows[1]!.parent, "p2")
 })
 
+test("setParent re-journals when an agent-less row gains its resolved agent", () => {
+  const dir = tmpDir()
+  const ledger = createLedger(path.join(dir, "turnstile.jsonl"), 64, 200)
+  // session.created fired with no agent; resolveParent resolves it later.
+  ledger.setParent("c1", "p1")
+  ledger.setParent("c1", "p1", "test-runner")
+  // Identical re-sets stay silent; an empty agent never downgrades.
+  ledger.setParent("c1", "p1", "test-runner")
+  ledger.setParent("c1", "p1")
+  // A genuine agent change re-journals.
+  ledger.setParent("c1", "p1", "reviewer")
+  const rows = journalEntries(dir).filter((e) => e.type === "child-edge")
+  assert.equal(rows.length, 3)
+  assert.equal(rows[0]!.agent, undefined)
+  assert.equal(rows[1]!.agent, "test-runner")
+  assert.equal(rows[2]!.agent, "reviewer")
+})
+
 // ── replay fold ──────────────────────────────────────────────────────────────
 
 test("replay folds child-edge rows and the re-seed re-applies them", () => {

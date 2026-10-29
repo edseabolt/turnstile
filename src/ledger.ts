@@ -102,8 +102,12 @@ export interface GateLedger {
    * is supplied) whenever it is new or changed — the data the setup re-seed
    * replays after a plugin reload wipes the in-memory map (#225). An
    * unchanged re-set is silent (idempotent registrations stay journaled
-   * once). Both IDs and the optional agent must already be validated by the
-   * caller; journaling is fail-open (`appendLine` never throws).
+   * once). An agent upgrade (a previously agent-less row gaining a resolved
+   * agent, or an agent change) re-journals — the journaled agent feeds the
+   * post-reload emitter re-seed, so it must never be frozen empty; an empty
+   * agent never downgrades a journaled one. Both IDs and the optional agent
+   * must already be validated by the caller; journaling is fail-open
+   * (`appendLine` never throws).
    * @param sessionID The child session ID.
    * @param parentID The parent session ID.
    * @param agent The child's resolved emitter agent name, or "" when
@@ -1270,6 +1274,9 @@ export function createLedger(
 ): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
+  // The emitter agent last journaled per child edge (parallel to
+  // childToParent, same cap): the agent-upgrade part of the setParent dedupe.
+  const edgeAgents = new Map<string, string>()
   // Child→parent edges restored by the boot replay's `child-edge` fold,
   // pending the setup re-seed (reseedEdges applies them without journaling).
   const reseededEdges = new Map<string, { parent: string; agent: string }>()
@@ -1658,9 +1665,18 @@ export function createLedger(
     setParent(sessionID: string, parentID: string, agent = ""): void {
       // Journal only a new-or-changed edge: idempotent registrations
       // (session.created plus resolveParent both firing) stay journaled once.
-      const changed = childToParent.get(sessionID) !== parentID
+      // An agent upgrade (a previously agent-less row gaining the resolved
+      // emitter agent) counts as changed — the journaled agent feeds the
+      // post-reload emitter re-seed, so an empty agent must not be frozen in.
+      // The journaled agent is tracked in a parallel map (same cap) because
+      // childToParent stores the parent only; a downgrade is never a change.
+      const changed =
+        childToParent.get(sessionID) !== parentID ||
+        (agent !== "" && edgeAgents.get(sessionID) !== agent)
       childToParent.set(sessionID, parentID)
       cap(childToParent)
+      if (changed) edgeAgents.set(sessionID, agent)
+      cap(edgeAgents)
       if (changed) {
         appendLine(
           journalPath,
