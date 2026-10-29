@@ -2330,21 +2330,19 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // telemetry and the guard.
     const gw = classifyBashWrite(text)
     toolPolicy.observeBashWrite(sid, text, gw)
-    // The stateful ledger stays out of tool-policy: only a shaped
-    // capability is handed over. `parent` is the parent session (a
-    // subagent's bash draws on the parent's task scope) and `st` is
-    // its bucket, so a still-unattributed child self-keys its own
-    // fresh state.
+    // Fail-closed exemption, mirroring the write/edit arm: only a registered
+    // pipeline child's own bash is exempt, and an unresolved agent gates like
+    // a parent. The exemption sits AFTER the telemetry (so a child still
+    // journals its `handsOn` row) and BEFORE the guard (so the guard — and
+    // with it the parent bucket's pending hands-on once-grant and landing
+    // grant — is never reached by a child dispatch).
+    if (isPipelineChild(sid, typeof event?.agent === "string" ? event.agent : "")) return
     const parent = ledger.parentOf(sid)
     const st = ledger.state(parent)
-    // Defensive invariant: the gate arm must sit AFTER `consumeLandingGrant`
-    // in the code flow, not before it — a landing once-grant releases one
-    // push landing, and a hands-on bash write must not leak that grant (the
-    // hands-on once-grant is consumed by `guardBashWrite` itself, below).
-    // Defensive invariant: the bash write arm runs BEFORE the landing
-    // once-grant is consumed — `guardBashWrite` consumes the hands-on
-    // once-grant itself, so a landing grant can never release a bash write,
-    // and a hands-on block throws before the landing grant is burned.
+    // Invariant: this arm runs BEFORE `consumeLandingGrant` and the hands-on
+    // once-grant is consumed inside `guardBashWrite` itself — so a landing
+    // grant can never release a bash write, and a hands-on block throws
+    // before the landing grant is burned.
     toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
     if (consumeLandingGrant(st, text)) return
     toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent, sid))
