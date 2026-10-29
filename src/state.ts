@@ -1,7 +1,7 @@
 /**
  * @fileoverview State boundary: per-session gate state shape (fresh bucket,
  * metering-counter clearing), snapshot and pipeline rendering, and the
- * replay-merge carry predicate. The ledger boundary (`src/ledger.ts`) owns
+ * replay merge (`mergeAfterReplay`). The ledger boundary (`src/ledger.ts`) owns
  * persistence: the LRU session maps, journal replay, and eviction protection.
  * Pure bookkeeping; no enforcement decisions here.
  */

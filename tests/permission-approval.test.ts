@@ -81,6 +81,10 @@ async function bootWithPlan(
     // in explicitly). `config` spreads first so its gitGates cannot override
     // the pin below.
     config: {
+      // Ask mode: these suites exercise the interactive ask ladder
+      // (repeat attempts journal the permission ask and arm the latch);
+      // the block-mode default has dedicated guard-level tests.
+      escalation: "ask" as const,
       ...config,
       metricsDir,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
@@ -116,6 +120,10 @@ async function bootLanding(
     // BLOCK, which must not depend on the live repo's git state at cwd.
     // `config` spreads first so its gitGates cannot override the pin below.
     config: {
+      // Ask mode: these suites exercise the interactive landing ask ladder
+      // (see bootWithPlan); the block-mode default has dedicated
+      // guard-level tests.
+      escalation: "ask" as const,
       ...config,
       metricsDir,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
@@ -936,7 +944,7 @@ test("reply: landing-gate asks stay bounded and a recent ask still matches", asy
         type: "permission.asked",
         properties: {
           id: `land-old-${i}`,
-          message: "turnstile: push/PR requires a reviewer — landing",
+          message: "turnstile: pushing requires a reviewer — landing",
         },
       })
     }
@@ -1225,6 +1233,146 @@ test("evaluate: an unrelated action is left untouched", async () => {
  * enforce — its first push records a block so the second escalates. The most
  * recent arm (p051) is still live and forces the ask.
  */
+/**
+ * Same-tick escalation dedupe (landing): two guard arms on one parent inside
+ * the ask-latch TTL window journal exactly ONE `permission` ask row — the
+ * second arm is a dedupe hit, so the guard takes the full block path (throws,
+ * journals a block row) while the already-armed latch stays live for the
+ * evaluate handler. After the window ages out, a genuinely new escalation
+ * journals a fresh ask row and allows.
+ */
+test("dedupe: a within-window landing re-arm throws and collapses the ask row", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // First push: first block throws.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Second push: fresh escalation — journals the ask row and allows.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // Third push inside the TTL window: dedupe hit — the guard throws and
+    // journals a block row; no second ask row is journaled.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // The block row of the dedupe hit is journaled (no permission ask row).
+    const asksSoFar = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "landing" && l.action === "ask",
+    )
+    assert.equal(asksSoFar.length, 1, "exactly one ask row within the window")
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "blocked" && l.reason === "no-landing-approval",
+      ),
+      "the dedupe-hit guard journaled its block row",
+    )
+    // The existing latch stays live: a subsequent evaluate within the TTL
+    // still forces the ask (the dedupe collapsed only the ask row).
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    // Age past the TTL: the next push is a genuinely new escalation — it
+    // journals a fresh ask row and allows.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    const asksAfter = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "landing" && l.action === "ask",
+    )
+    assert.equal(asksAfter.length, 2, "a post-window escalation journals a second ask row")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Same-tick escalation dedupe (hands-on, mirrors the landing test): a
+ * within-window repeat write is a dedupe hit — the guard throws and journals
+ * its block row instead of a second ask, the latch stays live for the
+ * evaluate handler, and a post-window write journals a fresh ask row.
+ */
+test("dedupe: a within-window hands-on re-arm throws and collapses the ask row", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // First write: first block throws.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Second write: fresh escalation — journals the ask row and allows.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Third write inside the TTL window: dedupe hit — throws, block row
+    // journaled, no second ask row.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const asksSoFar = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "hands-on" && l.action === "ask",
+    )
+    assert.equal(asksSoFar.length, 1, "exactly one ask row within the window")
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "blocked" && l.reason === "parent-hands-on",
+      ),
+      "the dedupe-hit guard journaled its block row",
+    )
+    // The existing latch stays live: the evaluate within the TTL still
+    // forces the hands-on ask.
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    // Age past the TTL: the next write journals a fresh ask row and allows.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    const asksAfter = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "hands-on" && l.action === "ask",
+    )
+    assert.equal(asksAfter.length, 2, "a post-window escalation journals a second ask row")
+  } finally {
+    restore()
+  }
+})
+
 test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async () => {
   const { h, restore } = await bootLanding()
   try {
@@ -1262,7 +1410,8 @@ test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async
  * decides. The landing-ask recording is the empty-message sibling of the
  * plan-gate escalate echo (different prefix, disjoint map).
  */
-test("asked: an empty-message landing escalate echo grants one push via the .landing short-circuit", async () => {
+test("asked: an empty-message landing escalate echo grants one push via the .landing short-circuit", async (t) => {
+  const clock = frozenClock(t)
   const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: first block under enforce throws, records one landing block.
@@ -1302,10 +1451,10 @@ test("asked: an empty-message landing escalate echo grants one push via the .lan
     )
     // The grant is scoped to landing candidates: a NON-push bash command does
     // not consume it. Re-arm (the repeat push after the granted one journals
-    // the ask and allows — the escalation UX), re-grant, run a non-push
-    // command first (does not burn the grant), then the push (released by the
-    // still-pending grant — a grant burned on `git status` would make this
-    // push re-block).
+    // the ask and allows — the escalation UX). The immediate re-arm would be
+    // a within-TTL dedupe hit (block path), so age past the ask-latch TTL
+    // first: the new escalation journals a fresh ask row and allows.
+    clock.advance(6001)
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
@@ -1457,7 +1606,8 @@ test("reply: a landing always-grant stands a reviewer approval and releases the 
  * attempt re-arms the landing ask instead of being allowed. Contrasts with the
  * `always` reply and confirms a reject never releases the landing gate.
  */
-test("reply: a landing reject leaves the gate red and re-arms the ask", async () => {
+test("reply: a landing reject leaves the gate red and re-arms the ask", async (t) => {
+  const clock = frozenClock(t)
   const { h, metricsDir, restore } = await bootLanding()
   try {
     await assert.rejects(
@@ -1482,15 +1632,16 @@ test("reply: a landing reject leaves the gate red and re-arms the ask", async ()
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "reject"),
     )
-    // The gate is still red: a repeat attempt escalates (no throw on execute),
-    // and the evaluate handler then forces the landing ask again.
-    assert.doesNotThrow(() =>
-      callTool(h, "execute.before", {
-        tool: "bash",
-        sessionID: "p1",
-        input: { command: "git push origin main" },
-      }),
-    )
+    // The gate is still red: a within-window re-arm after the reject is a
+    // dedupe hit (it throws — the block path), so age past the ask-latch TTL
+    // first; the genuinely new escalation journals a fresh ask row and
+    // allows, and the evaluate handler then forces the landing ask again.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
     const event: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", event)
     assert.equal(event.effect, "ask", "a reject keeps the landing gate red and re-forces the ask")
@@ -2153,7 +2304,8 @@ test("evaluate: plan approval does not release the hands-on arm", async () => {
  * `once` stamps the single-edit grant, `reject` journals the decision only and
  * leaves the gate red. A plan-prefix ask never populates the hands-on map.
  */
-test("permission.asked/replied: hands-on prefix records and grants", async () => {
+test("permission.asked/replied: hands-on prefix records and grants", async (t) => {
+  const clock = frozenClock(t)
   const { h, metricsDir, restore } = await bootLanding()
   try {
     // Reject first: journals the decision only, gate stays red.
@@ -2180,7 +2332,22 @@ test("permission.asked/replied: hands-on prefix records and grants", async () =>
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "reject"),
     )
-    // The reject left the gate red: the next attempt escalates (no throw).
+    // The reject left the gate red: a within-window re-arm after the reject
+    // is a dedupe hit — the guard takes the block path (throws) instead of
+    // re-asking while the previous latch stays live (binding dedupe
+    // semantics: only duplicate ask rows are collapsed, the block is real).
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Age past the ask-latch TTL: the next write is a genuinely new
+    // escalation — it journals a fresh ask row and allows.
+    clock.advance(6001)
     await callTool(h, "execute.before", {
       tool: "write",
       sessionID: "p1",

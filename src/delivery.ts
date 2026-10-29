@@ -243,17 +243,21 @@ export const PLAN_ASK_MESSAGE_PREFIX = "turnstile: plan approval required"
 /**
  * Message prefix the evaluate handler stamps on every landing-gate ask, so the
  * stream consumer can recognize a landing ask (even when the host omits the
- * session id) and route its reply to the landing gate.
+ * session id) and route its reply to the landing gate. It must remain a
+ * literal prefix of `turnstile: ${LANDING_REQUIREMENT}` (the evaluate
+ * handler's landing ask message) — keep the two in sync when the requirement
+ * string changes.
  */
-export const LANDING_ASK_MESSAGE_PREFIX = "turnstile: push/PR requires a reviewer"
+export const LANDING_ASK_MESSAGE_PREFIX = "turnstile: pushing requires a reviewer"
 
 /**
  * Message prefix the evaluate handler stamps on every hands-on-gate ask, so
  * the stream consumer can recognize a hands-on ask (even when the host omits
  * the session id) and route its reply to the hands-on gate. It is the opening
- * of HANDSON_REQUIREMENT (the ask message is `turnstile: ${HANDSON_REQUIREMENT}`),
- * and it is disjoint from the plan and landing prefixes, so an approval of one
- * never releases another.
+ * of HANDSON_REQUIREMENT (the ask message is `turnstile: ${HANDSON_REQUIREMENT}`)
+ * — keep the prefix a literal prefix of the requirement string when it
+ * changes — and it is disjoint from the plan and landing prefixes, so an
+ * approval of one never releases another.
  */
 export const HANDSON_ASK_MESSAGE_PREFIX =
   "turnstile: parent-session write/edit requires the pipeline"

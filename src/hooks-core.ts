@@ -116,6 +116,10 @@ export interface TurnstileContext {
   pendingLandingAsk: Map<string, number>
   /** Parents armed for a hands-on ask, awaiting the stream event. */
   pendingHandsOnAsk: Map<string, number>
+  /** Parent → Date.now() of its last landing escalation (ask-row dedupe). */
+  lastLandingEscalateAt: Map<string, number>
+  /** Parent → Date.now() of its last hands-on escalation (ask-row dedupe). */
+  lastHandsOnEscalateAt: Map<string, number>
   /** Landing-gate permission asks, keyed by host request id. */
   landingGateAsks: Map<string, { sessionID: string; recordedAt: number }>
   /** Hands-on-gate permission asks, keyed by host request id. */
@@ -673,6 +677,17 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // The hands-on arm shares the ask-latch TTL: same fail-toward-strict
   // expiry, single-sourced at module scope (`askLatchTtlMs`).
   const pendingHandsOnAskTtlMs = askLatchTtlMs
+  // Landing-ask dedupe: parent → Date.now() of the parent's last landing
+  // escalation. A re-arm within `askLatchTtlMs` of the previous escalation
+  // collapses into the already-armed latch's single ask row — the guard
+  // journals no second `permission` ask row and takes the block path instead
+  // while the latch stays live for the evaluate handler. Bounded by
+  // boundLandingAsks; cleared wherever pendingLandingAsk is cleared.
+  const lastLandingEscalateAt = new Map<string, number>()
+  // Hands-on-ask dedupe (mirrors lastLandingEscalateAt for the hands-on
+  // gate): bounded by boundHandsOnAsks; cleared wherever pendingHandsOnAsk
+  // is cleared.
+  const lastHandsOnEscalateAt = new Map<string, number>()
   // Hands-on-gate permission asks, keyed by host request id → the parent
   // session the ask was raised for + when it was recorded. Only asks by the
   // evaluate handler's hands-on arm (message prefixed
@@ -790,19 +805,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
-   * Bounds the pending-landing-ask map (parent → arm time), evicting its oldest
-   * entries.
+   * Bounds the pending-landing-ask map (parent → arm time) and the landing
+   * dedupe-timestamp map, evicting their oldest entries.
    */
   function boundLandingAsks(): void {
     evictTo(pendingLandingAsk, maxTrackedLandingAsks)
+    evictTo(lastLandingEscalateAt, maxTrackedLandingAsks)
   }
 
   /**
-   * Bounds the pending-hands-on-ask map (parent → arm time), evicting its
-   * oldest entries.
+   * Bounds the pending-hands-on-ask map (parent → arm time) and the hands-on
+   * dedupe-timestamp map, evicting their oldest entries.
    */
   function boundHandsOnAsks(): void {
     evictTo(pendingHandsOnAsk, maxTrackedHandsOnAsks)
+    evictTo(lastHandsOnEscalateAt, maxTrackedHandsOnAsks)
   }
 
   /**
@@ -897,6 +914,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     if (at === undefined) return false
     if (Date.now() - at > pendingLandingAskTtlMs) {
       pendingLandingAsk.delete(sid)
+      // Mirror the expiry on the dedupe map too: a stale timestamp must not
+      // suppress a legitimate new ask row after the latch expired.
+      lastLandingEscalateAt.delete(sid)
       return false
     }
     return true
@@ -915,6 +935,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     if (at === undefined) return false
     if (Date.now() - at > pendingHandsOnAskTtlMs) {
       pendingHandsOnAsk.delete(sid)
+      // Mirror the expiry on the dedupe map too: a stale timestamp must not
+      // suppress a legitimate new ask row after the latch expired.
+      lastHandsOnEscalateAt.delete(sid)
       return false
     }
     return true
@@ -2188,10 +2211,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * boundary, so the stateful ledger never enters the pure tool-policy
    * module. `recordBlock`/`escalate` are its only mutators; `escalate`
    * arms the pending-landing-ask latch (the evaluate handler forces the
-   * human ask off it) and is called by guardLanding only under `enforce`
-   * on a repeat attempt (no approval, >= 1 prior block); fail-toward-strict
-   * — a host reject leaves approval absent, so the next attempt re-blocks
-   * and re-arms. `hasCreditedApproval` is a read of the ledger's bucket-free
+   * human ask off it) and is called by guardLanding only under
+   * `escalation: "ask"` on an armed attempt (a repeat attempt, or a
+   * credited first attempt); it returns whether the ask row must be
+   * journaled (within-TTL duplicate arms return false); fail-toward-strict
+   * — a host reject leaves approval absent, so the next attempt re-blocks. `hasCreditedApproval` is a read of the ledger's bucket-free
    * credit trace (a journaled, non-refused reviewer APPROVE that a prompt
    * reset dropped the `hasReviewApprove` flag for) that guardLanding
    * consults to escalate a credited session's first push instead of throwing
@@ -2212,12 +2236,48 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       recordBlock: () => {
         st.landingBlocks += 1
       },
-      escalate: () => {
-        pendingLandingAsk.set(parent, Date.now())
-        boundLandingAsks()
-      },
+      escalate: (): boolean => armLandingAsk(parent),
       isEmptyDiff: (command: string): boolean => isEmptyDiffPush(command, currentProjectDir(sid)),
     }
+  }
+
+  /**
+   * Arms the pending-landing-ask latch and reports whether the caller must
+   * journal the ask row: a re-arm within `askLatchTtlMs` of the parent's
+   * previous escalation is a same-tick duplicate — the latch is (re-)armed
+   * so the evaluate handler still forces the ask, but the ask row is
+   * collapsed into the already-journaled one and the guard takes the block
+   * path. The latch set happens before the dedupe check so a duplicate arm
+   * refreshes the latch the evaluate handler consumes.
+   * @param parent The parent session (the latch's and dedupe map's key).
+   * @returns True when the caller must journal the `permission` ask row.
+   */
+  function armLandingAsk(parent: string): boolean {
+    const now = Date.now()
+    const last = lastLandingEscalateAt.get(parent)
+    pendingLandingAsk.set(parent, now)
+    boundLandingAsks()
+    if (last !== undefined && now - last < askLatchTtlMs) return false
+    lastLandingEscalateAt.set(parent, now)
+    boundLandingAsks()
+    return true
+  }
+
+  /**
+   * Hands-on twin of {@link armLandingAsk}: arms the pending-hands-on-ask
+   * latch and dedupes same-tick escalations by the same within-TTL rule.
+   * @param parent The parent session (the latch's and dedupe map's key).
+   * @returns True when the caller must journal the `permission` ask row.
+   */
+  function armHandsOnAsk(parent: string): boolean {
+    const now = Date.now()
+    const last = lastHandsOnEscalateAt.get(parent)
+    pendingHandsOnAsk.set(parent, now)
+    boundHandsOnAsks()
+    if (last !== undefined && now - last < askLatchTtlMs) return false
+    lastHandsOnEscalateAt.set(parent, now)
+    boundHandsOnAsks()
+    return true
   }
 
   /**
@@ -2278,9 +2338,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * (mirrors landingGateHandles): only a shaped capability crosses the
    * boundary. `escalate` arms the pending-hands-on-ask latch (the evaluate
    * handler forces the human ask off it) and is called by guardHandsOn only
-   * on a repeat attempt (no release, >= 1 prior block);
+   * under `escalation: "ask"` on a repeat attempt (no release, >= 1 prior
+   * block); it returns whether the ask row must be journaled (within-TTL
+   * duplicate arms return false);
    * fail-toward-strict — a host reject leaves the gate red, so the next
-   * attempt re-blocks and re-arms.
+   * attempt re-blocks.
    * @param st The parent's gate-state bucket.
    * @param parent The parent session (the latch's key).
    * @returns The hands-on-gate capability record.
@@ -2293,10 +2355,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       recordBlock: () => {
         st.handsOnBlocks += 1
       },
-      escalate: () => {
-        pendingHandsOnAsk.set(parent, Date.now())
-        boundHandsOnAsks()
-      },
+      escalate: (): boolean => armHandsOnAsk(parent),
     }
   }
 
@@ -2727,9 +2786,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // to the previous task scope too: a new prompt drops it, so the new
     // task starts from a pure first block again.
     pendingLandingAsk.delete(sessionID)
+    // The landing dedupe timestamp belongs to the previous task scope the
+    // same way: without this delete a stale timestamp could suppress a
+    // legitimate ask row for up to `askLatchTtlMs` after the prompt reset.
+    lastLandingEscalateAt.delete(sessionID)
     // A hands-on-ask arm belongs to the previous task scope the same way:
     // a new prompt drops it, so the new task starts from a pure first block.
     pendingHandsOnAsk.delete(sessionID)
+    // Mirror the hands-on dedupe timestamp (same rationale as the landing
+    // one above).
+    lastHandsOnEscalateAt.delete(sessionID)
     // A prompt reset also drops undelivered near-miss diagnostics: they
     // belong to the previous task scope. The scan below re-seeds within the
     // same admission, so a new prompt's own near misses still surface.
@@ -3131,6 +3197,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     awaitingPlanAsk,
     pendingLandingAsk,
     pendingHandsOnAsk,
+    lastLandingEscalateAt,
+    lastHandsOnEscalateAt,
     landingGateAsks,
     handsOnGateAsks,
     sessionDirs,

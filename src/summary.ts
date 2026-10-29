@@ -1,7 +1,7 @@
 /**
  * @fileoverview Session-summary boundary: pure counting and formatting over
  * parsed journal entries for the session-end summary surfaced at
- * `session.idle` (issue's recap line). No host, no journaler, no state —
+ * `session.idle`. No host, no journaler, no state —
  * the caller reads the journal (`readJournalEntries` in `src/journal.ts`),
  * counts (`countSessionActivity`), and delivers; this module is shareable
  * with the observe-period summary surface, which can call

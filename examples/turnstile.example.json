@@ -18,6 +18,7 @@
   "trace": true,
   "sessionSummary": "quiet",
   "continuationCarry": true,
+  "escalation": "block",
   "suspendMarker": "TURNSTILE OFF:",
   "resumeMarker": "TURNSTILE ON:",
   "allowSuspend": true,

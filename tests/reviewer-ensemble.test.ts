@@ -56,6 +56,10 @@ async function boot(
     // empty-diff tests opt back in explicitly.
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask ladder (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       ...config,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
     },

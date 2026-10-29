@@ -49,6 +49,10 @@ async function boot(
     env: isolatedEnv(metricsDir),
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask latches (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       gitGates: {
         ...defaultConfig({}).gitGates,
         // Pinned false: these tests exercise the landing ladder's BLOCKED
@@ -156,7 +160,7 @@ async function armAndRecordLandingAsk(h: FakeHost, parent: string, askId: string
   await callPermission(h, "evaluate", event)
   assert.ok(
     typeof event.message === "string" &&
-      event.message.startsWith("turnstile: push/PR requires a reviewer"),
+      event.message.startsWith("turnstile: pushing requires a reviewer"),
     "the landing evaluate must compose the landing-ask echo",
   )
   await h.pushEvent({

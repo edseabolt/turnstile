@@ -116,6 +116,12 @@ export function defaultConfig(
     // also prints an all-gates-green line for zero-activity sessions; "off"
     // restores pre-summary behavior exactly.
     sessionSummary: "quiet",
+    // Escalation ladder: "block" (default) re-throws the block on a retried
+    // landing/hands-on attempt and never raises a permission ask, so an
+    // auto-accepting host cannot silently collapse the ask tier into an
+    // allow; release is waiver/approval-marker or earned reviewer verdict
+    // only. "ask" restores the interactive permission-ask ladder verbatim.
+    escalation: "block",
     // Continuation carry is on by default: a reviewer-approved landing prompt
     // re-arms earned credit when the worktree/branch is unchanged; set
     // `continuationCarry: false` to restore a clean cycle every prompt.
@@ -187,6 +193,7 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "trace" || key === "continuationCarry" || key === "allowSuspend")
     return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
+  if (key === "escalation") return value === "ask" || value === "block"
   if (
     key === "metricsDir" ||
     key === "waiverMarker" ||
@@ -489,6 +496,17 @@ export function mergeConfig(
         assignScalar(config, key as keyof TurnstileConfig, value)
       } else {
         warnings.push('config: sessionSummary must be "on", "quiet", or "off"; keeping default')
+      }
+      continue
+    }
+    if (key === "escalation") {
+      // Mirrors the sessionSummary special case: shared validate/assign
+      // helpers, only the warning wording is special-cased to name the two
+      // accepted literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push('config: escalation must be "block" or "ask"; keeping default')
       }
       continue
     }

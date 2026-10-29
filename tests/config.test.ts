@@ -853,6 +853,33 @@ test("configDigest flips on sessionSummary overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, sessionSummary: "on" }))
 })
 
+/** escalation defaults to block and validates its two literals. */
+test("escalation defaults to block and accepts block/ask", () => {
+  assert.equal(defaultConfig({}).escalation, "block")
+  for (const mode of ["block", "ask"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { escalation: mode })
+    assert.equal(config.escalation, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** An invalid escalation value keeps the block default and names the two
+ *  accepted literals; a non-string rejects the same way. */
+test("mergeConfig rejects an invalid escalation and keeps the block default", () => {
+  const base = defaultConfig({})
+  for (const bad of ["bogus", 42, true]) {
+    const { config, warnings } = mergeConfig(base, { escalation: bad })
+    assert.equal(config.escalation, "block")
+    assert.deepEqual(warnings, ['config: escalation must be "block" or "ask"; keeping default'])
+  }
+})
+
+/** The digest flips when escalation overrides the block default. */
+test("configDigest flips on escalation overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, escalation: "ask" }))
+})
+
 /** Enforce mode plus maxReviewerRounds: 1 warns that a second reviewer
  *  dispatch will be capped; the resolved count is left as configured. */
 test("loadConfig warns when enforce reviewEnsemble needs maxReviewerRounds >= 2", () => {

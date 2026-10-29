@@ -43,15 +43,17 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
 /**
  * Builds a policy over the default config (the hands-on gate is always on),
  * with a capturing journaler.
+ * @param overrides Top-level config overrides over the defaults (e.g.
+ *     `escalation: "ask"` to exercise the interactive ask ladder).
  * @returns The policy, its journaled entries, and its trace lines.
  */
-function makePolicy(): {
+function makePolicy(overrides: Partial<TurnstileConfig> = {}): {
   policy: ToolPolicy
   entries: any[]
   traces: string[]
 } {
   const { journaler, entries, traces } = captureJournaler()
-  const cfg: TurnstileConfig = { ...defaultConfig({}) }
+  const cfg: TurnstileConfig = { ...defaultConfig({}), ...overrides }
   return { policy: createToolPolicy(cfg, journaler), entries, traces }
 }
 
@@ -103,9 +105,10 @@ function recordingCapability(opts?: {
       log.blockCount = (log.blockCount as number) + 1
       log.recordBlock = (log.recordBlock as number) + 1
     },
-    escalate: () => {
+    escalate: (): boolean => {
       if (throwAt === "escalate") throw new Error("escalate boom")
       log.escalate = (log.escalate as number) + 1
+      return true
     },
   }
   return { gate, log }
@@ -133,13 +136,13 @@ test("guardHandsOn: the first write/edit of a task always throws and journals on
 })
 
 /**
- * Repeat attempt under `enforce` escalates and allows: journals a
+ * Repeat attempt under `escalation: "ask"` escalates and allows: journals a
  * `{type:"permission", action:"ask", reason:"hands-on"}`, calls
  * `gate.escalate()` once, does not throw, and journals no second blocked
  * entry (the evaluate handler forces the human ask off the armed latch).
  */
-test("guardHandsOn: repeat attempt under enforce escalates and allows", () => {
-  const { policy, entries } = makePolicy()
+test("guardHandsOn: repeat attempt under escalation ask escalates and allows", () => {
+  const { policy, entries } = makePolicy({ escalation: "ask" })
   const { gate, log } = recordingCapability({ prior: 1 })
   allows(() => policy.guardHandsOn("edit", "/repo/b.ts", "s1", gate))
   assert.equal(log.escalate, 1, "escalate called on the repeat attempt")
@@ -148,6 +151,26 @@ test("guardHandsOn: repeat attempt under enforce escalates and allows", () => {
   assert.ok(perm, "a permission ask is journaled on the repeat attempt")
   assert.equal(perm.action, "ask")
   assert.equal(handsOnBlocks(entries).length, 0, "no blocked entry on the escalation")
+})
+
+/**
+ * Repeat attempt under the default `escalation: "block"` re-blocks: journals
+ * a second `parent-hands-on` block row, records the block again, throws, and
+ * journals no `permission` ask row and never calls `gate.escalate()` (the
+ * ask tier cannot collapse to allow under an auto-accepting host).
+ */
+test("guardHandsOn: repeat attempt under the default block mode re-blocks", () => {
+  const { policy, entries } = makePolicy()
+  const { gate, log } = recordingCapability({ prior: 1 })
+  blocks(() => policy.guardHandsOn("edit", "/repo/b2.ts", "s1", gate))
+  assert.equal(log.escalate, 0, "block mode never escalates")
+  assert.equal(log.recordBlock, 1, "the repeat block is recorded again")
+  assert.equal(handsOnBlocks(entries).length, 1, "one block row on the repeat attempt")
+  assert.equal(
+    entries.some((e) => e.type === "permission"),
+    false,
+    "no permission ask row under block mode",
+  )
 })
 
 /**
@@ -188,8 +211,8 @@ test("guardHandsOn: empty path journals the misconfiguration error", () => {
 
 /** An internal capability error fails open: journaled, never thrown. The
  *  per-throwIn configurations avoid the legitimate first-block throw (prior 1
- *  only escalates), so any throw the guard lets escape is a real fail-open
- *  gap. */
+ *  only escalates under `escalation: "ask"`), so any throw the guard lets
+ *  escape is a real fail-open gap. */
 test("guardHandsOn: an internal capability error fails open", () => {
   const cases: Array<{ throwIn: keyof HandsOnGateCapability; prior: number }> = [
     { throwIn: "hasRelease", prior: 1 },
@@ -201,7 +224,7 @@ test("guardHandsOn: an internal capability error fails open", () => {
     { throwIn: "escalate", prior: 1 },
   ]
   for (const { throwIn, prior } of cases) {
-    const { policy, entries } = makePolicy()
+    const { policy, entries } = makePolicy({ escalation: "ask" })
     const { gate } = recordingCapability({ throwIn, prior })
     allows(() => policy.guardHandsOn("write", "/repo/d.ts", "s1", gate))
     const errs = entries.filter(

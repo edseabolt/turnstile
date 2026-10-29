@@ -31,7 +31,8 @@ The plugin and pipeline subagent definitions are installed by
 `npm run init` (symlinks by default, `--copy` for real copies; manifest:
 `install.json`), making this repo the source of truth for
 `~/.config/opencode/plugin(s)`, `~/.config/opencode/agents`, and
-`~/.config/opencode/skills` (the vendored `turnstile-setup` skill).
+`~/.config/opencode/skills` (the vendored `turnstile-setup` and
+`turnstile-suspend` skills).
 The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `agents/`;
@@ -45,8 +46,8 @@ model snippet (repeatable `--model [name=]provider/model[#variant]` seeds;
 model ids may be multi-segment, e.g. `oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`;
 `--validate` checks concrete specs against `opencode models` and exits 1 on a
 miss; `--model`/`--validate` given without `--print-model-config` exit 2) and
-writes nothing — it short-circuits before any install work — and the router
-skips the agents install step entirely in that case (see the README).
+writes nothing — `install.mjs` prints the snippet and short-circuits before
+any manifest work (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift). `npm test` enforces 100% line, branch, and function coverage over
@@ -180,9 +181,10 @@ stated feature; devDependencies are tooling only.)
 - `src/` and `tests/` must stay erasable TypeScript (no enums, namespaces,
   parameter properties); the test harness runs the real source through
   `node --experimental-strip-types`.
-- Host API is the v2 shape `{ tool.hook, session.hook, event.subscribe }`,
-  verified against opencode v2.0.22. If hooks don't fire, check the host
-  version before assuming a logic bug.
+- Host API is the v2 shape
+  `{ tool.hook, session.hook, permission.hook, event.subscribe }`, verified
+  against opencode v2.0.22. If hooks don't fire, check the host version before
+  assuming a logic bug.
 - `docs/architecture.md` is the authoritative reference for enforced
   contracts; the doc comment atop `turnstile.ts` is a contract-level
   summary that points at it, and its module list must track `src/`.
@@ -193,8 +195,8 @@ stated feature; devDependencies are tooling only.)
   journaled, never block tool calls. Only deliberate `BLOCKED by turnstile:`
   errors throw. Keep that distinction when editing hooks.
 - Journal replay: `GATE: PASS` entries from `~/.local/share/opencode/metrics/turnstile.jsonl`
-  restore gate state on restart (last `replayTailLines` lines, default 2000),
-  and plan-reviewer
+  restore gate state on restart (the newest `replayTailLines` lines, default
+  2000, walked across journal generations newest-first), and plan-reviewer
   `VERDICT: APPROVE` entries restore the plan-approval gate the same way.
   A new user prompt resets the session's gate state, unless
   `continuationCarry` re-arms the one-prompt grace for a same-worktree/branch
@@ -204,8 +206,8 @@ stated feature; devDependencies are tooling only.)
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
   requires updating both the regexes here and the marker examples in the
-  validated sources — README.md, `agents/*.md`, and `src/policy.ts` — checked
-  together by `scripts/check-markers.mjs`.
+  validated sources — README.md, `docs/usage.md`, `agents/*.md`, and
+  `src/policy.ts` — checked together by `scripts/check-markers.mjs`.
 - The read-counter keys off the parent session (`childToParent` map); state
   is per parent, not per child subagent session.
 - Shipped agent definitions (`agents/*.md`) must treat configured values as
