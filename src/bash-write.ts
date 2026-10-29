@@ -10,7 +10,11 @@
  * a non-`/dev` redirect (output capture such as `npm test > log` is observed,
  * never gated). Output-capture and no-op shapes never classify `gate`:
  * `echo hi > /dev/null`, `grep x file > /dev/null`, `git push > /dev/null`,
- * `echo "a > b"` (quoted), `cmd 2>&1` (fd dup), `cat <<EOF` (heredoc stdin).
+ * `echo "a > b"` (quoted), `cmd 2>&1` (fd dup). `tee` operands
+ * that are `/dev` targets or fd-dup forms (`2>&1`, `>&N`, `N>&M`) are not
+ * file operands, and `dd` with every `of=` on `/dev` writes no file. Leading
+ * `NAME=value` assignments and `sudo`/`env`/`nice`/`command` wrappers are
+ * stripped before the head dispatch (`sudo cp a b` gates like `cp a b`).
  * Deliberately not gated at all: `rsync`, `install`, `mkdir` (dir-only),
  * interactive editors (`vim`/`nano` — they cannot run in a non-tty tool call),
  * and `rm` (destructive, not a file write; out of scope for the hands-on
@@ -140,9 +144,24 @@ const REDIRECT_WRITER_HEADS = new Set(["cat", "echo", "printf", "head", "tail"])
 /** Heads that gate unconditionally: they exist to copy/move/mutate files. */
 const UNCONDITIONAL_WRITER_HEADS = new Set(["cp", "mv", "dd", "truncate", "touch"])
 
+/** Wrapper words that prefix a command without changing the executed head. */
+const WRAPPER_WORDS = new Set(["sudo", "env", "nice", "command"])
+
 /** True when a redirect target is a device or fd-dup (never a file write). */
 function isDevOrFdTarget(target: string): boolean {
   return target.startsWith("/dev/") || target.startsWith("&")
+}
+
+/**
+ * True when a tokenized `tee` operand is an fd form, never a file operand:
+ * `>&N`, the tokenized `N>&M` fd-dup, or a split remnant like `N>` (the
+ * tokenizer sees `2>&1` as one word, but the separator splitter cuts it at
+ * the `&`, leaving `2>` beside the `1`).
+ * @param word A tokenized word of the simple command.
+ * @returns True when the word is an fd form.
+ */
+function isFdFormWord(word: string): boolean {
+  return word.startsWith("&") || /^\d*>>?&?\d*$/.test(word)
 }
 
 /**
@@ -226,23 +245,61 @@ function isRedirectToken(word: string): boolean {
 }
 
 /**
+ * Strips leading `NAME=value` assignment words and `sudo`/`env`/`nice`/
+ * `command` wrapper words: they prefix a command without changing the
+ * executed head, so classification must dispatch on the real head
+ * (`sudo cp a b` gates like `cp a b`).
+ * @param words The tokenized words of one simple command.
+ * @returns The words after the prefix, in order.
+ */
+function stripPrefixWords(words: string[]): string[] {
+  let i = 0
+  while (
+    i < words.length &&
+    (WRAPPER_WORDS.has(words[i]!) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!))
+  ) {
+    i++
+  }
+  return words.slice(i)
+}
+
+/**
+ * True when a `dd` command writes no file: every `of=` operand names a
+ * `/dev` target (a bare `dd` with no `of=` writes stdout).
+ * @param words The tokenized words of the `dd` simple command.
+ * @returns True when no `of=` operand names a non-`/dev` file.
+ */
+function ddWritesNoFile(words: string[]): boolean {
+  return words.filter((w) => w.startsWith("of=")).every((w) => w.slice(3).startsWith("/dev/"))
+}
+
+/**
  * Classifies ONE simple command. The head decides: an unconditional writer
- * (`cp`/`mv`/`dd`/`truncate`/`touch`) gates outright; `sed` gates on an
- * in-place flag; `tee` gates on a non-flag, non-redirect file operand;
- * redirect writers (`cat`/`echo`/`printf`/`head`/`tail`) gate on a collected
- * redirect target; any other head with a collected target is telemetry.
+ * (`cp`/`mv`/`dd`/`truncate`/`touch`) gates outright (`dd` only when an
+ * `of=` operand names a non-`/dev` file); `sed` gates on an in-place flag;
+ * `tee` gates on a non-flag, non-redirect file operand (`/dev` targets and
+ * fd-dup forms are skipped); redirect writers (`cat`/`echo`/`printf`/`head`/
+ * `tail`) gate on a collected redirect target; any other head with a
+ * collected target is telemetry. Leading assignments and wrapper words are
+ * stripped first.
  * @param simple One simple command string (already separator-split).
  * @returns The per-simple verdict.
  */
 function classifySimple(simple: string): BashWriteVerdict {
-  const words = tokenizeWords(simple)
+  const words = stripPrefixWords(tokenizeWords(simple))
   const head = words[0] ?? ""
-  if (UNCONDITIONAL_WRITER_HEADS.has(head)) return "gate"
+  if (UNCONDITIONAL_WRITER_HEADS.has(head)) {
+    return head === "dd" && ddWritesNoFile(words) ? "none" : "gate"
+  }
   if (head === "sed") {
     return words.slice(1).some(isSedInPlaceFlag) ? "gate" : "none"
   }
   if (head === "tee") {
-    const operand = words.slice(1).some((w) => !w.startsWith("-") && !isRedirectToken(w))
+    const operand = words
+      .slice(1)
+      .some(
+        (w) => !w.startsWith("-") && !isRedirectToken(w) && !isDevOrFdTarget(w) && !isFdFormWord(w),
+      )
     return operand ? "gate" : "none"
   }
   const redirects = scanRedirects(simple)

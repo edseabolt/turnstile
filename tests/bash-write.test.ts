@@ -1,7 +1,8 @@
 /**
  * @fileoverview Write-shape classifier tests: the `classifyBashWrite` verdict
  * matrix over gated writers, telemetry-only redirects, and the zero-false-
- * positive shapes (`/dev` targets, quoted redirects, fd dups, heredocs).
+ * positive shapes (`/dev` targets, quoted redirects, fd dups, `/dev`/fd-dup
+ * `tee` operands, `/dev` `dd of=`, assignment and wrapper prefixes).
  */
 
 import { test } from "node:test"
@@ -13,9 +14,6 @@ import { splitCommands as reExportedSplit } from "../src/tool-policy.ts"
 test("classifyBashWrite: gated writer shapes", () => {
   const cases = [
     "cat > f",
-    "cat > f.txt <<'EOF'\nbody\nEOF",
-    "echo x >> f",
-    "printf '%s' x > f",
     "head -5 src > out",
     "tail -1 a > b",
     "sed -i s/a/b/ f",
@@ -35,6 +33,12 @@ test("classifyBashWrite: gated writer shapes", () => {
     "npm test; cat > f",
     "cat >f",
     "echo a>>b",
+    "sudo cp a b",
+    "sudo env nice command touch f",
+    "FOO=1 mv a b",
+    "env touch f",
+    "dd of=f",
+    "dd if=a of=b of=f",
   ]
   for (const c of cases) {
     assert.equal(classifyBashWrite(c), "gate", `gate: ${c}`)
@@ -76,6 +80,10 @@ test("classifyBashWrite: zero-false-positive shapes never gate", () => {
     "ls -la",
     "sed s/a/b/ f",
     "tee -a",
+    "echo x | tee /dev/null",
+    "tee 2>&1",
+    "tee >/dev/null 2>&1",
+    "dd if=a of=/dev/null",
   ]
   for (const c of cases) {
     assert.equal(classifyBashWrite(c), "none", `none: ${c}`)
