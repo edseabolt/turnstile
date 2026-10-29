@@ -242,27 +242,17 @@ export type GateEvidenceMode = "enforce" | "flag" | "off"
 export type ReviewEnsembleMode = "enforce" | "advise"
 
 /**
- * Enforcement mode for the tool-call denylist policy in `src/tool-policy.ts`.
- * `enforce` (default) blocks matching bash/shell commands and write/edit paths;
- * `shadow` journals the would-block without throwing (adoption path); `off` is
- * a silent no-op escape hatch. Mirrors `GateEvidenceMode`.
- */
-export type ToolPolicyMode = "enforce" | "shadow" | "off"
-
-/**
  * Denylist policy governing the tools that flow through `execute.before`:
  * bash/shell commands and write/edit target paths. Both denylists default
  * empty — the "unless the user explicitly asks" semantics for git/gh
  * operations belongs to the host permission system's `ask` rules, not a
- * hardcoded denylist — while `mode` still defaults to `enforce`, so a
- * configured rule blocks the moment it is added (an empty list is a harmless
- * no-op). `pathDeny` stays empty for ordinary editing (a decision is made and,
- * on block, journaled, with no default blocks). Regex sources are
+ * hardcoded denylist — and a configured rule blocks the moment it is added
+ * (an empty list is a harmless no-op; the session-wide escape hatch is the
+ * suspend marker). `pathDeny` stays empty for ordinary editing (a decision is
+ * made and, on block, journaled, with no default blocks). Regex sources are
  * case-insensitive, compiled once at setup, and matched with `RegExp.test`.
  */
 export interface TurnstileToolPolicy {
-  /** Enforcement mode: `enforce` (default), `shadow`, or `off`. */
-  mode: ToolPolicyMode
   /** Case-insensitive regex sources matched against bash/shell commands. */
   bashDeny: string[]
   /** Case-insensitive regex sources matched against write/edit target paths. */
@@ -273,9 +263,10 @@ export interface TurnstileToolPolicy {
 
 /**
  * Git-and-commit gate configuration backing the mechanical gates in
- * `src/tool-policy.ts`. The default `mode` is `"shadow"`: the
- * gates are active but non-blocking (audit-only) until a user flips a key to
- * `"enforce"`, mirroring the tool-policy "adopt shadow first" adoption path.
+ * `src/tool-policy.ts`. There is no meta-mode: each boolean key is the
+ * per-feature switch (`commitMessages` lints commit subjects, `landingGate`
+ * gates pushes/PR landing on a reviewer verdict), enforced unconditionally
+ * while true; the session-wide escape hatch is the suspend marker.
  *
  * `commitFormat` is a conventional-commits regex SOURCE string (no leading
  * `^`/trailing `$`): callers compile it with `new RegExp("^" + source + "$",
@@ -286,8 +277,6 @@ export interface TurnstileToolPolicy {
  * line.
  */
 export interface TurnstileGitGates {
-  /** Enforcement mode: `enforce` (blocks), `shadow` (audit-only, default), or `off` (silent no-op). */
-  mode: ToolPolicyMode
   /** Whether `git commit` messages are linted as conventional commits. */
   commitMessages: boolean
   /** Conventional-commit regex SOURCE string (compiled by callers with `"^…$"` + `"s"`). */
@@ -792,17 +781,6 @@ export interface TurnstileConfig {
    */
   reviewEnsemble: ReviewEnsembleMode
   /**
-   * Parent hands-on gate mode: gates `write`/`edit` calls made by the parent
-   * session itself (a registered pipeline child's own edits never gate).
-   * `shadow` (default) audits parent hands-on edits journal-only, mirroring
-   * the gitGates adoption path; `enforce` runs the block-then-ask ladder —
-   * the first parent write/edit per task blocks, a repeat attempt escalates
-   * to a human permission ask (`always` releases for the task, `once` for
-   * one edit, `reject` re-blocks); `off` is a no-op. See
-   * `src/tool-policy.ts` (guardHandsOn).
-   */
-  handsOnGate: ToolPolicyMode
-  /**
    * Case-insensitive regex source a successful (exit-0) bash/shell command
    * must match to count as test execution. Overridable for non-JS/other
    * toolchains; the default covers npm/pnpm/yarn/bun/deno/node --test/
@@ -811,17 +789,17 @@ export interface TurnstileConfig {
   evidencePattern: string
   /**
    * Denylist policy for bash/shell and write/edit tools in `execute.before`.
-   * Default `mode` is `enforce`; both `bashDeny` and `pathDeny` default empty
-   * (git/gh consent is the host permission system's, and a configured rule
-   * blocks the moment it is added), and `observeSessionMove` journals
-   * `session_move` dispatches without blocking. See `src/tool-policy.ts`.
+   * Both `bashDeny` and `pathDeny` default empty (git/gh consent is the host
+   * permission system's, and a configured rule blocks the moment it is added),
+   * and `observeSessionMove` journals `session_move` dispatches without
+   * blocking. See `src/tool-policy.ts`.
    */
   toolPolicy: TurnstileToolPolicy
   /**
-   * Git-and-commit gate configuration. Default `mode` is `shadow` (audit-only
-   * until a user opts into `enforce`), `commitMessages` lints `git commit`
-   * messages against the conventional-commits `commitFormat`, and `landingGate`
-   * gates push/PR-landing on a reviewer `VERDICT: APPROVE`. See
+   * Git-and-commit gate configuration: `commitMessages` lints `git commit`
+   * messages against the conventional-commits `commitFormat`, and
+   * `landingGate` gates push/PR-landing on a reviewer `VERDICT: APPROVE` —
+   * each enforced unconditionally while its boolean is true. See
    * `src/tool-policy.ts`.
    */
   gitGates: TurnstileGitGates

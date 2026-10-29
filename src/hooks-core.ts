@@ -642,8 +642,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // gate). The value is single-sourced at module scope (`askLatchTtlMs`).
   const awaitingPlanAskTtlMs = askLatchTtlMs
   // Parents whose evaluate handler has been armed to force a landing ask (the
-  // guard sets this under `gitGates.mode: enforce` on a repeat `git push`
-  // attempt: no reviewer approval AND >= 1 prior landing block). Parent → arm
+  // guard sets this on a repeat `git push` attempt: no reviewer approval AND
+  // >= 1 prior landing block). Parent → arm
   // time. The landing arm consults it (not the command, whose wire shape in the
   // permission event is unverified — the guard is the single source of truth
   // for landing-candidate detection via isPushLanding). Bounded by
@@ -664,7 +664,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   const landingGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
   const maxTrackedLandingGateAsks = 50
   // Parents whose evaluate handler has been armed to force a hands-on ask
-  // (the guard sets this under `handsOnGate: enforce` on a repeat parent
+  // (the guard sets this on a repeat parent
   // write/edit attempt: no release AND >= 1 prior hands-on block). Parent →
   // arm time. Bounded by boundHandsOnAsks; expires like the other latches so
   // a lost stream event cannot latch a parent indefinitely.
@@ -888,8 +888,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * Reads (and expires) the pending-landing-ask latch for a session: an arm
    * older than the TTL is dropped and reported as absent. Fail-toward-strict:
    * an expired latch arms nothing, so a later ask is inert and the landing gate
-   * re-blocks. Only armed under `gitGates.mode: enforce` on a repeat attempt, so
-   * shadow/off never ask.
+   * re-blocks.
    * @param sid The parent session whose latch is consulted.
    * @returns Whether a live (unexpired) latch exists for the session.
    */
@@ -907,8 +906,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * Reads (and expires) the pending-hands-on-ask latch for a session: an arm
    * older than the TTL is dropped and reported as absent. Fail-toward-strict:
    * an expired latch arms nothing, so a later ask is inert and the hands-on
-   * gate re-blocks. Only armed under `handsOnGate: enforce` on a repeat
-   * attempt, so shadow/off never ask.
+   * gate re-blocks.
    * @param sid The parent session whose latch is consulted.
    * @returns Whether a live (unexpired) latch exists for the session.
    */
@@ -2239,8 +2237,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // (under the empty default there is no such deny, so `gh pr` flows to
     // the landing telemetry below).
     toolPolicy.guardBash(tool, command, sid)
-    // Conventional-commit lint (fail-closed under enforce for
-    // uninspectable forms; audit-only under shadow; silent under off).
+    // Conventional-commit lint (fail-closed for uninspectable forms).
     toolPolicy.guardCommitMessage(tool, command, sid)
     // Landing telemetry (always) then the reviewer-gated landing gate.
     const text = String(command ?? "")
@@ -2281,7 +2278,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * (mirrors landingGateHandles): only a shaped capability crosses the
    * boundary. `escalate` arms the pending-hands-on-ask latch (the evaluate
    * handler forces the human ask off it) and is called by guardHandsOn only
-   * under `enforce` on a repeat attempt (no release, >= 1 prior block);
+   * on a repeat attempt (no release, >= 1 prior block);
    * fail-toward-strict — a host reject leaves the gate red, so the next
    * attempt re-blocks and re-arms.
    * @param st The parent's gate-state bucket.
@@ -2312,7 +2309,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * `childToParent` edge is the same one the read budget and landing gate key
    * off, and `ledger.parentOf` self-keys an unregistered session, so
    * unregistered sessions count as parents (gated). A hands-on block throws
-   * BlockError (re-thrown by the outer catch); shadow journals only.
+   * BlockError (re-thrown by the outer catch).
    * @param event The execute.before tool event (write/edit shape).
    * @param tool The narrowed tool name (`"write"` or `"edit"`).
    */

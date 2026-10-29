@@ -26,7 +26,7 @@ tool: "tool.hook (hooks-tool.ts)" {
 before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nonce-grant short-circuit ▸ reviewer gate ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
-before-write: "write/edit: path denylist ▸ hands-on gate\n(parent sessions only — a registered pipeline\nchild's write/edit never gates; released by\nwaiver/always/once-grant; first block throws\nunder enforce, repeat arms the ask)"
+before-write: "write/edit: path denylist ▸ hands-on gate\n(parent sessions only — a registered pipeline\nchild's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask)"
 
 after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ PIPELINE status append\n(per delivery) ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"

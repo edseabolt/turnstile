@@ -158,11 +158,6 @@
       "enum": ["enforce", "advise"],
       "description": "Enforcement mode for the reviewer ensemble (default enforce)."
     },
-    "handsOnGate": {
-      "type": "string",
-      "enum": ["enforce", "shadow", "off"],
-      "description": "Parent hands-on gate mode: gates write/edit by the parent session (default shadow)."
-    },
     "evidencePattern": {
       "type": "string",
       "description": "Case-insensitive regex source matched against bash/shell commands to count as test-execution evidence."
@@ -172,11 +167,6 @@
       "additionalProperties": false,
       "description": "Denylist policy for bash/shell and write/edit tools in execute.before.",
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["enforce", "shadow", "off"],
-          "description": "Enforcement mode (default enforce)."
-        },
         "bashDeny": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
@@ -196,13 +186,8 @@
     "gitGates": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Git-and-commit gate configuration (default mode shadow, audit-only).",
+      "description": "Git-and-commit gate configuration (commitMessages and landingGate default true).",
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["enforce", "shadow", "off"],
-          "description": "Enforcement mode (default shadow)."
-        },
         "commitMessages": {
           "type": "boolean",
           "description": "Whether git commit messages are linted as conventional commits (default true)."

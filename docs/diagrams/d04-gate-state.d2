@@ -63,7 +63,7 @@ planok-note: "bound approval (dispatch-named plan):\nname + per-file key;\nbound
   shape: parallelogram
 }
 reviewed-note: "pendingOnceGrant.landing releases exactly one push.\nemptyDiffExempt: a push whose every refspec is ref-equal\nto its upstream is allowed without approval\n(no force flags; journaled exempt:empty-diff)."
-handson-note: "hands-on gate (handsOnGate, parent write/edit only):\ntask-scoped handsOnBlocks arms the ask on a repeat;\nhandsOnRelease (permission 'always') or an executor-\nscoped USER WAIVER: releases; pendingOnceGrant.handsOn\nreleases exactly one edit. Plan approval does not release.\nAll three fields are prompt-reset and dropped by\nmergeAfterReplay (a restart re-arms — fail-toward-strict)." {
+handson-note: "hands-on gate (parent write/edit only):\ntask-scoped handsOnBlocks arms the ask on a repeat;\nhandsOnRelease (permission 'always') or an executor-\nscoped USER WAIVER: releases; pendingOnceGrant.handsOn\nreleases exactly one edit. Plan approval does not release.\nAll three fields are prompt-reset and dropped by\nmergeAfterReplay (a restart re-arms — fail-toward-strict)." {
   style.stroke-dash: 4
   shape: parallelogram
 }

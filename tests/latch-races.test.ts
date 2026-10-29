@@ -51,7 +51,6 @@ async function boot(
       metricsDir,
       gitGates: {
         ...defaultConfig({}).gitGates,
-        mode: "enforce",
         // Pinned false: these tests exercise the landing ladder's BLOCKED
         // path and must not depend on the fixture project's git state.
         emptyDiffExempt: false,

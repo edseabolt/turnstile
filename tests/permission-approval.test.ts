@@ -928,7 +928,7 @@ test("reply: a message-prefixed plan ask is recorded and the map stays bounded",
  * `landingGateAsks` bounder (the reviewer's unbounded-growth finding).
  */
 test("reply: landing-gate asks stay bounded and a recent ask still matches", async () => {
-  const { h, restore, metricsDir } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore, metricsDir } = await bootLanding()
   try {
     // 51 landing-prefix asks (the evaluate echo message shape), no latch needed.
     for (let i = 1; i <= 51; i++) {
@@ -1055,7 +1055,7 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
  * TTL window is untouched (the next push re-blocks and re-arms).
  */
 test("evaluate: a live pending-landing-ask arm forces the landing ask", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: no approval, first block under enforce → throws, records a block.
     await assert.rejects(
@@ -1111,7 +1111,6 @@ test("evaluate: an approved landing gate releases without forcing the ask", asyn
   // flag flips the gate on a plain PASS; the task still needs two reviewer
   // dispatches before the verdict is credited.
   const { h, restore } = await bootLanding({
-    gitGates: { mode: "enforce" },
     gateEvidence: "flag",
   })
   try {
@@ -1158,7 +1157,7 @@ test("evaluate: an approved landing gate releases without forcing the ask", asyn
  * clock aged past the TTL.
  */
 test("evaluate: an expired pending-landing-ask arm does not force the ask", async (t) => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore } = await bootLanding()
   // The clock restore rides on the test's after hook: the final assertion
   // runs while time is still frozen, as the latch age it measures.
   const clock = frozenClock(t)
@@ -1193,7 +1192,7 @@ test("evaluate: an expired pending-landing-ask arm does not force the ask", asyn
  * on the never-latched direction (`at === undefined`). No effect is forced.
  */
 test("evaluate: a bash action with no landing latch is left untouched", async () => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore } = await bootLanding()
   try {
     const event: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", event)
@@ -1227,7 +1226,7 @@ test("evaluate: an unrelated action is left untouched", async () => {
  * recent arm (p051) is still live and forces the ask.
  */
 test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async () => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore } = await bootLanding()
   try {
     for (let i = 1; i <= 51; i++) {
       const parent = `p${String(i).padStart(3, "0")}`
@@ -1264,7 +1263,7 @@ test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async
  * plan-gate escalate echo (different prefix, disjoint map).
  */
 test("asked: an empty-message landing escalate echo grants one push via the .landing short-circuit", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: first block under enforce throws, records one landing block.
     await assert.rejects(
@@ -1360,7 +1359,7 @@ test("asked: an empty-message landing escalate echo grants one push via the .lan
  * empty-message escalate echo tested above.
  */
 test("asked: a landing-prefix ask echo records the ask and its once reply grants one push", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: block. Repeat push: arm the pending-landing-ask latch.
     await assert.rejects(
@@ -1408,7 +1407,7 @@ test("asked: a landing-prefix ask echo records the ask and its once reply grants
  * guard sees the approval). Contrasts with the `once` and `reject` replies.
  */
 test("reply: a landing always-grant stands a reviewer approval and releases the gate", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     await assert.rejects(
       () =>
@@ -1459,7 +1458,7 @@ test("reply: a landing always-grant stands a reviewer approval and releases the 
  * `always` reply and confirms a reject never releases the landing gate.
  */
 test("reply: a landing reject leaves the gate red and re-arms the ask", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     await assert.rejects(
       () =>
@@ -1507,7 +1506,7 @@ test("reply: a landing reject leaves the gate red and re-arms the ask", async ()
  * past the TTL.
  */
 test("evaluate: an expired pending-hands-on arm does not force the ask", async (t) => {
-  const { h, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, restore } = await bootLanding()
   const clock = frozenClock(t)
   try {
     // First write: block (frozen time used for its journal ts).
@@ -1669,7 +1668,7 @@ test("asked: a prefixed plan-ask echo journals no latch-steal", async () => {
  * record stays the single PERM-ask entry status.mjs counts.
  */
 test("evaluate: the landing consume stamps event:forced with no action:ask", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: first block under enforce throws.
     await assert.rejects(
@@ -1813,7 +1812,7 @@ test("fail-open: a throwing permission.replied payload journals the event error 
  * the same edge the read budget and landing gate key off.
  */
 test("hands-on dispatch: parent write/edit gates, child write/edit does not", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // A registered pipeline child.
     await h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
@@ -1846,13 +1845,12 @@ test("hands-on dispatch: parent write/edit gates, child write/edit does not", as
 /**
  * Ordering: a configured `pathDeny` match wins over the hands-on gate and the
  * two journal reasons stay disjoint — the denylisted path journals reason
- * "tool-policy" (and throws under toolPolicy.mode enforce), a plain path
+ * "tool-policy", a plain path
  * journals "parent-hands-on". A denylisted path is forbidden outright
  * regardless of any hands-on release.
  */
 test("hands-on dispatch: denylist wins over the hands-on gate", async () => {
   const { h, metricsDir, restore } = await bootLanding({
-    handsOnGate: "enforce",
     toolPolicy: { pathDeny: ["secret"] },
   })
   try {
@@ -1896,7 +1894,7 @@ test("hands-on dispatch: denylist wins over the hands-on gate", async () => {
  * first block and throws.
  */
 test("hands-on dispatch: once-grant releases exactly one edit", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First write: block (handsOnBlocks = 1). Repeat write: arm the ask latch.
     await assert.rejects(
@@ -1964,7 +1962,7 @@ test("hands-on dispatch: once-grant releases exactly one edit", async () => {
  * entry lands.
  */
 test("hands-on dispatch: a write/edit event with no input is a no-op, not a crash", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     await callTool(h, "execute.before", { tool: "write", sessionID: "p1" })
     await callTool(h, "execute.before", { tool: "edit", sessionID: "p1", input: {} })
@@ -1988,7 +1986,7 @@ test("hands-on dispatch: a write/edit event with no input is a no-op, not a cras
  * stays inert.
  */
 test("evaluate: the hands-on arm forces the ask off a live latch", async () => {
-  const { h, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, restore } = await bootLanding()
   try {
     // First write: block. Repeat write: arm the pending-hands-on latch.
     await assert.rejects(
@@ -2030,7 +2028,7 @@ test("evaluate: the hands-on arm forces the ask off a live latch", async () => {
 test("evaluate: a live task release or executor waiver inerts the hands-on arm", async () => {
   // (a) `always` release: granted after arming, then the arm stays live but
   // inert — the evaluate returns without touching effect.
-  const always = await bootLanding({ handsOnGate: "enforce" })
+  const always = await bootLanding()
   try {
     const { h, metricsDir } = always
     await assert.rejects(() =>
@@ -2064,7 +2062,7 @@ test("evaluate: a live task release or executor waiver inerts the hands-on arm",
   }
   // (b) Executor-scoped waiver: a user prompt carrying the waiver literal
   // names the executor stage, so the waiver covers the hands-on gate.
-  const waiver = await bootLanding({ handsOnGate: "enforce" })
+  const waiver = await bootLanding()
   try {
     const { h } = waiver
     await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: executor, go ahead" })
@@ -2079,7 +2077,7 @@ test("evaluate: a live task release or executor waiver inerts the hands-on arm",
       }),
     )
     // Unscoped waiver covers it the same way.
-    const unscoped = await bootLanding({ handsOnGate: "enforce" })
+    const unscoped = await bootLanding()
     try {
       await callSession(unscoped.h, "prompt", {
         sessionID: "p1",
@@ -2097,7 +2095,7 @@ test("evaluate: a live task release or executor waiver inerts the hands-on arm",
     }
     // A waiver scoped AWAY from executor does not release: the first edit
     // still blocks under enforce.
-    const scopedAway = await bootLanding({ handsOnGate: "enforce" })
+    const scopedAway = await bootLanding()
     try {
       await callSession(scopedAway.h, "prompt", {
         sessionID: "p1",
@@ -2124,7 +2122,7 @@ test("evaluate: a live task release or executor waiver inerts the hands-on arm",
  * forces the ask — the gate is plan-independent.
  */
 test("evaluate: plan approval does not release the hands-on arm", async () => {
-  const { h, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, restore } = await bootLanding()
   try {
     // Approve the plan through the prompt channel.
     await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: go" })
@@ -2156,7 +2154,7 @@ test("evaluate: plan approval does not release the hands-on arm", async () => {
  * leaves the gate red. A plan-prefix ask never populates the hands-on map.
  */
 test("permission.asked/replied: hands-on prefix records and grants", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // Reject first: journals the decision only, gate stays red.
     await assert.rejects(() =>
@@ -2253,7 +2251,7 @@ test("permission.asked/replied: hands-on prefix records and grants", async () =>
  * fresh first block instead of escalating or being released.
  */
 test("hands-on dispatch: prompt reset clears the hands-on task state", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ handsOnGate: "enforce" })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First write: block. Repeat write: arm the ask.
     await assert.rejects(() =>

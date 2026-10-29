@@ -34,16 +34,13 @@
   "verdictMarker": "^\\s*[`>#*\\s]*VERDICT: (APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+",
   "gateEvidence": "enforce",
   "reviewEnsemble": "enforce",
-  "handsOnGate": "shadow",
   "evidencePattern": "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b",
   "toolPolicy": {
-    "mode": "enforce",
     "bashDeny": [],
     "pathDeny": [],
     "observeSessionMove": true
   },
   "gitGates": {
-    "mode": "shadow",
     "commitMessages": true,
     "commitFormat": "(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\\([^)]*\\))?(?:[!]:?|:) [^\\r\\n]{1,72}(?:(?:\\r?\\n){1,2}[^\\r\\n]*)?",
     "landingGate": true,

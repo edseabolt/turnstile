@@ -28,7 +28,6 @@ import type {
   TurnstileConfig,
   TurnstileGitGates,
   TurnstileToolPolicy,
-  ToolPolicyMode,
 } from "./types.ts"
 
 /** Default config file location. */
@@ -140,14 +139,8 @@ export function defaultConfig(
     verdictMarker: VERDICT_RE.source,
     gateEvidence: "enforce",
     reviewEnsemble: "enforce",
-    // Parent hands-on gate ships in `shadow` (audit-only) mirroring the
-    // gitGates adoption path: parent write/edit is journaled but never
-    // blocked until a user flips the key to `enforce` (the block-then-ask
-    // ladder); `off` is a no-op.
-    handsOnGate: "shadow",
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
     toolPolicy: {
-      mode: "enforce",
       // `bashDeny` is the tool for pattern-based shell denies the host
       // permission system cannot express; a configured list replaces this
       // default wholesale (the merge semantics are unchanged). Empty by
@@ -161,13 +154,12 @@ export function defaultConfig(
       pathDeny: [],
       observeSessionMove: true,
     },
-    // Git-and-commit gates ship in `shadow` (audit-only) by default: the gates
-    // are active but non-blocking until a user flips a key to `enforce`,
-    // mirroring the tool-policy "adopt shadow first" adoption path. `commitFormat`
+    // Git-and-commit gates are per-feature switches with no meta-mode: while
+    // `commitMessages` is true commit subjects are linted, and while
+    // `landingGate` is true pushes wait for a reviewer verdict. `commitFormat`
     // is a conventional-commits regex SOURCE (no anchors): callers wrap it with
     // `^…$` + the `"s"` flag (see src/tool-policy.ts).
     gitGates: {
-      mode: "shadow",
       commitMessages: true,
       commitFormat: DEFAULT_COMMIT_FORMAT,
       landingGate: true,
@@ -212,7 +204,6 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (key === "gateEvidence" && (value === "enforce" || value === "flag" || value === "off"))
     return true
   if (key === "reviewEnsemble" && (value === "enforce" || value === "advise")) return true
-  if (key === "handsOnGate") return value === "enforce" || value === "shadow" || value === "off"
   if (key === "evidencePattern" && typeof value === "string") {
     // A non-compiling pattern is rejected so `new RegExp` never throws later.
     try {
@@ -266,7 +257,6 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "verdictMarker") config.verdictMarker = value as string
   else if (key === "gateEvidence") config.gateEvidence = value as GateEvidenceMode
   else if (key === "reviewEnsemble") config.reviewEnsemble = value as ReviewEnsembleMode
-  else if (key === "handsOnGate") config.handsOnGate = value as ToolPolicyMode
   else if (key === "evidencePattern") config.evidencePattern = value as string
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
   else if (key === "suspendMarker") config.suspendMarker = value as string
@@ -351,13 +341,12 @@ export function mergeConfig(
       const merged: TurnstileToolPolicy = { ...config.toolPolicy }
       for (const [tpKey, tpValue] of Object.entries(value as Record<string, unknown>)) {
         if (tpKey === "mode") {
-          if (tpValue === "enforce" || tpValue === "shadow" || tpValue === "off") {
-            merged.mode = tpValue as ToolPolicyMode
-          } else {
-            warnings.push(
-              'config: toolPolicy.mode must be "enforce", "shadow", or "off"; keeping default',
-            )
-          }
+          // Legacy key from the removed tool-policy meta-mode: dropped, never
+          // honored, and surfaced so a user config cannot silently lose the
+          // knob it still names.
+          warnings.push(
+            'config: unknown key "toolPolicy.mode" removed — the bash/path denylist is now always enforced; use TURNSTILE OFF: to suspend',
+          )
         } else if (tpKey === "observeSessionMove") {
           if (typeof tpValue === "boolean") {
             merged.observeSessionMove = tpValue
@@ -417,13 +406,11 @@ export function mergeConfig(
       const merged: TurnstileGitGates = { ...config.gitGates }
       for (const [gk, gv] of Object.entries(value as Record<string, unknown>)) {
         if (gk === "mode") {
-          if (gv === "enforce" || gv === "shadow" || gv === "off") {
-            merged.mode = gv as ToolPolicyMode
-          } else {
-            warnings.push(
-              'config: gitGates.mode must be "enforce", "shadow", or "off"; keeping default',
-            )
-          }
+          // Legacy key from the removed gitGates meta-mode: dropped, never
+          // honored, and surfaced; the booleans are the only switches now.
+          warnings.push(
+            'config: unknown key "gitGates.mode" removed — commit lint and the landing gate are always enforced when their boolean keys are true; use TURNSTILE OFF: to suspend',
+          )
         } else if (gk === "commitMessages" || gk === "landingGate" || gk === "emptyDiffExempt") {
           if (typeof gv === "boolean") {
             if (gk === "commitMessages") merged.commitMessages = gv
@@ -461,6 +448,15 @@ export function mergeConfig(
       }
       continue
     }
+    if (key === "handsOnGate") {
+      // Legacy key from the removed hands-on meta-mode: dropped, never
+      // honored, and surfaced so a user config cannot silently lose the knob
+      // it still names; the gate is always enforced now.
+      warnings.push(
+        'config: unknown key "handsOnGate" removed — the parent hands-on gate is now always enforced; use TURNSTILE OFF: to suspend',
+      )
+      continue
+    }
     if (!(key in config)) {
       warnings.push(`config: unknown key "${key}" ignored`)
       continue
@@ -493,17 +489,6 @@ export function mergeConfig(
         assignScalar(config, key as keyof TurnstileConfig, value)
       } else {
         warnings.push('config: sessionSummary must be "on", "quiet", or "off"; keeping default')
-      }
-      continue
-    }
-    if (key === "handsOnGate") {
-      // Mirrors the gateEvidence/reviewEnsemble special case: shared
-      // validate/assign helpers, only the warning wording is special-cased
-      // to name the three accepted literals.
-      if (isValidScalar(key as keyof TurnstileConfig, value)) {
-        assignScalar(config, key as keyof TurnstileConfig, value)
-      } else {
-        warnings.push('config: handsOnGate must be "enforce", "shadow", or "off"; keeping default')
       }
       continue
     }
