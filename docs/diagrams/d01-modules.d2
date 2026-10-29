@@ -31,7 +31,8 @@ core: "src/ — one concern per boundary" {
   gatesdispatch: "gates-dispatch.ts\nreviewer gate, loop caps, read horizon,\nensemble completeness"
   gatesplan: "gates-plan.ts\nplan-approval gate, decomposition gate,\nplans-dir scan + cache"
   gatescommon: "gates-common.ts\nBlockError + waiver coverage semantics"
-  toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate"
+  toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate,\nhands-on gate (write/edit + bash write)"
+  bashwrite: "bash-write.ts\nwrite-shape classifier (classifyBashWrite)\n+ shell tokenizer (splitCommands/tokenizeWords)"
   emptydiff: "empty-diff.ts\nempty-diff probe: planPushRefs (static)\n+ ref-equality check (exec seam)"
   evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
@@ -71,8 +72,10 @@ core.hookscore -> core.gates
 core.hookscore -> core.gatescommon
 core.hookscore -> core.evidence
 core.hookscore -> core.toolpolicy
+  core.hookscore -> core.bashwrite
 core.hookscore -> core.emptydiff
 core.toolpolicy -> core.emptydiff
+  core.toolpolicy -> core.bashwrite
 core.hookscore -> core.state
 core.hookscore -> core.ledger
 core.hookscore -> core.markers

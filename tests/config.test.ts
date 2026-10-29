@@ -670,6 +670,21 @@ test("mergeConfig rejects a non-boolean toolPolicy.observeSessionMove", () => {
   ])
 })
 
+/** bashWriteGate must be a boolean; a non-boolean keeps the default true. */
+test("mergeConfig rejects a non-boolean toolPolicy.bashWriteGate", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    toolPolicy: { bashWriteGate: "yes" },
+  })
+  assert.equal(config.toolPolicy.bashWriteGate, true)
+  assert.deepEqual(warnings, [
+    "config: toolPolicy.bashWriteGate must be a boolean; keeping default",
+  ])
+  const on = mergeConfig(defaultConfig({}), { toolPolicy: { bashWriteGate: false } })
+  assert.equal(on.config.toolPolicy.bashWriteGate, false)
+  assert.deepEqual(on.warnings, [])
+})
+
 /** A well-shaped list drops only the non-compiling element, keeps the rest. */
 test("mergeConfig drops one non-compiling toolPolicy.bashDeny element, keeps the rest", () => {
   const base = defaultConfig({})

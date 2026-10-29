@@ -185,6 +185,10 @@
         "observeSessionMove": {
           "type": "boolean",
           "description": "Journal session_move dispatches as telemetry (default true)."
+        },
+        "bashWriteGate": {
+          "type": "boolean",
+          "description": "Gate confident file-writing bash commands (redirects from writer commands, tee, sed -i/--in-place, cp/mv/dd/truncate/touch) through the parent hands-on ladder (default true); write-shaped commands always journal handsOn telemetry."
         }
       }
     },

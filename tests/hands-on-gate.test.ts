@@ -12,6 +12,7 @@ import {
   createToolPolicy,
   HANDSON_REQUIREMENT,
   type HandsOnGateCapability,
+  type BashWriteGateCapability,
   type ToolPolicy,
 } from "../src/tool-policy.ts"
 import { defaultConfig } from "../src/config.ts"
@@ -248,4 +249,221 @@ test("guardHandsOn: the block error names the requirement and stamps cause hands
       e.cause === "hands-on",
   )
   assert.equal(HANDSON_REQUIREMENT.length > 0, true)
+})
+
+/** A gate-shaped bash capability with a recorded consumeGrant. */
+function bashCap(
+  gate: HandsOnGateCapability,
+  grant = false,
+  throwIn?: "consumeGrant",
+): BashWriteGateCapability & { grantConsumed: boolean; consumeCalls: number } {
+  let consumed = false
+  let consumeCalls = 0
+  return {
+    ...gate,
+    consumeGrant: () => {
+      consumeCalls++
+      if (throwIn === "consumeGrant") throw new Error("consumeGrant boom")
+      consumed = grant
+      return grant
+    },
+    get grantConsumed() {
+      return consumed
+    },
+    get consumeCalls() {
+      return consumeCalls
+    },
+  }
+}
+
+/**
+ * The first gate-tier bash write of a task throws and journals one
+ * `parent-hands-on` block stamped `tool:"bash"`; nothing is journaled for
+ * telemetry- or none-tier commands and no telemetry row is written for the
+ * gate call itself.
+ */
+test("guardBashWrite: the first gate-tier write throws and journals parent-hands-on", () => {
+  const { policy, entries } = makePolicy()
+  const { gate, log } = recordingCapability()
+  const cap = bashCap(gate)
+  blocks(() => policy.guardBashWrite("bash", "cat > f.txt", "gate", "s1", cap))
+  const blocked = handsOnBlocks(entries)
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0].tool, "bash")
+  assert.equal(blocked[0].sessionID, "s1")
+  assert.equal(log.recordBlock, 1)
+  assert.equal(cap.consumeCalls, 1, "the guard consults the once-grant on the gate path")
+})
+
+/**
+ * Non-gate verdicts never gate and never consume the pending once-grant.
+ */
+test("guardBashWrite: telemetry and none verdicts never gate or burn the grant", () => {
+  for (const verdict of ["telemetry", "none"] as const) {
+    const { policy, entries } = makePolicy()
+    const { gate, log } = recordingCapability()
+    const cap = bashCap(gate, true)
+    allows(() => policy.guardBashWrite("bash", "npm test > log", verdict, "s1", cap))
+    assert.equal(cap.consumeCalls, 0, `verdict ${verdict} never consults the grant`)
+    assert.equal(log.recordBlock, 0)
+    assert.equal(handsOnBlocks(entries).length, 0)
+    assert.deepEqual(entries, [])
+  }
+})
+
+/**
+ * With `bashWriteGate: false` a gate-shaped command neither gates nor burns
+ * the grant (flag check precedes consumeGrant), while telemetry continues
+ * to journal.
+ */
+test("guardBashWrite: disabled gate never consumes the pending once-grant", () => {
+  const { policy, entries } = makePolicy({
+    toolPolicy: { ...defaultConfig({}).toolPolicy, bashWriteGate: false },
+  })
+  const { gate, log } = recordingCapability()
+  const cap = bashCap(gate, true)
+  allows(() => policy.guardBashWrite("bash", "cat > f", "gate", "s1", cap))
+  assert.equal(cap.consumeCalls, 0, "the disabled flag short-circuits before the grant")
+  assert.equal(log.recordBlock, 0)
+  assert.deepEqual(entries, [])
+  policy.observeBashWrite("s1", "cat > f", "gate")
+  assert.equal(
+    entries.filter((e) => (e as any).type === "tool" && (e as any).handsOn === true).length,
+    1,
+    "telemetry still journals with the gate off",
+  )
+})
+
+/**
+ * Release / waiver / once-grant short-circuits allow a gate-tier write
+ * silently; a pending grant is consumed only on the gate path.
+ */
+test("guardBashWrite: release, waiver, and once-grant allow silently", () => {
+  for (const seed of [{ release: true }, { waiver: true }] as const) {
+    const { policy, entries } = makePolicy()
+    const { gate, log } = recordingCapability(seed)
+    const cap = bashCap(gate, true)
+    allows(() => policy.guardBashWrite("bash", "mv a b", "gate", "s1", cap))
+    assert.deepEqual(entries, [])
+    assert.equal(log.recordBlock, 0)
+  }
+  const { policy, entries } = makePolicy()
+  const { gate } = recordingCapability()
+  const cap = bashCap(gate, true)
+  allows(() => policy.guardBashWrite("bash", "cp a b", "gate", "s1", cap))
+  assert.deepEqual(entries, [], "a once-granted write journals nothing")
+  assert.equal(cap.grantConsumed, true)
+  // A second gate-tier write with no grant re-arms the first block.
+  blocks(() => policy.guardBashWrite("bash", "cp a b", "gate", "s1", bashCap(gate)))
+  assert.equal(handsOnBlocks(entries).length, 1)
+})
+
+/**
+ * Repeat gate-tier bash writes follow the shared ladder: under
+ * `escalation: "ask"` they journal the permission ask, call escalate, and
+ * allow; under the default `"block"` they re-block without escalating.
+ */
+test("guardBashWrite: repeat attempts follow the escalation ladder", () => {
+  const { policy, entries } = makePolicy({ escalation: "ask" })
+  const { gate, log } = recordingCapability({ prior: 1 })
+  const cap = bashCap(gate)
+  allows(() => policy.guardBashWrite("shell", "touch f", "gate", "s1", cap))
+  assert.equal(log.escalate, 1)
+  assert.equal(
+    entries.some((e) => e.type === "permission" && e.reason === "hands-on"),
+    true,
+  )
+  const { policy: p2, entries: e2 } = makePolicy()
+  const { gate: g2 } = recordingCapability({ prior: 1 })
+  blocks(() => p2.guardBashWrite("shell", "touch f", "gate", "s1", bashCap(g2)))
+  assert.equal(handsOnBlocks(e2).length, 1)
+})
+
+/**
+ * Write-shaped commands journal exactly one `handsOn` telemetry row;
+ * none-shaped commands journal none.
+ */
+test("observeBashWrite: journals handsOn telemetry for write-shaped commands", () => {
+  const { policy, entries } = makePolicy()
+  policy.observeBashWrite("s1", "npm test > log", "telemetry")
+  policy.observeBashWrite("s1", "cat > f", "gate")
+  policy.observeBashWrite("s1", "ls", "none")
+  const rows = entries.filter((e) => e.type === "tool" && e.handsOn === true)
+  assert.equal(rows.length, 2)
+  for (const r of rows) {
+    assert.equal(r.tool, "bash")
+    assert.equal(r.sessionID, "s1")
+  }
+})
+
+/** A journaler error inside observeBashWrite fails open. */
+test("observeBashWrite: an internal error fails open", () => {
+  const { policy, entries } = makePolicy()
+  policy.observeBashWrite("s1", 42, "telemetry")
+  assert.equal(entries.filter((e) => e.type === "tool").length, 1)
+  assert.equal(handsOnBlocks(entries).length, 0)
+})
+
+/** A journaler error inside observeBashWrite's journal call fails open and
+ *  journals the error through the same (recursively guarded) seam. */
+test("observeBashWrite: a journal failure fails open", () => {
+  const entries: any[] = []
+  const journaler: Journaler = {
+    journalPath: "",
+    tracePath: "",
+    journal(entry) {
+      entries.push({ ...entry })
+      if (entry.type === "tool") throw new Error("disk full")
+    },
+    traceEvent() {},
+  }
+  const cfg: TurnstileConfig = { ...defaultConfig({}) }
+  const policy = createToolPolicy(cfg, journaler)
+  assert.doesNotThrow(() => policy.observeBashWrite("s1", "cat > f", "gate"))
+  assert.equal(
+    entries.some((e) => e.type === "error" && /tool policy guard/.test(String(e.error))),
+    true,
+  )
+})
+
+/** Capability throws inside guardBashWrite fail open, except the block. */
+test("guardBashWrite: an internal capability error fails open", () => {
+  const cases: Array<{ throwIn: keyof HandsOnGateCapability; prior: number }> = [
+    { throwIn: "hasRelease", prior: 1 },
+    { throwIn: "hasWaiver", prior: 1 },
+    { throwIn: "priorBlocks", prior: 1 },
+    { throwIn: "recordBlock", prior: 0 },
+    { throwIn: "escalate", prior: 1 },
+  ]
+  for (const { throwIn, prior } of cases) {
+    const { policy, entries } = makePolicy({ escalation: "ask" })
+    const { gate } = recordingCapability({ throwIn, prior })
+    const cap = bashCap(gate)
+    allows(() => policy.guardBashWrite("bash", "sed -i s/a/b/ f", "gate", "s1", cap))
+    const errs = entries.filter(
+      (e) => e.type === "error" && /tool policy guard/.test(String(e.error)),
+    )
+    assert.equal(errs.length, 1, `throwIn=${throwIn} journals one error`)
+  }
+  const { policy, entries } = makePolicy()
+  const { gate } = recordingCapability()
+  allows(() =>
+    policy.guardBashWrite("bash", "touch f", "gate", "s1", bashCap(gate, false, "consumeGrant")),
+  )
+  assert.equal(
+    entries.some((e) => e.type === "error" && /tool policy guard/.test(String(e.error))),
+    true,
+    "a consumeGrant throw fails open",
+  )
+  assert.equal(handsOnBlocks(entries).length, 0)
+})
+
+/** The bash block error stamps the `hands-on` cause like write/edit. */
+test("guardBashWrite: the block error stamps cause hands-on", () => {
+  const { policy } = makePolicy()
+  const { gate } = recordingCapability()
+  assert.throws(
+    () => policy.guardBashWrite("bash", "cat > f", "gate", "s1", bashCap(gate)),
+    (e: unknown) => e instanceof BlockError && e.cause === "hands-on",
+  )
 })

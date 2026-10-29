@@ -371,6 +371,7 @@ test("tool-policy guards journal their internal failure when the sink throws", (
     bashDeny: ["git\\s+push"],
     pathDeny: ["\\.env$"],
     observeSessionMove: false,
+    bashWriteGate: false,
   }
   const policy = createToolPolicy(config, hostile)
   assert.doesNotThrow(() => policy.guardBash("bash", "git push origin main", "p1"))
@@ -405,7 +406,12 @@ test("git-side guards journal their internal failure when the sink throws", () =
     },
   } as unknown as Parameters<typeof createToolPolicy>[1]
   const config = defaultConfig()
-  config.toolPolicy = { bashDeny: [], pathDeny: [], observeSessionMove: false }
+  config.toolPolicy = {
+    bashDeny: [],
+    pathDeny: [],
+    observeSessionMove: false,
+    bashWriteGate: false,
+  }
   const policy = createToolPolicy(config, hostile)
   const stub = {
     hasApproval: (): boolean => false,
@@ -435,7 +441,12 @@ test("observeSessionMove is a no-op when disabled and redacts under trace:false"
   })
   const config = defaultConfig()
   config.trace = false
-  config.toolPolicy = { bashDeny: [], pathDeny: [], observeSessionMove: false }
+  config.toolPolicy = {
+    bashDeny: [],
+    pathDeny: [],
+    observeSessionMove: false,
+    bashWriteGate: false,
+  }
   const policy = createToolPolicy(config, j)
   policy.observeSessionMove("p1", "/tmp/somewhere")
   assert.equal(journalEntries(metricsDir).length, 0)
@@ -1347,4 +1358,45 @@ test("evidence.has and evidence.observe handle empty and undefined inputs", () =
   const t = createEvidenceTracker(cfg(), identityParent)
   assert.equal(t.has(""), false)
   assert.equal(t.observe("c1", undefined, 0), false)
+})
+
+/** Write-shaped bash commands reach the hands-on gate through the bash hook
+ *  surface: a parent's gate-tier write blocks (fail-closed for an unresolved
+ *  agent), while output-capture and non-write shapes pass, and telemetry
+ *  rows are journaled for every write-shaped command. */
+test("bash write gate: parent gate-tier write blocks, capture shapes pass", async () => {
+  const h = makeFakeHost()
+  const { dispose, metricsDir } = await boot(h.host)
+  try {
+    // Gate-tier shape from a parent with an unresolvable agent: fails closed.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "cat > notes.md <<'EOF'\nhi\nEOF" },
+        }),
+      (e: unknown) => e instanceof BlockError && e.cause === "hands-on",
+    )
+    // Zero-false-positive shapes pass without any block.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "npm test > log" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "grep x file > /dev/null" },
+    })
+    // Telemetry rows: the gate-tier heredoc write and the capture redirect
+    // (`npm test > log`) journal one row each; the `/dev/null` target drops
+    // its redirect, so it journals nothing.
+    const toolRows = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.handsOn === true,
+    )
+    assert.equal(toolRows.length, 2)
+  } finally {
+    dispose()
+  }
 })
