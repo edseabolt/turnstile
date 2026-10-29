@@ -19,8 +19,8 @@ export const PROGRESS_HEADER = "# Progress"
  * Fail-closed fallbacks — each returns the whole file unchanged so an
  * unrecognized structure never silently shrinks the hashed region:
  * - the file does not start with the exact `# Progress` header at line 1
- *   (missing, misspelled, or merely whitespace-differing lines other than
- *   trailing whitespace on the header itself);
+ *   (missing, misspelled, or a line differing beyond trailing whitespace on
+ *   the header itself — leading whitespace fails closed);
  * - the file starts with `# Progress` but carries no following top-level
  *   heading (a progress-only file has no spec region to key on).
  * A plan without a `# Progress` section therefore keys on its whole bytes —
@@ -30,7 +30,7 @@ export const PROGRESS_HEADER = "# Progress"
  */
 export function planSpecRegion(bytes: Buffer): Buffer {
   const lines = bytes.toString("utf8").split("\n")
-  if (lines[0]?.trim() !== PROGRESS_HEADER) return bytes
+  if (lines[0]?.trimEnd() !== PROGRESS_HEADER) return bytes
   for (let i = 1; i < lines.length; i++) {
     if (/^# /.test(lines[i]!)) return Buffer.from(lines.slice(i).join("\n"), "utf8")
   }

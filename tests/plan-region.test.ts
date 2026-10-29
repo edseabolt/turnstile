@@ -84,6 +84,11 @@ test("plan-region: trailing whitespace on the Progress header line is tolerated"
   assert.equal(keyOf(spaced), keyOf(PLAN))
 })
 
+test("plan-region: leading whitespace on the Progress header fails closed to whole-file keying", () => {
+  const indented = PLAN.replace(PROGRESS_HEADER, " " + PROGRESS_HEADER)
+  assert.equal(keyOf(indented), createHash("sha256").update(indented).digest("hex"))
+})
+
 test("plan-region: the exported header is the canonical literal", () => {
   assert.equal(PROGRESS_HEADER, "# Progress")
 })

@@ -304,10 +304,12 @@ A typical enforced run:
    **Maintenance dispatches**: an executor dispatch whose prompt declares
    maintenance scope for the live bound plan (names the plan + the literal
    word "maintenance") AND whose current working-tree diff touches only
-   non-src surfaces (the plan file, `docs/*.md`, `README.md`/`CONTRIBUTING.md`,
+   non-src surfaces (the active plan file under the configured `plansDir`,
+   `docs/*.md`, `README.md`/`CONTRIBUTING.md`,
    `agents/*.md` — marker-validated ones only when the repo's
    `scripts/check-markers.mjs` guard passes) rides a lighter path: it skips
-   the plan-approval and decomposition gates and journals
+   the plan-approval and decomposition gates (without consuming a pending
+   plan-gate once-grant) and journals
    `{type:"maintenance", capped:false}`, capped at 4 per plan (a cap-exceeded
    attempt escalates like any blocked dispatch). Any `src/`, `tests/`,
    `bin/`, `scripts/`, or config/schema/example touch gates it as ordinary

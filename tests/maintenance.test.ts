@@ -24,15 +24,20 @@ import {
   maintenanceMarkerSensitive,
 } from "../src/maintenance.ts"
 import {
+  callPermission,
   callTool,
   isolatedEnv,
   journalEntries,
   makeFakeHost,
   tmpDir,
+  waitUntil,
   type FakeHost,
 } from "./helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+
+/** The default repo-relative plans dir (mirrors the shipped config default). */
+const PLANS = ".opencode/plans"
 
 test("maintenance rules: the declaration needs the plan in scope and the word", () => {
   assert.equal(maintenanceDeclared("do maintenance on plan.md", "plan.md", ["plan.md"]), true)
@@ -52,15 +57,15 @@ test("maintenance rules: marker-sensitive surfaces", () => {
 
 test("maintenance rules: per-file eligibility matrix", () => {
   // Allowed non-src surfaces.
-  assert.equal(maintenanceFileEligible("CONTRIBUTING.md", false), true)
-  assert.equal(maintenanceFileEligible("docs/architecture.md", false), true)
-  assert.equal(maintenanceFileEligible(".opencode/plans/plan.md", false), true)
+  assert.equal(maintenanceFileEligible("CONTRIBUTING.md", false, PLANS), true)
+  assert.equal(maintenanceFileEligible("docs/architecture.md", false, PLANS), true)
+  assert.equal(maintenanceFileEligible(".opencode/plans/plan.md", false, PLANS), true)
   // Marker-validated surfaces need a passing guard.
-  assert.equal(maintenanceFileEligible("README.md", false), false)
-  assert.equal(maintenanceFileEligible("README.md", true), true)
-  assert.equal(maintenanceFileEligible("docs/usage.md", true), true)
-  assert.equal(maintenanceFileEligible("agents/executor.md", true), true)
-  assert.equal(maintenanceFileEligible("agents/executor.md", false), false)
+  assert.equal(maintenanceFileEligible("README.md", false, PLANS), false)
+  assert.equal(maintenanceFileEligible("README.md", true, PLANS), true)
+  assert.equal(maintenanceFileEligible("docs/usage.md", true, PLANS), true)
+  assert.equal(maintenanceFileEligible("agents/executor.md", true, PLANS), true)
+  assert.equal(maintenanceFileEligible("agents/executor.md", false, PLANS), false)
   // Forbidden trees and exact files.
   for (const f of [
     "src/gates-plan.ts",
@@ -74,18 +79,35 @@ test("maintenance rules: per-file eligibility matrix", () => {
     "opencode.json",
     "package.json",
   ]) {
-    assert.equal(maintenanceFileEligible(f, true), false, f)
+    assert.equal(maintenanceFileEligible(f, true, PLANS), false, f)
   }
   // Non-markdown plan-adjacent and doc paths fail closed.
-  assert.equal(maintenanceFileEligible(".opencode/plans/plan.txt", true), false)
-  assert.equal(maintenanceFileEligible("docs/notes.txt", true), false)
+  assert.equal(maintenanceFileEligible(".opencode/plans/plan.txt", true, PLANS), false)
+  assert.equal(maintenanceFileEligible("docs/notes.txt", true, PLANS), false)
+})
+
+test("maintenance rules: the plans surface is anchored to the configured dir, not a substring", () => {
+  // A nested lookalike path never qualifies via the plan surface: it falls
+  // through to the marker-guard-required agents/ rule (false without a
+  // passing guard, true with one — as ordinary agents prose).
+  assert.equal(maintenanceFileEligible("agents/.opencode/plans/x.md", false, PLANS), false)
+  assert.equal(maintenanceFileEligible("agents/.opencode/plans/x.md", true, PLANS), true)
+  // A custom plansDir is recognized; the default dir then matches nothing.
+  assert.equal(maintenanceFileEligible("plans/x.md", true, "plans"), true)
+  assert.equal(maintenanceFileEligible("plans/x.md", true, PLANS), false)
+  // A dir outside the project (..-relative) or an empty dir match nothing.
+  assert.equal(
+    maintenanceFileEligible("../elsewhere/plans/x.md", true, "../elsewhere/plans"),
+    false,
+  )
+  assert.equal(maintenanceFileEligible("x.md", true, ""), false)
 })
 
 test("maintenance rules: whole-diff eligibility (null probe fails closed)", () => {
-  assert.equal(maintenanceDiffEligible(null, true), false)
-  assert.equal(maintenanceDiffEligible([], false), true)
-  assert.equal(maintenanceDiffEligible(["docs/a.md"], false), true)
-  assert.equal(maintenanceDiffEligible(["docs/a.md", "src/x.ts"], true), false)
+  assert.equal(maintenanceDiffEligible(null, true, PLANS), false)
+  assert.equal(maintenanceDiffEligible([], false, PLANS), true)
+  assert.equal(maintenanceDiffEligible(["docs/a.md"], false, PLANS), true)
+  assert.equal(maintenanceDiffEligible(["docs/a.md", "src/x.ts"], true, PLANS), false)
 })
 
 test("maintenance rules: the cap constant is 4", () => {
@@ -97,6 +119,7 @@ async function bootMaint(opts: {
   planBody?: string
   markerScript?: string
   git?: boolean
+  plansDir?: string
 }): Promise<{
   h: FakeHost
   project: string
@@ -105,10 +128,11 @@ async function bootMaint(opts: {
   metricsDir: string
 }> {
   const project = tmpDir()
-  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  const plansDir = opts.plansDir ?? path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
   const planName = "plan.md"
   fs.writeFileSync(
-    path.join(project, ".opencode", "plans", planName),
+    path.join(plansDir, planName),
     opts.planBody ?? "# Progress\n\n# Objective\n\nSpec.\n",
   )
   fs.mkdirSync(path.join(project, "docs"), { recursive: true })
@@ -128,7 +152,10 @@ async function bootMaint(opts: {
   const h = makeFakeHost()
   const prev = process.cwd()
   process.chdir(project)
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, ...(opts.plansDir ? { plansDir: opts.plansDir } : {}) },
+  })
   const dispose = (await setup(h.host)) as () => void
   return {
     h,
@@ -187,6 +214,47 @@ test("maintenance flow: an eligible maintenance dispatch skips the plan gate and
   }
 })
 
+test("maintenance flow: a maintenance dispatch does not consume the plan-gate once-grant", async () => {
+  const { h, restore, metricsDir } = await bootMaint({})
+  try {
+    // A pending one-shot grant from an earlier red-gate ask (before any
+    // approval): a `once` reply stamps `pendingOnceGrant.plan`.
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "req-1" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "req-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // The plan-reviewer approval lands while the grant is still pending.
+    await approvePlan(h, "plan.md")
+    const planPath = path.join(process.cwd(), ".opencode", "plans", "plan.md")
+    fs.writeFileSync(planPath, "# Progress\n\n- DONE\n\n# Objective\n\nSpec.\n")
+    // Both maintenance dispatches must ride the maintenance path: the grant
+    // stays pending (pre-fix, the first dispatch was admitted by the grant
+    // before classification — zero maintenance rows, one burned approval).
+    const prompt = "plan.md maintenance: refresh bullets"
+    for (let i = 0; i < 2; i++) {
+      await callTool(h, "execute.before", {
+        sessionID: "p1",
+        tool: "task",
+        input: { agent: "executor", prompt },
+      })
+    }
+    const rows = journalEntries(metricsDir).filter((r) => r.type === "maintenance")
+    assert.equal(rows.length, 2)
+    assert.ok(rows.every((r) => r.capped === false))
+    const dispatches = journalEntries(metricsDir).filter(
+      (r) => r.type === "dispatch" && !r.blocked && r.agent === "executor",
+    )
+    assert.equal(dispatches.length, 2)
+  } finally {
+    restore()
+  }
+})
+
 test("maintenance flow: no live approval keeps the maintenance prompt on the ordinary gate", async () => {
   const { h, restore, metricsDir } = await bootMaint({})
   try {
@@ -226,6 +294,14 @@ test("maintenance flow: a diff touching src/ escalates to the ordinary gate", as
     )
     const rows = journalEntries(metricsDir).filter((r) => r.type === "maintenance")
     assert.equal(rows.length, 0)
+    // The escalation is the ordinary plan gate actually firing (not merely
+    // the absence of a maintenance row): the blocked row carries the
+    // no-plan-verdict reason of enforcePlanApproval.
+    const blocked = journalEntries(metricsDir).filter(
+      (r) => r.type === "blocked" && r.reason === "no-plan-verdict",
+    )
+    assert.equal(blocked.length, 1)
+    assert.equal(blocked[0]!.plan, "plan.md")
   } finally {
     restore()
   }
@@ -416,6 +492,29 @@ test("maintenance flow: a classification failure fails open to the ordinary path
   } finally {
     dispose()
     process.chdir(prev)
+  }
+})
+
+test("maintenance flow: an absolute custom plansDir is recognized (relativized against the project)", async () => {
+  const plansDir = tmpDir()
+  const { h, project, restore, metricsDir } = await bootMaint({ plansDir })
+  try {
+    await approvePlan(h, "plan.md")
+    fs.writeFileSync(
+      path.join(plansDir, "plan.md"),
+      "# Progress\n\n- DONE\n\n# Objective\n\nSpec.\n",
+    )
+    fs.writeFileSync(path.join(project, "docs", "note.md"), "new\n")
+    await callTool(h, "execute.before", {
+      sessionID: "p1",
+      tool: "task",
+      input: { agent: "executor", prompt: "plan.md maintenance: refresh bullets" },
+    })
+    const rows = journalEntries(metricsDir).filter((r) => r.type === "maintenance")
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.plan, "plan.md")
+  } finally {
+    restore()
   }
 })
 

@@ -2197,6 +2197,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     gates.enforceDecomposition(sessionID, prompt, dir, ledger)
   }
 
+  /**
+   * The configured plans dir as a repo-relative path for one project dir: a
+   * relative `plansDir` is used as-is; an absolute one is relativized against
+   * the project dir (a dir outside the project yields a `..`-based path that
+   * the eligibility rule treats as matching nothing — fail closed). Single
+   * source for the maintenance eligibility call sites.
+   * @param projectDir The session's project directory.
+   * @returns The repo-relative plans dir.
+   */
+  function maintenancePlansDirRel(projectDir: string): string {
+    return path.isAbsolute(config.plansDir)
+      ? path.relative(projectDir, config.plansDir)
+      : config.plansDir
+  }
+
   // ── Maintenance dispatch classification (orchestration) ────────────────
   // Bookkeeping-only executor dispatches (plan-progress upkeep, doc prose)
   // ride a lighter path: they skip the plan-approval and decomposition gates
@@ -2214,16 +2229,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
 
   /**
    * Runs the repo's `scripts/check-markers.mjs` guard: the marker-drift CI
-   * check, executed against the project's current tree. A missing script or
-   * a non-zero exit fails the guard (fail closed) — a marker-validated
-   * surface then cannot qualify for a maintenance dispatch.
+   * check, executed against the project's current tree. A missing script, a
+   * non-zero exit, or a run exceeding the 10s spawn timeout fails the guard
+   * (fail closed — a timed-out spawn reports `status === null`) — a
+   * marker-validated surface then cannot qualify for a maintenance dispatch.
    * @param projectDir The project directory to run the guard in.
    * @returns True when the guard exists and passes.
    */
   function markerGuardPasses(projectDir: string): boolean {
     const script = path.join(projectDir, "scripts", "check-markers.mjs")
     if (!fs.existsSync(script)) return false
-    const r = spawnSync(process.execPath, [script], { cwd: projectDir, encoding: "utf8" })
+    const r = spawnSync(process.execPath, [script], {
+      cwd: projectDir,
+      encoding: "utf8",
+      timeout: 10_000,
+    })
     return r.status === 0
   }
 
@@ -2253,13 +2273,80 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Approval freshness for a maintenance dispatch: the session must carry a
+   * live bound approval (verdict + bound plan + key), the prompt must declare
+   * maintenance scope for that plan, and the bound approval must still cover
+   * the plan's CURRENT spec region (same spec-slice key shape as capture and
+   * reconcile — one extractor; a spec edit reconcile has not yet observed, or
+   * an unresolvable binding, is stale — fail closed).
+   * @param sessionID The dispatching session ID.
+   * @param prompt The dispatch prompt text.
+   * @returns The approved plan name and its project dir, or null when the
+   *     dispatch is ordinary work.
+   */
+  async function maintenanceApprovalFresh(
+    sessionID: string,
+    prompt: string,
+  ): Promise<{ plan: string; dir: string } | null> {
+    const s = ledger.state(sessionID)
+    // The maintenance path skips plan-reviewer *re*-approval: it requires a
+    // live bound approval to skip at all. No verdict, no bound plan, or a
+    // stale one (already dropped by reconcile) is ordinary work.
+    if (!s.hasPlanVerdict || s.approvedPlanKey === "") return null
+    const plan = s.approvedPlan
+    if (!maintenanceDeclared(prompt, plan, gates.promptPlanNames(prompt))) return null
+    const dir = await resolveProjectDir(sessionID)
+    if (gates.planApprovalBinding(dir, [plan])?.key !== s.approvedPlanKey) return null
+    return { plan, dir }
+  }
+
+  /**
+   * The whole-diff eligibility probe for a maintenance dispatch: lists the
+   * working-tree's changed files, runs the marker guard only when a
+   * marker-validated surface is touched, and applies the pure eligibility
+   * rules against the configured plans dir.
+   * @param dir The session's project directory.
+   * @returns True when every touched file is an allowed surface.
+   */
+  function maintenanceDiffAllowed(dir: string): boolean {
+    const files = gitWorkingTreeFiles(dir)
+    const needsGuard = files !== null && files.some(maintenanceMarkerSensitive)
+    return maintenanceDiffEligible(
+      files,
+      needsGuard ? markerGuardPasses(dir) : false,
+      maintenancePlansDirRel(dir),
+    )
+  }
+
+  /**
+   * Meters one admitted-scope maintenance dispatch against the per-plan cap:
+   * under the cap, a slot is consumed and the admitted row journaled; at the
+   * cap, the capped attempt row is journaled and nothing is consumed.
+   * @param sessionID The dispatching session ID.
+   * @param plan The maintenance dispatch's active plan.
+   * @returns `"admit"` (a slot was consumed) or `"capped"` (the caller
+   *     escalates like any blocked dispatch).
+   */
+  function meterMaintenanceCap(sessionID: string, plan: string): "admit" | "capped" {
+    const count = maintenanceCounts.get(plan) ?? 0
+    if (count >= MAINTENANCE_MAX_PER_PLAN) {
+      journaler.journal({ type: "maintenance", sessionID, plan, capped: true })
+      return "capped"
+    }
+    maintenanceCounts.set(plan, count + 1)
+    boundMaintenanceCounts()
+    journaler.journal({ type: "maintenance", sessionID, plan, capped: false })
+    return "admit"
+  }
+
+  /**
    * Classifies an executor dispatch as maintenance or ordinary work, and
-   * meters the per-plan maintenance cap. Returns `"admit"` (journaling the
-   * `{type:"maintenance", capped:false}` row and consuming one cap slot),
-   * `"capped"` (journaling the `capped:true` attempt row; the caller
-   * escalates like any blocked dispatch), or `"ordinary"` (the ordinary
-   * gates apply). Any internal error fails open to `"ordinary"` with a
-   * journaled error entry — classification must never block a dispatch by
+   * meters the per-plan maintenance cap. Returns `"admit"` (an admitted
+   * `{type:"maintenance", capped:false}` row was journaled and a cap slot
+   * consumed), `"capped"` (the `capped:true` attempt row was journaled; the
+   * caller escalates like any blocked dispatch), or `"ordinary"` (the
+   * ordinary gates apply). Any internal error fails open to `"ordinary"` with
+   * a journaled error entry — classification must never block a dispatch by
    * itself; the ordinary gates still run.
    * @param sessionID The dispatching session ID.
    * @param prompt The dispatch prompt text.
@@ -2270,37 +2357,39 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     prompt: string,
   ): Promise<"admit" | "capped" | "ordinary"> {
     try {
-      const s = ledger.state(sessionID)
-      // The maintenance path skips plan-reviewer *re*-approval: it requires a
-      // live bound approval to skip at all. No verdict, no bound plan, or a
-      // stale one (already dropped by reconcile) is ordinary work.
-      if (!s.hasPlanVerdict || s.approvedPlanKey === "") return "ordinary"
-      const plan = s.approvedPlan
-      if (!maintenanceDeclared(prompt, plan, gates.promptPlanNames(prompt))) return "ordinary"
-      const dir = await resolveProjectDir(sessionID)
-      // The bound approval must still cover the plan's CURRENT spec region
-      // (same spec-slice key shape as capture and reconcile — one extractor);
-      // a spec edit that reconcile has not yet observed must not ride the
-      // maintenance path either. An unresolvable binding is stale (fail closed).
-      if (gates.planApprovalBinding(dir, [plan])?.key !== s.approvedPlanKey) return "ordinary"
-      const files = gitWorkingTreeFiles(dir)
-      const needsGuard = files !== null && files.some(maintenanceMarkerSensitive)
-      if (!maintenanceDiffEligible(files, needsGuard ? markerGuardPasses(dir) : false)) {
-        return "ordinary"
-      }
-      const count = maintenanceCounts.get(plan) ?? 0
-      if (count >= MAINTENANCE_MAX_PER_PLAN) {
-        journaler.journal({ type: "maintenance", sessionID, plan, capped: true })
-        return "capped"
-      }
-      maintenanceCounts.set(plan, count + 1)
-      boundMaintenanceCounts()
-      journaler.journal({ type: "maintenance", sessionID, plan, capped: false })
-      return "admit"
+      const fresh = await maintenanceApprovalFresh(sessionID, prompt)
+      if (fresh === null) return "ordinary"
+      if (!maintenanceDiffAllowed(fresh.dir)) return "ordinary"
+      return meterMaintenanceCap(sessionID, fresh.plan)
     } catch (e) {
       journaler.journal({ type: "error", sessionID, error: `maintenance classification: ${e}` })
       return "ordinary"
     }
+  }
+
+  /**
+   * Escalates a cap-exceeded maintenance dispatch: journals the
+   * `maintenance-capped` blocked row and throws the deliberate
+   * `BLOCKED by turnstile:` error (the ordinary block vocabulary, so the
+   * caller's settle stamps and re-throws it like any guard block).
+   * @param sessionID The dispatching session ID.
+   * @param plan The plan whose cap is spent.
+   */
+  function maintenanceCappedBlock(sessionID: string, plan: string): never {
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      agent: config.agents.executor,
+      reason: "maintenance-capped",
+      plan,
+    })
+    throw new BlockError(
+      `BLOCKED by turnstile: the maintenance dispatch cap (${MAINTENANCE_MAX_PER_PLAN}) is spent ` +
+        `for plan "${plan}" — dispatch the ${config.agents.planReviewer} subagent for a ` +
+        `re-review, or obtain an explicit user waiver (a user prompt this task must contain ` +
+        `the literal marker '${config.waiverMarker}' followed by the user's words).`,
+      "plan-gate",
+    )
   }
 
   /**
@@ -2444,44 +2533,32 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
-   * A task dispatch's pre-guard sequence: the per-leg and total-dispatch
-   * budget guard, then the plan-gate once-grant short-circuit — run
-   * before the agent-specific guards. The budget guard's
-   * waiver-exemption verdict is returned so the commit can thread it
-   * without re-reading: a later guard (the reviewer gate) may consume a
-   * covered unscoped waiver in between. A consumed once-grant is an
-   * allowed dispatch and is metered right at the short-circuit, like any
-   * other. Ordering matters: the budget guard runs before the once-grant
-   * consume, so a blocked dispatch cannot consume the grant. A BlockError
-   * from the budget guard propagates to the caller's settle, which stamps
-   * or suppresses it with the fallback verdict (the guard threw, so its
-   * verdict was never produced).
+   * A task dispatch's pre-guard budget half: the per-leg and total-dispatch
+   * budget guard. The plan-gate once-grant is consumed only inside the
+   * executor branch (after maintenance classification), so a dispatch that
+   * rides the maintenance path never burns a user's one-shot approval it
+   * never needed, and a blocked dispatch cannot consume the grant (the
+   * budget guard runs first; a BlockError from it propagates to the
+   * caller's settle).
    * @param sessionID The dispatching session ID.
    * @param agent The resolved agent name.
-   * @param description The trace-gated dispatch description.
-   * @returns The budget guard's waiver-exemption verdict and whether the
-   *     once-grant released the dispatch (already metered when true).
+   * @returns The budget guard's waiver-exemption verdict.
    */
-  function dispatchBudgetAndGrant(
-    sessionID: string,
-    agent: string,
-    description: string,
-  ): { waived: boolean; admitted: boolean } {
-    const waived = gates.guardDispatchBudget(sessionID, ledger, agent)
-    const admitted = consumePlanGrant(sessionID, agent)
-    if (admitted) allowDispatch(sessionID, agent, description, waived)
-    return { waived, admitted }
+  function dispatchBudget(sessionID: string, agent: string): boolean {
+    return gates.guardDispatchBudget(sessionID, ledger, agent)
   }
 
   /**
-   * Guard-and-meter-and-journal section of a task dispatch: the per-leg
-   * and total-dispatch budget guard and the plan-gate once-grant
-   * short-circuit (dispatchBudgetAndGrant), the reviewer evidence guard,
-   * and the executor plan/decomposition guards — then the counters
-   * advance and the dispatch entry is recorded at the admitted exit (a
-   * blocked attempt draws down nothing; stamped `blocked:true` only on a
-   * deliberate BlockError, which is re-thrown for the outer fail-open
-   * catch).
+   * Guard-and-meter-and-journal section of a task dispatch: the budget
+   * guard (dispatchBudget), the reviewer evidence guard, and the executor
+   * branch: maintenance classification first (an admitted dispatch is
+   * allowed without touching the plan gates; a capped one escalates), then
+   * the deferred plan-gate once-grant consume (an ordinary dispatch
+   * released by the grant skips the gates), then the plan/decomposition
+   * guards — then the counters advance and the dispatch entry is recorded
+   * at the admitted exit (a blocked attempt draws down nothing; stamped
+   * `blocked:true` only on a deliberate BlockError, which is re-thrown for
+   * the outer fail-open catch).
    * @param sessionID The dispatching session ID.
    * @param agent The resolved agent name.
    * @param prompt The dispatch prompt.
@@ -2495,9 +2572,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   ): Promise<void> {
     let waived = false
     try {
-      const outcome = dispatchBudgetAndGrant(sessionID, agent, description)
-      waived = outcome.waived
-      if (outcome.admitted) return
+      waived = dispatchBudget(sessionID, agent)
       if (agent === config.agents.reviewer) reviewerDecisionRecheck(sessionID)
       if (agent === config.agents.executor) {
         const maintenance = await classifyMaintenanceDispatch(sessionID, prompt)
@@ -2506,21 +2581,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
           return
         }
         if (maintenance === "capped") {
-          const plan = ledger.state(sessionID).approvedPlan
-          journaler.journal({
-            type: "blocked",
-            sessionID,
-            agent: config.agents.executor,
-            reason: "maintenance-capped",
-            plan,
-          })
-          throw new BlockError(
-            `BLOCKED by turnstile: the maintenance dispatch cap (${MAINTENANCE_MAX_PER_PLAN}) is spent ` +
-              `for plan "${plan}" — dispatch the ${config.agents.planReviewer} subagent for a ` +
-              `re-review, or obtain an explicit user waiver (a user prompt this task must contain ` +
-              `the literal marker '${config.waiverMarker}' followed by the user's words).`,
-            "plan-gate",
-          )
+          maintenanceCappedBlock(sessionID, ledger.state(sessionID).approvedPlan)
+        }
+        if (consumePlanGrant(sessionID, agent)) {
+          allowDispatch(sessionID, agent, description, waived)
+          return
         }
         await enforceExecutorGates(sessionID, prompt)
       }
