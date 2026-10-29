@@ -37,8 +37,7 @@ export function createToolHooks(ctx: TurnstileContext): {
    * budget, not a per-child one); bash/shell runs the command denylist +
    * landing guard; write/edit the path denylist then the parent-only
    * hands-on gate; session_move the worktree-move guard. A blocked call
-   * throws the deliberate BlockError; shadow mode journals only; off is a
-   * no-op.
+   * throws the deliberate BlockError.
    * @param event The host execute.before tool-hook payload.
    * @throws The deliberate gate block error when a guard rejects the call.
    */
@@ -58,7 +57,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     // extraction coerces the unconfirmed host payload (candidate keys
     // documented on each guard); an empty result fails open with
     // misconfiguration telemetry. A block throws BlockError (the setup
-    // wrapper rethrows it); shadow journals only; off is a no-op.
+    // wrapper rethrows it).
     if (event?.tool === "bash" || event?.tool === "shell") {
       ctx.handleBashDispatch(event, event.tool)
       return

@@ -102,7 +102,7 @@ export function createPermissionHooks(ctx: TurnstileContext): {
       // (host-shape-uncertain) permission event — the guard is the single
       // source of truth for landing-candidate detection. Approval
       // releases the gate; a live latch means the human must decide this
-      // landing (the first block already threw, and shadow never arms).
+      // landing (the first block already threw).
       // The arm is ONE-SHOT: it is consumed by the first evaluate it
       // forces. The permission request the arm is meant to attach to is
       // the very next one (the repeat push the guard just allowed through
