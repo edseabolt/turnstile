@@ -184,6 +184,22 @@ next attempt. `TURNSTILE OFF:` suspends it session-wide, but plan approval
 alone does not release the gate. A new user prompt resets the block count
 and any release.
 
+**Parent file-writing bash.** The hands-on gate also covers confident
+file-writing bash commands in parents and non-pipeline subagents: redirects
+from writer commands (`cat > f`, `echo x >> f`), `tee f`, `sed -i`/
+`--in-place`, and `cp`/`mv`/`dd`/`truncate`/`touch` run the same ladder as a
+parent `write`/`edit` (release, waiver, and the `once` grant all apply, and a
+`once` releases one write of any kind). Output capture never gates —
+`echo hi > /dev/null`, `npm test > log`, `git push > /dev/null` — and neither
+do heredoc-bearing commands (`cat <<EOF`: the splitter sees the heredoc body
+lines as simple commands, but they are stdin data, so the whole command is
+observed, not gated), `tee /dev/null` / fd-dup operands (`tee 2>&1`), or `dd
+of=/dev/...`; leading `NAME=value` assignments and `sudo`/`env`/`nice`/
+`command` wrappers classify by the real head (`sudo cp a b` gates). Every
+write-shaped command journals a `handsOn` telemetry row even where it
+is not gated. `toolPolicy.bashWriteGate: false` opts the gate tier out
+(telemetry continues).
+
 ## Waivers and approvals
 
 Turnstile reads a waiver or a human plan approval only from the user's own
@@ -322,6 +338,7 @@ no edits. The key knobs most people touch:
 
 | `sessionSummary` | `quiet` | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables) |
 | `toolPolicy.bashDeny` | `[]` | regex denylist for `bash`/`shell` (e.g. worktree/branch/merge ops) |
+| `toolPolicy.bashWriteGate` | `true` | gate confident file-writing bash commands (redirects from writer commands, `tee`, `sed -i`/`--in-place`, `cp`/`mv`/`dd`/`truncate`/`touch`) through the hands-on ladder; write-shaped commands always journal `handsOn` telemetry |
 | `maxReviewerRounds` / others | 2 / 3 / 3 / 4 / 16 | per-leg and total dispatch caps per task |
 | `agents.*` | stage names | rename recognition when you bring your own agents |
 | `plansDir` | `.opencode/plans` | where the decomposition scan looks |

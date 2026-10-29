@@ -259,6 +259,13 @@ export interface TurnstileToolPolicy {
   pathDeny: string[]
   /** Journal `session_move` dispatches (never blocks). */
   observeSessionMove: boolean
+  /**
+   * Gate confident file-writing bash commands (redirects from writer
+   * commands, `tee`, `sed -i`/`--in-place`, `cp`/`mv`/`dd`/`truncate`/
+   * `touch`) through the parent hands-on ladder; write-shaped commands
+   * always journal `handsOn` telemetry.
+   */
+  bashWriteGate: boolean
 }
 
 /**

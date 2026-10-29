@@ -30,8 +30,10 @@ import {
   isPushLanding,
   type HandsOnGateCapability,
   type LandingGateCapability,
+  type BashWriteGateCapability,
   type ToolPolicy,
 } from "./tool-policy.ts"
+import { classifyBashWrite } from "./bash-write.ts"
 import { formatPipelineStatus } from "./state.ts"
 import { orchestratorPolicyFor } from "./policy.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
@@ -2300,10 +2302,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
 
   /**
    * Handles a `bash`/`shell` tool call: the denylist guard, the
-   * conventional-commit lint, and the landing telemetry, then the
-   * reviewer-gated landing gate with a landing once-grant
-   * short-circuit for push candidates. A denylist or landing block
-   * throws BlockError (re-thrown by the outer catch).
+   * conventional-commit lint, the landing telemetry, and the hands-on bash
+   * telemetry + write-shaped bash gate, then the reviewer-gated landing
+   * gate with a landing once-grant short-circuit for push candidates. A
+   * denylist, hands-on, or landing block throws BlockError (re-thrown by
+   * the outer catch).
    * @param event The execute.before tool event (bash/shell shape).
    * @param tool The narrowed tool name (`"bash"` or `"shell"`).
    */
@@ -2320,13 +2323,27 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Landing telemetry (always) then the reviewer-gated landing gate.
     const text = String(command ?? "")
     toolPolicy.observeLanding(sid, text)
-    // The stateful ledger stays out of tool-policy: only a shaped
-    // capability is handed over. `parent` is the parent session (a
-    // subagent's bash draws on the parent's task scope) and `st` is
-    // its bucket, so a still-unattributed child self-keys its own
-    // fresh state.
+    // Hands-on bash telemetry (all sessions, never blocks), then the
+    // write-shaped bash gate for parents and non-pipeline subagents —
+    // a registered pipeline child's own file-writing bash is its work.
+    // The verdict is computed ONCE here and threaded into both the
+    // telemetry and the guard.
+    const gw = classifyBashWrite(text)
+    toolPolicy.observeBashWrite(sid, text, gw)
+    // Fail-closed exemption, mirroring the write/edit arm: only a registered
+    // pipeline child's own bash is exempt, and an unresolved agent gates like
+    // a parent. The exemption sits AFTER the telemetry (so a child still
+    // journals its `handsOn` row) and BEFORE the guard (so the guard — and
+    // with it the parent bucket's pending hands-on once-grant and landing
+    // grant — is never reached by a child dispatch).
+    if (isPipelineChild(sid, typeof event?.agent === "string" ? event.agent : "")) return
     const parent = ledger.parentOf(sid)
     const st = ledger.state(parent)
+    // Invariant: this arm runs BEFORE `consumeLandingGrant` and the hands-on
+    // once-grant is consumed inside `guardBashWrite` itself — so a landing
+    // grant can never release a bash write, and a hands-on block throws
+    // before the landing grant is burned.
+    toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
     if (consumeLandingGrant(st, text)) return
     toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent, sid))
     return
@@ -2374,6 +2391,23 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         st.handsOnBlocks += 1
       },
       escalate: (): boolean => armHandsOnAsk(parent),
+    }
+  }
+
+  /**
+   * The stateful bash-write-gate capability handed to
+   * `toolPolicy.guardBashWrite`: the hands-on capability plus the once-grant
+   * consume. The consume is NOT called at the arm site — `guardBashWrite`
+   * runs it itself, after its flag and verdict checks, so a disabled gate or
+   * a non-gate shape never burns a pending grant.
+   * @param st The parent's gate-state bucket.
+   * @param parent The parent session (the latch's key).
+   * @returns The bash-write-gate capability record.
+   */
+  function bashWriteGateHandles(st: GateState, parent: string): BashWriteGateCapability {
+    return {
+      ...handsOnGateHandles(st, parent),
+      consumeGrant: () => consumeHandsOnGrant(st),
     }
   }
 

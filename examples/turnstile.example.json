@@ -39,7 +39,8 @@
   "toolPolicy": {
     "bashDeny": [],
     "pathDeny": [],
-    "observeSessionMove": true
+    "observeSessionMove": true,
+    "bashWriteGate": true
   },
   "gitGates": {
     "commitMessages": true,

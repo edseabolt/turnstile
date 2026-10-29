@@ -21,106 +21,19 @@ import { DEFAULT_COMMIT_FORMAT } from "./config.ts"
 import { BlockError } from "./gates.ts"
 import type { Journaler } from "./journal.ts"
 import type { TurnstileConfig } from "./types.ts"
+import type { BashWriteVerdict } from "./bash-write.ts"
+
+// The shell-aware tokenizer lives in `src/bash-write.ts` (the write-shape
+// classifier owns it so the dependency stays acyclic); it is re-exported here
+// so `empty-diff.ts` and the tests keep importing from this boundary.
+export { splitCommands, tokenizeWords } from "./bash-write.ts"
+import { splitCommands, tokenizeWords } from "./bash-write.ts"
 
 /** One compiled denylist rule, paired with its source index for the journal. */
 interface CompiledRule {
   re: RegExp
   index: number
   source: string
-}
-
-// Splits a command into simple commands on top-level shell separators
-// (`;` `|` `&` `\r` `\n`), quote- and backslash-aware: a backslash escapes the
-// next character (`\;` inside quotes is not a separator, `\"` does not close a
-// quote early), so a quoted `echo "git commit"` stays on one side of a
-// separator (never parsed as an invocation). Shared with the commit-lint guard
-// below so landing detection and commit linting parse the same shape.
-export function splitCommands(command: string): string[] {
-  const out: string[] = []
-  let cur = ""
-  let quote = ""
-  let escaped = false
-  for (const ch of command) {
-    if (escaped) {
-      // The previous backslash consumed this character: append it verbatim.
-      cur += ch
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") {
-        escaped = true
-        cur += ch
-        continue
-      }
-      if (ch === quote) quote = ""
-      cur += ch
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      cur += ch
-      continue
-    }
-    if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
-      out.push(cur)
-      cur = ""
-      continue
-    }
-    cur += ch
-  }
-  out.push(cur)
-  return out
-}
-
-// Tokenizes one simple command into quoted-aware words, stripping the quotes so
-// a `-m "feat: x"` word yields the bare message `feat: x`. Honors the same
-// backslash escape so a `\"` inside a double-quoted word is a literal quote,
-// not a word break.
-export function tokenizeWords(input: string): string[] {
-  const words: string[] = []
-  let cur = ""
-  let quote = ""
-  let escaped = false
-  for (const ch of input) {
-    if (escaped) {
-      cur += ch
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") {
-        escaped = true
-        cur += ch
-        continue
-      }
-      if (ch === quote) quote = ""
-      else cur += ch
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    if (/\s/.test(ch)) {
-      if (cur) words.push(cur)
-      cur = ""
-      continue
-    }
-    cur += ch
-  }
-  if (cur) words.push(cur)
-  return words
 }
 
 /**
@@ -327,6 +240,18 @@ export interface HandsOnGateCapability {
 }
 
 /**
+ * The stateful capability for the bash write gate
+ * ({@link ToolPolicy.guardBashWrite}): the hands-on capability plus the
+ * once-grant consume, which only the bash arm runs (the write/edit gate's
+ * grant is consumed in the hook layer). Extending without altering keeps
+ * existing {@link HandsOnGateCapability} fakes and tests untouched.
+ */
+export interface BashWriteGateCapability extends HandsOnGateCapability {
+  /** Consumes the pending `.handsOn` once-grant; true when one was pending. */
+  consumeGrant(): boolean
+}
+
+/**
  * The stateless tool-call policy bound to one resolved config + journaler.
  * Every guard fails open on an internal error; only a deliberate block throws.
  */
@@ -478,6 +403,43 @@ export interface ToolPolicy {
     filePath: unknown,
     sessionID: string,
     gate: HandsOnGateCapability,
+  ): void
+  /**
+   * Journals `{type:"tool", tool:"bash", handsOn:true}` telemetry for
+   * write-shaped bash commands — in every mode, for every session (children
+   * included, like landing telemetry), and never blocking. The write-shape
+   * verdict is classified once by the caller (via
+   * {@link classifyBashWrite}) and threaded here, so the command is never
+   * re-parsed. Fail-open on an internal error.
+   * @param sessionID The session ID, recorded in the journal entry.
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   */
+  observeBashWrite(sessionID: string, command: unknown, verdict: BashWriteVerdict): void
+  /**
+   * Gates confident file-writing bash commands through the hands-on ladder
+   * (mirroring {@link ToolPolicy.guardHandsOn}): a no-op unless
+   * `toolPolicy.bashWriteGate` is set and `verdict` is `"gate"`. A live
+   * release or an executor-scoped waiver allows silently; then a pending
+   * `.handsOn` once-grant is consumed and allows; otherwise the shared
+   * hands-on ladder tail runs (block / repeat-attempt escalation — see
+   * {@link ToolPolicy.guardHandsOn}). Ordering: the grant is consumed here,
+   * after the flag and verdict checks, so with the gate disabled or a
+   * non-gate shape a pending grant is never burned. Fail-open on an
+   * internal error.
+   * @param tool The tool name, recorded in the journal (`"bash"` or `"shell"`).
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The bash-write-gate capability supplied by the hook layer.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
+   */
+  guardBashWrite(
+    tool: "bash" | "shell",
+    command: unknown,
+    verdict: BashWriteVerdict,
+    sessionID: string,
+    gate: BashWriteGateCapability,
   ): void
 }
 
@@ -820,6 +782,27 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   /**
+   * Shared hands-on ladder tail: both the write/edit guard and the bash
+   * write guard pass identical inputs to {@link guardLadderTail}, so the
+   * block/escalation decision has one source (DRY).
+   * @param tool The tool name, recorded in journal entries.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The hands-on capability from the caller's gate.
+   */
+  function handsOnTail(tool: string, sessionID: string, gate: HandsOnGateCapability): void {
+    guardLadderTail({
+      armed: gate.priorBlocks() >= 1,
+      tool,
+      sessionID,
+      reason: "hands-on",
+      gate,
+      journalBlock: journalHandsOnBlock,
+      requirement: HANDSON_REQUIREMENT,
+      blockCause: "hands-on",
+    })
+  }
+
+  /**
    * Guards a parent-session `write`/`edit` target path. `gate` is the
    * stateful capability from the hook layer (registered pipeline children
    * never reach it — the caller's dispatch skip owns the parent-only
@@ -851,16 +834,57 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         return
       }
       if (gate.hasRelease() || gate.hasWaiver()) return
-      guardLadderTail({
-        armed: gate.priorBlocks() >= 1,
-        tool,
-        sessionID,
-        reason: "hands-on",
-        gate,
-        journalBlock: journalHandsOnBlock,
-        requirement: HANDSON_REQUIREMENT,
-        blockCause: "hands-on",
-      })
+      handsOnTail(tool, sessionID, gate)
+    } catch (e) {
+      if (e instanceof BlockError) throw e
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
+   * Journals hands-on bash write telemetry (`{type:"tool", tool:"bash",
+   * handsOn:true}`) for write-shaped commands — always, in every mode, for
+   * every session (children included, like landing telemetry), and never
+   * blocking. No-op for a non-write-shaped command.
+   * @param sessionID The session ID, recorded in the journal entry.
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   */
+  function observeBashWrite(sessionID: string, command: unknown, verdict: BashWriteVerdict): void {
+    try {
+      if (verdict === "none") return
+      journaler.journal({ type: "tool", sessionID, tool: "bash", handsOn: true })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
+   * Gates confident file-writing bash commands through the hands-on ladder
+   * (see {@link ToolPolicy.guardBashWrite}). Ordering: the `bashWriteGate`
+   * flag and the `verdict === "gate"` check come first, then the release /
+   * waiver short-circuits, then the once-grant is consumed HERE (so a
+   * disabled gate or a non-gate shape never burns a pending grant), then
+   * the shared ladder tail.
+   * @param tool The tool name, recorded in the journal.
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The bash-write-gate capability supplied by the hook layer.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
+   */
+  function guardBashWrite(
+    tool: "bash" | "shell",
+    command: unknown,
+    verdict: BashWriteVerdict,
+    sessionID: string,
+    gate: BashWriteGateCapability,
+  ): void {
+    try {
+      if (!config.toolPolicy.bashWriteGate || verdict !== "gate") return
+      if (gate.hasRelease() || gate.hasWaiver()) return
+      if (gate.consumeGrant()) return
+      handsOnTail(tool, sessionID, gate)
     } catch (e) {
       if (e instanceof BlockError) throw e
       journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
@@ -942,5 +966,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     observeLanding,
     guardLanding,
     guardHandsOn,
+    observeBashWrite,
+    guardBashWrite,
   }
 }

@@ -159,6 +159,12 @@ export function defaultConfig(
       // on block, journaled) without breaking ordinary editing.
       pathDeny: [],
       observeSessionMove: true,
+      // File-writing bash goes through the hands-on ladder: only confident
+      // writer shapes gate (`cat > f`, `tee f`, `sed -i`, `cp`/`mv`/...);
+      // output capture (`npm test > log`, `> /dev/null`) never gates, so the
+      // writer-head set is the zero-false-positive surface. The session-wide
+      // escape hatch is the TURNSTILE OFF: suspend marker.
+      bashWriteGate: true,
     },
     // Git-and-commit gates are per-feature switches with no meta-mode: while
     // `commitMessages` is true commit subjects are linted, and while
@@ -354,13 +360,11 @@ export function mergeConfig(
           warnings.push(
             'config: unknown key "toolPolicy.mode" removed — the bash/path denylist is now always enforced; use TURNSTILE OFF: to suspend',
           )
-        } else if (tpKey === "observeSessionMove") {
+        } else if (tpKey === "observeSessionMove" || tpKey === "bashWriteGate") {
           if (typeof tpValue === "boolean") {
-            merged.observeSessionMove = tpValue
+            merged[tpKey] = tpValue
           } else {
-            warnings.push(
-              "config: toolPolicy.observeSessionMove must be a boolean; keeping default",
-            )
+            warnings.push(`config: toolPolicy.${tpKey} must be a boolean; keeping default`)
           }
         } else if (tpKey === "bashDeny" || tpKey === "pathDeny") {
           // Only the value itself being non-array falls back to the default

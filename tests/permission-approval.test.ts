@@ -2080,6 +2080,56 @@ test("hands-on dispatch: pipeline child exempt via emitterAgent fallback, unreso
 })
 
 /**
+ * The bash write gate exempts a registered pipeline child exactly like the
+ * write/edit arm: a gate-tier command (`cp`) from a child whose tool event
+ * reports a pipeline agent never blocks (the executor's own work) while an
+ * unresolved agent fails closed and gates like a parent. The child's
+ * hands-on telemetry row is still journaled — only the guard is skipped —
+ * and a blocked bash write journals reason `parent-hands-on`.
+ */
+test("hands-on dispatch: pipeline child gate-tier bash passes, unresolved child gated", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Pipeline child: the agent is reported on the tool event itself.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "executor" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "c1",
+      agent: "executor",
+      input: { command: "cp a b" },
+    })
+    // Fail-closed: edge present but no resolvable agent anywhere.
+    await h.pushEvent({ type: "session.created", properties: { sessionID: "c3", parentID: "p1" } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "c3",
+          agent: 42,
+          input: { command: "cp a b" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the unresolved child bash is gated")
+    assert.equal(blocked[0]!.sessionID, "c3")
+    // Telemetry precedes the exemption: the exempt child still journaled its
+    // hands-on row for the same gate-tier command.
+    const handsOn = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.handsOn === true && e.sessionID === "c1",
+    )
+    assert.equal(handsOn.length, 1, "the exempt child still journals its hands-on row")
+  } finally {
+    restore()
+  }
+})
+
+/**
  * Ordering: a configured `pathDeny` match wins over the hands-on gate and the
  * two journal reasons stay disjoint — the denylisted path journals reason
  * "tool-policy", a plain path
