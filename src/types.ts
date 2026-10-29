@@ -720,6 +720,17 @@ export interface TurnstileConfig {
    */
   sessionSummary: "on" | "quiet" | "off"
   /**
+   * Repeat-attempt escalation mode for the landing and hands-on gates.
+   * "block" (default): a retried attempt re-throws `BLOCKED by turnstile:`
+   * and never raises a permission ask — the gate releases only via a
+   * user-authored waiver/approval prompt marker, an earned reviewer
+   * verdict, or a hands-on `always` release carried over from a prior
+   * "ask" session. "ask": the repeat attempt arms a one-shot latch and
+   * forces the host permission ask (interactive hosts; under an
+   * auto-accepting host the ask tier collapses to allow).
+   */
+  escalation: "ask" | "block"
+  /**
    * When true, a prompt admitted in an unchanged worktree/branch carries the
    * current task's restart-sticky gate flags across the prompt reset instead
    * of wiping them (a continuation, not a new task). The carry is

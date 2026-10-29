@@ -394,6 +394,10 @@ async function boot(
     // back in explicitly per call.
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask ladder (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       ...configOverrides,
       gitGates: { emptyDiffExempt: false, ...configOverrides.gitGates },
     } as Partial<TurnstileConfig>,
@@ -648,6 +652,10 @@ async function bootInGitProject(
     // assertions deterministic; the empty-diff tests opt in per call.
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask ladder (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       ...configOverrides,
       gitGates: { emptyDiffExempt: false, ...configOverrides.gitGates },
     } as Partial<TurnstileConfig>,

@@ -95,8 +95,9 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         return
       }
       // Landing arm: a bash/shell permission.evaluate whose landing ask
-      // is armed (the guard set the pending-landing-ask latch on a
-      // repeat attempt). Candidate detection lives in
+      // is armed (the guard set the pending-landing-ask latch on an armed
+      // attempt under `escalation: "ask"` — under the default `"block"` no
+      // latch is ever armed, so this arm stays inert by construction). Candidate detection lives in
       // `isPushLanding` (used by the guard); the evaluate handler
       // consults the arm rather than re-reading the command from the
       // (host-shape-uncertain) permission event — the guard is the single
@@ -117,12 +118,19 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         // no enforcement is lost.
         if (ctx.ledger.isSuspended(parent)) {
           ctx.pendingLandingAsk.delete(parent)
+          // Mirror the suspension consume on the dedupe map: a stale
+          // timestamp must not suppress a legitimate ask row after the
+          // suspension (the guard re-arms on a fresh attempt).
+          ctx.lastLandingEscalateAt.delete(parent)
           return
         }
         const st = ctx.ledger.state(parent)
         if (st.hasReviewApprove) return
         if (!ctx.hasLiveLandingAsk(parent)) return
         ctx.pendingLandingAsk.delete(parent)
+        // One-shot consume: the dedupe timestamp goes with the latch so the
+        // next (genuinely new) escalation can journal a fresh ask row.
+        ctx.lastLandingEscalateAt.delete(parent)
         pe.effect = "ask"
         pe.message = `turnstile: ${LANDING_REQUIREMENT}`
         // Stamp the consume, not the ask: the guard already journaled the
@@ -141,7 +149,9 @@ export function createPermissionHooks(ctx: TurnstileContext): {
       }
       // Hands-on arm: a write/edit permission.evaluate whose hands-on ask is
       // armed (the guard set the pending-hands-on-ask latch on a repeat
-      // parent attempt). The guard is the single source of truth for
+      // parent attempt under `escalation: "ask"` — under the default
+      // `"block"` no latch is ever armed, so this arm stays inert by
+      // construction). The guard is the single source of truth for
       // the parent-only contract; the evaluate handler consults the arm
       // rather than re-reading the (host-shape-uncertain) event. A live
       // `always` release or an executor-scoped waiver inerts the arm without
@@ -157,12 +167,18 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         // attempt, so no enforcement is lost.
         if (ctx.ledger.isSuspended(parent)) {
           ctx.pendingHandsOnAsk.delete(parent)
+          // Mirror the suspension consume on the dedupe map (same rationale
+          // as the landing arm above).
+          ctx.lastHandsOnEscalateAt.delete(parent)
           return
         }
         const st = ctx.ledger.state(parent)
         if (st.handsOnRelease || waiverCovers(st, ["executor"])) return
         if (!ctx.hasLiveHandsOnAsk(parent)) return
         ctx.pendingHandsOnAsk.delete(parent)
+        // One-shot consume: the dedupe timestamp goes with the latch so the
+        // next (genuinely new) escalation can journal a fresh ask row.
+        ctx.lastHandsOnEscalateAt.delete(parent)
         pe.effect = "ask"
         pe.message = `turnstile: ${HANDSON_REQUIREMENT}`
         // Stamp the consume, not the ask: the guard already journaled the

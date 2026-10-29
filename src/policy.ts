@@ -116,7 +116,7 @@ function markerParsingSection(): string {
  * @returns The reviewer ensemble line.
  */
 function ensembleSection(): string {
-  return `Reviewer ensemble: dispatch two reviewer subagents on the same diff; turnstile mechanically counts unwaived reviewer dispatches per task (the \`{type:"ensemble"}\` journal entry, carrying the running count) and, under \`reviewEnsemble: enforce\` (default) refuses to consider the task reviewed — the landing gate stays red, escalate or obtain the permission-prompt release — until the second dispatch has been journaled; waived dispatches never satisfy the ensemble: a waived review is still released only by the human permission ask, never by the reviewer verdict; merge one finding per file+symbol at max severity; a singleton CRITICAL/HIGH blocks only after re-reading the cited location; LOW singletons become UNCONFIRMED notes.`
+  return `Reviewer ensemble: dispatch two reviewer subagents on the same diff; turnstile mechanically counts unwaived reviewer dispatches per task (the \`{type:"ensemble"}\` journal entry, carrying the running count) and, under \`reviewEnsemble: enforce\` (default) refuses to consider the task reviewed — the landing gate stays red until the user's explicit approval (waiver) or the human release — until the second dispatch has been journaled; waived dispatches never satisfy the ensemble: a waived review is still released only by the human, never by the reviewer verdict; merge one finding per file+symbol at max severity; a singleton CRITICAL/HIGH blocks only after re-reading the cited location; LOW singletons become UNCONFIRMED notes.`
 }
 
 /**

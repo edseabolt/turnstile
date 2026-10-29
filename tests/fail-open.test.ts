@@ -412,7 +412,7 @@ test("git-side guards journal their internal failure when the sink throws", () =
     hasCreditedApproval: (): boolean => false,
     priorBlocks: (): number => 0,
     recordBlock: (): void => {},
-    escalate: (): void => {},
+    escalate: (): boolean => true,
     isEmptyDiff: (): boolean => false,
   }
   assert.doesNotThrow(() => policy.guardCommitMessage("bash", 'git commit -m "garbage"', "p1"))

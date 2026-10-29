@@ -169,18 +169,25 @@ export function isPushLanding(command: string): boolean {
  * message, so the two never drift. Stamped after `BLOCKED by turnstile:` (the
  * ask message is `turnstile: ${LANDING_REQUIREMENT}`, prefixed so the stream
  * consumer can recognize a landing ask by its `turnstile: push/PR …` prefix).
+ * Mode-true in both escalation modes: it instructs stop-and-report and names
+ * the release signals (user waiver / earned reviewer verdict), promising no
+ * permission ask — correct under `escalation: "block"`, and still the right
+ * instruction under `"ask"` (the ask happens, but the agent must stop and
+ * report until the reply lands).
  */
 export const LANDING_REQUIREMENT =
-  "pushing requires a reviewer VERDICT: APPROVE before landing — wait for the reviewer or escalate to the user"
+  "pushing requires a reviewer VERDICT: APPROVE before landing — report this block to the user and stop; the gate releases only on the user's explicit approval (waiver) or an earned reviewer verdict"
 
 /**
  * Core hands-on-gate text (enforce throw + ask message share it, so the two
  * never drift). Stamped after `BLOCKED by turnstile:` (the ask message is
  * `turnstile: ${HANDSON_REQUIREMENT}`, prefixed so the stream consumer can
  * recognize a hands-on ask by its `turnstile: hands-on edits …` prefix).
+ * Mode-true in both escalation modes (see LANDING_REQUIREMENT): it instructs
+ * stop-and-report and drops the ask promise.
  */
 export const HANDSON_REQUIREMENT =
-  "parent-session write/edit requires the pipeline — dispatch the executor on the approved plan, or wait for the human permission ask"
+  "parent-session write/edit requires the pipeline — dispatch the executor on the approved plan; report this block to the user and stop; the gate releases only on the user's explicit approval (waiver)"
 
 /**
  * Suffix added to the invalid-commit-block ask, describing the accepted shape.
@@ -279,8 +286,12 @@ export interface LandingGateCapability {
   priorBlocks(): number
   /** Increment {@link LandingGateCapability.priorBlocks} (block path only). */
   recordBlock(): void
-  /** Signal the setup-side permission wiring to arm the human ask (repeat attempt). */
-  escalate(): void
+  /**
+   * Arms the ask latch; returns true when the caller must journal the ask
+   * row (dedupe collapses same-tick re-arms within the latch TTL into one
+   * journaled ask).
+   */
+  escalate(): boolean
   /**
    * True when `command` is a statically-provable empty-diff push (a total
    * probe: every refspec's branch resolves to the same commit as its
@@ -307,8 +318,12 @@ export interface HandsOnGateCapability {
   priorBlocks(): number
   /** Increment {@link HandsOnGateCapability.priorBlocks} (block path only). */
   recordBlock(): void
-  /** Signal the hook-side permission wiring to arm the human ask. */
-  escalate(): void
+  /**
+   * Arms the ask latch; returns true when the caller must journal the ask
+   * row (dedupe collapses same-tick re-arms within the latch TTL into one
+   * journaled ask).
+   */
+  escalate(): boolean
 }
 
 /**
@@ -401,12 +416,15 @@ export interface ToolPolicy {
    * Without approval, first block this task: journal
    * `{type:"blocked", reason:"no-landing-approval"}`, call `gate.recordBlock()`,
    * and throw (`BlockError`). A repeat attempt (`priorBlocks() >= 1`) without
-   * approval journals `{type:"permission", action:"ask", reason:"landing"}`
-   * and calls `gate.escalate()` (arming the pending-landing-ask latch);
-   * `execute.before` then passes so the setup-side evaluate handler forces the
-   * human ask naming the missing reviewer verdict. Fail-toward-strict: a host
-   * `reject` leaves approval absent, so the next attempt re-blocks and re-arms
-   * the ask. Fail-open on an internal error. With `gitGates.emptyDiffExempt`
+   * approval branches on `config.escalation`: under `"ask"` it journals
+   * `{type:"permission", action:"ask", reason:"landing"}` and calls
+   * `gate.escalate()` (arming the pending-landing-ask latch; a within-window
+   * duplicate arm journals no second ask row), and `execute.before` then
+   * passes so the setup-side evaluate handler forces the human ask naming the
+   * missing reviewer verdict; under `"block"` (the default) the repeat
+   * attempt takes the block path again — no ask, no latch. Fail-toward-strict:
+   * a host `reject` leaves approval absent, so the next attempt re-blocks.
+   * Fail-open on an internal error. With `gitGates.emptyDiffExempt`
    * (default true; `false` is the strict opt-out), a push the capability proves
    * statically empty against upstream is journaled `exempt:"empty-diff"` and
    * allowed; every ambiguous shape (detached HEAD, unresolvable remote/upstream,
@@ -432,13 +450,21 @@ export interface ToolPolicy {
    * `USER WAIVER:` allows silently. Otherwise the first attempt this task
    * journals `{type:"blocked", reason:"parent-hands-on"}`, calls
    * `gate.recordBlock()`, and throws (`BlockError` stamped `cause:"hands-on"`).
-   * A repeat attempt (`priorBlocks() >= 1`) journals
+   * A repeat attempt (`priorBlocks() >= 1`) branches on `config.escalation`:
+   * under `"ask"` it journals
    * `{type:"permission", action:"ask", reason:"hands-on"}` and calls
-   * `gate.escalate()` (arming the pending-hands-on-ask latch); `execute.before`
-   * then passes so the evaluate handler forces the human ask naming the
-   * hands-on requirement. Plan approval never releases this gate.
+   * `gate.escalate()` (arming the pending-hands-on-ask latch; a within-window
+   * duplicate arm journals no second ask row); `execute.before` then passes
+   * so the evaluate handler forces the human ask naming the hands-on
+   * requirement; under `"block"` (the default) the repeat attempt takes the
+   * block path again — no ask, no latch. Under `"block"` the reply-granted
+   * release paths (`handsOnRelease`, the hands-on once-grant) stay naturally
+   * inert: they are granted only from replies to asks the plugin raised, and
+   * `"block"` raises none (a release granted in a prior `"ask"` session
+   * within the same ledger bucket still releases). Plan approval never
+   * releases this gate.
    * Fail-toward-strict: a host `reject` leaves the gate red, so the next
-   * attempt re-blocks and re-arms the ask. An empty/absent path journals
+   * attempt re-blocks. An empty/absent path journals
    * `{type:"error"}` and allows (fail-open misconfiguration telemetry).
    * Fail-open on an internal error.
    * @param tool The tool name, recorded in the journal (`"write"` or `"edit"`).
@@ -756,7 +782,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     /** Ask reason string (`"landing"` / `"hands-on"`). */
     reason: string
     /** Escalation + block-recording capability from the caller's gate. */
-    gate: { escalate(): void; recordBlock(): void }
+    gate: { escalate(): boolean; recordBlock(): void }
     /** The gate's block journaler (a journalGateBlock delegation). */
     journalBlock: (tool: string, sessionID: string) => void
     /** Requirement text the enforce throw names. */
@@ -766,16 +792,19 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   /**
-   * Shared guard ladder tail: an armed attempt journals the permission ask,
-   * escalates, and allows (the evaluate handler forces the human ask); an
-   * unarmed attempt takes the first block — journal, record, then throw.
-   * Fail-toward-strict: a reject leaves the gate red and the next attempt
-   * re-blocks and re-arms. One source for the landing and hands-on ladders so
-   * the two cannot drift.
+   * Shared guard ladder tail: under `escalation: "ask"` an armed attempt
+   * journals the permission ask (only when `gate.escalate()` reports the
+   * arm is not a within-window duplicate — dedupe collapses same-tick
+   * re-arms into one ask row) and allows (the evaluate handler forces the
+   * human ask); under `escalation: "block"` (the default) or when the
+   * escalate arm is deduped, the attempt takes the block path — journal,
+   * record, then throw. Fail-toward-strict: a reject leaves the gate red
+   * and the next attempt re-blocks. One source for the landing and
+   * hands-on ladders so the two cannot drift.
    * @param t The parameterized ladder inputs (see {@link LadderTail}).
    */
   function guardLadderTail(t: LadderTail): void {
-    if (t.armed) {
+    if (t.armed && config.escalation === "ask" && t.gate.escalate()) {
       journaler.journal({
         type: "permission",
         sessionID: t.sessionID,
@@ -783,7 +812,6 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         action: "ask",
         reason: t.reason,
       })
-      t.gate.escalate()
       return
     }
     t.journalBlock(t.tool, t.sessionID)

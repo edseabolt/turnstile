@@ -49,6 +49,10 @@ async function boot(
     env: isolatedEnv(metricsDir),
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask latches (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       gitGates: {
         ...defaultConfig({}).gitGates,
         // Pinned false: these tests exercise the landing ladder's BLOCKED

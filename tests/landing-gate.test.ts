@@ -46,10 +46,17 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
 /**
  * Builds a policy over the default config with one-level-deep `gitGates`
  * override, with a capturing journaler.
- * @param overrides `gitGates` fields to merge over the defaults.
+ * @param overrides `gitGates` fields to merge over the defaults, plus a
+ *     top-level `escalation` override (e.g. `"ask"` to exercise the
+ *     interactive ask ladder).
  * @returns The policy, its journaled entries, and its trace lines.
  */
-function makePolicy(overrides: { gitGates?: Partial<TurnstileGitGates> } = {}): {
+function makePolicy(
+  overrides: {
+    gitGates?: Partial<TurnstileGitGates>
+    escalation?: "ask" | "block"
+  } = {},
+): {
   policy: ToolPolicy
   entries: any[]
   traces: string[]
@@ -57,6 +64,7 @@ function makePolicy(overrides: { gitGates?: Partial<TurnstileGitGates> } = {}): 
   const { journaler, entries, traces } = captureJournaler()
   const cfg: TurnstileConfig = {
     ...defaultConfig({}),
+    escalation: overrides.escalation ?? "block",
     gitGates: { ...defaultConfig({}).gitGates, ...(overrides.gitGates ?? {}) },
   }
   return { policy: createToolPolicy(cfg, journaler), entries, traces }
@@ -113,10 +121,11 @@ function recordingCapability(opts?: {
       log.blockCount = (log.blockCount as number) + 1
       log.recordBlock = (log.recordBlock as number) + 1
     },
-    escalate: () => {
+    escalate: (): boolean => {
       if (throwAt === "escalate") throw new Error("escalate boom")
       log.escalate = (log.escalate as number) + 1
       log.escalated = true
+      return true
     },
     isEmptyDiff: () => {
       if (throwAt === "isEmptyDiff") throw new Error("isEmptyDiff boom")
@@ -157,14 +166,14 @@ test("guardLanding: first-block decision matrix over the landingGate switch", ()
 })
 
 /**
- * Repeat attempt without approval. Under `enforce` it journals a
+ * Repeat attempt without approval under `escalation: "ask"`. It journals a
  * `{type:"permission", action:"ask", reason:"landing"}` and calls
  * `gate.escalate()` (allowing execute.before to pass so the setup-side evaluate
- * handler forces the human ask); the escalation is a documented no-op on the
- * real capability, so the guard itself allows.
+ * handler forces the human ask); the escalation arm journals the ask row (the
+ * dedupe returns true for a fresh escalation), so the guard itself allows.
  */
-test("guardLanding: repeat attempt under enforce escalates and allows", () => {
-  const { policy, entries } = makePolicy()
+test("guardLanding: repeat attempt under escalation ask escalates and allows", () => {
+  const { policy, entries } = makePolicy({ escalation: "ask" })
   const { gate, log } = recordingCapability({ prior: 1 })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.escalate, 1, "escalate called on the repeat attempt")
@@ -175,13 +184,33 @@ test("guardLanding: repeat attempt under enforce escalates and allows", () => {
 })
 
 /**
- * A session journaled with a credited reviewer APPROVE whose `hasReviewApprove`
- * flag a prompt reset dropped escalates on the FIRST enforce attempt: no
- * first-block throw, no block recorded, one landing ask journaled, and
- * `gate.escalate()` armed so the evaluate handler can force the human ask.
+ * Repeat attempt under the default `escalation: "block"` re-blocks: journals
+ * a second `no-landing-approval` block row, records the block again, throws,
+ * and journals no `permission` ask row and never calls `gate.escalate()`.
  */
-test("guardLanding: a credited session escalates on the first enforce attempt", () => {
+test("guardLanding: repeat attempt under the default block mode re-blocks", () => {
   const { policy, entries } = makePolicy()
+  const { gate, log } = recordingCapability({ prior: 1 })
+  blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.escalate, 0, "block mode never escalates")
+  assert.equal(log.recordBlock, 1, "the repeat block is recorded again")
+  assert.equal(landingBlocks(entries).length, 1, "one block row on the repeat attempt")
+  assert.equal(
+    entries.some((e) => e.type === "permission"),
+    false,
+    "no permission ask row under block mode",
+  )
+})
+
+/**
+ * A session journaled with a credited reviewer APPROVE whose `hasReviewApprove`
+ * flag a prompt reset dropped escalates on the FIRST attempt under
+ * `escalation: "ask"`: no first-block throw, no block recorded, one landing
+ * ask journaled, and `gate.escalate()` armed so the evaluate handler can
+ * force the human ask.
+ */
+test("guardLanding: a credited session escalates on the first attempt under ask mode", () => {
+  const { policy, entries } = makePolicy({ escalation: "ask" })
   const { gate, log } = recordingCapability({ credited: true })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.escalate, 1, "escalate is called on the credited first attempt")
@@ -191,6 +220,26 @@ test("guardLanding: a credited session escalates on the first enforce attempt", 
   assert.ok(perm, "the landing ask is journaled on the credited first attempt")
   assert.equal(perm.action, "ask")
   assert.deepEqual(landingBlocks(entries), [], "a credited first attempt journals no block")
+})
+
+/**
+ * A credited session under the default `escalation: "block"` takes the plain
+ * first block: the human decision point the credit exists for is the ask,
+ * which block mode does not raise — so the first push throws, records the
+ * block, and journals no permission ask row.
+ */
+test("guardLanding: a credited session takes the plain first block under block mode", () => {
+  const { policy, entries } = makePolicy()
+  const { gate, log } = recordingCapability({ credited: true })
+  blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.escalate, 0, "block mode never escalates a credited session")
+  assert.equal(log.recordBlock, 1, "the credited first attempt records the block")
+  assert.equal(landingBlocks(entries).length, 1, "one block row on the credited first attempt")
+  assert.equal(
+    entries.some((e) => e.type === "permission"),
+    false,
+    "no permission ask row under block mode",
+  )
 })
 
 /** Approval releases the gate: no block, no capability call, nothing journaled. */

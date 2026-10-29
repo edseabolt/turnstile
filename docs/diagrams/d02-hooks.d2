@@ -14,7 +14,7 @@ preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-t
 
 permission: "permission.hook('evaluate') (hooks-permission.ts)\nnever blocks, forces 'ask'" {
   plan-arm: "action == task\nand plan gate red?"
-  landing-arm: "action == bash/shell\npush without approve?\n(empty-diff exempt if proved)"
+  landing-arm: "action == bash/shell\npush without approve + live\npendingLandingAsk latch?\n(armed by the guard only under\nescalation:\"ask\"; inert on\nsuspension/approval)"
   handson-arm: "action == write/edit\nlive pendingHandsOnAsk latch?\n(inert on handsOnRelease /\nexecutor waiver or suspension)"
 }
 
@@ -26,7 +26,7 @@ tool: "tool.hook (hooks-tool.ts)" {
 before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nonce-grant short-circuit ▸ reviewer gate ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
-before-write: "write/edit: path denylist ▸ hands-on gate\n(parent sessions only — a registered pipeline\nchild's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask)"
+before-write: "write/edit: path denylist ▸ hands-on gate\n(parent sessions only — a registered pipeline\nchild's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
 
 after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ PIPELINE status append\n(per delivery) ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
