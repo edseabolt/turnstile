@@ -91,6 +91,13 @@ export interface TurnstileContext {
   verdictRe: RegExp
   /** Gate-state ledger (replays journal on construction). */
   ledger: GateLedger
+  /**
+   * Re-applies the boot replay's restored child→parent edges and re-seeds
+   * the emitter-authority cache from them, journaling the `reseed` row;
+   * called once per setup before hooks register (#225 re-seed).
+   * @returns The number of child edges restored.
+   */
+  reseedChildEdges(): number
   /** Gate decision service. */
   gates: Gates
   /** Tool policy (push-landing requirement, denylist, etc.). */
@@ -871,6 +878,30 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Rebuilds the post-reload child state from the journal tail (#225 defense
+   * in depth): the ledger re-applies the journaled `child-edge` rows to
+   * `childToParent` (a live executor/test-runner child is no longer gated as
+   * a parent on its next write after a plugin setup re-fire), the
+   * emitter-authority cache is re-seeded from each edge's journaled agent
+   * (one entry covers both re-seeds), and one `reseed` row records the
+   * edges-restored count so a post-reload parent-hands-on block is
+   * diagnosable as a re-seed failure, not a gate malfunction. Fail-open: a
+   * throwing re-seed journals an error and reports 0.
+   * @returns The number of child edges restored.
+   */
+  function reseedChildEdges(): number {
+    try {
+      const edges = ledger.reseedEdges()
+      for (const edge of edges) seedEmitter(edge.child, edge.agent)
+      journaler.journal({ type: "reseed", edges: edges.length })
+      return edges.length
+    } catch (e) {
+      journaler.journal({ type: "error", error: `reseed: ${e}` })
+      return 0
+    }
+  }
+
+  /**
    * Reads the emitter-authority cache for a session: the resolved agent
    * name, or "" when the session's agent was never resolved. Pure read
    * (no LRU promotion); the delivery layer consults it as the fallback for
@@ -1035,14 +1066,15 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     try {
       const rec = await get({ sessionID })
       const parentID = readRecordString(rec, PARENT_KEYS)
+      const agentName = readRecordString(rec, AGENT_KEYS)
       // Redundant emitter seed: an agent resolved from the record would make
       // streamed markers authoritative. resolveParent early-returns once the
       // edge is set (session.created seeds the edge), so this only fires when
       // the first resolve happens before the edge lands; `execute.after`
       // delivery remains the always-firing seed (see seedEmitter).
-      seedEmitter(sessionID, readRecordString(rec, AGENT_KEYS))
+      seedEmitter(sessionID, agentName)
       if (parentID !== "") {
-        ledger.setParent(sessionID, parentID)
+        ledger.setParent(sessionID, parentID, agentName)
         // Back-fill: the edge may land after the claim and its evidence were
         // recorded, so a pending unverified PASS verifies the moment it can.
         promoteOnEvidence(parentID)
@@ -3311,6 +3343,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     surfaceNearMissDiagnostics,
     seedEmitter,
     emitterAgent,
+    reseedChildEdges,
     markerKindAllowed,
     hasLiveAwaitingAsk,
     hasLiveLandingAsk,

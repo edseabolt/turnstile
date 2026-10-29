@@ -90,7 +90,7 @@ export function startEventStream(
     if (sid) {
       const agent = typeof properties.agent === "string" ? properties.agent : ""
       if (typeof properties.parentID === "string") {
-        ctx.ledger.setParent(sid, properties.parentID)
+        ctx.ledger.setParent(sid, properties.parentID, agent)
         // Back-fill: a background child's edge often lands after
         // its evidence and claim were recorded.
         ctx.promoteOnEvidence(properties.parentID)

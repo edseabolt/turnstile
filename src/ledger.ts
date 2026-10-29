@@ -97,11 +97,30 @@ export interface GateLedger {
    */
   parentOf(sessionID: string | undefined): string
   /**
-   * Records a resolved child→parent edge.
+   * Records a resolved child→parent edge. The edge is journaled as a
+   * `child-edge` row (carrying the child's resolved emitter agent when one
+   * is supplied) whenever it is new or changed — the data the setup re-seed
+   * replays after a plugin reload wipes the in-memory map (#225). An
+   * unchanged re-set is silent (idempotent registrations stay journaled
+   * once). Both IDs and the optional agent must already be validated by the
+   * caller; journaling is fail-open (`appendLine` never throws).
    * @param sessionID The child session ID.
    * @param parentID The parent session ID.
+   * @param agent The child's resolved emitter agent name, or "" when
+   *     unresolved (the journaled row then omits the field).
    */
-  setParent(sessionID: string, parentID: string): void
+  setParent(sessionID: string, parentID: string, agent?: string): void
+  /**
+   * Re-applies the child→parent edges restored by the boot replay's
+   * `child-edge` fold (last-wins per child over the replay tail), rebuilding
+   * the in-memory map after a plugin reload without journaling (a re-seed
+   * must not re-append the rows it just folded, or every restart would grow
+   * the journal and re-reseed forever). Each restored edge marks its parent
+   * live and is LRU-capped like a live registration.
+   * @returns The restored edges as `{ child, parent, agent }` records, in
+   *     replay order; empty when the tail held no `child-edge` rows.
+   */
+  reseedEdges(): Array<{ child: string; parent: string; agent: string }>
   /**
    * Registers a session as a live parent so the `states` cap never evicts
    *  its bucket while it stays tracked. Registration is the
@@ -315,6 +334,10 @@ const APPROVAL_LEDGER_FILE = "approved-plans.jsonl"
 /** Cap on durable approval records; over-cap, the oldest record is evicted
  *  and the sidecar is rewritten compacted (bounded growth, like the journal). */
 const MAX_APPROVAL_RECORDS = 256
+/** Upper bound on a replayed emitter agent name (a real agent name fits
+ *  well under this; anything longer is hostile padding). */
+const MAX_REPLAY_AGENT_LEN = 128
+
 /** Shape of a stored project scope token (a `projectScope` output). */
 const PROJECT_SCOPE_RE = /^[0-9a-f]{16}$/
 /** Upper bound on a replayed observe-mode counter (a real period stays far
@@ -340,6 +363,8 @@ interface ReplayMaps {
   lastReviewVerdict: Map<string, string>
   lastEnsemble: Map<string, number>
   lastRefusedApprove: Map<string, boolean>
+  /** Restored child→parent edges (last-wins per child), for the setup re-seed. */
+  childEdges: Map<string, { parent: string; agent: string }>
 }
 
 /**
@@ -396,6 +421,7 @@ function newReplayMaps(): ReplayMaps {
     lastReviewVerdict: new Map(),
     lastEnsemble: new Map(),
     lastRefusedApprove: new Map(),
+    childEdges: new Map(),
   }
 }
 
@@ -463,7 +489,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "ensemble" &&
     entry.type !== "observe" &&
     entry.type !== "would-block" &&
-    entry.type !== "suspended"
+    entry.type !== "suspended" &&
+    entry.type !== "child-edge"
   ) {
     return null
   }
@@ -696,6 +723,34 @@ function foldSuspended(
 }
 
 /**
+ * Folds a `child-edge` entry into the re-seed edge map (last-wins per child).
+ * The parent ID must pass the host session-ID shape (a hostile parent is a
+ * drop, never folded); the emitter agent is optional — a non-string or
+ * over-length value degrades to "" (the re-seed then skips the emitter
+ * cache for that child) without dropping the edge.
+ * @param entry The parsed `child-edge` entry.
+ * @param maps The last-wins maps to fill.
+ * @param sessionID The validated child session ID.
+ * @returns A session-id drop for an invalid parent, or `null` when folded.
+ */
+function foldChildEdge(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  const parent = entry.parent
+  if (typeof parent !== "string" || !REPLAY_SESSION_RE.test(parent)) {
+    return { reason: "session-id", sessionID }
+  }
+  const agent = entry.agent
+  maps.childEdges.set(sessionID, {
+    parent,
+    agent: typeof agent === "string" && agent.length <= MAX_REPLAY_AGENT_LEN ? agent : "",
+  })
+  return null
+}
+
+/**
  * Dispatches a replay-typed entry to its per-kind fold.
  * @param entry The parsed replay-typed entry.
  * @param maps The last-wins maps to fill.
@@ -732,6 +787,9 @@ function foldReplayLine(
   }
   if (type === "suspended") {
     return foldSuspended(entry, suspended, sessionID)
+  }
+  if (type === "child-edge") {
+    return foldChildEdge(entry, maps, sessionID)
   }
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
@@ -1075,6 +1133,13 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  * `event:"would-block"` audit flavor folds inert, and a missing or unknown
  * action is a shape drop. The restored map is LRU-capped after replay like
  * the other session maps.
+ *
+ * A replayed `child-edge` entry (last-wins per child) parks the restored
+ * edge for the setup re-seed: the parent ID must pass the host session-ID
+ * shape (a hostile parent is a session-id drop) and the optional emitter
+ * agent degrades to "" when non-string or over-length. The restored edges
+ * are applied later by the ledger's `reseedEdges` — never during replay —
+ * so a reload re-applies them exactly once.
  * @param states The session→state map to populate.
  *
  * A replayed green is journaled audited evidence, not runtime proof: the
@@ -1137,6 +1202,9 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
  *     admission phases, the admitted-session dedup set, the running totals
  *     (last-wins), and the summary-marker probe fold in directly, online, as
  *     the lines are read.
+ * @param childEdges The map the restored `child-edge` records (last-wins per
+ *     child) are parked into for the setup re-seed; filled at the end of the
+ *     walk, never applied here.
  */
 function replayGatePasses(
   states: Map<string, GateState>,
@@ -1145,6 +1213,7 @@ function replayGatePasses(
   creditedApprovals: Map<string, number>,
   observePeriod: ObservePeriod,
   suspended: Map<string, true>,
+  childEdges: Map<string, { parent: string; agent: string }>,
 ): void {
   const maps = newReplayMaps()
   const drops: ReplayDrop[] = []
@@ -1164,6 +1233,7 @@ function replayGatePasses(
     if (drop) drops.push(drop)
   }
   restoreBuckets(states, maps, creditedApprovals)
+  for (const [child, edge] of maps.childEdges) childEdges.set(child, edge)
   journalReplayDrops(journalPath, drops)
 }
 
@@ -1200,6 +1270,9 @@ export function createLedger(
 ): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
+  // Child→parent edges restored by the boot replay's `child-edge` fold,
+  // pending the setup re-seed (reseedEdges applies them without journaling).
+  const reseededEdges = new Map<string, { parent: string; agent: string }>()
   // Latest VERDICT marker observation per child session, LRU-capped and
   // promote-on-touch like the other session maps. Verdict-kind only, keyed by
   // child ID so it never leaks across children. A re-observation that changes
@@ -1529,6 +1602,7 @@ export function createLedger(
     creditedApprovals,
     observePeriod,
     suspended,
+    reseededEdges,
   )
   cap(states, isParent)
   cap(creditedApprovals)
@@ -1581,13 +1655,38 @@ export function createLedger(
       }
       return sessionID
     },
-    setParent(sessionID: string, parentID: string): void {
+    setParent(sessionID: string, parentID: string, agent = ""): void {
+      // Journal only a new-or-changed edge: idempotent registrations
+      // (session.created plus resolveParent both firing) stay journaled once.
+      const changed = childToParent.get(sessionID) !== parentID
       childToParent.set(sessionID, parentID)
       cap(childToParent)
+      if (changed) {
+        appendLine(
+          journalPath,
+          JSON.stringify({
+            ts: now(),
+            type: "child-edge",
+            sessionID,
+            parent: parentID,
+            ...(agent ? { agent } : {}),
+          }),
+        )
+      }
       // Edge resolution marks the parent live: its `states` bucket
       // is now protected from eviction until an unrelated parent churn evicts
       // this registration from the registry.
       markParent(parentID)
+    },
+    reseedEdges(): Array<{ child: string; parent: string; agent: string }> {
+      const out: Array<{ child: string; parent: string; agent: string }> = []
+      for (const [child, edge] of reseededEdges) {
+        childToParent.set(child, edge.parent)
+        cap(childToParent)
+        markParent(edge.parent)
+        out.push({ child, parent: edge.parent, agent: edge.agent })
+      }
+      return out
     },
     recordChildVerdict(childID: string, marker: string, source: string): boolean {
       // changed = the marker or source actually moved; the setup layer journals
