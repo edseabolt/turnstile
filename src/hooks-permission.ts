@@ -95,8 +95,8 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         return
       }
       // Landing arm: a bash/shell permission.evaluate whose landing ask
-      // is armed (the guard set the pending-landing-ask latch under
-      // enforce on a repeat attempt). Candidate detection lives in
+      // is armed (the guard set the pending-landing-ask latch on a
+      // repeat attempt). Candidate detection lives in
       // `isPushLanding` (used by the guard); the evaluate handler
       // consults the arm rather than re-reading the command from the
       // (host-shape-uncertain) permission event — the guard is the single
@@ -140,8 +140,8 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         return
       }
       // Hands-on arm: a write/edit permission.evaluate whose hands-on ask is
-      // armed (the guard set the pending-hands-on-ask latch under enforce on
-      // a repeat parent attempt). The guard is the single source of truth for
+      // armed (the guard set the pending-hands-on-ask latch on a repeat
+      // parent attempt). The guard is the single source of truth for
       // the parent-only contract; the evaluate handler consults the arm
       // rather than re-reading the (host-shape-uncertain) event. A live
       // `always` release or an executor-scoped waiver inerts the arm without
