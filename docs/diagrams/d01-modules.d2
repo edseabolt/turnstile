@@ -30,7 +30,9 @@ core: "src/ — one concern per boundary" {
   childreg: "child-registration.ts\npipeline-child resolution: agent-name\nprecedence, edge + emitter fallback,\nfail-closed unknown"
   gates: "gates.ts\ncomposition: createGates + the Gates interface"
   gatesdispatch: "gates-dispatch.ts\nreviewer gate, loop caps, read horizon,\nensemble completeness"
-  gatesplan: "gates-plan.ts\nplan-approval gate, decomposition gate,\nplans-dir scan + cache"
+  gatesplan: "gates-plan.ts\nplan-approval gate, decomposition gate,\nplans-dir scan + cache (spec-region keys)"
+  planregion: "plan-region.ts\nplanSpecRegion: spec-slice extractor —\nProgress section excluded from the\nhashed approval key"
+  maintenance: "maintenance.ts\nmaintenance-dispatch rules: declaration,\nnon-src diff eligibility, marker guard"
   gatescommon: "gates-common.ts\nBlockError + waiver coverage semantics"
   toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate,\nhands-on gate (write/edit + bash write)"
   bashwrite: "bash-write.ts\nwrite-shape classifier (classifyBashWrite)\n+ shell tokenizer (splitCommands/tokenizeWords)"
@@ -102,6 +104,8 @@ core.hookstool -> core.delivery
 core.hooksevents -> core.hookscore: "type-only"
 core.hooksevents -> core.delivery
 core.hookscore -> core.policy
+core.hookscore -> core.maintenance
+core.gatesplan -> core.planregion
 core.ledger -> core.journal: "replay (fs)"
 core.ledger -> core.state: "newState, counters, merge"
 core.ledger -> core.bounded

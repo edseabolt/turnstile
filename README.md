@@ -151,7 +151,7 @@ hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 
 | Gate                   | In one line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plan approval          | `executor` dispatches blocked while the plans dir holds a _pending_ plan — one lacking a current plan-reviewer `VERDICT: APPROVE` (or human approval) and a durable approved-plan record; plan edits invalidate the approval, and a durable record outlives the journal replay window and prompt resets                                                                                                                                                                                                               |
+| Plan approval          | `executor` dispatches blocked while the plans dir holds a _pending_ plan — one lacking a current plan-reviewer `VERDICT: APPROVE` (or human approval) and a durable approved-plan record; the approval key covers the plan's **spec region** (`# Objective` onward — the leading `# Progress` section is pipeline-maintained and excluded, so progress-note edits keep the approval live), spec edits invalidate it, and a durable record outlives the journal replay window and prompt resets                        |
 | Reviewer dispatch gate | `reviewer` dispatches blocked until a `GATE: PASS` **verified** by a real exit-0 test execution in this task                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Reviewer round cap     | Max 2 `reviewer` dispatches per task; waived dispatches bypass and don't count                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Reviewer ensemble      | A reviewer APPROVE credits the landing gate only at ≥2 unwaived reviewer dispatches                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -170,6 +170,18 @@ State lifecycle: a new user prompt resets the session's gate state, except
 when continuation carry (default on) re-arms it for a prompt with an
 unchanged worktree/branch fingerprint and earned credit. Replayed gate state
 survives a restart and the next (resume) prompt, then reverts.
+
+**Maintenance dispatches.** A bookkeeping-only executor dispatch — the prompt
+names the live approved plan file plus the word "maintenance", and the current
+working-tree diff touches only non-src surfaces (the plan file itself,
+`docs/*.md`, `README.md`, `CONTRIBUTING.md`, `agents/*.md` prose; the
+marker-validated ones qualify only while the repo's `scripts/check-markers.mjs`
+guard passes) — skips the plan-approval and decomposition gates: no
+plan-reviewer re-approval cycle for progress notes and doc prose. It journals
+a `{type:"maintenance"}` row (MNT column in `status`) and is capped at **4
+per plan**; a cap-exceeded attempt blocks like any other dispatch, and any
+`src/`, `tests/`, `bin/`, `scripts/`, or config/schema/example touch in the
+diff gates the dispatch as ordinary implementation work.
 
 **Parent hands-on edits.** Parent sessions dispatch work through the
 pipeline; direct `write`/`edit` calls in the parent — and in any

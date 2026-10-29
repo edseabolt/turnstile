@@ -917,7 +917,7 @@ test("a journal without observe entries renders byte-identically despite a confi
     assert.equal(code(res), 0)
     const out = res.stdout.split("\n")
     assert.equal(out[0], `turnstile status — ${join(dir, "turnstile.jsonl")}`)
-    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM  REL  SUS")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  MNT  BLK  PERM  REL  SUS")
     assert.ok(!res.stdout.includes("observe:"), "no observe line renders")
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -968,7 +968,7 @@ test("suspended entries fold last-wins into the suspension flag and SUS column",
     const table = runStatus(dir, [])
     assert.equal(code(table), 0)
     const out = table.stdout.split("\n")
-    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM  REL  SUS")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  MNT  BLK  PERM  REL  SUS")
     assert.match(table.stdout, /sp-sus2.*OFF/)
     const rows = out.filter((l) => l.startsWith("sp-"))
     assert.ok(

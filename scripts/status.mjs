@@ -308,6 +308,7 @@ function freshSession() {
     waivers: [],
     dispatches: 0,
     blocks: 0,
+    maintenance: 0,
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
     stickyRelease: null,
@@ -349,6 +350,10 @@ function observeCountsOf(entry) {
  * observation-only, so a dropped line is silent here rather than journaled).
  * Verdict markers over the replay marker bound degrade to "" (they then flow
  * into the empty-marker BLOCK fallback below). Parent-keyed.
+ *
+ * Maintenance lines (`type:"maintenance"`) count admitted dispatches
+ * (`capped` falsy) into the MNT column; a `capped:true` attempt row folds
+ * nothing (its block is already counted by the guard's `blocked` entry).
  *
  * Suspension lines (`type:"suspended"`) fold last-wins like ledger.ts's
  * foldSuspended: `action:"off"` marks the session suspended, `action:"on"`
@@ -456,6 +461,12 @@ function aggregate(lines) {
       // the guard's `blocked` entry, so exclude the `blocked:true` stamp from
       // the dispatches counter (no double count).
       if (e.blocked !== true) a.dispatches++
+    } else if (type === "maintenance") {
+      // Maintenance dispatch fold: admitted maintenance dispatches count in
+      // their own column (bookkeeping rides the lighter path, so it is not
+      // an implementation dispatch); a `capped:true` attempt row is already
+      // visible through the blocked entry the escalation journals.
+      if (e.capped !== true) a.maintenance++
     } else if (type === "blocked") {
       a.blocks++
     } else if (type === "permission") {
@@ -523,6 +534,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     verdict: a.planApproval.effective ?? "·",
     wv: a.waivers.length,
     dis: a.dispatches,
+    mnt: a.maintenance,
     bl: a.blocks,
     ask: a.permissionAsks,
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
@@ -530,7 +542,19 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     sus: a.suspended ? "OFF" : "·",
   }))
 
-  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "REL", "SUS"]
+  const headers = [
+    "SESSION",
+    "GATE",
+    "PLAN",
+    "VERDICT",
+    "WV",
+    "DIS",
+    "MNT",
+    "BLK",
+    "PERM",
+    "REL",
+    "SUS",
+  ]
   const cells = [
     (r) => r.session,
     (r) => r.gate,
@@ -538,6 +562,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => r.verdict,
     (r) => String(r.wv),
     (r) => String(r.dis),
+    (r) => String(r.mnt),
     (r) => String(r.bl),
     (r) => `${r.ask}/${r.dec}`,
     (r) => r.rel,

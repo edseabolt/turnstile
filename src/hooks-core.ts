@@ -8,6 +8,7 @@
 
 import { evictTo } from "./bounded.ts"
 import { agentFromDispatchEvent, resolveChildStatus } from "./child-registration.ts"
+import { spawnSync } from "node:child_process"
 import { formatConfigWarnings, formatObserveSummary, loadConfig } from "./config.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
@@ -39,6 +40,14 @@ import {
   type ToolPolicy,
 } from "./tool-policy.ts"
 import { classifyBashWrite } from "./bash-write.ts"
+import {
+  MAINTENANCE_MAX_PER_PLAN,
+  maintenanceDeclared,
+  maintenanceDiffEligible,
+  maintenanceMarkerSensitive,
+} from "./maintenance.ts"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
@@ -2188,6 +2197,112 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     gates.enforceDecomposition(sessionID, prompt, dir, ledger)
   }
 
+  // ── Maintenance dispatch classification (orchestration) ────────────────
+  // Bookkeeping-only executor dispatches (plan-progress upkeep, doc prose)
+  // ride a lighter path: they skip the plan-approval and decomposition gates
+  // (no plan-reviewer re-approval cycle) and journal a `maintenance` row.
+  // Eligibility is structural, not trust-based (see the module-level
+  // MAINTENANCE_* rules): the prompt declares maintenance scope for the
+  // active plan AND the current working-tree diff touches only non-src
+  // surfaces; anything else gates as ordinary implementation work.
+  const maintenanceCounts = new Map<string, number>()
+  /** Cap on tracked per-plan maintenance counters (bounded memory). */
+  const maxTrackedMaintenancePlans = 16
+  function boundMaintenanceCounts(): void {
+    evictTo(maintenanceCounts, maxTrackedMaintenancePlans)
+  }
+
+  /**
+   * Runs the repo's `scripts/check-markers.mjs` guard: the marker-drift CI
+   * check, executed against the project's current tree. A missing script or
+   * a non-zero exit fails the guard (fail closed) — a marker-validated
+   * surface then cannot qualify for a maintenance dispatch.
+   * @param projectDir The project directory to run the guard in.
+   * @returns True when the guard exists and passes.
+   */
+  function markerGuardPasses(projectDir: string): boolean {
+    const script = path.join(projectDir, "scripts", "check-markers.mjs")
+    if (!fs.existsSync(script)) return false
+    const r = spawnSync(process.execPath, [script], { cwd: projectDir, encoding: "utf8" })
+    return r.status === 0
+  }
+
+  /**
+   * Lists the working-tree's changed files: tracked modifications/staging
+   * (`git diff --name-only HEAD`) plus untracked non-ignored files (`git
+   * ls-files --others --exclude-standard` — gitignored plan files stay out,
+   * so a progress-only plan edit never disqualifies). Any probe failure
+   * (git absent, unborn HEAD, non-zero exit) returns null — the caller
+   * treats that as ineligible (fail closed).
+   * @param projectDir The repository directory to probe.
+   * @returns The repo-relative changed paths, or null on probe failure.
+   */
+  function gitWorkingTreeFiles(projectDir: string): string[] | null {
+    const diff = spawnSync("git", ["diff", "--name-only", "HEAD"], {
+      cwd: projectDir,
+      encoding: "utf8",
+    })
+    const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
+      cwd: projectDir,
+      encoding: "utf8",
+    })
+    if (diff.error || diff.status !== 0 || untracked.error || untracked.status !== 0) return null
+    return [...diff.stdout.split("\n"), ...untracked.stdout.split("\n")].filter(
+      (s) => s.trim() !== "",
+    )
+  }
+
+  /**
+   * Classifies an executor dispatch as maintenance or ordinary work, and
+   * meters the per-plan maintenance cap. Returns `"admit"` (journaling the
+   * `{type:"maintenance", capped:false}` row and consuming one cap slot),
+   * `"capped"` (journaling the `capped:true` attempt row; the caller
+   * escalates like any blocked dispatch), or `"ordinary"` (the ordinary
+   * gates apply). Any internal error fails open to `"ordinary"` with a
+   * journaled error entry — classification must never block a dispatch by
+   * itself; the ordinary gates still run.
+   * @param sessionID The dispatching session ID.
+   * @param prompt The dispatch prompt text.
+   * @returns The classification verdict.
+   */
+  async function classifyMaintenanceDispatch(
+    sessionID: string,
+    prompt: string,
+  ): Promise<"admit" | "capped" | "ordinary"> {
+    try {
+      const s = ledger.state(sessionID)
+      // The maintenance path skips plan-reviewer *re*-approval: it requires a
+      // live bound approval to skip at all. No verdict, no bound plan, or a
+      // stale one (already dropped by reconcile) is ordinary work.
+      if (!s.hasPlanVerdict || s.approvedPlanKey === "") return "ordinary"
+      const plan = s.approvedPlan
+      if (!maintenanceDeclared(prompt, plan, gates.promptPlanNames(prompt))) return "ordinary"
+      const dir = await resolveProjectDir(sessionID)
+      // The bound approval must still cover the plan's CURRENT spec region
+      // (same spec-slice key shape as capture and reconcile — one extractor);
+      // a spec edit that reconcile has not yet observed must not ride the
+      // maintenance path either. An unresolvable binding is stale (fail closed).
+      if (gates.planApprovalBinding(dir, [plan])?.key !== s.approvedPlanKey) return "ordinary"
+      const files = gitWorkingTreeFiles(dir)
+      const needsGuard = files !== null && files.some(maintenanceMarkerSensitive)
+      if (!maintenanceDiffEligible(files, needsGuard ? markerGuardPasses(dir) : false)) {
+        return "ordinary"
+      }
+      const count = maintenanceCounts.get(plan) ?? 0
+      if (count >= MAINTENANCE_MAX_PER_PLAN) {
+        journaler.journal({ type: "maintenance", sessionID, plan, capped: true })
+        return "capped"
+      }
+      maintenanceCounts.set(plan, count + 1)
+      boundMaintenanceCounts()
+      journaler.journal({ type: "maintenance", sessionID, plan, capped: false })
+      return "admit"
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `maintenance classification: ${e}` })
+      return "ordinary"
+    }
+  }
+
   /**
    * True while the session is inside its observe period: gate decisions are
    * computed and journaled, but the deliberate block is suppressed. Reads the
@@ -2384,7 +2499,31 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       waived = outcome.waived
       if (outcome.admitted) return
       if (agent === config.agents.reviewer) reviewerDecisionRecheck(sessionID)
-      if (agent === config.agents.executor) await enforceExecutorGates(sessionID, prompt)
+      if (agent === config.agents.executor) {
+        const maintenance = await classifyMaintenanceDispatch(sessionID, prompt)
+        if (maintenance === "admit") {
+          allowDispatch(sessionID, agent, description, waived)
+          return
+        }
+        if (maintenance === "capped") {
+          const plan = ledger.state(sessionID).approvedPlan
+          journaler.journal({
+            type: "blocked",
+            sessionID,
+            agent: config.agents.executor,
+            reason: "maintenance-capped",
+            plan,
+          })
+          throw new BlockError(
+            `BLOCKED by turnstile: the maintenance dispatch cap (${MAINTENANCE_MAX_PER_PLAN}) is spent ` +
+              `for plan "${plan}" — dispatch the ${config.agents.planReviewer} subagent for a ` +
+              `re-review, or obtain an explicit user waiver (a user prompt this task must contain ` +
+              `the literal marker '${config.waiverMarker}' followed by the user's words).`,
+            "plan-gate",
+          )
+        }
+        await enforceExecutorGates(sessionID, prompt)
+      }
       allowDispatch(sessionID, agent, description, waived)
     } catch (e) {
       if (dispatchBlockOutcome(e, sessionID, agent, description, waived)) return

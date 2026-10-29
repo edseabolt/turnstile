@@ -16,6 +16,7 @@ import type { Journaler } from "./journal.ts"
 import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
 import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
+import { planSpecRegion } from "./plan-region.ts"
 
 /**
  * Plan-domain enforcement functions bound to one resolved config +
@@ -109,7 +110,11 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     decompFile: string | null
     /** Every plan name whose bytes carry a `## Decomposition` block. */
     decomp: Set<string>
-    /** Every plan name → sha256 hex of its bytes (the bound-staleness key). */
+    /**
+     * Every plan name → sha256 hex of its spec-region bytes (the
+     * bound-staleness key; `# Progress` content is excluded — see
+     * `src/plan-region.ts`).
+     */
     fileKeys: Map<string, string>
   }
 
@@ -128,9 +133,9 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
   }
 
   /**
-   * sha256 hex of one plan file's bytes: the per-file content identity that
-   * both the dir key and a bound approval's key are built from — one hash per
-   * file per scan, never recomputed.
+   * sha256 hex of one plan file's spec region (`planSpecRegion`): the per-file
+   * content identity that both the dir key and a bound approval's key are
+   * built from — one hash per file per scan, never recomputed.
    * @param bytes The plan file bytes.
    * @returns The hex digest.
    */
@@ -167,7 +172,13 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    */
   function scanPlans(dir: string): PlansScan {
     const entries = readEntries(dir)
-    const pairs = entries.map((e) => ({ name: e.name, hash: hashEntry(e.bytes) }))
+    // The per-file key hashes the spec region (src/plan-region.ts), not the
+    // whole file: the leading `# Progress` section is pipeline-maintained by
+    // design, so a progress-only edit must not invalidate a bound approval.
+    // Capture (planApprovalBinding), reconcile (reconcileBoundStamp), and the
+    // durable sidecar compare all read this one map — one shared extractor,
+    // one key shape everywhere.
+    const pairs = entries.map((e) => ({ name: e.name, hash: hashEntry(planSpecRegion(e.bytes)) }))
     const key = plansKey(pairs)
     const cached = plansCache
     if (cached !== null && cached.key === key) return cached.scan
@@ -563,7 +574,8 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * Returns the plan identity to bind an approval to: the dispatch prompt's
    * plan candidates intersected with the current plans dir. Exactly one
    * distinct candidate that exists in the dir binds (`{ name, key }`, the
-   * key being that file's sha256 hex); zero candidates, an ambiguous set, an
+   * key being that file's spec-region sha256 hex); zero candidates, an
+   * ambiguous set, an
    * absent dir, or an unreadable dir fail open to undefined (the approval
    * stays unbound and keeps the dir-signature rule).
    * @param projectDir The current project directory.
