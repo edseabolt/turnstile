@@ -441,7 +441,7 @@ test("an observe-period executor dispatch suppresses the plan-gate block and jou
 test("an enforce-period executor dispatch enforces the plan-gate block and journals no observe entries", async () => {
   const { h, metricsDir, restore } = await bootObserve({})
   try {
-    await callSession(h, "prompt", { sessionID: "p1", text: "build it" })
+    await callSession(h, "prompt", { sessionID: "p1", text: "a note for later" })
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {

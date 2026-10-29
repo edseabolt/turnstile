@@ -248,6 +248,9 @@ export function createToolHooks(ctx: TurnstileContext): {
    * @param event The host execute.after tool-hook payload (mutated in place).
    */
   const afterRead = (event: ToolHookEvent): void => {
+    // Advisory intent nudge first: an armed nudge prepends to the parent's
+    // own read delivery ahead of the read-budget telemetry below.
+    ctx.prependIntentNudgeRead(event)
     const sessionID = ctx.ledger.parentOf(asSessionID(event?.sessionID))
     const s = ctx.ledger.state(sessionID)
     // The before-hook already incremented; a read that did not produce

@@ -775,6 +775,14 @@ export interface TurnstileConfig {
    * true.
    */
   allowSuspend: boolean
+  /**
+   * Whether the advisory intent nudge is enabled. When true (default), a
+   * user prompt classified as implementation intent with no plan approval
+   * journals `{type:"intent"}` and prepends one advisory pipeline-entry
+   * nudge to the next tool delivery. When false, intent detection is a full
+   * no-op: nothing is journaled and nothing is injected.
+   */
+  intentNudge: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */

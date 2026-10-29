@@ -14,6 +14,7 @@
  * mechanical enforcement.
  */
 
+import type { IntentKind } from "./intent.ts"
 import type { TurnstileConfig } from "./types.ts"
 
 /** The config slice the orchestrator policy text interpolates. */
@@ -146,6 +147,38 @@ function traceSection(c: PolicyConfig): string {
  */
 function verificationSection(): string {
   return `Verification: the host chain (npm run ci, which is npm run ci:host) covers lint, format:check, typecheck, check:markers, and test on a fresh checkout and writes nothing under ~/.config; the install-drift chain (npm run ci:installed, which is npm run install:check) runs after npm run init, where a machine already has artifacts installed to check.`
+}
+
+/**
+ * The signal description each intent kind carries in the nudge prose.
+ * @returns The record of per-kind signal descriptions.
+ */
+function intentNudgeSignals(): Record<IntentKind, string> {
+  return {
+    issue: "a GitHub issue reference",
+    "plan-ref": "a plan-file reference",
+    dispatch: "a plan-dispatch request",
+    work: "imperative work verbs addressed at the code",
+  }
+}
+
+/**
+ * Builds the advisory pipeline-entry nudge for one detected intent signal,
+ * prepended to the first tool delivery after the intent was admitted. The
+ * prose deliberately quotes no marker syntax (no waiver/gate/approval
+ * literals): it is advisory guidance, and keeping the literals out of this
+ * module leaves the marker-drift validated source set unchanged.
+ * @param kind The detected intent signal kind.
+ * @returns The nudge text prepended ahead of the delivery text.
+ */
+export function intentNudge(kind: IntentKind): string {
+  return (
+    `[turnstile] Advisory reminder (not a block): the user's latest prompt reads as ` +
+    `implementation work (signal: ${intentNudgeSignals()[kind]}). Before editing code, ` +
+    `enter the pipeline — create or choose a plan file in the plans directory and ` +
+    `dispatch the planner subagent to begin it, then follow the pipeline order through ` +
+    `reviewer approval. If this is not implementation work, ignore this reminder.`
+  )
 }
 
 /**

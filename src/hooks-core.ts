@@ -35,7 +35,8 @@ import {
 } from "./tool-policy.ts"
 import { classifyBashWrite } from "./bash-write.ts"
 import { formatPipelineStatus } from "./state.ts"
-import { orchestratorPolicyFor } from "./policy.ts"
+import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
+import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
 import { isEmptyDiffPush } from "./empty-diff.ts"
@@ -133,6 +134,10 @@ export interface TurnstileContext {
   landingGateAsks: Map<string, { sessionID: string; recordedAt: number }>
   /** Hands-on-gate permission asks, keyed by host request id. */
   handsOnGateAsks: Map<string, { sessionID: string; recordedAt: number }>
+  /** Parent → pending intent-nudge kind awaiting the next tool delivery. */
+  intentNudgePending: Map<string, IntentKind>
+  /** `${sessionID}:${kind}` keys already nudged (one-shot per intent). */
+  intentNudgedKinds: Set<string>
   /** Last-known project directory per session. */
   sessionDirs: Map<string, string>
   /** Per-session sliding window of streamed child text. */
@@ -162,6 +167,8 @@ export interface TurnstileContext {
   maxTrackedLandingGateAsks: number
   /** Cap on tracked hands-on-gate asks. */
   maxTrackedHandsOnGateAsks: number
+  /** Cap on tracked intent-nudge dedupe keys. */
+  maxTrackedIntentNudges: number
   /** Max parent-lookup retries per session. */
   maxLookupAttempts: number
   /** Cap on tracked failed-lookup sessions. */
@@ -207,6 +214,8 @@ export interface TurnstileContext {
   boundLandingGateAsks(): void
   /** Evicts oldest entries from handsOnGateAsks past the cap. */
   boundHandsOnGateAsks(): void
+  /** Evicts oldest keys from the intent-nudge dedupe set and pending map. */
+  boundIntentNudges(): void
   /** Evicts oldest entries from sessionAgents past the cap. */
   boundSessionAgents(): void
   /** Evicts oldest keys from admittedIds past the cap. */
@@ -301,6 +310,17 @@ export interface TurnstileContext {
     event: ToolHookEvent,
     delivery: Extract<Delivery, { kind: "string" | "structured" }>,
   ): void
+  /**
+   * Delivers a pending intent nudge on a classified task delivery: consumes
+   * the parent's pending nudge (one-shot) and prepends the advisory text.
+   */
+  prependIntentNudge(event: ToolHookEvent, parent: string, delivery: Delivery): void
+  /**
+   * Delivers a pending intent nudge on a parent-keyed read delivery: consumes
+   * the pending nudge (one-shot) and prepends the advisory text to a string
+   * output; non-string outputs keep the nudge pending.
+   */
+  prependIntentNudgeRead(event: ToolHookEvent): void
   /** Applies the injection dispatch table once the name guard passes. */
   applyPolicyResult(parent: string, event: ToolHookEvent, delivery: Delivery, agent: string): void
   /** Attributes a plan-reviewer result to the parent's plan-approval gate. */
@@ -707,6 +727,47 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // oldest past the cap.
   const handsOnGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
   const maxTrackedHandsOnGateAsks = 50
+  // Pending intent nudges: parent → the detected IntentKind awaiting the
+  // parent's next tool delivery (armed by prompt admission, consumed once).
+  // Latest-wins when one prompt's nudge is still undelivered and a later
+  // prompt classifies a different kind: the earlier kind is preserved in the
+  // journaled `intent` row, but only the latest armed kind rides the next
+  // delivery — the pending map holds one kind per parent by design (a
+  // per-parent queue would let stale nudges land long after their prompt).
+  // A prompt reset drops any undelivered nudge (task-scoped delivery state);
+  // bounded by boundIntentNudges alongside the dedupe set.
+  const intentNudgePending = new Map<string, IntentKind>()
+  // Intent-nudge one-shot latch: `${sessionID}:${kind}` keys already nudged.
+  // One nudge per detected intent signal, deduped across prompts in the
+  // session (a repeated intent prompt journals but does not re-nudge); the
+  // latch is NOT cleared by a prompt reset — a plan approval clears it, so a
+  // later task's intents can nudge again. Bounded: evict oldest past the cap.
+  const intentNudgedKinds = new Set<string>()
+  const maxTrackedIntentNudges = 64
+
+  /**
+   * Bounds the intent-nudge state: evicts the oldest dedupe keys past the
+   * latch cap and the oldest pending nudges past the session cap.
+   */
+  function boundIntentNudges(): void {
+    evictTo(intentNudgedKinds, maxTrackedIntentNudges)
+    evictTo(intentNudgePending, config.maxSessions)
+  }
+
+  /**
+   * Clears a session's entire intent-nudge state: the pending (undelivered)
+   * nudge and every per-kind dedupe key. Called when a plan approval lands —
+   * the task got its plan, so a later task's intents may nudge again. (The
+   * prompt reset drops only the undelivered pending nudge; the dedupe keys
+   * survive it by design.)
+   * @param sessionID The parent session whose nudge state is cleared.
+   */
+  function clearIntentNudge(sessionID: string): void {
+    intentNudgePending.delete(sessionID)
+    for (const kind of INTENT_KINDS) {
+      intentNudgedKinds.delete(`${sessionID}:${kind}`)
+    }
+  }
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
   const maxLookupAttempts = 3
@@ -1520,8 +1581,15 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // idempotent (early-returns on a registered edge) and bounded by the
     // failedLookups retry cap, so the await is cheap on the common path.
     await resolveParent(child)
+    const parent = ledger.parentOf(child)
+    // Name guard first: a child-facing delivery the guard skips (unresolvable
+    // edge + config-known subagent name) returns here and never receives the
+    // parent-addressed nudge text below.
     if (delivery.kind !== "structured" && nameGuardSkips(event, child)) return
-    applyPolicyResult(ledger.parentOf(child), event, delivery, agent)
+    // Advisory intent nudge: independent of the policy head, delivered on the
+    // first classified parent-facing delivery after admission.
+    prependIntentNudge(event, parent, delivery)
+    applyPolicyResult(parent, event, delivery, agent)
   }
 
   /**
@@ -1606,6 +1674,83 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     }
     appendPipelineStatus(parent, event, delivery, agent)
     prependPolicy(parent, event, delivery)
+  }
+
+  /**
+   * Classifies an admitted parent prompt for implementation intent and arms
+   * the advisory pipeline-entry nudge. Runs only when the intent-nudge key is
+   * enabled (disabled = full no-op: no journal, no nudge); every detection is
+   * journaled `{type:"intent", sessionID, kind}`, but the nudge arms only
+   * when the parent has no plan approval (the active-plan proxy — a parent
+   * already working under an approved plan needs no pipeline-entry reminder)
+   * and only once per detected intent signal (the dedupe latch survives
+   * prompt resets; a plan approval clears it). Fail-open: the classification
+   * step is wrapped, so a throw anywhere in it journals an `error` row and
+   * never propagates from the prompt path.
+   * @param sessionID The admitted parent session.
+   * @param properties The prompt payload to classify.
+   */
+  function handlePromptIntent(sessionID: string, properties: PromptHookProperties): void {
+    if (!config.intentNudge) return
+    try {
+      const kind = classifyIntent(promptTextOf(properties))
+      if (kind === null) return
+      if (ledger.state(sessionID).hasPlanVerdict) return
+      journaler.journal({ type: "intent", sessionID, kind })
+      const key = `${sessionID}:${kind}`
+      if (intentNudgedKinds.has(key)) return
+      intentNudgedKinds.add(key)
+      intentNudgePending.set(sessionID, kind)
+      boundIntentNudges()
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `intent classification: ${e}` })
+    }
+  }
+
+  /**
+   * Delivers a pending intent nudge on a classified task/subagent delivery:
+   * consumes the parent's pending nudge (one-shot) and prepends the advisory
+   * text ahead of the delivery text. Deliveries that cannot carry text
+   * (absent/unclassifiable) keep the nudge pending for a later delivery.
+   * Fail-open: a throwing mutation journals `type:"error"` and never blocks.
+   * @param event The execute.after payload whose result is mutated.
+   * @param parent The resolved parent session for the delivery.
+   * @param delivery The classified delivery (see `classifyDelivery`).
+   */
+  function prependIntentNudge(event: ToolHookEvent, parent: string, delivery: Delivery): void {
+    if (delivery.kind !== "string" && delivery.kind !== "structured") return
+    const kind = intentNudgePending.get(parent)
+    if (kind === undefined) return
+    intentNudgePending.delete(parent)
+    try {
+      prependDeliveryText(event, delivery, intentNudge(kind))
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
+    }
+  }
+
+  /**
+   * Delivers a pending intent nudge on a parent-keyed read delivery: the
+   * parent's own read results are the exploration-phase channel the nudge
+   * rides. A child-keyed read (the event session differs from the resolved
+   * parent) is left untouched — the nudge is addressed to the parent. A
+   * non-string output keeps the nudge pending for a later delivery.
+   * Fail-open: a throwing mutation journals `type:"error"` and never blocks.
+   * @param event The execute.after payload whose result is mutated.
+   */
+  function prependIntentNudgeRead(event: ToolHookEvent): void {
+    const raw = asSessionID(event?.sessionID)
+    const parent = ledger.parentOf(raw)
+    if (parent !== raw) return
+    const kind = intentNudgePending.get(parent)
+    if (kind === undefined) return
+    if (!event?.result || typeof event.result.output !== "string") return
+    intentNudgePending.delete(parent)
+    try {
+      event.result.output = `${intentNudge(kind)}\n${event.result.output}`
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
+    }
   }
 
   /**
@@ -1811,6 +1956,12 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       ...planApprovalStampFields(s),
     })
     journaler.traceEvent("plan-reviewer", "verdict", traceMarker, sid)
+    if (result === "APPROVE") {
+      // The attributed task has its plan: clear the intent-nudge latch exactly
+      // like the human-marker approval arm, so a later task's detected intents
+      // can nudge again.
+      clearIntentNudge(sid)
+    }
     recordDurablePlanApproval(s, projectDir)
   }
 
@@ -2893,6 +3044,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // belong to the previous task scope. The scan below re-seeds within the
     // same admission, so a new prompt's own near misses still surface.
     nearMissPending.delete(sessionID)
+    // A pending intent nudge belongs to the previous prompt too: an
+    // undelivered nudge must not attach to a later task's deliveries. The
+    // per-kind dedupe keys survive this reset by design (one nudge per
+    // detected intent across prompts; a plan approval clears them).
+    intentNudgePending.delete(sessionID)
   }
 
   /**
@@ -2954,6 +3110,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         // absent/unreadable dir stamps "" and keeps the accept-once path.
         const projectDir = currentProjectDir(sessionID)
         stampPlanApproval(s, "APPROVE", projectDir, [])
+        // The task has its plan: forget prior intent nudges so a later
+        // task's detected intents can nudge again.
+        clearIntentNudge(sessionID)
         journaler.journal({
           type: "plan",
           sessionID,
@@ -3245,6 +3404,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     captureSuspend(sessionID, properties)
     scanNearMisses(sessionID, properties)
     surfaceKeylessPrompt(sessionID, properties)
+    handlePromptIntent(sessionID, properties)
   }
   /**
    * Binds the host session API for the shared `resolveParent` helper.
@@ -3292,6 +3452,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     pendingHandsOnAsk,
     lastLandingEscalateAt,
     lastHandsOnEscalateAt,
+    intentNudgePending,
+    intentNudgedKinds,
     landingGateAsks,
     handsOnGateAsks,
     sessionDirs,
@@ -3309,6 +3471,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     pendingHandsOnAskTtlMs,
     maxTrackedLandingGateAsks,
     maxTrackedHandsOnGateAsks,
+    maxTrackedIntentNudges,
     maxLookupAttempts,
     maxTrackedLookups,
     maxTrackedSessionDirs,
@@ -3332,6 +3495,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     boundHandsOnAsks,
     boundLandingGateAsks,
     boundHandsOnGateAsks,
+    boundIntentNudges,
     boundSessionAgents,
     boundAdmittedIds,
     boundSummarizedSessions,
@@ -3367,6 +3531,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     injectOrchestratorPolicy,
     appendPipelineStatus,
     prependPolicy,
+    prependIntentNudge,
+    prependIntentNudgeRead,
     applyPolicyResult,
     attributePlanVerdict,
     creditReviewApproval,

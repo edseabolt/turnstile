@@ -111,6 +111,10 @@
       "type": "boolean",
       "description": "Whether the suspend/resume markers are honored; false refuses an OFF marker with a journaled refused:true entry and a surfaced diagnostic (default true)."
     },
+    "intentNudge": {
+      "type": "boolean",
+      "description": "Advisory intent nudge: a user prompt classified as implementation intent (work verb at code, issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals {type:\"intent\"} and prepends one advisory pipeline-entry nudge to the next tool delivery; false is a full no-op (default true)."
+    },
     "escalation": {
       "type": "string",
       "enum": ["block", "ask"],

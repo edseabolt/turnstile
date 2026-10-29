@@ -132,6 +132,12 @@ export function defaultConfig(
     suspendMarker: "TURNSTILE OFF:",
     resumeMarker: "TURNSTILE ON:",
     allowSuspend: true,
+    // Advisory intent nudge is on by default: an admitted prompt classified
+    // as implementation intent with no plan approval journals `{type:"intent"}`
+    // and prepends one advisory pipeline-entry nudge to the next tool
+    // delivery. `intentNudge: false` disables detection entirely (no journal
+    // row, no nudge).
+    intentNudge: true,
     agents: {
       planner: "planner",
       reviewer: "reviewer",
@@ -196,7 +202,12 @@ export function defaultConfig(
  *     explicitly to end an observe period.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (key === "trace" || key === "continuationCarry" || key === "allowSuspend")
+  if (
+    key === "trace" ||
+    key === "continuationCarry" ||
+    key === "allowSuspend" ||
+    key === "intentNudge"
+  )
     return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
   if (key === "escalation") return value === "ask" || value === "block"
@@ -275,6 +286,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "suspendMarker") config.suspendMarker = value as string
   else if (key === "resumeMarker") config.resumeMarker = value as string
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
+  else if (key === "intentNudge") config.intentNudge = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
   else config[key as NumericConfigKey] = value as number
 }

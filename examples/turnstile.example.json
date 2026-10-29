@@ -22,6 +22,7 @@
   "suspendMarker": "TURNSTILE OFF:",
   "resumeMarker": "TURNSTILE ON:",
   "allowSuspend": true,
+  "intentNudge": true,
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",
