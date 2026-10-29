@@ -172,7 +172,8 @@ unchanged worktree/branch fingerprint and earned credit. Replayed gate state
 survives a restart and the next (resume) prompt, then reverts.
 
 **Parent hands-on edits.** Parent sessions dispatch work through the
-pipeline; direct `write`/`edit` calls in the parent are always gated. The
+pipeline; direct `write`/`edit` calls in the parent — and in any
+non-pipeline subagent — are always gated. The
 first parent edit per task throws `BLOCKED by turnstile:`; under the default
 `escalation: "block"` a repeat attempt re-blocks — the gate releases only on
 your explicit `USER WAIVER:` (or a hands-on release carried from a prior

@@ -311,7 +311,7 @@ export interface TurnstileContext {
   handleBashDispatch(event: ToolHookEvent, tool: "bash" | "shell"): void
   /** Consumes the hands-on once-grant when one is pending; true = released. */
   consumeHandsOnGrant(st: GateState): boolean
-  /** Handles a parent-session write/edit tool call (denylist + hands-on gate). */
+  /** Handles a write/edit tool call (denylist + hands-on gate; parent sessions and non-pipeline subagents gate, only registered pipeline children are exempt). */
   handleWriteEditDispatch(event: ToolHookEvent, tool: "write" | "edit"): void
   /**
    * Swallows a deliberate BlockError at the catch-all execute.before choke
@@ -879,6 +879,24 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    */
   function emitterAgent(sessionID: string): string {
     return sessionAgents.get(sessionID) ?? ""
+  }
+
+  /**
+   * Answers whether a session is a registered pipeline child: it carries a
+   * child→parent edge AND its agent resolves to a configured pipeline agent
+   * name. The agent comes from the tool event first (the host reports the
+   * dispatched agent on execute payloads), falling back to the seeded
+   * emitter-authority cache. Fail-closed: an empty or unknown agent name
+   * gates the session like a parent, so a non-pipeline subagent (or a child
+   * whose agent was never resolved) can never bypass the hands-on gate.
+   * @param sid The tool event's session ID.
+   * @param agent The resolved agent name candidate from the event ("" when none).
+   * @returns Whether the session is an exempt pipeline child.
+   */
+  function isPipelineChild(sid: string, agent: string): boolean {
+    if (!ledger.childToParent.has(sid)) return false
+    const resolved = agent !== "" ? agent : emitterAgent(sid)
+    return resolved !== "" && subagentNames.has(resolved)
   }
 
   /**
@@ -2363,12 +2381,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * Handles a parent-session `write`/`edit` tool call: the path denylist
    * guard first (a configured `pathDeny` wins outright and the two journal
    * reasons stay disjoint — the same denylist-before-gate ordering the bash
-   * path uses), then the parent-only hands-on gate. A registered pipeline
-   * child's write/edit is the executor's own work and never gates: the
-   * `childToParent` edge is the same one the read budget and landing gate key
-   * off, and `ledger.parentOf` self-keys an unregistered session, so
-   * unregistered sessions count as parents (gated). A hands-on block throws
-   * BlockError (re-thrown by the outer catch).
+   * path uses), then the hands-on gate. A registered pipeline child's
+   * write/edit is the executor's own work and never gates: the exemption
+   * requires both the `childToParent` edge and an agent name in the
+   * configured pipeline set (event-reported agent first, seeded emitter
+   * cache as fallback), so a non-pipeline subagent — or any child whose
+   * agent cannot be resolved — is gated like a parent (fail-closed). A
+   * hands-on block throws BlockError (re-thrown by the outer catch).
    * @param event The execute.before tool event (write/edit shape).
    * @param tool The narrowed tool name (`"write"` or `"edit"`).
    */
@@ -2378,8 +2397,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Denylist first: a configured pathDeny wins and the journal reasons stay
     // disjoint (mirrors the bash denylist-before-landing-gate ordering).
     toolPolicy.guardPath(tool, filePath, sid)
-    // Hands-on gate: parent sessions only.
-    if (ledger.childToParent.has(sid)) return
+    // Hands-on gate: parent sessions and non-pipeline subagents; only a
+    // registered pipeline child's own write/edit (the executor's work)
+    // is exempt, and an unresolved agent fails closed (gated).
+    if (isPipelineChild(sid, typeof event?.agent === "string" ? event.agent : "")) return
     const parent = ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
     const st = ledger.state(parent)
     if (consumeHandsOnGrant(st)) return // once-grant: released for this one edit
