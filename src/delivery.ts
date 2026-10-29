@@ -245,7 +245,7 @@ export const PLAN_ASK_MESSAGE_PREFIX = "turnstile: plan approval required"
  * stream consumer can recognize a landing ask (even when the host omits the
  * session id) and route its reply to the landing gate.
  */
-export const LANDING_ASK_MESSAGE_PREFIX = "turnstile: push/PR requires a reviewer"
+export const LANDING_ASK_MESSAGE_PREFIX = "turnstile: pushing requires a reviewer"
 
 /**
  * Message prefix the evaluate handler stamps on every hands-on-gate ask, so

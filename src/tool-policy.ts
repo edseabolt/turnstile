@@ -171,7 +171,7 @@ export function isPushLanding(command: string): boolean {
  * consumer can recognize a landing ask by its `turnstile: push/PR …` prefix).
  */
 export const LANDING_REQUIREMENT =
-  "push/PR requires a reviewer VERDICT: APPROVE before landing — wait for the reviewer or escalate to the user"
+  "pushing requires a reviewer VERDICT: APPROVE before landing — wait for the reviewer or escalate to the user"
 
 /**
  * Core hands-on-gate text (enforce throw + ask message share it, so the two

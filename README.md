@@ -220,7 +220,7 @@ dispatch prompt — there is no agent-dispatchable off switch):
 
 - **`TURNSTILE OFF:`** suspends blocking for the session: enforcement
   decisions keep computing and journaling (every block that would have fired
-  is journaled as a `would-block` audit entry), but nothing throws `BLOCKED`
+  is journaled as a `suspended` audit entry with `event:"would-block"`), but nothing throws `BLOCKED`
   and no permission ask is forced. The session's gate state is cleared fresh
   and stays suspended across a restart (replayed from the journal tail).
 - **`TURNSTILE ON:`** resumes enforcement with fresh task state — no credit
@@ -230,7 +230,7 @@ When both markers appear in one prompt, the one occurring later wins. Config:
 `suspendMarker` / `resumeMarker` rename the literals (defaults
 `TURNSTILE OFF:` / `TURNSTILE ON:`), and `allowSuspend: false` disables both
 (an OFF is refused with a journaled `refused:true` entry and a surfaced
-diagnostic — the ON marker likewise). Inspect the live state with
+diagnostic, and the ON marker is refused the same way). Inspect the live state with
 `node bin/cli.mjs status` (in-repo) or `npx opencode-turnstile status`.
 
 ## Markers
@@ -240,7 +240,7 @@ are the canonical syntax; CI asserts the parser in `src/markers.ts` accepts
 exactly them.
 
 ```
-GATE: PASS tests=12 passed=11 failed=1
+GATE: PASS tests=12 passed=12 failed=0
 GATE: FAIL tests=12 passed=10 failed=2
 
 VERDICT: APPROVE crit=0 high=0 med=2 low=1

@@ -19,7 +19,7 @@ Two contexts this skill can run in; detect which one you are in first:
 - **Anywhere else** (npm-package or npx context): use the CLI,
   `npx opencode-turnstile init` / `npx opencode-turnstile check`. Do NOT run
   `npm run init` — that script only exists in the repo. The install mode is
-  resolved from an explicit flag, then the ledger's recorded `mode`, then
+  resolved from an explicit flag, then the manifest's `mode` field, then
   auto-detect: a `.git` checkout installs by linking, a package install
   copies.
 

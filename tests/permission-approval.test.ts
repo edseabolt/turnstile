@@ -936,7 +936,7 @@ test("reply: landing-gate asks stay bounded and a recent ask still matches", asy
         type: "permission.asked",
         properties: {
           id: `land-old-${i}`,
-          message: "turnstile: push/PR requires a reviewer — landing",
+          message: "turnstile: pushing requires a reviewer — landing",
         },
       })
     }

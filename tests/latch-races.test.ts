@@ -156,7 +156,7 @@ async function armAndRecordLandingAsk(h: FakeHost, parent: string, askId: string
   await callPermission(h, "evaluate", event)
   assert.ok(
     typeof event.message === "string" &&
-      event.message.startsWith("turnstile: push/PR requires a reviewer"),
+      event.message.startsWith("turnstile: pushing requires a reviewer"),
     "the landing evaluate must compose the landing-ask echo",
   )
   await h.pushEvent({

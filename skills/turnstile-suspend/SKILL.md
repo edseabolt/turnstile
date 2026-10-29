@@ -25,7 +25,7 @@ What it does for this session:
   checks, and permission asks all proceed.
 - Enforcement decisions keep being computed and journaled (observe-like, not
   blind): every block that _would_ have fired is recorded in the JSONL
-  journal as a `would-block` audit entry.
+  journal as a `suspended` audit entry with `event:"would-block"`.
 - The session's gate state is cleared fresh, and it stays cleared: credit is
   not earned while suspended.
 - The suspension survives a process restart (replayed from the journal tail).

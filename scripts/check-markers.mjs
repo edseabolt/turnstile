@@ -1,6 +1,6 @@
-// CI guard: the marker examples in README.md, the templates in agents/*.md
-// and src/policy.ts, and the evidence emitter's MARKER_OK copy must be
-// accepted by the parser regexes in src/markers.ts. Exits non-zero on drift.
+// CI guard: the marker examples in README.md and docs/usage.md, the templates
+// in agents/*.md and src/policy.ts, and the evidence emitter's MARKER_OK copy
+// must be accepted by the parser regexes in src/markers.ts. Exits non-zero on drift.
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,6 +13,7 @@ const ts = ["turnstile.ts", "src/markers.ts"]
   .map((f) => readFileSync(join(root, f), "utf8"))
   .join("\n")
 const readme = readFileSync(join(root, "README.md"), "utf8")
+const usage = readFileSync(join(root, "docs", "usage.md"), "utf8")
 // The standalone evidence emitter carries its own copy of the canonical marker
 // pair so it can degrade a journaled marker to null without importing TS
 // source; guard that copy against the same concrete README examples below.
@@ -35,12 +36,16 @@ if (!markerOkMatch) throw new Error("could not find MARKER_OK in scripts/evidenc
 const markerOkRe = new RegExp(markerOkMatch[1], markerOkMatch[2].replace(/g/g, ""))
 
 // Every fenced ```-block line that looks like a marker must match a regex.
-const lines = [...readme.matchAll(/```[a-z]*\n([\s\S]*?)```/g)]
-  .flatMap((m) => m[1].split("\n"))
-  .filter((l) => /^(GATE|VERDICT): /.test(l.trim()) && !/[<>]/.test(l))
+// README and usage.md both carry concrete examples; usage.md is a doc page
+// readers copy from, so its examples are guarded against the same drift.
+const lines = [readme, usage].flatMap((doc) =>
+  [...doc.matchAll(/```[a-z]*\n([\s\S]*?)```/g)]
+    .flatMap((m) => m[1].split("\n"))
+    .filter((l) => /^(GATE|VERDICT): /.test(l.trim()) && !/[<>]/.test(l)),
+)
 
 if (lines.length === 0) {
-  console.error("check-markers: no concrete marker examples found in README.md")
+  console.error("check-markers: no concrete marker examples found in README.md or docs/usage.md")
   process.exit(1)
 }
 
@@ -90,13 +95,13 @@ for (const [re, name, canonical] of [
 for (const line of lines) {
   const ok = gateRe.test(line) || verdictRe.test(line)
   if (!ok) {
-    console.error(`check-markers: README marker not accepted by parser: ${line}`)
+    console.error(`check-markers: doc marker not accepted by parser: ${line}`)
     failed++
   }
   // The evidence emitter's MARKER_OK copy must accept the same concrete
   // examples the parser does, so a drift in that second copy fails the guard.
   if (!markerOkRe.test(line)) {
-    console.error(`check-markers: README marker not accepted by evidence MARKER_OK: ${line}`)
+    console.error(`check-markers: doc marker not accepted by evidence MARKER_OK: ${line}`)
     failed++
   }
 }
@@ -178,5 +183,5 @@ if (failed) {
   process.exit(1)
 }
 console.log(
-  `check-markers: OK (${lines.length} README examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser; parser regex sources match canonical shape)`,
+  `check-markers: OK (${lines.length} README/usage examples verified against parser + evidence MARKER_OK, ${agentTemplates} agent + ${policyTemplates} policy templates verified against parser; parser regex sources match canonical shape)`,
 )

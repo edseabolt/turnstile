@@ -98,7 +98,7 @@ stays red).
 emits its marker as the first line of its output:
 
 ```text
-GATE: PASS tests=12 passed=11 failed=1
+GATE: PASS tests=12 passed=12 failed=0
 ```
 
 Under the default `gateEvidence:enforce`, that marker only flips the gate
@@ -769,8 +769,8 @@ commit subjects, and unapproved pushes that never landed.
 This repo now runs the landing gate enforced: an unapproved push is
 refused, not journaled. The flip was motivated by 54
 `no-landing-approval` would-blocks across 38 sessions — pushes the
-approved ensemble had actually earned but the audit-only period only
-recorded. A fix to
+approved ensemble had actually earned, recorded by the observe-mode
+journaling that predates enforced landing. A fix to
 the delivery-credit path (a reviewer `VERDICT: APPROVE` delivered without
 `input.agent` never credited the gate) landed before the flip, so the
 enforced gate releases on approvals it would otherwise have missed.

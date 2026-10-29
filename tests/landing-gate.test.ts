@@ -318,7 +318,7 @@ test("guardLanding: the enforce error names the landing requirement", () => {
   const { gate } = recordingCapability()
   assert.throws(
     () => policy.guardLanding("bash", "git push origin main", "s1", gate),
-    (e: Error) => e instanceof BlockError && e.message.includes("push/PR requires a reviewer"),
+    (e: Error) => e instanceof BlockError && e.message.includes("pushing requires a reviewer"),
   )
 })
 

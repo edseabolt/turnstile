@@ -1,7 +1,7 @@
 /**
- * @fileoverview Policy boundary: enforcement decisions: the reviewer
- * dispatch gate, the plan-approval gate, the whole-file read horizon, and
- * the decomposition gate.
+ * @fileoverview Policy boundary: composition of the per-gate enforcement
+ * modules (dispatch gates, plan gates) — this module wires them into the
+ * host-facing `Gates` interface.
  * Functions here either return normally or throw a deliberate BLOCKED
  * error; every other failure fails open upstream (hooks guard and journal).
  * All tunables (thresholds, marker, agent names) come from the injected
