@@ -16,6 +16,7 @@
  */
 
 import { agentFromTaskInput } from "./markers.ts"
+import type { TaskInput } from "./types.ts"
 import type { GateLedger } from "./ledger.ts"
 import type { ToolHookEvent } from "./types.ts"
 
@@ -85,4 +86,24 @@ export function resolveChildStatus(
  */
 export function agentFromDispatchEvent(event: ToolHookEvent): string {
   return agentFromTaskInput(event.input) || (typeof event.agent === "string" ? event.agent : "")
+}
+
+/**
+ * Resolves the agent name from a delivery-shaped tool event (the
+ * execute.after payload). Order matters: the dispatch input and the
+ * structured result's input echo name the CHILD, while the payload's
+ * generic `event.agent` field can carry the PARENT's agent name on
+ * structured/background deliveries — so the name-bearing inputs are
+ * tried first and the `event.agent` fallback only wins when no input
+ * shape names one. Using agentFromDispatchEvent's order here would
+ * misattribute gate-moving credit to the parent.
+ * @param event The host execute.after tool-hook payload.
+ * @returns The agent name, or "" when no shape names one.
+ */
+export function agentFromDeliveryEvent(event: ToolHookEvent): string {
+  return (
+    agentFromTaskInput(event.input) ||
+    agentFromTaskInput(event.result?.input as TaskInput | undefined) ||
+    agentFromDispatchEvent(event)
+  )
 }

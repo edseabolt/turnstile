@@ -11,11 +11,10 @@
  * else); `after` never gates — every failure journals fail-open.
  */
 
-import { agentFromDispatchEvent } from "./child-registration.ts"
-import { agentFromTaskInput } from "./markers.ts"
+import { agentFromDeliveryEvent } from "./child-registration.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import type { MarkerEvent, TaskInput, ToolHookEvent, ToolResult } from "./types.ts"
+import type { MarkerEvent, ToolHookEvent, ToolResult } from "./types.ts"
 
 /**
  * Tool-surface hook bodies bound to one shared per-setup context. The
@@ -77,16 +76,15 @@ export function createToolHooks(ctx: TurnstileContext): {
   }
 
   /**
-   * Resolves the delivery agent from the dispatch input, trying the task
-   * tool input shape and the generic subagent shape (`event.agent` on the
-   * payload) first, then the structured result's input when neither names
-   * one.
+   * Resolves the delivery agent via the delivery-order resolver: the
+   * dispatch input and the structured result's input echo name the CHILD
+   * and win first; the payload's generic `event.agent` is the last
+   * fallback (it can carry the parent's name on structured/background
+   * deliveries — see agentFromDeliveryEvent).
    * @param event The host execute.after tool-hook payload.
    * @returns The agent name, or "" when no shape names one.
    */
-  const resolveDeliveryAgent = (event: ToolHookEvent): string =>
-    agentFromDispatchEvent(event) ||
-    agentFromTaskInput(event.result?.input as TaskInput | undefined)
+  const resolveDeliveryAgent = (event: ToolHookEvent): string => agentFromDeliveryEvent(event)
   /**
    * Awaits the child→parent edge for the deliveries that need it before
    * marker parsing and attribution: plan-reviewer, test-runner, and

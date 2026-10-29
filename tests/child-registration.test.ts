@@ -11,6 +11,7 @@ import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
 import {
+  agentFromDeliveryEvent,
   agentFromDispatchEvent,
   isPipelineChildDispatch,
   resolveChildStatus,
@@ -19,6 +20,7 @@ import { BlockError } from "../src/gates.ts"
 import type { GateLedger } from "../src/ledger.ts"
 import type { ToolHookEvent } from "../src/types.ts"
 import {
+  callSession,
   callTool,
   isolatedEnv,
   journalEntries,
@@ -28,6 +30,7 @@ import {
   type FakeHost,
 } from "./helpers.ts"
 
+const PASS = "GATE: PASS tests=3 passed=3 failed=0"
 const NAMES = new Set(["executor", "reviewer"])
 
 /** A minimal ledger stub carrying only the edge map the boundary reads. */
@@ -35,13 +38,14 @@ function stubLedger(edges: Array<[string, string]>): GateLedger {
   return { childToParent: new Map(edges) } as unknown as GateLedger
 }
 
-/** Boots the plugin on a fake host in a temp metrics dir. */
-async function boot(): Promise<{
+/** Boots the plugin on a fake host in a temp metrics dir, optionally with
+ *  host session records (session.get lookups) for edge resolution. */
+async function boot(opts?: { sessionRecords?: Map<string, any> }): Promise<{
   h: FakeHost
   dispose: () => void
   metricsDir: string
 }> {
-  const h = makeFakeHost()
+  const h = makeFakeHost({ sessionRecords: opts?.sessionRecords })
   const metricsDir = tmpDir()
   const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
   const dispose = (await setup(h.host)) as () => void
@@ -220,6 +224,73 @@ test("a parent dispatch with no agent name still blocks (unaffected)", async () 
         input: { command: "cat > notes.md" },
       })
     })
+  } finally {
+    dispose()
+  }
+})
+
+test("agentFromDeliveryEvent: the input echo names the child before event.agent (unit order)", () => {
+  // A structured/background delivery whose input carries no agent but whose
+  // result echo does: the child-naming echo must win over event.agent.
+  const echo = {
+    tool: "task",
+    sessionID: "p1",
+    agent: "orchestrator",
+    input: {},
+    result: { output: "x", input: { agent: "test-runner" } },
+  } as unknown as ToolHookEvent
+  assert.equal(agentFromDeliveryEvent(echo), "test-runner")
+  // With no input echo either, the event.agent fallback still resolves.
+  const fallback = {
+    tool: "task",
+    sessionID: "p1",
+    agent: "test-runner",
+    input: {},
+    result: { output: "x" },
+  } as unknown as ToolHookEvent
+  assert.equal(agentFromDeliveryEvent(fallback), "test-runner")
+  // Nothing names an agent: "".
+  const none = {
+    tool: "task",
+    sessionID: "p1",
+    input: {},
+    result: { output: "x" },
+  } as unknown as ToolHookEvent
+  assert.equal(agentFromDeliveryEvent(none), "")
+})
+
+test("a delivery's parent-named event.agent never shadows the child's result echo", async () => {
+  // The chunk-1 regression: a structured child-keyed delivery whose dispatch
+  // input omitted the agent. `event.agent` there can carry the PARENT's name
+  // (docs/architecture.md hazard); the result's input echo names the child.
+  // The child's name must win so the test-runner PASS awaits its edge and
+  // verifies at delivery instead of being attributed to the parent's name.
+  const records = new Map<string, any>([["c1", { parentID: "p1", agent: "test-runner" }]])
+  const { h, dispose, metricsDir } = await boot({ sessionRecords: records })
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "run the pipeline" })
+    // Evidence correlation: the child's exit-0 test run is what a verified
+    // PASS needs (mirrors the evidence-attribution harness shape).
+    await callTool(h, "execute.after", {
+      tool: "bash",
+      sessionID: "c1",
+      input: { command: "npm test" },
+      result: { metadata: { exit: 0 } },
+    })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      agent: "orchestrator",
+      input: {},
+      result: { output: `${PASS}\nrest`, input: { agent: "test-runner" } },
+    })
+    const gate = journalEntries(metricsDir).find((l) => l.type === "gate" && l.result === "PASS")
+    assert.ok(gate, "the echo-named child resolves the edge, so the PASS is recorded")
+    assert.equal(
+      gate.verified,
+      true,
+      "the echo-named child resolves, so the PASS verifies at delivery",
+    )
   } finally {
     dispose()
   }

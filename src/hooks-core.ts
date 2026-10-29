@@ -1869,6 +1869,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * @param event The execute.before tool event (task/subagent shape).
    */
   async function handleTaskDispatch(event: ToolHookEvent): Promise<void> {
+    // Dispatch-input-first resolution is safe here: `event.input` IS the
+    // dispatch input (execute.before, no structured result echo exists),
+    // so the `event.agent` fallback cannot shadow a child name the way it
+    // can on delivery payloads (see agentFromDeliveryEvent).
     const agent = agentFromDispatchEvent(event)
     const sessionID = asSessionID(event?.sessionID)
     // Sessions dispatching guarded subagents are parents by
