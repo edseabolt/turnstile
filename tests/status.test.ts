@@ -893,6 +893,28 @@ test("an in-period journal renders the observe phase on the header line", () => 
   }
 })
 
+/** Maintenance dispatch rows (`type:"maintenance"`) fold into the MNT column:
+ *  an admitted row (`capped` falsy) increments the count; a `capped:true`
+ *  attempt row folds nothing (its block is visible through the `blocked`
+ *  entry). */
+test("maintenance rows count admitted dispatches into the MNT column", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "maintenance", sessionID: "sp-mnt", plan: "plan.md", capped: false }),
+      line(2, { type: "maintenance", sessionID: "sp-mnt", plan: "plan.md", capped: false }),
+      line(3, { type: "maintenance", sessionID: "sp-mnt", plan: "plan.md", capped: true }),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  MNT  BLK  PERM  REL  SUS")
+    assert.match(table.stdout, /sp-mnt\s+\S+\s+\S+\s+\S+\s+0\s+0\s+2\s+/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /** A journal without observe-mode entries renders byte-identically to the
  *  pre-observe table even when a period is configured: the observe line only
  *  renders over a journal that actually holds observe-mode entries. */
