@@ -191,7 +191,9 @@ from writer commands (`cat > f`, `echo x >> f`), `tee f`, `sed -i`/
 parent `write`/`edit` (release, waiver, and the `once` grant all apply, and a
 `once` releases one write of any kind). Output capture never gates —
 `echo hi > /dev/null`, `npm test > log`, `git push > /dev/null` — and neither
-do `tee /dev/null` / fd-dup operands (`tee 2>&1`), or `dd
+do heredoc-bearing commands (`cat <<EOF`: the splitter sees the heredoc body
+lines as simple commands, but they are stdin data, so the whole command is
+observed, not gated), `tee /dev/null` / fd-dup operands (`tee 2>&1`), or `dd
 of=/dev/...`; leading `NAME=value` assignments and `sudo`/`env`/`nice`/
 `command` wrappers classify by the real head (`sudo cp a b` gates). Every
 write-shaped command journals a `handsOn` telemetry row even where it

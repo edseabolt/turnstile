@@ -10,7 +10,11 @@
  * a non-`/dev` redirect (output capture such as `npm test > log` is observed,
  * never gated). Output-capture and no-op shapes never classify `gate`:
  * `echo hi > /dev/null`, `grep x file > /dev/null`, `git push > /dev/null`,
- * `echo "a > b"` (quoted), `cmd 2>&1` (fd dup). `tee` operands
+ * `echo "a > b"` (quoted), `cmd 2>&1` (fd dup). A heredoc operator (`<<`/
+ * `<<<`) caps the whole command at `telemetry` — the splitter sees the
+ * heredoc body lines as independent simple commands, but they are stdin
+ * data, so a heredoc-bearing command never gates (a real redirect hidden on
+ * the head, e.g. `cat > f <<EOF`, is observed, not blocked). `tee` operands
  * that are `/dev` targets or fd-dup forms (`2>&1`, `>&N`, `N>&M`) are not
  * file operands, and `dd` with every `of=` on `/dev` writes no file. Leading
  * `NAME=value` assignments and `sudo`/`env`/`nice`/`command` wrappers are
@@ -245,6 +249,41 @@ function isRedirectToken(word: string): boolean {
 }
 
 /**
+ * True when the string carries a heredoc operator (`<<` or `<<<`) outside
+ * quotes: everything after the operator's line is stdin data, which
+ * {@link splitCommands} still sees as independent simple commands — so a
+ * heredoc-bearing command must not be gated on its body lines.
+ * @param simple One simple command string (already separator-split).
+ * @returns True when a heredoc operator is present.
+ */
+function hasHeredocOperator(simple: string): boolean {
+  let quote = ""
+  let escaped = false
+  for (let i = 0; i < simple.length; i++) {
+    const ch = simple[i]!
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (quote) {
+      if (ch === "\\") escaped = true
+      else if (ch === quote) quote = ""
+      continue
+    }
+    if (ch === "\\") {
+      escaped = true
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (ch === "<" && simple[i + 1] === "<") return true
+  }
+  return false
+}
+
+/**
  * Strips leading `NAME=value` assignment words and `sudo`/`env`/`nice`/
  * `command` wrapper words: they prefix a command without changing the
  * executed head, so classification must dispatch on the real head
@@ -313,17 +352,25 @@ function classifySimple(simple: string): BashWriteVerdict {
  * redirect from a non-writer head (observed, never gated), `"none"`
  * otherwise. The first simple command that yields a verdict wins, so a clean
  * first command does not mask a write later in the string (`true && cat > f`
- * gates).
+ * gates). A heredoc operator anywhere caps the verdict at `telemetry`: the
+ * splitter sees the heredoc body lines as independent simple commands, but
+ * they are stdin data, never writes.
  * @param command The raw command value from the host payload.
  * @returns The write-shape verdict.
  */
 export function classifyBashWrite(command: unknown): BashWriteVerdict {
   if (typeof command !== "string" || command.trim() === "") return "none"
   let telemetry = false
+  let heredoc = false
   for (const simple of splitCommands(command)) {
+    if (hasHeredocOperator(simple)) heredoc = true
     const v = classifySimple(simple)
-    if (v === "gate") return "gate"
-    if (v === "telemetry") telemetry = true
+    if (v === "gate") {
+      if (!heredoc) return "gate"
+      telemetry = true
+    } else if (v === "telemetry") {
+      telemetry = true
+    }
   }
   return telemetry ? "telemetry" : "none"
 }

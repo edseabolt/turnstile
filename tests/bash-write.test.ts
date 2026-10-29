@@ -1,8 +1,9 @@
 /**
  * @fileoverview Write-shape classifier tests: the `classifyBashWrite` verdict
  * matrix over gated writers, telemetry-only redirects, and the zero-false-
- * positive shapes (`/dev` targets, quoted redirects, fd dups, `/dev`/fd-dup
- * `tee` operands, `/dev` `dd of=`, assignment and wrapper prefixes).
+ * positive shapes (`/dev` targets, quoted redirects, fd dups, heredocs,
+ * `/dev`/fd-dup `tee` operands, `/dev` `dd of=`, assignment and wrapper
+ * prefixes).
  */
 
 import { test } from "node:test"
@@ -52,6 +53,8 @@ test("classifyBashWrite: telemetry-only redirect shapes", () => {
     "grep x f > out",
     "ls | tee f",
     "cmd > f 2>&1",
+    "cat > f.txt <<'EOF'\nbody\nEOF",
+    "cat <<EOF\necho hi > /tmp/out\nEOF",
   ]) {
     // `ls | tee f` is split on the pipe, so the `tee f` simple gates; the
     // remaining cases are non-writer heads with a non-dev redirect.

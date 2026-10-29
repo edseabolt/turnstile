@@ -1362,7 +1362,7 @@ test("evidence.has and evidence.observe handle empty and undefined inputs", () =
 
 /** Write-shaped bash commands reach the hands-on gate through the bash hook
  *  surface: a parent's gate-tier write blocks (fail-closed for an unresolved
- *  agent), while output-capture and non-write shapes pass, and telemetry
+ *  agent), while output-capture and heredoc shapes pass, and telemetry
  *  rows are journaled for every write-shaped command. */
 test("bash write gate: parent gate-tier write blocks, capture shapes pass", async () => {
   const h = makeFakeHost()
@@ -1374,7 +1374,7 @@ test("bash write gate: parent gate-tier write blocks, capture shapes pass", asyn
         callTool(h, "execute.before", {
           tool: "bash",
           sessionID: "p1",
-          input: { command: "cat > notes.md <<'EOF'\nhi\nEOF" },
+          input: { command: "cat > notes.md" },
         }),
       (e: unknown) => e instanceof BlockError && e.cause === "hands-on",
     )
@@ -1389,13 +1389,20 @@ test("bash write gate: parent gate-tier write blocks, capture shapes pass", asyn
       sessionID: "p1",
       input: { command: "grep x file > /dev/null" },
     })
-    // Telemetry rows: the gate-tier heredoc write and the capture redirect
-    // (`npm test > log`) journal one row each; the `/dev/null` target drops
-    // its redirect, so it journals nothing.
+    // A heredoc-bearing command is observed, never gated — even when the
+    // head itself carries a real redirect (`cat > f <<EOF`).
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "cat > notes.md <<'EOF'\nhi\nEOF" },
+    })
+    // Telemetry rows: the blocked gate-tier write, the capture redirect
+    // (`npm test > log`), and the heredoc write journal one row each; the
+    // `/dev/null` target drops its redirect, so it journals nothing.
     const toolRows = journalEntries(metricsDir).filter(
       (e) => e.type === "tool" && e.handsOn === true,
     )
-    assert.equal(toolRows.length, 2)
+    assert.equal(toolRows.length, 3)
   } finally {
     dispose()
   }
