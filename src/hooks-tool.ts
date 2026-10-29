@@ -11,6 +11,7 @@
  * else); `after` never gates — every failure journals fail-open.
  */
 
+import { agentFromDispatchEvent } from "./child-registration.ts"
 import { agentFromTaskInput } from "./markers.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
@@ -76,13 +77,15 @@ export function createToolHooks(ctx: TurnstileContext): {
   }
 
   /**
-   * Resolves the delivery agent from the dispatch input, falling back to
-   * the structured result's input when the dispatch input names none.
+   * Resolves the delivery agent from the dispatch input, trying the task
+   * tool input shape and the generic subagent shape (`event.agent` on the
+   * payload) first, then the structured result's input when neither names
+   * one.
    * @param event The host execute.after tool-hook payload.
-   * @returns The agent name, or "" when neither shape names one.
+   * @returns The agent name, or "" when no shape names one.
    */
   const resolveDeliveryAgent = (event: ToolHookEvent): string =>
-    agentFromTaskInput(event.input) ||
+    agentFromDispatchEvent(event) ||
     agentFromTaskInput(event.result?.input as TaskInput | undefined)
   /**
    * Awaits the child→parent edge for the deliveries that need it before

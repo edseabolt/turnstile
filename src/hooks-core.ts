@@ -7,10 +7,10 @@
  */
 
 import { evictTo } from "./bounded.ts"
+import { agentFromDispatchEvent, resolveChildStatus } from "./child-registration.ts"
 import { formatConfigWarnings, formatObserveSummary, loadConfig } from "./config.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
-  agentFromTaskInput,
   compileMarkerRegex,
   deltaWindowFloorChars,
   parseGateMarkers,
@@ -884,21 +884,20 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
-   * Answers whether a session is a registered pipeline child: it carries a
-   * child→parent edge AND its agent resolves to a configured pipeline agent
-   * name. The agent comes from the tool event first (the host reports the
-   * dispatched agent on execute payloads), falling back to the seeded
-   * emitter-authority cache. Fail-closed: an empty or unknown agent name
-   * gates the session like a parent, so a non-pipeline subagent (or a child
-   * whose agent was never resolved) can never bypass the hands-on gate.
+   * Resolves a tool event session's registration status through the
+   * child-registration boundary: a non-empty event agent name in the
+   * configured pipeline set is authoritative (edge or not — parents never
+   * carry a subagent agent name); otherwise the child→parent edge plus the
+   * emitter-authority fallback decides; anything unresolved is `"unknown"`
+   * and gates like a parent (fail closed). Supersedes the former
+   * edge-required check, so a generic-subagent dispatch or a child whose
+   * edge was lost to a reload still exempts from its name.
    * @param sid The tool event's session ID.
    * @param agent The resolved agent name candidate from the event ("" when none).
-   * @returns Whether the session is an exempt pipeline child.
+   * @returns The session's registration status at this boundary.
    */
-  function isPipelineChild(sid: string, agent: string): boolean {
-    if (!ledger.childToParent.has(sid)) return false
-    const resolved = agent !== "" ? agent : emitterAgent(sid)
-    return resolved !== "" && subagentNames.has(resolved)
+  function childStatus(sid: string, agent: string): "child" | "parent" | "unknown" {
+    return resolveChildStatus(sid, agent, ledger, subagentNames, emitterAgent)
   }
 
   /**
@@ -1870,7 +1869,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * @param event The execute.before tool event (task/subagent shape).
    */
   async function handleTaskDispatch(event: ToolHookEvent): Promise<void> {
-    const agent = agentFromTaskInput(event.input)
+    const agent = agentFromDispatchEvent(event)
     const sessionID = asSessionID(event?.sessionID)
     // Sessions dispatching guarded subagents are parents by
     // definition: mark before the guards so their
@@ -2330,13 +2329,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // telemetry and the guard.
     const gw = classifyBashWrite(text)
     toolPolicy.observeBashWrite(sid, text, gw)
-    // Fail-closed exemption, mirroring the write/edit arm: only a registered
-    // pipeline child's own bash is exempt, and an unresolved agent gates like
-    // a parent. The exemption sits AFTER the telemetry (so a child still
-    // journals its `handsOn` row) and BEFORE the guard (so the guard — and
-    // with it the parent bucket's pending hands-on once-grant and landing
-    // grant — is never reached by a child dispatch).
-    if (isPipelineChild(sid, typeof event?.agent === "string" ? event.agent : "")) return
+    // Fail-closed exemption, mirroring the write/edit arm: only a pipeline
+    // child's own bash is exempt (agent-name precedence first, then the
+    // edge + emitter fallback), and an unresolved status gates like a
+    // parent. The exemption sits AFTER the telemetry (so a child still
+    // journals its `handsOn` row) and BEFORE the guards (so the bash-write
+    // guard — and with it the parent bucket's pending hands-on once-grant —
+    // and the landing gate are never reached by a child dispatch).
+    if (childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") return
     const parent = ledger.parentOf(sid)
     const st = ledger.state(parent)
     // Invariant: this arm runs BEFORE `consumeLandingGrant` and the hands-on
@@ -2415,13 +2415,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * Handles a parent-session `write`/`edit` tool call: the path denylist
    * guard first (a configured `pathDeny` wins outright and the two journal
    * reasons stay disjoint — the same denylist-before-gate ordering the bash
-   * path uses), then the hands-on gate. A registered pipeline child's
-   * write/edit is the executor's own work and never gates: the exemption
-   * requires both the `childToParent` edge and an agent name in the
-   * configured pipeline set (event-reported agent first, seeded emitter
-   * cache as fallback), so a non-pipeline subagent — or any child whose
-   * agent cannot be resolved — is gated like a parent (fail-closed). A
-   * hands-on block throws BlockError (re-thrown by the outer catch).
+   * path uses), then the hands-on gate. A pipeline child's
+   * write/edit is the executor's own work and never gates: a non-empty
+   * event agent name in the configured pipeline set is authoritative
+   * evidence (edge or not — parents never carry a subagent agent name);
+   * without an event name the child→parent edge plus the seeded emitter
+   * cache decides, and any unresolved status gates like a parent
+   * (fail-closed). A hands-on block throws BlockError (re-thrown by the
+   * outer catch).
    * @param event The execute.before tool event (write/edit shape).
    * @param tool The narrowed tool name (`"write"` or `"edit"`).
    */
@@ -2432,9 +2433,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // disjoint (mirrors the bash denylist-before-landing-gate ordering).
     toolPolicy.guardPath(tool, filePath, sid)
     // Hands-on gate: parent sessions and non-pipeline subagents; only a
-    // registered pipeline child's own write/edit (the executor's work)
-    // is exempt, and an unresolved agent fails closed (gated).
-    if (isPipelineChild(sid, typeof event?.agent === "string" ? event.agent : "")) return
+    // pipeline child's own write/edit (the executor's work) is exempt
+    // (agent-name precedence first, then the edge + emitter fallback), and
+    // an unresolved status fails closed (gated).
+    if (childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") return
     const parent = ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
     const st = ledger.state(parent)
     if (consumeHandsOnGrant(st)) return // once-grant: released for this one edit
