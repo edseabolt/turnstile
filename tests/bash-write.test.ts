@@ -21,6 +21,7 @@ test("classifyBashWrite: gated writer shapes", () => {
     "sed -i s/a/b/ f",
     "sed -i.bak s/a/b/ f",
     "sed -I s/a/b/ f",
+    "sed -I.bak s/a/b/ f",
     "sed --in-place s/a/b/ f",
     "sed --in-place=.bak s/a/b/ f",
     "x | tee f",
@@ -73,10 +74,29 @@ test("classifyBashWrite: zero-false-positive shapes never gate", () => {
     "",
     "   ",
     "ls -la",
+    "sed s/a/b/ f",
+    "tee -a",
   ]
   for (const c of cases) {
     assert.equal(classifyBashWrite(c), "none", `none: ${c}`)
   }
+})
+
+test("classifyBashWrite: escaped redirect metacharacters never gate", () => {
+  // A backslash outside quotes escapes the next character (so `\>` is a
+  // literal, not a redirect); inside quotes it is an escaped character the
+  // scanner must consume without mistaking it for a delimiter.
+  const cases = ["echo a\\>b", 'echo "x\\>y"', "echo 'a\\>b' > /dev/null"]
+  for (const c of cases) {
+    assert.equal(classifyBashWrite(c), "none", `none: ${c}`)
+  }
+  // The escaped `\>` is a literal argument, but the unescaped trailing
+  // `>f` is a real redirect, so this shape still gates.
+  assert.equal(classifyBashWrite("echo a\\>>f"), "gate")
+  // Quoted redirect targets are collected with quotes stripped: still a file
+  // write, still a gate.
+  assert.equal(classifyBashWrite("cat > 'f'"), "gate")
+  assert.equal(classifyBashWrite('echo x > "f"'), "gate")
 })
 
 test("classifyBashWrite: non-string input classifies none", () => {
