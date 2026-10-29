@@ -131,7 +131,6 @@ test("a waived reviewer dispatch never counts toward the ensemble", async () => 
 test("a credited APPROVE at ensemble count 0 is refused and arms the landing ask", async () => {
   const { h, metricsDir, dispose } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     await greenGate(h, "p1")
@@ -181,7 +180,6 @@ test("a credited APPROVE at ensemble count 0 is refused and arms the landing ask
 test("enforce credits a reviewer APPROVE only at ensemble count 2", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     await greenGate(h, "p1")
@@ -285,7 +283,7 @@ test("advise mode credits a single-reviewer APPROVE yet journals the count", asy
 /** a human always-grant outranks the ensemble — no incomplete journal, a
  *  clearing refusedApprove:false entry is journaled, and the gate releases. */
 test("a human always-grant releases the gate and journals a clearing entry", async () => {
-  const { h, metricsDir, dispose } = await boot({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, dispose } = await boot()
   try {
     await assert.rejects(() =>
       callTool(h, "execute.before", {
@@ -332,7 +330,7 @@ test("a human always-grant releases the gate and journals a clearing entry", asy
 /** the human grant survives restart — replay restores hasReviewApprove
  *  from the clearing (refusedApprove:false) entry. */
 test("a human always-grant survives restart via the clearing entry", async () => {
-  const { h, dispose, metricsDir } = await boot({ gitGates: { mode: "enforce" } })
+  const { h, dispose, metricsDir } = await boot()
   try {
     await assert.rejects(() =>
       callTool(h, "execute.before", {
@@ -371,7 +369,6 @@ test("a human always-grant survives restart via the clearing entry", async () =>
 test("a post-grant APPROVE delivery at a smaller count keeps the human release", async () => {
   const { h, metricsDir, dispose } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     // The human releases the landing gate via an always-grant.
@@ -643,7 +640,6 @@ test("an ensemble-only entry restores the count without grace", () => {
 test("an incomplete ensemble arms the landing ask like an unreviewed task", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     await greenGate(h, "p1")
@@ -695,14 +691,12 @@ test("an incomplete ensemble arms the landing ask like an unreviewed task", asyn
  * structured / background shape — which must resolve the delivery agent
  * through the child→parent edge + host session record and credit the parent.
  * The earlier cases in this file keep their own configs unchanged; every case below shares
- * DELIVER_ENFORCE — gitGates enforce (the real landing gate) and flag-mode
- * evidence (greenGate flips on a plain PASS) — so enforce assertions never
- * depend on the shadow default, and the ensemble default (enforce) is stated
- * for legibility.
+ * DELIVER_ENFORCE — flag-mode evidence (greenGate flips on a plain PASS) and the
+ * enforced ensemble default — so the landing assertions never depend on config
+ * defaults and the ensemble default (enforce) is stated for legibility.
  */
 const DELIVER_ENFORCE: Record<string, any> = {
   gateEvidence: "flag",
-  gitGates: { mode: "enforce" },
   reviewEnsemble: "enforce",
 }
 
@@ -1065,13 +1059,12 @@ test("a no-input plan-reviewer APPROVE attributes through the session record", a
  * a mechanical credit outlives its own task bucket — the landing prompt
  * resets `hasReviewApprove`, but the credit trace survives, so the first push
  * of the landing turn is the human decision point: no `BlockError`, exactly
- * one enforce-mode landing ask journaled, no `no-landing-approval` block, and
+ * one landing ask journaled, no `no-landing-approval` block, and
  * the evaluate handler forces the ask with the landing requirement message.
  */
 test("a credited APPROVE arms the landing ask on the first push of the landing prompt", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     await greenGate(h, "p1")
@@ -1117,7 +1110,6 @@ test("a credited APPROVE arms the landing ask on the first push of the landing p
       (e) => e.type === "permission" && e.action === "ask" && e.reason === "landing",
     )
     assert.equal(asks.length, 1, "the escalated first push is the single ask record")
-    assert.equal(asks[0]!.mode, "enforce")
     assert.ok(
       !entries.some((e) => e.type === "blocked" && e.reason === "no-landing-approval"),
       "a credited session's first push journals no no-landing-approval block",
@@ -1135,7 +1127,6 @@ test("a credited APPROVE arms the landing ask on the first push of the landing p
 test("a human always landing release arms the ask on the next turn's first push", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     // Ladder to the human release: first block, repeat escalates, and the
@@ -1203,7 +1194,6 @@ test("a human always landing release arms the ask on the next turn's first push"
 test("a stale journaled release still escalates the first push after later prompts", async () => {
   const { h, dispose, metricsDir } = await boot({
     gateEvidence: "flag",
-    gitGates: { mode: "enforce" },
   })
   try {
     // Ladder to the human release: first block, repeat escalates, always reply.

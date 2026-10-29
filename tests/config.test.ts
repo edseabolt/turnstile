@@ -246,7 +246,14 @@ test("TURNSTILE_TRACE accepts the 0/1/false/true matrix", () => {
   assert.equal(loadConfig({ [ENV_KEYS.trace]: "true" }).config.trace, true)
   const invalid = loadConfig({ [ENV_KEYS.trace]: "sometimes" })
   assert.equal(invalid.config.trace, true)
-  assert.equal(invalid.warnings.length, 1)
+  // The user config file this test loads may surface its own legacy-key
+  // warnings; only the trace warning is pinned here.
+  assert.ok(
+    invalid.warnings.some(
+      (w) =>
+        w === "env TURNSTILE_TRACE=sometimes invalid (use 0/1/true/false); keeping current value",
+    ),
+  )
 })
 
 /** TURNSTILE_METRICS_DIR redirects the journal directory. */
@@ -538,16 +545,14 @@ test("configDigest flips on evidence-key overrides", () => {
  *  to the host permission system, not a hardcoded denylist. */
 test("defaultConfig ships an empty toolPolicy denylist (host permissions govern git/gh consent)", () => {
   const cfg = defaultConfig({})
-  assert.equal(cfg.toolPolicy.mode, "enforce")
   assert.deepEqual(cfg.toolPolicy.bashDeny, [])
   assert.deepEqual(cfg.toolPolicy.pathDeny, [])
   assert.equal(cfg.toolPolicy.observeSessionMove, true)
 })
 
-/** gitGates defaults: shadow mode, conventional-commit linting on, landing gate on. */
-test("defaultConfig ships the gitGates defaults (shadow)", () => {
+/** gitGates defaults: conventional-commit linting on, landing gate on. */
+test("defaultConfig ships the gitGates defaults (lint and landing on)", () => {
   const cfg = defaultConfig({})
-  assert.equal(cfg.gitGates.mode, "shadow")
   assert.equal(cfg.gitGates.commitMessages, true)
   assert.equal(cfg.gitGates.commitFormat, DEFAULT_COMMIT_FORMAT)
   assert.equal(cfg.gitGates.landingGate, true)
@@ -570,23 +575,12 @@ test("mergeConfig rejects a non-object gitGates and keeps defaults", () => {
   assert.deepEqual(warnings, ["config: gitGates must be an object; keeping defaults"])
 })
 
-/** An invalid gitGates.mode keeps the shadow default and names it. */
-test("mergeConfig rejects an invalid gitGates.mode and keeps shadow", () => {
-  const base = defaultConfig({})
-  const { config, warnings } = mergeConfig(base, { gitGates: { mode: "strict" } })
-  assert.equal(config.gitGates.mode, "shadow")
-  assert.deepEqual(warnings, [
-    'config: gitGates.mode must be "enforce", "shadow", or "off"; keeping default',
-  ])
-})
-
 /** Valid gitGates overrides are applied one level deep. */
 test("mergeConfig applies valid gitGates overrides", () => {
   const base = defaultConfig({})
   const { config } = mergeConfig(base, {
-    gitGates: { mode: "enforce", commitMessages: false, landingGate: false },
+    gitGates: { commitMessages: false, landingGate: false },
   })
-  assert.equal(config.gitGates.mode, "enforce")
   assert.equal(config.gitGates.commitMessages, false)
   assert.equal(config.gitGates.landingGate, false)
   // Untouched sub-keys keep their defaults.
@@ -643,8 +637,8 @@ test("mergeConfig keeps a valid gitGates.commitFormat override", () => {
 /** Unknown gitGates sub-keys are ignored with a warning. */
 test("mergeConfig ignores unknown gitGates sub-keys", () => {
   const base = defaultConfig({})
-  const { config, warnings } = mergeConfig(base, { gitGates: { mode: "shadow", bogus: 1 } })
-  assert.equal(config.gitGates.mode, "shadow")
+  const { config, warnings } = mergeConfig(base, { gitGates: { bogus: 1 } })
+  assert.deepEqual(config.gitGates, base.gitGates)
   assert.deepEqual(warnings, ['config: unknown gitGates key "bogus" ignored'])
 })
 
@@ -652,7 +646,7 @@ test("mergeConfig ignores unknown gitGates sub-keys", () => {
 test("configDigest flips when a gitGates value changes", () => {
   const base = defaultConfig({})
   const before = configDigest(base)
-  const after = configDigest({ ...base, gitGates: { ...base.gitGates, mode: "enforce" } })
+  const after = configDigest({ ...base, gitGates: { ...base.gitGates, landingGate: false } })
   assert.notEqual(before, after)
 })
 
@@ -662,16 +656,6 @@ test("mergeConfig rejects a non-object toolPolicy and keeps defaults", () => {
   const { config, warnings } = mergeConfig(base, { toolPolicy: "nope" as unknown })
   assert.deepEqual(config.toolPolicy, base.toolPolicy)
   assert.deepEqual(warnings, ["config: toolPolicy must be an object; keeping defaults"])
-})
-
-/** An invalid toolPolicy.mode keeps the enforce default and names it. */
-test("mergeConfig rejects an invalid toolPolicy.mode and keeps enforce", () => {
-  const base = defaultConfig({})
-  const { config, warnings } = mergeConfig(base, { toolPolicy: { mode: "strict" } })
-  assert.equal(config.toolPolicy.mode, "enforce")
-  assert.deepEqual(warnings, [
-    'config: toolPolicy.mode must be "enforce", "shadow", or "off"; keeping default',
-  ])
 })
 
 /** observeSessionMove must be a boolean; a non-boolean keeps the default. */
@@ -767,28 +751,50 @@ test("mergeConfig rejects a non-array toolPolicy.pathDeny and keeps defaults", (
 test("mergeConfig ignores unknown toolPolicy sub-keys", () => {
   const base = defaultConfig({})
   const { config, warnings } = mergeConfig(base, {
-    toolPolicy: { mode: "shadow", bogus: true },
+    toolPolicy: { bogus: true },
   })
-  assert.equal(config.toolPolicy.mode, "shadow")
+  assert.deepEqual(config.toolPolicy, base.toolPolicy)
   assert.deepEqual(warnings, ['config: unknown toolPolicy key "bogus" ignored'])
 })
 
-/** Overrides merge one level deep: a supplied mode keeps unmentioned defaults. */
+/** Overrides merge one level deep: a supplied key keeps unmentioned defaults. */
 test("loadConfig merges toolPolicy one level deep", () => {
   const file = path.join(xdgTmp, "tp-deep.json")
-  fs.writeFileSync(file, JSON.stringify({ toolPolicy: { mode: "shadow" } }))
+  fs.writeFileSync(file, JSON.stringify({ toolPolicy: { observeSessionMove: false } }))
   const { config } = loadConfig({ [ENV_KEYS.config]: file })
-  assert.equal(config.toolPolicy.mode, "shadow")
+  assert.equal(config.toolPolicy.observeSessionMove, false)
   assert.deepEqual(config.toolPolicy.bashDeny, defaultConfig({}).toolPolicy.bashDeny)
 })
 
-/** The config digest flips when toolPolicy.mode changes from the default. */
-test("configDigest flips when toolPolicy.mode changes", () => {
+/** The config digest flips when toolPolicy.bashDeny changes from the default. */
+test("configDigest flips when a toolPolicy value changes", () => {
   const base = defaultConfig({})
   assert.notEqual(
     configDigest(base),
-    configDigest({ ...base, toolPolicy: { ...base.toolPolicy, mode: "shadow" } }),
+    configDigest({ ...base, toolPolicy: { ...base.toolPolicy, bashDeny: ["\\bnpm\\b"] } }),
   )
+})
+
+/** Each legacy meta-mode key is dropped with a surfaced warning and never
+ *  honored: toolPolicy.mode, gitGates.mode, and handsOnGate load clean
+ *  without them and the enforcement stays on. */
+test("legacy meta-mode keys are dropped with a warning and never honored", () => {
+  const base = defaultConfig({})
+  const tp = mergeConfig(base, { toolPolicy: { mode: "shadow" } as unknown })
+  assert.deepEqual(tp.config.toolPolicy, base.toolPolicy)
+  assert.deepEqual(tp.warnings, [
+    'config: unknown key "toolPolicy.mode" removed — the bash/path denylist is now always enforced; use TURNSTILE OFF: to suspend',
+  ])
+  const gg = mergeConfig(base, { gitGates: { mode: "enforce" } as unknown })
+  assert.deepEqual(gg.config.gitGates, base.gitGates)
+  assert.deepEqual(gg.warnings, [
+    'config: unknown key "gitGates.mode" removed — commit lint and the landing gate are always enforced when their boolean keys are true; use TURNSTILE OFF: to suspend',
+  ])
+  const ho = mergeConfig(base, { handsOnGate: "enforce" } as never)
+  assert.equal("handsOnGate" in ho.config, false)
+  assert.deepEqual(ho.warnings, [
+    'config: unknown key "handsOnGate" removed — the parent hands-on gate is now always enforced; use TURNSTILE OFF: to suspend',
+  ])
 })
 
 /** An invalid reviewEnsemble value keeps the enforce default, names the key,
@@ -816,30 +822,6 @@ test("mergeConfig accepts each valid reviewEnsemble literal", () => {
 test("configDigest flips on reviewEnsemble overrides", () => {
   const base = defaultConfig({})
   assert.notEqual(configDigest(base), configDigest({ ...base, reviewEnsemble: "advise" }))
-})
-
-/** The hands-on gate defaults to shadow and validates its three literals
- *  ("enforce", "shadow", "off") with no warning per accepted literal. */
-test("handsOnGate defaults to shadow and accepts enforce/shadow/off", () => {
-  assert.equal(defaultConfig({}).handsOnGate, "shadow")
-  for (const mode of ["enforce", "shadow", "off"] as const) {
-    const { config, warnings } = mergeConfig(defaultConfig({}), { handsOnGate: mode })
-    assert.equal(config.handsOnGate, mode)
-    assert.equal(warnings.length, 0)
-  }
-})
-
-/** An invalid handsOnGate value keeps the shadow default and names the three
- *  accepted literals; a non-string rejects the same way. */
-test("mergeConfig rejects an invalid handsOnGate and keeps the shadow default", () => {
-  const base = defaultConfig({})
-  for (const bad of ["yes", 1, null]) {
-    const { config, warnings } = mergeConfig(base, { handsOnGate: bad })
-    assert.equal(config.handsOnGate, "shadow")
-    assert.deepEqual(warnings, [
-      'config: handsOnGate must be "enforce", "shadow", or "off"; keeping default',
-    ])
-  }
 })
 
 /** sessionSummary defaults to quiet and validates its three literals. */

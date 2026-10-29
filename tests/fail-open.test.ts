@@ -14,7 +14,7 @@ import * as path from "node:path"
 import turnstileModule, { turnstile } from "../turnstile.ts"
 import { readPluginVersion } from "../src/setup.ts"
 import { validateResolved, defaultConfig } from "../src/config.ts"
-import { createGates } from "../src/gates.ts"
+import { createGates, BlockError } from "../src/gates.ts"
 import { createJournaler, appendLine } from "../src/journal.ts"
 import { parseGateMarkers, agentFromTaskInput } from "../src/markers.ts"
 import { newState } from "../src/state.ts"
@@ -368,7 +368,6 @@ test("tool-policy guards journal their internal failure when the sink throws", (
   } as unknown as Parameters<typeof createToolPolicy>[1]
   const config = defaultConfig()
   config.toolPolicy = {
-    mode: "enforce",
     bashDeny: ["git\\s+push"],
     pathDeny: ["\\.env$"],
     observeSessionMove: false,
@@ -406,7 +405,7 @@ test("git-side guards journal their internal failure when the sink throws", () =
     },
   } as unknown as Parameters<typeof createToolPolicy>[1]
   const config = defaultConfig()
-  config.toolPolicy = { mode: "enforce", bashDeny: [], pathDeny: [], observeSessionMove: false }
+  config.toolPolicy = { bashDeny: [], pathDeny: [], observeSessionMove: false }
   const policy = createToolPolicy(config, hostile)
   const stub = {
     hasApproval: (): boolean => false,
@@ -436,7 +435,7 @@ test("observeSessionMove is a no-op when disabled and redacts under trace:false"
   })
   const config = defaultConfig()
   config.trace = false
-  config.toolPolicy = { mode: "enforce", bashDeny: [], pathDeny: [], observeSessionMove: false }
+  config.toolPolicy = { bashDeny: [], pathDeny: [], observeSessionMove: false }
   const policy = createToolPolicy(config, j)
   policy.observeSessionMove("p1", "/tmp/somewhere")
   assert.equal(journalEntries(metricsDir).length, 0)
@@ -1286,17 +1285,23 @@ test("bash/shell and write/edit payloads resolve through alternate keys", async 
   const h = makeFakeHost()
   const { dispose } = await boot(h.host)
   try {
-    // `cmd` and `path` are the alternate payload keys; both coerce.
+    // `cmd` and `path` are the alternate payload keys; both coerce. The parent
+    // edit reaches the always-on hands-on gate (not a misconfiguration error),
+    // so the coercion is proven by the hands-on block, not an allow.
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
       input: { cmd: "git status" },
     })
-    await callTool(h, "execute.before", {
-      tool: "edit",
-      sessionID: "p1",
-      input: { path: "/repo/README.md" },
-    })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "edit",
+          sessionID: "p1",
+          input: { path: "/repo/README.md" },
+        }),
+      (e: unknown) => e instanceof BlockError && e.cause === "hands-on",
+    )
     // execute.after command recording falls back to cmd, then the title.
     await callTool(h, "execute.after", {
       tool: "bash",

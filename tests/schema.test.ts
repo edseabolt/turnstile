@@ -102,16 +102,6 @@ test("schema property types and enums match the runtime defaults recursively", (
     ["enforce", "advise"],
     "reviewEnsemble enum",
   )
-  assert.deepEqual(
-    schema.properties.toolPolicy!.properties!.mode!.enum,
-    ["enforce", "shadow", "off"],
-    "toolPolicy.mode enum",
-  )
-  assert.deepEqual(
-    schema.properties.gitGates!.properties!.mode!.enum,
-    ["enforce", "shadow", "off"],
-    "gitGates.mode enum",
-  )
 })
 
 /** (11) Every key in the example config (top-level and nested) has a matching
