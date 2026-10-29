@@ -1966,7 +1966,10 @@ test("hands-on dispatch: parent write/edit gates, child write/edit does not", as
   const { h, metricsDir, restore } = await bootLanding()
   try {
     // A registered pipeline child.
-    await h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "executor" },
+    })
     // Parent write: first block under enforce throws and records the block.
     await assert.rejects(
       () =>
@@ -1988,6 +1991,89 @@ test("hands-on dispatch: parent write/edit gates, child write/edit does not", as
     )
     assert.equal(blocked.length, 1, "only the parent write is gated")
     assert.equal(blocked[0]!.sessionID, "p1")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The narrowed child exemption keys off the child→parent edge plus the
+ * configured pipeline agent set: a child whose tool event reports a pipeline
+ * agent name (`event.agent`) is exempt, while a non-pipeline subagent
+ * (e.g. an explore/analysis agent) is gated like a parent and its block is
+ * journaled with reason `parent-hands-on`.
+ */
+test("hands-on dispatch: pipeline child exempt via event.agent, non-pipeline child gated", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Pipeline child: the agent is reported on the tool event itself.
+    await h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "c1",
+      agent: "executor",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Non-pipeline child: edge present, but the agent is not in the pipeline set.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c2", parentID: "p1", agent: "codebase-analyst" },
+    })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "c2",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the non-pipeline child write is gated")
+    assert.equal(blocked[0]!.sessionID, "c2")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Agent resolution paths for the child exemption: with no agent on the tool
+ * event, the seeded emitter cache (`session.created`'s agent) still exempts a
+ * pipeline child; an unresolved agent (nothing seeded, non-string
+ * `event.agent`) fails closed and the child gates like a parent.
+ */
+test("hands-on dispatch: pipeline child exempt via emitterAgent fallback, unresolved child gated", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Fallback path: the tool event carries no agent; session.created seeded it.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "executor" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "edit",
+      sessionID: "c1",
+      input: { filePath: "/repo/b.ts" },
+    })
+    // Fail-closed: edge present but no resolvable agent anywhere.
+    await h.pushEvent({ type: "session.created", properties: { sessionID: "c3", parentID: "p1" } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "c3",
+          agent: 42,
+          input: { filePath: "/repo/c.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the unresolved child write is gated")
+    assert.equal(blocked[0]!.sessionID, "c3")
   } finally {
     restore()
   }

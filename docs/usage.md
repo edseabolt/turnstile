@@ -269,6 +269,10 @@ work. If the parent session (the one you type into) tries a `write` or
 - A new user prompt resets the gate: the block count and any `always`
   release start over.
 
+The gate covers the parent session and every non-pipeline subagent;
+only the pipeline's own agents (executor and friends) are exempt, because
+their writes are the pipeline's work.
+
 If you genuinely want one-off hands-on fixes, reply `once` per edit, or
 scope a `USER WAIVER: executor` for a task of small direct tweaks.
 

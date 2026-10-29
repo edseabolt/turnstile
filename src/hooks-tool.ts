@@ -63,9 +63,9 @@ export function createToolHooks(ctx: TurnstileContext): {
       return
     }
     if (event?.tool === "write" || event?.tool === "edit") {
-      // Path denylist first, then the parent-only hands-on gate (see
-      // handleWriteEditDispatch — a registered pipeline child's own write/
-      // edit is the executor's work and never gates).
+      // Path denylist first, then the hands-on gate (see
+      // handleWriteEditDispatch — only a registered pipeline child's own
+      // write/edit is exempt; non-pipeline subagents gate like parents).
       ctx.handleWriteEditDispatch(event, event.tool)
       return
     }
