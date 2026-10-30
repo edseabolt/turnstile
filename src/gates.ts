@@ -32,7 +32,8 @@ export interface Gates {
    * gates (the plan gate is covered by either its plan-reviewer or executor
    * stage name), and a scoped waiver stays live until that stage's waiver
    * allowance is spent — metered separately from the ordinary dispatch caps.
-   * A new user prompt drops the waiver. Without `search` the gate-unverified
+   * The waiver holds for the whole task scope; a task-scope change drops it.
+   * Without `search` the gate-unverified
    * refusal renders byte-identical to the legacy message and journals no
    * `searched` field; with one, the refusal names the searched sessions and
    * the `blocked` entry gains `searched` (IDs only).
@@ -172,9 +173,9 @@ export interface Gates {
    * in the waiver text scopes it to those stages' gates — this gate is
    * covered by either its plan-reviewer or executor stage name — and a
    * scoped waiver stays live until that stage's waiver allowance is spent,
-   * metered separately from the ordinary dispatch caps; a new user prompt
-   * drops the waiver. A waiver covering this gate is never consumed (the
-   * plan gate is sticky).
+   * metered separately from the ordinary dispatch caps; the waiver holds for
+   * the whole task scope, a task-scope change drops it. A waiver covering
+   * this gate is never consumed (the plan gate is sticky).
    * @param sessionID The parent session ID.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.

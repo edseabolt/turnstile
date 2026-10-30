@@ -2,7 +2,7 @@
  * @fileoverview Fingerprint boundary: the worktree/branch identity a task was
  * admitted against, and the pure predicate deciding whether a continuation
  * prompt (an unchanged identity) carries the restart-sticky gate flags across
- * a prompt reset instead of wiping them. Both exports are total: they never
+ * a task-scope reset instead of wiping them. Both exports are total: they never
  * throw.
  */
 
@@ -89,7 +89,7 @@ export function worktreeFingerprint(projectDir: string, exec: ExecFile = realExe
 
 /**
  * Pure predicate deciding whether a continuation prompt carries the current
- * task's restart-sticky gate flags across a prompt reset. The carry is
+ * task's restart-sticky gate flags across a task-scope reset. The carry is
  * CREDIT-SCOPED by design: it is a no-op unless credit was actually earned
  * (the test gate `hasGatePass` or the landing approval `hasReviewApprove`),
  * so a continuation arriving before any `GATE: PASS` or reviewer

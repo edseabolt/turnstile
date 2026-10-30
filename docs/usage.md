@@ -234,14 +234,18 @@ Repeat-attempt escalation of the landing and hands-on gates is controlled by
   the ask.
 
 The plan-gate escalation (the first executor dispatch when no plan approval
-holds) asks in both modes; it is not part of the landing/hands-on ladder.
+holds) follows the `escalation` mode: under `"block"` (the default) the
+dispatch blocks with the stop-and-report instruction and release flows via
+`PLAN APPROVED:` or a waiver; under `"ask"` it surfaces the permission
+prompt. It is not part of the landing/hands-on ladder.
 
 > **Warning — auto-accept voids the human decision point.** If the host
 > answers permission asks automatically (`session.permissions:
 "autoaccept"` in `~/.config/opencode/cli.json`), the `escalation: "ask"`
-> ladder, the plan-gate escalation, and the ensemble's human release are all
+> ladder and the ensemble's human release are all
 > answered without you: the landing gate degrades to a
-> two-push delay and the plan gate degrades to a one-block delay. Turnstile
+> two-push delay and, under `"ask"`, the plan gate degrades to a one-block
+> delay. Turnstile
 > assumes a human actually answers; this is one reason the default is
 > `"block"`. `opencode-turnstile status` prints an
 > advisory when it detects the setting.
@@ -660,6 +664,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `suspendMarker`                                                                                                            | `TURNSTILE OFF:`                                                                                                                                                             | literal prompt marker that suspends gate blocking for the session (decisions keep journaling, nothing blocks, state cleared fresh); honored only from the user's own prompt                                                                                                                                         |
 | `resumeMarker`                                                                                                             | `TURNSTILE ON:`                                                                                                                                                              | literal prompt marker that resumes enforcement with fresh task state (no credit earned while suspended rehydrates)                                                                                                                                                                                                  |
 | `allowSuspend`                                                                                                             | `true`                                                                                                                                                                       | whether the suspend/resume markers are honored; `false` refuses an OFF marker (journaled `refused:true` + surfaced diagnostic) with no state change                                                                                                                                                                 |
+| `intentNudge`                                                                                                              | `true`                                                                                                                                                                       | advisory intent nudge: a prompt classified as implementation intent (work verb at code, gh issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals `{type:"intent"}` and prepends one advisory pipeline-entry nudge to the next tool delivery; `false` is a full no-op       |
 | `sessionSummary`                                                                                                           | `quiet`                                                                                                                                                                      | session-end summary surface: `quiet` prints one recap line at session.idle for sessions that did something (silent for zero-activity sessions); `on` also prints an all-gates-green line for zero-activity sessions; `off` disables the surface                                                                     |
 | `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` / `agents.planner` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger` / `planner`                                                                                           | agent names recognized in dispatches                                                                                                                                                                                                                                                                                |
 | `agents.bareOutput`                                                                                                        | `["test-runner", "reviewer", "plan-reviewer"]`                                                                                                                               | agents whose marker-less output is a violation; derived from the configured test-runner, reviewer, and plan-reviewer names when the key is absent or the list is empty (JSON has no way to write the code's "unset" sentinel, so the shipped example carries [] and the loader treats an empty list as unset)       |

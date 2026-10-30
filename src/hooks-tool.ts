@@ -11,10 +11,10 @@
  * else); `after` never gates — every failure journals fail-open.
  */
 
-import { agentFromTaskInput } from "./markers.ts"
+import { agentFromDeliveryEvent } from "./child-registration.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import type { MarkerEvent, TaskInput, ToolHookEvent, ToolResult } from "./types.ts"
+import type { MarkerEvent, ToolHookEvent, ToolResult } from "./types.ts"
 
 /**
  * Tool-surface hook bodies bound to one shared per-setup context. The
@@ -76,14 +76,15 @@ export function createToolHooks(ctx: TurnstileContext): {
   }
 
   /**
-   * Resolves the delivery agent from the dispatch input, falling back to
-   * the structured result's input when the dispatch input names none.
+   * Resolves the delivery agent via the delivery-order resolver: the
+   * dispatch input and the structured result's input echo name the CHILD
+   * and win first; the payload's generic `event.agent` is the last
+   * fallback (it can carry the parent's name on structured/background
+   * deliveries — see agentFromDeliveryEvent).
    * @param event The host execute.after tool-hook payload.
-   * @returns The agent name, or "" when neither shape names one.
+   * @returns The agent name, or "" when no shape names one.
    */
-  const resolveDeliveryAgent = (event: ToolHookEvent): string =>
-    agentFromTaskInput(event.input) ||
-    agentFromTaskInput(event.result?.input as TaskInput | undefined)
+  const resolveDeliveryAgent = (event: ToolHookEvent): string => agentFromDeliveryEvent(event)
   /**
    * Awaits the child→parent edge for the deliveries that need it before
    * marker parsing and attribution: plan-reviewer, test-runner, and
@@ -247,6 +248,9 @@ export function createToolHooks(ctx: TurnstileContext): {
    * @param event The host execute.after tool-hook payload (mutated in place).
    */
   const afterRead = (event: ToolHookEvent): void => {
+    // Advisory intent nudge first: an armed nudge prepends to the parent's
+    // own read delivery ahead of the read-budget telemetry below.
+    ctx.prependIntentNudgeRead(event)
     const sessionID = ctx.ledger.parentOf(asSessionID(event?.sessionID))
     const s = ctx.ledger.state(sessionID)
     // The before-hook already incremented; a read that did not produce
@@ -256,7 +260,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     ctx.journaler.journal({ type: "tool", sessionID, tool: "read", reads: s.reads })
     // The warn prefix is once per task: the corrected `reads` counter
     // is not monotonic, so equality with readWarn could re-inject on
-    // a later climb — the task-scoped flag (fresh on every prompt
+    // a later climb — the task-scoped flag (fresh on every task-scope
     // reset) suppresses the repeat. `>=` rather than `==`: a burst of
     // before-reads can carry the counter past the threshold before
     // any string-output after-read runs, so equality could skip the

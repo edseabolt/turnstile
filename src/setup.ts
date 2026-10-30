@@ -57,8 +57,9 @@ function disposeAll(cleanups: Array<() => void>): () => void {
 }
 
 /**
- * Registers the three session hooks (prompt, generate, compaction). Each
- * registration is independent: a failure journals and skips that hook only.
+ * Registers the four session hooks (prompt, generate, context, compaction).
+ * Each registration is independent: a failure journals and skips that hook
+ * only.
  * @param h The live host context.
  * @param ctx The per-setup shared context.
  * @param cleanups Disposal list for successful registrations.
@@ -72,9 +73,12 @@ async function registerSessionHooks(
   if (typeof h.session?.hook !== "function") return 0
   const hook = h.session.hook
   const sessionHooks = createSessionHooks(ctx)
-  const hooks: Array<["prompt" | "generate" | "compaction", Parameters<typeof hook>[1]]> = [
+  const hooks: Array<
+    ["prompt" | "generate" | "context" | "compaction", Parameters<typeof hook>[1]]
+  > = [
     ["prompt", sessionHooks.prompt],
     ["generate", sessionHooks.generate],
+    ["context", sessionHooks.context],
     ["compaction", sessionHooks.compaction],
   ]
   let count = 0
@@ -242,12 +246,16 @@ async function registerHostHook(
  * @param version The plugin version string (or null when unreadable).
  * @param compat The compat label to stamp on the heartbeat.
  * @param hooksCount The number of successfully registered hooks.
+ * @param edgesRestored The number of child edges restored by the setup
+ *     re-seed (stamped only when non-zero, so a post-reload parent-hands-on
+ *     block is diagnosable as a re-seed failure — issue #225 telemetry).
  */
 function writeSetupHeartbeat(
   ctx: TurnstileContext,
   version: string | null,
   compat: "compatible" | "unknown" | "incompatible",
   hooksCount = 0,
+  edgesRestored = 0,
 ): void {
   ctx.journaler.journal({
     type: "setup",
@@ -255,6 +263,7 @@ function writeSetupHeartbeat(
     digest: configDigest(ctx.config),
     hooks: hooksCount,
     compat,
+    ...(edgesRestored > 0 ? { edgesRestored } : {}),
     ...(ctx.config.trace
       ? { trace: true, agents: ctx.config.agents, metricsDir: ctx.config.metricsDir }
       : {}),
@@ -365,7 +374,7 @@ export function readPluginVersion(pkgPath?: string): string | null {
 /**
  * Registers every hook surface and returns the total count. Each registration
  * is independent (a failure journals and skips only that hook). The count
- * feeds the load heartbeat (7 on a full host: 3 session + 1 permission + 2
+ * feeds the load heartbeat (8 on a full host: 4 session + 1 permission + 2
  * tool + 1 event subscriber).
  * @param h The live host context.
  * @param ctx The per-setup shared context.
@@ -433,10 +442,15 @@ async function runSetup(
   }
 
   const cleanups: Array<() => void> = []
+  // Child-edge re-seed BEFORE any hook registers: a live pipeline child from
+  // before the reload must resolve through its restored edge (and emitter
+  // agent) on the first post-reload write — the #225 re-seed window is
+  // exactly the gap between setup and the child's next tool call.
+  const edgesRestored = ctx.reseedChildEdges()
   // Load heartbeat: one entry per host-session boot, emitted after every
   // registration so `hooks` is accurate. Telemetry only — it never blocks.
   const hooks = await registerAllHooks(h, ctx, cleanups)
-  writeSetupHeartbeat(ctx, version, compat, hooks)
+  writeSetupHeartbeat(ctx, version, compat, hooks, edgesRestored)
   return disposeAll(cleanups)
 }
 

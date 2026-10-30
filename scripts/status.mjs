@@ -192,6 +192,29 @@ const MAX_REPLAY_MARKER_LEN = 512
 const MAX_REPLAY_OBSERVE_COUNT = 1_000_000
 
 /**
+ * Upper bound on a journaled plan file name, and its path-free alphabet.
+ * Mirrors the canonical bound/alphabet in src/ledger.ts: an over-length,
+ * path-carrying, or hostile name degrades to the unbound empty name (replay
+ * parity — a bound plan identity that fails its shape is unbound).
+ */
+const MAX_REPLAY_NAME_LEN = 128
+const PLAN_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Sanitizes a raw journaled plan name for the task-scope fold (standalone
+ * copy of ledger.ts's sanitizePlanName).
+ * @param {unknown} plan The raw `plan` field of a journal line.
+ * @returns {string} The sanitized name, or "" when unbound/malformed.
+ */
+function planNameOf(plan) {
+  return typeof plan === "string" && plan.length >= 1 && plan.length <= MAX_REPLAY_NAME_LEN
+    ? PLAN_NAME_RE.test(plan)
+      ? plan
+      : ""
+    : ""
+}
+
+/**
  * Reads and parses the config file the config layer uses, silently tolerating
  * a missing or malformed file (fail-open). Returns `null` when nothing usable
  * is present.
@@ -308,8 +331,12 @@ function freshSession() {
     waivers: [],
     dispatches: 0,
     blocks: 0,
+    maintenance: 0,
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
+    stickyRelease: null,
+    activePlan: "",
+    taskComplete: false,
     suspended: false,
   }
 }
@@ -348,6 +375,10 @@ function observeCountsOf(entry) {
  * observation-only, so a dropped line is silent here rather than journaled).
  * Verdict markers over the replay marker bound degrade to "" (they then flow
  * into the empty-marker BLOCK fallback below). Parent-keyed.
+ *
+ * Maintenance lines (`type:"maintenance"`) count admitted dispatches
+ * (`capped` falsy) into the MNT column; a `capped:true` attempt row folds
+ * nothing (its block is already counted by the guard's `blocked` entry).
  *
  * Suspension lines (`type:"suspended"`) fold last-wins like ledger.ts's
  * foldSuspended: `action:"off"` marks the session suspended, `action:"on"`
@@ -424,9 +455,29 @@ function aggregate(lines) {
         if (result === "APPROVE" && e.source === "session-prompt") {
           a.planApproval.promptApproval = true
         }
+        // Task-scope fold, mirroring ledger.ts's applyPlanApprovalScope: a
+        // binding APPROVE (a path-free plan name within the replay bound)
+        // establishes the active task's plan; a DIFFERENT name — or a
+        // re-approval after a completion — restarts the scope (sticky
+        // release cleared, retire cleared). An unbound approval folds
+        // nothing into the scope.
+        if (result === "APPROVE") {
+          const name = planNameOf(e.plan)
+          if (name !== "" && (name !== a.activePlan || a.taskComplete)) {
+            a.stickyRelease = null
+            a.taskComplete = false
+            a.activePlan = name
+          }
+        }
       } else if (result === "WAIVED") {
         a.waivers.push({ channel: typeof e.channel === "string" ? e.channel : "", waiver: "" })
       }
+    } else if (type === "task-complete") {
+      // Task-retire fold, mirroring ledger.ts's foldTaskComplete: the retire
+      // clears the sticky release within the current scope and marks the
+      // task complete (a later plan APPROVE restarts the scope).
+      a.stickyRelease = null
+      a.taskComplete = true
     } else if (type === "verdict") {
       // VERDICT: APPROVE/BLOCK observations (plan-reviewer verdict markers).
       const marker =
@@ -455,6 +506,12 @@ function aggregate(lines) {
       // the guard's `blocked` entry, so exclude the `blocked:true` stamp from
       // the dispatches counter (no double count).
       if (e.blocked !== true) a.dispatches++
+    } else if (type === "maintenance") {
+      // Maintenance dispatch fold: admitted maintenance dispatches count in
+      // their own column (bookkeeping rides the lighter path, so it is not
+      // an implementation dispatch); a `capped:true` attempt row is already
+      // visible through the blocked entry the escalation journals.
+      if (e.capped !== true) a.maintenance++
     } else if (type === "blocked") {
       a.blocks++
     } else if (type === "permission") {
@@ -462,6 +519,26 @@ function aggregate(lines) {
         a.permissionAsks++
       } else if (e.decision === "once" || e.decision === "always" || e.decision === "reject") {
         a.permissionDecisions[e.decision]++
+      }
+      // Sticky-decision fold, mirroring ledger.ts's foldStickyDecision:
+      // only scope:"task" decision rows (standing `always` grants, waiver
+      // captures) with a kind on the ledger's allowlist participate,
+      // recording the release within the current task scope; ask rows
+      // (`action`), audit rows (`event`), legacy scope-less rows, and
+      // kinds outside plan/landing/hands-on/waiver fold nothing (a
+      // malformed kind restores nothing at replay, so it must render as
+      // no release here either).
+      if (
+        e.action === undefined &&
+        e.event === undefined &&
+        e.scope === "task" &&
+        (e.kind === "plan" || e.kind === "landing" || e.kind === "hands-on" || e.kind === "waiver")
+      ) {
+        if (e.decision === "always" || e.decision === "waiver") {
+          a.stickyRelease = e.decision === "waiver" ? "waiver" : (e.kind ?? "")
+        } else if (e.decision === "once" || e.decision === "reject") {
+          a.stickyRelease = null
+        }
       }
     } else if (type === "observe" || type === "would-block") {
       // Observe-mode fold (see the function doc): the line is present no
@@ -490,7 +567,24 @@ function fmtSession(id) {
 }
 
 /**
- * Renders the human-readable table. When the journal holds observe-mode
+ * Renders the task-scope cell: the active task's plan name, suffixed ` done`
+ * once the task retired (a GATE: PASS flip or a taskDoneMarker prompt), or
+ * `·` while no plan is bound (the planless fingerprint fallback has no
+ * journaled identity). Long names truncate for the cell; JSON keeps the
+ * full name in `activePlan`.
+ * @param {Record<string, unknown>} a The session accumulator.
+ * @returns {string} The SCOPE cell text.
+ */
+function fmtScope(a) {
+  if (a.activePlan === "") return "·"
+  const name = a.activePlan.length > 14 ? `${a.activePlan.slice(0, 11)}…` : a.activePlan
+  return a.taskComplete ? `${name} done` : name
+}
+
+/**
+ * Renders the human-readable table. The REL column surfaces the folded
+ * sticky-release state (the last-wins sticky decision row: `plan`,
+ * `landing`, `hands-on`, `waiver`, or `·` when none). When the journal holds observe-mode
  * entries, the report gains one extra line right below the header line with
  * the folded phase and running period totals — journals without observe
  * entries render byte-identically to before (the observe argument carries
@@ -509,13 +603,29 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     verdict: a.planApproval.effective ?? "·",
     wv: a.waivers.length,
     dis: a.dispatches,
+    mnt: a.maintenance,
     bl: a.blocks,
     ask: a.permissionAsks,
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
+    rel: a.stickyRelease === null ? "·" : String(a.stickyRelease),
     sus: a.suspended ? "OFF" : "·",
+    scope: fmtScope(a),
   }))
 
-  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "SUS"]
+  const headers = [
+    "SESSION",
+    "GATE",
+    "PLAN",
+    "VERDICT",
+    "WV",
+    "DIS",
+    "MNT",
+    "BLK",
+    "PERM",
+    "REL",
+    "SUS",
+    "SCOPE",
+  ]
   const cells = [
     (r) => r.session,
     (r) => r.gate,
@@ -523,9 +633,12 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => r.verdict,
     (r) => String(r.wv),
     (r) => String(r.dis),
+    (r) => String(r.mnt),
     (r) => String(r.bl),
     (r) => `${r.ask}/${r.dec}`,
+    (r) => r.rel,
     (r) => r.sus,
+    (r) => r.scope,
   ]
 
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => cells[i](r).length)))

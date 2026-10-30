@@ -80,6 +80,7 @@ function recordingCapability(opts?: {
   prior?: number
   release?: boolean
   waiver?: boolean
+  escalateReturns?: boolean
   throwIn?: keyof HandsOnGateCapability
 }): { gate: HandsOnGateCapability; log: Record<string, number | boolean> } {
   const log: Record<string, number | boolean> = {
@@ -109,7 +110,7 @@ function recordingCapability(opts?: {
     escalate: (): boolean => {
       if (throwAt === "escalate") throw new Error("escalate boom")
       log.escalate = (log.escalate as number) + 1
-      return true
+      return opts?.escalateReturns ?? true
     },
   }
   return { gate, log }
@@ -155,23 +156,37 @@ test("guardHandsOn: repeat attempt under escalation ask escalates and allows", (
 })
 
 /**
- * Repeat attempt under the default `escalation: "block"` re-blocks: journals
- * a second `parent-hands-on` block row, records the block again, throws, and
- * journals no `permission` ask row and never calls `gate.escalate()` (the
- * ask tier cannot collapse to allow under an auto-accepting host).
+ * Repeat attempt under the default `escalation: "block"` escalates too
+ * (ask-first, Phase 2): the armed repeat journals the permission ask row,
+ * calls `gate.escalate()` once, does not throw, and journals no second
+ * blocked entry — the evaluate handler forces the human ask off the armed
+ * latch in both modes. The block-throw is the no-latch fallback only.
  */
-test("guardHandsOn: repeat attempt under the default block mode re-blocks", () => {
+test("guardHandsOn: repeat attempt under the default block mode escalates too", () => {
   const { policy, entries } = makePolicy()
   const { gate, log } = recordingCapability({ prior: 1 })
-  blocks(() => policy.guardHandsOn("edit", "/repo/b2.ts", "s1", gate))
-  assert.equal(log.escalate, 0, "block mode never escalates")
-  assert.equal(log.recordBlock, 1, "the repeat block is recorded again")
-  assert.equal(handsOnBlocks(entries).length, 1, "one block row on the repeat attempt")
-  assert.equal(
-    entries.some((e) => e.type === "permission"),
-    false,
-    "no permission ask row under block mode",
-  )
+  allows(() => policy.guardHandsOn("edit", "/repo/b2.ts", "s1", gate))
+  assert.equal(log.escalate, 1, "escalate called on the repeat attempt")
+  assert.equal(log.recordBlock, 0, "no second block on the escalation")
+  const perm = entries.find((e) => e.type === "permission" && e.reason === "hands-on")
+  assert.ok(perm, "a permission ask is journaled on the repeat attempt")
+  assert.equal(perm.action, "ask")
+  assert.equal(handsOnBlocks(entries).length, 0, "no blocked entry on the escalation")
+})
+
+/**
+ * No-latch fallback: when the escalation is armed but the latch cannot be
+ * armed (`gate.escalate()` reports a within-window duplicate), the repeat
+ * attempt takes the block path — journal, record, throw. The deliberate
+ * block-throw fires only when no ask latch can be armed.
+ */
+test("guardHandsOn: a within-window duplicate arm re-blocks (no-latch fallback)", () => {
+  const { policy, entries } = makePolicy()
+  const { gate, log } = recordingCapability({ prior: 1, escalateReturns: false })
+  blocks(() => policy.guardHandsOn("edit", "/repo/b3.ts", "s1", gate))
+  assert.equal(log.escalate, 1, "the fallback is reached through escalate()")
+  assert.equal(log.recordBlock, 1, "the fallback records the block")
+  assert.equal(handsOnBlocks(entries).length, 1, "one block row on the fallback")
 })
 
 /**
@@ -359,9 +374,10 @@ test("guardBashWrite: release, waiver, and once-grant allow silently", () => {
 })
 
 /**
- * Repeat gate-tier bash writes follow the shared ladder: under
- * `escalation: "ask"` they journal the permission ask, call escalate, and
- * allow; under the default `"block"` they re-block without escalating.
+ * Repeat gate-tier bash writes follow the shared ladder: they journal the
+ * permission ask, call escalate, and allow (ask-first under the default
+ * `"block"` mode too); when the latch cannot arm (`escalate()` reports a
+ * within-window duplicate), the repeat takes the block path.
  */
 test("guardBashWrite: repeat attempts follow the escalation ladder", () => {
   const { policy, entries } = makePolicy({ escalation: "ask" })
@@ -374,7 +390,7 @@ test("guardBashWrite: repeat attempts follow the escalation ladder", () => {
     true,
   )
   const { policy: p2, entries: e2 } = makePolicy()
-  const { gate: g2 } = recordingCapability({ prior: 1 })
+  const { gate: g2 } = recordingCapability({ prior: 1, escalateReturns: false })
   blocks(() => p2.guardBashWrite("shell", "touch f", "gate", "s1", bashCap(g2)))
   assert.equal(handsOnBlocks(e2).length, 1)
 })

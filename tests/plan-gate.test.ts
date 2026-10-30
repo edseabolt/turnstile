@@ -2447,10 +2447,15 @@ test("multi-plan: a later review round naming another plan rebinds the session",
  * names the session's plan (z-work.md), not the alphabetically-first plan.
  */
 test("multi-plan: the plan-gate ask names the session's bound plan, not the first sorted", async () => {
-  const { h, restore, project, metricsDir } = await bootWithPlans({
-    "a-decoy.md": "# A\ndecoy body line.\n",
-    "z-work.md": "# Z\nwork body line.\n",
-  })
+  const { h, restore, project, metricsDir } = await bootWithPlans(
+    {
+      "a-decoy.md": "# A\ndecoy body line.\n",
+      "z-work.md": "# Z\nwork body line.\n",
+    },
+    // Ask mode: the test asserts the evaluate ask's message, which only
+    // fires under `escalation: "ask"`.
+    { escalation: "ask" },
+  )
   try {
     const workPath = path.join(project, ".opencode", "plans", "z-work.md")
     await reviewRound(h, "p1", "c1", `review ${workPath}`, APPROVE)
@@ -2609,6 +2614,10 @@ test("multi-plan: a self-keyed round APPROVE binds the plan identity from the di
 test("plan-gate-blocked executor dispatches draw down no budget; the grant-released dispatch still passes", async () => {
   const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
     maxTotalDispatches: 2,
+    // Ask mode: the once-grant release rides the plan-gate evaluate ask,
+    // which only fires under `escalation: "ask"`; the blocked-dispatch
+    // assertions above are guard-level and mode-independent.
+    escalation: "ask",
   })
   try {
     for (let i = 0; i < 3; i++) {
@@ -2756,7 +2765,10 @@ test("plan gate: a dispatch naming its durably-approved plan is exempt from unre
   )
   try {
     await reviewRound(h, "p1", "c1", "review zzz-current.md", APPROVE)
-    // A fresh prompt wipes the bucket; the sidecar still covers zzz-current.
+    // Retire the task (the plan-bound scope keeps state across ordinary
+    // prompts) and admit a fresh prompt: the bucket resets; the sidecar
+    // still covers zzz-current.
+    await callSession(h, "prompt", { sessionID: "p1", text: "TASK DONE: zzz-current landed" })
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // Naming the approved plan: admitted even though aaa-stale stays pending.
     await execDispatch(h, "p1", "implement zzz-current.md")
@@ -2839,7 +2851,10 @@ test("plan gate: an all-landed plans dir is green; a new plan blocks naming itse
   )
   try {
     await reviewRound(h, "p1", "c1", "review a-landed.md", APPROVE)
-    // The fresh prompt wipes the bucket; only the sidecar remains.
+    // Retire the task (the plan-bound scope keeps state across ordinary
+    // prompts) and admit a fresh prompt: the bucket resets; only the
+    // sidecar remains.
+    await callSession(h, "prompt", { sessionID: "p1", text: "TASK DONE: a-landed landed" })
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // All plans landed: the unnamed dispatch is admitted.
     await execDispatch(h, "p1", "do the work")

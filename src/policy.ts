@@ -14,6 +14,7 @@
  * mechanical enforcement.
  */
 
+import type { IntentKind } from "./intent.ts"
 import type { TurnstileConfig } from "./types.ts"
 
 /** The config slice the orchestrator policy text interpolates. */
@@ -67,7 +68,7 @@ function continuationSection(): string {
  * @returns The waivers and approvals line.
  */
 function waiversSection(c: PolicyConfig): string {
-  return `Waivers and approvals: a waiver or a human plan approval is a user-authored prompt the plugin observes at prompt admission — put the literal marker in the user's OWN prompt to obtain one (\`${c.waiverMarker} <your words>\` to waive a gate, \`${c.approvalMarker} <your words>\` to approve the plan). Naming configured agent names in your words scopes the waiver to those stages' gates (the plan gate is covered by either the plan-reviewer or executor name); a scoped waiver stays live until that stage's waiver allowance — <n> waiver-unblocked dispatches, metered apart from the ordinary caps — is spent; an unscoped waiver covers every gate but the reviewer gate consumes it on the first dispatch it unlocks; a new user prompt drops it; a blocked dispatch reports whether a waiver is live, out of scope, or consumed. A dispatch prompt from an agent that merely contains the marker unlocks nothing; do not fabricate, paste, or relay a waiver/approval marker to open a gate — escalate to the user if none holds.`
+  return `Waivers and approvals: a waiver or a human plan approval is a user-authored prompt the plugin observes at prompt admission — put the literal marker in the user's OWN prompt to obtain one (\`${c.waiverMarker} <your words>\` to waive a gate, \`${c.approvalMarker} <your words>\` to approve the plan). Naming configured agent names in your words scopes the waiver to those stages' gates (the plan gate is covered by either the plan-reviewer or executor name); a scoped waiver stays live until that stage's waiver allowance — <n> waiver-unblocked dispatches, metered apart from the ordinary caps — is spent; an unscoped waiver covers every gate but the reviewer gate consumes it on the first dispatch it unlocks; a waiver holds for the task scope and is dropped only when the task changes (a different approved plan, an explicit retire, or a new task in an unplan-bound checkout); a blocked dispatch reports whether a waiver is live, out of scope, or consumed. A dispatch prompt from an agent that merely contains the marker unlocks nothing; do not fabricate, paste, or relay a waiver/approval marker to open a gate — escalate to the user if none holds.`
 }
 
 /**
@@ -77,16 +78,16 @@ function waiversSection(c: PolicyConfig): string {
  * @returns The plan gate line.
  */
 function planGateSection(c: PolicyConfig): string {
-  return `Plan gate: dispatch executor only after this task's plan-reviewer first line is \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\`, or a human approval (see waivers and approvals above: a \`${c.approvalMarker}\` in the user's prompt, or a \`${c.waiverMarker}\` waiver). If no approval holds, the first executor dispatch escalates to the human — see human-approval escalation below; do not attempt to bypass or auto-approve. plan-file changes invalidate the approval (re-plan, then re-dispatch plan-reviewer before resuming executor work).`
+  return `Plan gate: dispatch executor only after this task's plan-reviewer first line is \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\`, or a human approval (see waivers and approvals above: a \`${c.approvalMarker}\` in the user's prompt, or a \`${c.waiverMarker}\` waiver). If no approval holds, the executor dispatch is blocked — STOP, report back, and obtain the human approval or waiver; do not re-dispatch in a loop or attempt to bypass or auto-approve. plan-file changes invalidate the approval (re-plan, then re-dispatch plan-reviewer before resuming executor work).`
 }
 
 /**
- * Human-approval escalation line: the plan-gate permission prompt is a human
- * decision point to answer honestly.
+ * Human-approval escalation line: the plan-gate permission prompt exists only
+ * under `escalation: "ask"` and is a human decision point to answer honestly.
  * @returns The human-approval escalation line.
  */
 function escalationSection(): string {
-  return `Human-approval escalation: when turnstile raises the plan gate through OpenCode's permission prompt, that prompt appears with the plan file + head and the human decides the outcome (reply \`always\` to approve, \`once\` for a single dispatch, or \`reject\`); respond to it honestly, do not attempt to bypass it or auto-approve.`
+  return `Human-approval escalation: only with \`escalation: "ask"\` configured does a red plan gate surface OpenCode's permission prompt — it appears with the plan file + head and the human decides the outcome (reply \`always\` to approve, \`once\` for a single dispatch, or \`reject\`); under the default \`escalation: "block"\` no prompt appears and the release channels are the human approval and waiver markers above. Respond to any prompt honestly, do not attempt to bypass it or auto-approve.`
 }
 
 /**
@@ -97,7 +98,7 @@ function escalationSection(): string {
  * @returns The dispatch gate line.
  */
 function dispatchGateSection(c: PolicyConfig): string {
-  return `Dispatch gate: dispatch reviewer only after this task's test-runner first line is \`GATE: PASS tests=<n> passed=<n> failed=<n>\`, or an explicit user waiver (from the user's prompt, per waivers and approvals); max ${c.maxReviewerRounds} reviewer dispatches per task (waived dispatches don't count toward the cap; a new user prompt resets it; a reviewer-scoped waiver stays live until its own allowance (${c.maxReviewerRounds} waiver-unblocked dispatches) is spent, then the round-limit escalates), then escalate the open findings to the user. Loop caps: per task the plugin also caps \`planner\`, \`plan-reviewer\`, and \`test-runner\` dispatches (${c.maxPlannerRounds}/${c.maxPlanReviewerRounds}/${c.maxTestRunnerRounds}) and a total dispatch budget (${c.maxTotalDispatches}); a blocked dispatch means the pipeline is looping — STOP, escalate to the user, do not re-dispatch; waived dispatches are exempt; a new user prompt resets all counters.`
+  return `Dispatch gate: dispatch reviewer only after this task's test-runner first line is \`GATE: PASS tests=<n> passed=<n> failed=<n>\`, or an explicit user waiver (from the user's prompt, per waivers and approvals); max ${c.maxReviewerRounds} reviewer dispatches per task (waived dispatches don't count toward the cap; a new task resets it; a reviewer-scoped waiver stays live until its own allowance (${c.maxReviewerRounds} waiver-unblocked dispatches) is spent, then the round-limit escalates), then escalate the open findings to the user. Loop caps: per task the plugin also caps \`planner\`, \`plan-reviewer\`, and \`test-runner\` dispatches (${c.maxPlannerRounds}/${c.maxPlanReviewerRounds}/${c.maxTestRunnerRounds}) and a total dispatch budget (${c.maxTotalDispatches}); a blocked dispatch means the pipeline is looping — STOP, escalate to the user, do not re-dispatch; waived dispatches are exempt; a new task resets all counters.`
 }
 
 /**
@@ -146,6 +147,38 @@ function traceSection(c: PolicyConfig): string {
  */
 function verificationSection(): string {
   return `Verification: the host chain (npm run ci, which is npm run ci:host) covers lint, format:check, typecheck, check:markers, and test on a fresh checkout and writes nothing under ~/.config; the install-drift chain (npm run ci:installed, which is npm run install:check) runs after npm run init, where a machine already has artifacts installed to check.`
+}
+
+/**
+ * The signal description each intent kind carries in the nudge prose.
+ * @returns The record of per-kind signal descriptions.
+ */
+function intentNudgeSignals(): Record<IntentKind, string> {
+  return {
+    issue: "a GitHub issue reference",
+    "plan-ref": "a plan-file reference",
+    dispatch: "a plan-dispatch request",
+    work: "imperative work verbs addressed at the code",
+  }
+}
+
+/**
+ * Builds the advisory pipeline-entry nudge for one detected intent signal,
+ * prepended to the first tool delivery after the intent was admitted. The
+ * prose deliberately quotes no marker syntax (no waiver/gate/approval
+ * literals): it is advisory guidance, and keeping the literals out of this
+ * module leaves the marker-drift validated source set unchanged.
+ * @param kind The detected intent signal kind.
+ * @returns The nudge text prepended ahead of the delivery text.
+ */
+export function intentNudge(kind: IntentKind): string {
+  return (
+    `[turnstile] Advisory reminder (not a block): the user's latest prompt reads as ` +
+    `implementation work (signal: ${intentNudgeSignals()[kind]}). Before editing code, ` +
+    `enter the pipeline — create or choose a plan file in the plans directory and ` +
+    `dispatch the planner subagent to begin it, then follow the pipeline order through ` +
+    `reviewer approval. If this is not implementation work, ignore this reminder.`
+  )
 }
 
 /**

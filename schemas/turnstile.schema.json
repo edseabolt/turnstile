@@ -107,9 +107,17 @@
       "type": "string",
       "description": "Literal marker that, appearing in the user's own prompt, resumes enforcement with fresh task state — no credit earned while suspended survives (default TURNSTILE ON:). Never agent-dispatchable."
     },
+    "taskDoneMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, explicitly retires the session's active task: journals {type:\"task-complete\", plan} with the bucket's activePlan and stamps taskComplete, so the next admitted prompt starts a fresh task scope (default TASK DONE:). Admission-only: child results and dispatch prompts never retire a task."
+    },
     "allowSuspend": {
       "type": "boolean",
       "description": "Whether the suspend/resume markers are honored; false refuses an OFF marker with a journaled refused:true entry and a surfaced diagnostic (default true)."
+    },
+    "intentNudge": {
+      "type": "boolean",
+      "description": "Advisory intent nudge: a user prompt classified as implementation intent (work verb at code, issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals {type:\"intent\"} and prepends one advisory pipeline-entry nudge to the next tool delivery; false is a full no-op (default true)."
     },
     "escalation": {
       "type": "string",

@@ -393,7 +393,7 @@ test("reviewer-scoped waiver admits two ensemble dispatches, then blocks at its 
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)." +
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new task resets the cap)." +
         ALLOWANCE_CLAUSE,
   )
   // The refused dispatch journals no WAIVED entry: the count still reflects

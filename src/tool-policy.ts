@@ -190,7 +190,7 @@ export interface LandingGateCapability {
   hasApproval(): boolean
   /**
    * True when the session journaled a credited reviewer APPROVE — the
-   * bucket-free credit that a prompt reset drops the `hasReviewApprove` flag
+   * bucket-free credit that a task-scope reset drops the `hasReviewApprove` flag
    * for (refuses only a refusal-stamped verdict). Lets guardLanding escalate
    * a credited session's first push instead of throwing the first block.
    */
@@ -341,13 +341,14 @@ export interface ToolPolicy {
    * Without approval, first block this task: journal
    * `{type:"blocked", reason:"no-landing-approval"}`, call `gate.recordBlock()`,
    * and throw (`BlockError`). A repeat attempt (`priorBlocks() >= 1`) without
-   * approval branches on `config.escalation`: under `"ask"` it journals
+   * approval is ask-first: it journals
    * `{type:"permission", action:"ask", reason:"landing"}` and calls
    * `gate.escalate()` (arming the pending-landing-ask latch; a within-window
    * duplicate arm journals no second ask row), and `execute.before` then
    * passes so the setup-side evaluate handler forces the human ask naming the
-   * missing reviewer verdict; under `"block"` (the default) the repeat
-   * attempt takes the block path again — no ask, no latch. Fail-toward-strict:
+   * missing reviewer verdict — in BOTH `escalation` modes. The deliberate
+   * block-throw is the fallback for a first attempt or a latch that cannot
+   * arm (within-TTL duplicate). Fail-toward-strict:
    * a host `reject` leaves approval absent, so the next attempt re-blocks.
    * Fail-open on an internal error. With `gitGates.emptyDiffExempt`
    * (default true; `false` is the strict opt-out), a push the capability proves
@@ -375,19 +376,16 @@ export interface ToolPolicy {
    * `USER WAIVER:` allows silently. Otherwise the first attempt this task
    * journals `{type:"blocked", reason:"parent-hands-on"}`, calls
    * `gate.recordBlock()`, and throws (`BlockError` stamped `cause:"hands-on"`).
-   * A repeat attempt (`priorBlocks() >= 1`) branches on `config.escalation`:
-   * under `"ask"` it journals
+   * A repeat attempt (`priorBlocks() >= 1`) is ask-first: it journals
    * `{type:"permission", action:"ask", reason:"hands-on"}` and calls
    * `gate.escalate()` (arming the pending-hands-on-ask latch; a within-window
    * duplicate arm journals no second ask row); `execute.before` then passes
    * so the evaluate handler forces the human ask naming the hands-on
-   * requirement; under `"block"` (the default) the repeat attempt takes the
-   * block path again — no ask, no latch. Under `"block"` the reply-granted
-   * release paths (`handsOnRelease`, the hands-on once-grant) stay naturally
-   * inert: they are granted only from replies to asks the plugin raised, and
-   * `"block"` raises none (a release granted in a prior `"ask"` session
-   * within the same ledger bucket still releases). Plan approval never
-   * releases this gate.
+   * requirement — in BOTH `escalation` modes, the deliberate block-throw
+   * being the fallback for a first attempt or a latch that cannot arm
+   * (within-TTL duplicate). Reply-granted release paths (`handsOnRelease`,
+   * the hands-on once-grant) release replies to asks the plugin raised, in
+   * either mode. Plan approval never releases this gate.
    * Fail-toward-strict: a host `reject` leaves the gate red, so the next
    * attempt re-blocks. An empty/absent path journals
    * `{type:"error"}` and allows (fail-open misconfiguration telemetry).
@@ -416,6 +414,19 @@ export interface ToolPolicy {
    * @param verdict The caller's write-shape verdict for the command.
    */
   observeBashWrite(sessionID: string, command: unknown, verdict: BashWriteVerdict): void
+  /**
+   * Journals `{type:"tool", tool:"write"|"edit", scratch:true, path}` telemetry
+   * for a scratch-target parent write/edit — the audit trail for the
+   * temp-dir exemption (every exempt write is journaled with its target
+   * path, so the exemption can only ever exempt, never gate, and stays
+   * observable). The path is recorded unconditionally (bounded), unlike the
+   * trace-gated `session_move` directory: the audit trail is the point of
+   * the row. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal (`"write"` or `"edit"`).
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in the journal entry.
+   */
+  observeScratchWrite(tool: "write" | "edit", filePath: unknown, sessionID: string): void
   /**
    * Gates confident file-writing bash commands through the hands-on ladder
    * (mirroring {@link ToolPolicy.guardHandsOn}): a no-op unless
@@ -754,19 +765,23 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   /**
-   * Shared guard ladder tail: under `escalation: "ask"` an armed attempt
-   * journals the permission ask (only when `gate.escalate()` reports the
-   * arm is not a within-window duplicate — dedupe collapses same-tick
-   * re-arms into one ask row) and allows (the evaluate handler forces the
-   * human ask); under `escalation: "block"` (the default) or when the
-   * escalate arm is deduped, the attempt takes the block path — journal,
-   * record, then throw. Fail-toward-strict: a reject leaves the gate red
-   * and the next attempt re-blocks. One source for the landing and
-   * hands-on ladders so the two cannot drift.
+   * Shared guard ladder tail, ask-first: an armed attempt arms the one-shot
+   * ask latch (`gate.escalate()`) and — when the arm is not a within-window
+   * duplicate — journals the permission ask row and allows (the evaluate
+   * handler forces the human ask off the latch). The deliberate block-throw
+   * is the FALLBACK, not the default: it fires when the escalation is not
+   * armed (first attempt) or the latch cannot be armed (within-TTL
+   * duplicate arm — the ask is already live for this gate). This holds in
+   * BOTH `escalation` modes since the Phase 2 ask-first change: the mode
+   * no longer selects block-vs-ask on armed attempts, because an
+   * interactive host can surface the ask in either and the throw only
+   * serves the no-human-attached fallback. Fail-toward-strict: a reject
+   * leaves the gate red and the next attempt re-blocks. One source for the
+   * landing and hands-on ladders so the two cannot drift.
    * @param t The parameterized ladder inputs (see {@link LadderTail}).
    */
   function guardLadderTail(t: LadderTail): void {
-    if (t.armed && config.escalation === "ask" && t.gate.escalate()) {
+    if (t.armed && t.gate.escalate()) {
       journaler.journal({
         type: "permission",
         sessionID: t.sessionID,
@@ -842,6 +857,30 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   /**
+   * Journals scratch-target write/edit telemetry (`{type:"tool",
+   * tool:"write"|"edit", scratch:true, path}`) — the audit trail for the
+   * temp-dir exemption. The target path is recorded unconditionally
+   * (bounded), unlike the trace-gated `session_move` directory: the audit
+   * trail is the point of the row. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal.
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in the journal entry.
+   */
+  function observeScratchWrite(tool: "write" | "edit", filePath: unknown, sessionID: string): void {
+    try {
+      journaler.journal({
+        type: "tool",
+        sessionID,
+        tool,
+        scratch: true,
+        path: typeof filePath === "string" ? filePath.slice(0, 200) : "<redacted>",
+      })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
    * Journals hands-on bash write telemetry (`{type:"tool", tool:"bash",
    * handsOn:true}`) for write-shaped commands — always, in every mode, for
    * every session (children included, like landing telemetry), and never
@@ -896,7 +935,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * stateful capability from `setup.ts`. With approval: allow, no journal noise
    * beyond telemetry. Without, the first block journals
    * `no-landing-approval` and throws — unless the session already carries a
-   * credited reviewer APPROVE that a prompt reset dropped, in which case even
+   * credited reviewer APPROVE that a task-scope reset dropped, in which case even
    * the first attempt is the human decision point: it journals a `permission`
    * ask and signals escalation, allowing `execute.before` to pass so the
    * evaluate handler forces the ask. A repeat attempt escalates the same way.
@@ -939,7 +978,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         journaler.journal({ type: "tool", sessionID, tool, landing: true, exempt: "empty-diff" })
         return
       }
-      // A journaled credit escalates the first attempt too: the prompt reset
+      // A journaled credit escalates the first attempt too: the task-scope reset
       // dropped the `hasReviewApprove` flag, but the session still carries a
       // non-refused reviewer APPROVE, so the human decides this first push
       // rather than one wasted `no-landing-approval` block earlier.
@@ -967,6 +1006,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     guardLanding,
     guardHandsOn,
     observeBashWrite,
+    observeScratchWrite,
     guardBashWrite,
   }
 }

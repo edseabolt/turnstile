@@ -279,7 +279,7 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
     const edge = ledger.childToParent.get(sessionID)
     // Exhausting the round cap means the reviewer is re-dispatched in a loop —
     // escalate and stop (a subagent never receives a fresh user prompt to
-    // reset the cap, so "wait for a new prompt" would dead-end).
+    // reset the cap, so "wait for a new task" would dead-end).
     blockWithEscalation(
       sessionID,
       config.agents.reviewer,
@@ -293,7 +293,7 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
         `BLOCKED by turnstile: reviewer round limit (${cap}) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user`,
         edge,
         "the open findings",
-        " and wait for new instructions (a new user prompt resets the cap).",
+        " and wait for new instructions (a new task resets the cap).",
         clause,
       ),
     )
@@ -614,7 +614,7 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
         `BLOCKED by turnstile: ${agent} dispatch limit (${leg.cap}) reached this task — the pipeline is looping. STOP: do not re-dispatch ${agent}. Escalate to the user: report the repeated ${agent} failures`,
         edge,
         `the repeated ${agent} failures`,
-        ` and wait for new instructions (a new user prompt resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
+        ` and wait for new instructions (a new task resets the caps; raise ${leg.capKey} in your config to widen the cap).`,
         waiverStateNote(s, `the ${agent} stage`),
       ),
     )
@@ -654,7 +654,7 @@ export function createDispatchGates(config: TurnstileConfig, journaler: Journale
         `BLOCKED by turnstile: task dispatch budget (${config.maxTotalDispatches}) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline`,
         edge,
         "the stuck pipeline",
-        " and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget).",
+        " and wait for new instructions (a new task resets the counters; raise maxTotalDispatches in your config to widen the budget).",
         waiverStateNote(s, `the ${agent} stage`),
       ),
     )
