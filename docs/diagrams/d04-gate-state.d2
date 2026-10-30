@@ -39,7 +39,10 @@ green -> planok: "GATE: FAIL (latest-wins)" {
 }
 green -> reviewed: "reviewer APPROVE ×2 (reviewEnsemble=enforce) | permission landing 'always'"
 reviewed -> reviewed: "git push allowed"
-green -> end
+green -> end: "next prompt: review credited or no reviewer dispatch yet"
+green -> green: "next prompt with an interrupted\nreview (green gate, dispatches ≥ 1\nor a waived round, no credited\napproval) — recovery carry" {
+  style.stroke-dash: 4
+}
 
 suspend: "Suspended\n(TURNSTILE OFF:)\ndecisions computed + journaled,\nno BLOCKED, no permission ask" {
   shape: oval

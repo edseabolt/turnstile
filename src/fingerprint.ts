@@ -11,6 +11,7 @@ import type { StdioOptions } from "node:child_process"
 import * as path from "node:path"
 
 import type { GateState } from "./types.ts"
+import { isInterruptedReview } from "./task-scope.ts"
 
 /**
  * The child_process options shared by both rev-parse calls: bound the hang
@@ -96,15 +97,19 @@ export function worktreeFingerprint(projectDir: string, exec: ExecFile = realExe
  * `VERDICT: APPROVE` resets fully rather than carrying a
  * freshly-earned-but-empty flag. Only `taskFingerprint` distinguishes a
  * same-branch continuation from a genuinely new task, so a fingerprint
- * mismatch never carries.
+ * mismatch never carries. A retired bucket (`taskComplete`) carries only in
+ * the interrupted-review case (`isInterruptedReview`): a green gate, no
+ * credited approval, and at least one counted reviewer dispatch or waived
+ * reviewer round — a genuinely new task (no reviewer activity) or a
+ * completed review never carries out of a retire.
  * @param prior The prior prompt's gate state; `undefined` before any prompt.
  * @param fingerprint The worktree/branch identity the task was re-admitted
  *     against.
  * @param enabled The `continuationCarry` config flag, passed through so the
  *     predicate stays unit-testable without a real config.
  * @returns True only when carry is enabled, earned credit (a gate pass or a
- *     landing approval) exists, and the task was admitted again in the exact
- *     same worktree/branch.
+ *     landing approval) exists, the task was admitted again in the exact
+ *     same worktree/branch, and a retired bucket is an interrupted review.
  */
 export function shouldCarryGate(
   prior: GateState | undefined,
@@ -116,6 +121,7 @@ export function shouldCarryGate(
     prior !== undefined &&
     (prior.hasGatePass || prior.hasReviewApprove) &&
     prior.taskFingerprint !== "" &&
-    prior.taskFingerprint === fingerprint
+    prior.taskFingerprint === fingerprint &&
+    (!prior.taskComplete || isInterruptedReview(prior))
   )
 }

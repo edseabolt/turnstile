@@ -3428,18 +3428,24 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     const fingerprint = worktreeFingerprint(currentProjectDir(sessionID))
     // The carry decision is captured BEFORE mutating, not re-derived after.
     // The git probe is total (never throws), so this stays throw-free. A
-    // retired prior bucket journals no continuation row: the merge carries
-    // nothing out of a completed task, so the audit row must not claim a
-    // carry that did not happen.
+    // retired prior bucket journals a continuation row only when the
+    // recovery carry actually fired out of the retire (an interrupted
+    // review); those rows carry `recovery: true` so the audit trail
+    // distinguishes them from ordinary same-task continuations.
     if (config.continuationCarry) {
-      const carry = shouldCarryGate(prior, fingerprint, true) && prior!.taskComplete === false
+      const carry = shouldCarryGate(prior, fingerprint, true)
       // shouldCarryGate guarantees carry ⇒ prior is defined, so the
       // non-null assertion cannot fire; keep the predicate's contract
       // intact if it ever changes.
       if (carry) prior!.replayGrace = true
       resetTaskScope(sessionID)
       ledger.state(sessionID).taskFingerprint = fingerprint
-      if (carry) journaler.journal({ type: "continuation", sessionID })
+      if (carry)
+        journaler.journal({
+          type: "continuation",
+          sessionID,
+          ...(prior!.taskComplete ? { recovery: true } : {}),
+        })
     } else {
       resetTaskScope(sessionID)
     }
@@ -3543,11 +3549,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       const savedPlan = s.approvedPlan
       const savedKey = s.approvedPlanKey
       const savedSig = s.plansSignature
+      const savedFingerprint = s0.taskFingerprint
       resetTaskScope(sessionID, false)
       s = ledger.state(sessionID)
       s.approvedPlan = savedPlan
       s.approvedPlanKey = savedKey
       s.plansSignature = savedSig
+      // The worktree identity is not task scope: the clean rebuild must not
+      // wipe the stamp, or a later interrupted-review recovery carry would
+      // find no fingerprint to match against.
+      s.taskFingerprint = savedFingerprint
     }
     s.hasPlanVerdict = true
     if (human) s.humanApproval = true

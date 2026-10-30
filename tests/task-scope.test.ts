@@ -16,7 +16,7 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { approvalResetsScope, keepsTaskScope } from "../src/task-scope.ts"
+import { approvalResetsScope, isInterruptedReview, keepsTaskScope } from "../src/task-scope.ts"
 import { createLedger } from "../src/ledger.ts"
 import { newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
@@ -184,6 +184,35 @@ test("same-scope prompts keep gate flags, waiver, counters, and plan approval", 
   }
 })
 
+test("isInterruptedReview: green gate plus counted reviewer activity, no credited approval", () => {
+  const base = { hasGatePass: true, taskComplete: true }
+  assert.equal(
+    isInterruptedReview({ ...newState(), ...base, reviewerDispatches: 1 }),
+    true,
+    "a counted dispatch marks the review interrupted",
+  )
+  assert.equal(
+    isInterruptedReview({ ...newState(), ...base, reviewWaiverRounds: 1 }),
+    true,
+    "a waived reviewer round marks the review interrupted (waived dispatches are not counted)",
+  )
+  assert.equal(
+    isInterruptedReview({ ...newState(), ...base }),
+    false,
+    "no reviewer activity is a fresh task, not an interrupted review",
+  )
+  assert.equal(
+    isInterruptedReview({ ...newState(), ...base, hasReviewApprove: true, reviewerDispatches: 1 }),
+    false,
+    "a credited approval is a completed review, not an interrupted one",
+  )
+  assert.equal(
+    isInterruptedReview({ ...newState(), reviewerDispatches: 1 }),
+    false,
+    "a red gate is not an interrupted review",
+  )
+})
+
 test("a GATE: PASS on a plan-bound task retires it; the next prompt resets", async () => {
   const { h, metricsDir, restore } = await bootWithPlans(
     { "plan.md": "# P\n" },
@@ -212,6 +241,134 @@ test("a GATE: PASS on a plan-bound task retires it; the next prompt resets", asy
   } finally {
     restore()
   }
+})
+
+/** Dispatches a one-shot reviewer task on `parent`. */
+async function reviewerDispatch(h: FakeHost, parent: string): Promise<void> {
+  await callTool(h, "execute.before", {
+    tool: "task",
+    sessionID: parent,
+    input: { agent: "reviewer", prompt: "review it" },
+  })
+}
+
+test("an interrupted post-PASS review is recovered by the next prompt", async () => {
+  const { h, metricsDir, restore } = await bootWithPlans(
+    { "plan.md": "# P\n" },
+    { gateEvidence: "flag" },
+  )
+  try {
+    // The opening prompt stamps the worktree fingerprint the recovery carry
+    // matches against.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start the task" })
+    await reviewRound(h, "p1", "c1", "review plan.md", APPROVE)
+    await execDispatch(h, "p1", "work chunk-1")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+    })
+    // The review was started before the abort: one counted dispatch.
+    await reviewerDispatch(h, "p1")
+    // The interrupted turn's next prompt recovers the retired task's state.
+    await callSession(h, "prompt", { sessionID: "p1", text: "re-dispatch the reviewer" })
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "continuation" && l.sessionID === "p1" && l.recovery === true,
+      ),
+      "the recovery carry journaled a recovery continuation row",
+    )
+    const snapshot = snapshotOf(await compact(h, "p1"))
+    assert.match(snapshot, /plan: APPROVED plan=plan\.md/, "the plan approval was recovered")
+    assert.match(snapshot, /gate: GREEN/, "the green gate was recovered")
+    // The recovered gate unblocks the reviewer re-dispatch.
+    await reviewerDispatch(h, "p1")
+    // The recovered scope is plan-bound and no longer retired, so it persists
+    // like any live plan-bound green task — not for one prompt only.
+    await callSession(h, "prompt", { sessionID: "p1", text: "carry on" })
+    const snapshot2 = snapshotOf(await compact(h, "p1"))
+    assert.match(snapshot2, /plan: APPROVED plan=plan\.md/, "the scope persisted")
+    assert.match(snapshot2, /gate: GREEN/, "the gate persisted with the scope")
+  } finally {
+    restore()
+  }
+})
+
+test("a new-task prompt after a credited post-PASS review still resets", async () => {
+  const { h, metricsDir, restore } = await bootWithPlans(
+    { "plan.md": "# P\n" },
+    { gateEvidence: "flag" },
+  )
+  try {
+    // The opening prompt stamps the worktree fingerprint.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start the task" })
+    await reviewRound(h, "p1", "c1", "review plan.md", APPROVE)
+    await execDispatch(h, "p1", "work chunk-1")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+    })
+    // The review completed before the prompt: dispatches counted, approval
+    // credited — nothing was interrupted.
+    await reviewerDispatch(h, "p1")
+    await reviewerDispatch(h, "p1")
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+      result: { output: "VERDICT: APPROVE crit=0 high=0 med=0 low=0\n" },
+    })
+    await callSession(h, "prompt", { sessionID: "p1", text: "next task" })
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "continuation"),
+      "a completed review journals no continuation row",
+    )
+    const snapshot = snapshotOf(await compact(h, "p1"))
+    assert.match(snapshot, /plan: PENDING/, "the completed task reset to a fresh scope")
+    assert.match(snapshot, /gate: RED/, "the fresh scope has no earned gate")
+  } finally {
+    restore()
+  }
+})
+
+test("a restart-replayed interrupted review recovers on the first prompt", async () => {
+  const metricsDir = tmpDir()
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  // A journaled interrupted review: bound plan approval, green gate, one
+  // counted dispatch, then the retire — exactly the abort state at rest.
+  fs.writeFileSync(
+    journalPath,
+    [
+      JSON.stringify({
+        ts: "t",
+        type: "plan",
+        sessionID: "p1",
+        result: "APPROVE",
+        plan: "plan.md",
+      }),
+      JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", result: "PASS", verified: true }),
+      JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", count: 1 }),
+      JSON.stringify({ ts: "t", type: "task-complete", sessionID: "p1", plan: "plan.md" }),
+    ].join("\n") + "\n",
+  )
+  const ledger = createLedger(journalPath, 64, 2000)
+  const restored = ledger.peek("p1")!
+  assert.equal(restored.hasGatePass, true, "the green gate replayed")
+  assert.equal(restored.reviewerDispatches, 1, "the dispatch count replayed")
+  assert.equal(restored.taskComplete, true, "the retire replayed")
+  // The first post-restart prompt resets through the armed grace window: the
+  // interrupted review carries instead of wiping.
+  assert.equal(ledger.state("p1").replayGrace, true, "the restore armed the grace window")
+  ledger.resetState("p1")
+  const carried = ledger.peek("p1")!
+  assert.equal(carried.hasGatePass, true, "the green gate carried")
+  assert.equal(carried.reviewerDispatches, 1, "the dispatch count carried")
+  assert.equal(carried.hasPlanVerdict, true, "the plan approval carried")
+  assert.equal(carried.activePlan, "plan.md", "the bound plan identity carried")
+  assert.equal(carried.taskComplete, false, "the retire was lifted by the recovery")
 })
 
 test("a taskDoneMarker prompt retires the active task for the next prompt", async () => {

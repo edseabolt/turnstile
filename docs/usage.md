@@ -138,7 +138,15 @@ session (config is read once at setup).
 `replayGrace`). Earned state from issue #42 does not leak into the next
 task; the pipeline starts over. Exception: continuation carry (default on)
 carries earned flags across a prompt whose worktree/branch fingerprint is
-unchanged — gate-scoped, earned state only, never an unearned approval. Set
+unchanged — gate-scoped, earned state only, never an unearned approval. An
+interrupted review is recovered the same way: after a plan-bound task's test
+gate went green, the next prompt re-admitted in the same worktree/branch
+carries the green gate, the dispatch count, and the plan approval, so an
+aborted reviewer can be re-dispatched without re-running the test-runner —
+provided a reviewer dispatch was already counted (or a round waived) and no
+approval was credited yet. The recovered scope then persists like any live
+plan-bound green task, bounded by the ensemble cap and the landing gate.
+Set
 `continuationCarry: false` to restore a clean cycle every prompt.
 
 ---

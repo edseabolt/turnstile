@@ -201,7 +201,11 @@ stated feature; devDependencies are tooling only.)
   A new user prompt resets the session's gate state, unless
   `continuationCarry` re-arms the one-prompt grace for a same-worktree/branch
   continuation carrying earned credit (a journaled `GATE: PASS` or a credited
-  reviewer `VERDICT: APPROVE`); replay-time `refusedApprove:true` last-wins
+  reviewer `VERDICT: APPROVE`; a retired plan-bound task whose review was
+  interrupted mid-flight — green gate, ≥1 counted reviewer dispatch or a
+  waived reviewer round, no credited approval — carries the same way,
+  journaled as a `recovery: true` continuation row); replay-time
+  `refusedApprove:true` last-wins
   suppression still outranks the carried approval.
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax

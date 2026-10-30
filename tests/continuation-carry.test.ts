@@ -99,6 +99,62 @@ test("shouldCarryGate", async (t) => {
     const prior = gate({ hasGatePass: false, hasReviewApprove: true, taskFingerprint: "abc" })
     assert.equal(shouldCarryGate(prior, "xyz", true), false)
   })
+
+  await t.test("a retired bucket with an interrupted review carries", () => {
+    const prior = gate({
+      taskComplete: true,
+      hasGatePass: true,
+      reviewerDispatches: 1,
+      taskFingerprint: "abc",
+    })
+    assert.equal(shouldCarryGate(prior, "abc", true), true)
+  })
+
+  await t.test("a retired bucket whose reviewer round was waived carries", () => {
+    const prior = gate({
+      taskComplete: true,
+      hasGatePass: true,
+      reviewWaiverRounds: 1,
+      taskFingerprint: "abc",
+    })
+    assert.equal(shouldCarryGate(prior, "abc", true), true)
+  })
+
+  await t.test("a retired bucket with a credited approval never carries", () => {
+    const prior = gate({
+      taskComplete: true,
+      hasGatePass: true,
+      hasReviewApprove: true,
+      reviewerDispatches: 1,
+      taskFingerprint: "abc",
+    })
+    assert.equal(shouldCarryGate(prior, "abc", true), false)
+  })
+
+  await t.test("a retired bucket with no reviewer activity never carries", () => {
+    const prior = gate({ taskComplete: true, hasGatePass: true, taskFingerprint: "abc" })
+    assert.equal(shouldCarryGate(prior, "abc", true), false)
+  })
+
+  await t.test("a retired red-gate bucket never carries", () => {
+    const prior = gate({
+      taskComplete: true,
+      hasGatePass: false,
+      reviewerDispatches: 1,
+      taskFingerprint: "abc",
+    })
+    assert.equal(shouldCarryGate(prior, "abc", true), false)
+  })
+
+  await t.test("a retired interrupted review in a changed worktree never carries", () => {
+    const prior = gate({
+      taskComplete: true,
+      hasGatePass: true,
+      reviewerDispatches: 1,
+      taskFingerprint: "abc",
+    })
+    assert.equal(shouldCarryGate(prior, "xyz", true), false)
+  })
 })
 
 /** `worktreeFingerprint` fingerprints a non-git directory as its resolution. */

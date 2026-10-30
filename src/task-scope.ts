@@ -39,6 +39,27 @@ export function keepsTaskScope(prior: GateState | undefined, continuationCarry: 
 }
 
 /**
+ * Decides whether a retired plan-bound task's earned state is recoverable: the
+ * review phase was interrupted mid-flight. All three signals must hold — the
+ * test gate went green (`hasGatePass`), no reviewer approval was credited yet
+ * (`hasReviewApprove` false), and reviewer activity was already counted (at
+ * least one counted dispatch or one waived reviewer round; waived dispatches
+ * do not increment the dispatch counter, so the waiver counter is the only
+ * witness for that path). A genuinely new task (no reviewer activity) or a
+ * completed review (approval credited) is never recoverable. Pure predicate
+ * over `GateState`; never throws.
+ * @param prior The gate state to inspect.
+ * @returns True when the state shows an interrupted post-PASS review.
+ */
+export function isInterruptedReview(prior: GateState): boolean {
+  return (
+    prior.hasGatePass &&
+    !prior.hasReviewApprove &&
+    (prior.reviewerDispatches >= 1 || prior.reviewWaiverRounds >= 1)
+  )
+}
+
+/**
  * Decides whether a plan-approval event binding `boundPlan` changes the
  * bucket's task scope (the reset-at-capture rule). A binding approval resets
  * scope exactly when it binds a plan DIFFERENT from the bucket's current
