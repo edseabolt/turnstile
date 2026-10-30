@@ -234,14 +234,18 @@ Repeat-attempt escalation of the landing and hands-on gates is controlled by
   the ask.
 
 The plan-gate escalation (the first executor dispatch when no plan approval
-holds) asks in both modes; it is not part of the landing/hands-on ladder.
+holds) follows the `escalation` mode: under `"block"` (the default) the
+dispatch blocks with the stop-and-report instruction and release flows via
+`PLAN APPROVED:` or a waiver; under `"ask"` it surfaces the permission
+prompt. It is not part of the landing/hands-on ladder.
 
 > **Warning — auto-accept voids the human decision point.** If the host
 > answers permission asks automatically (`session.permissions:
 "autoaccept"` in `~/.config/opencode/cli.json`), the `escalation: "ask"`
-> ladder, the plan-gate escalation, and the ensemble's human release are all
+> ladder and the ensemble's human release are all
 > answered without you: the landing gate degrades to a
-> two-push delay and the plan gate degrades to a one-block delay. Turnstile
+> two-push delay and, under `"ask"`, the plan gate degrades to a one-block
+> delay. Turnstile
 > assumes a human actually answers; this is one reason the default is
 > `"block"`. `opencode-turnstile status` prints an
 > advisory when it detects the setting.

@@ -275,6 +275,39 @@ test("evaluate: red plan gate forces an ask naming the plan file + head", async 
   }
 })
 
+/** Under the default `escalation: "block"` the task arm is inert on a red
+ *  plan gate: no forced ask, no message, no journaled ask row, and no
+ *  awaiting-ask latch — the dispatch guard blocks instead, and release flows
+ *  via `PLAN APPROVED:` plus the sticky waiver/ask paths. */
+test("evaluate: block mode keeps the red plan-gate task arm inert", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan(
+    { escalation: "block" },
+    "# Plan\n\nBody line.\n",
+  )
+  try {
+    const event: Record<string, any> = { sessionID: "p1", action: "task" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "block mode never forces the ask")
+    assert.equal(event.message, undefined)
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.action === "ask"),
+      "no ask row is journaled in block mode",
+    )
+    // The dispatch guard still blocks with the plan-approval message.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
+  } finally {
+    restore()
+  }
+})
+
 /** Under trace:false the ask still names the plan file but redacts the body. */
 test("evaluate: trace:false redacts the plan body out of the ask message", async () => {
   const { h, restore } = await bootWithPlan({ trace: false }, "# Plan\n\nSensitive body line.\n")

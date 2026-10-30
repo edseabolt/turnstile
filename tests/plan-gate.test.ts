@@ -2447,10 +2447,15 @@ test("multi-plan: a later review round naming another plan rebinds the session",
  * names the session's plan (z-work.md), not the alphabetically-first plan.
  */
 test("multi-plan: the plan-gate ask names the session's bound plan, not the first sorted", async () => {
-  const { h, restore, project, metricsDir } = await bootWithPlans({
-    "a-decoy.md": "# A\ndecoy body line.\n",
-    "z-work.md": "# Z\nwork body line.\n",
-  })
+  const { h, restore, project, metricsDir } = await bootWithPlans(
+    {
+      "a-decoy.md": "# A\ndecoy body line.\n",
+      "z-work.md": "# Z\nwork body line.\n",
+    },
+    // Ask mode: the test asserts the evaluate ask's message, which only
+    // fires under `escalation: "ask"`.
+    { escalation: "ask" },
+  )
   try {
     const workPath = path.join(project, ".opencode", "plans", "z-work.md")
     await reviewRound(h, "p1", "c1", `review ${workPath}`, APPROVE)
@@ -2609,6 +2614,10 @@ test("multi-plan: a self-keyed round APPROVE binds the plan identity from the di
 test("plan-gate-blocked executor dispatches draw down no budget; the grant-released dispatch still passes", async () => {
   const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
     maxTotalDispatches: 2,
+    // Ask mode: the once-grant release rides the plan-gate evaluate ask,
+    // which only fires under `escalation: "ask"`; the blocked-dispatch
+    // assertions above are guard-level and mode-independent.
+    escalation: "ask",
   })
   try {
     for (let i = 0; i < 3; i++) {

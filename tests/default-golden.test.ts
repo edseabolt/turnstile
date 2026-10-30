@@ -322,7 +322,10 @@ async function bootDefaultPlan(): Promise<{
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    // Ask mode: the plan-gate ask golden exercises the evaluate ask entry,
+    // which only fires under `escalation: "ask"`; the prompt-channel goldens
+    // are mode-independent.
+    config: { metricsDir, escalation: "ask" },
   })
   const dispose = (await setup(h.host)) as () => void
   return {

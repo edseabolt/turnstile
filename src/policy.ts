@@ -78,16 +78,16 @@ function waiversSection(c: PolicyConfig): string {
  * @returns The plan gate line.
  */
 function planGateSection(c: PolicyConfig): string {
-  return `Plan gate: dispatch executor only after this task's plan-reviewer first line is \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\`, or a human approval (see waivers and approvals above: a \`${c.approvalMarker}\` in the user's prompt, or a \`${c.waiverMarker}\` waiver). If no approval holds, the first executor dispatch escalates to the human — see human-approval escalation below; do not attempt to bypass or auto-approve. plan-file changes invalidate the approval (re-plan, then re-dispatch plan-reviewer before resuming executor work).`
+  return `Plan gate: dispatch executor only after this task's plan-reviewer first line is \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\`, or a human approval (see waivers and approvals above: a \`${c.approvalMarker}\` in the user's prompt, or a \`${c.waiverMarker}\` waiver). If no approval holds, the executor dispatch is blocked — STOP, report back, and obtain the human approval or waiver; do not re-dispatch in a loop or attempt to bypass or auto-approve. plan-file changes invalidate the approval (re-plan, then re-dispatch plan-reviewer before resuming executor work).`
 }
 
 /**
- * Human-approval escalation line: the plan-gate permission prompt is a human
- * decision point to answer honestly.
+ * Human-approval escalation line: the plan-gate permission prompt exists only
+ * under `escalation: "ask"` and is a human decision point to answer honestly.
  * @returns The human-approval escalation line.
  */
 function escalationSection(): string {
-  return `Human-approval escalation: when turnstile raises the plan gate through OpenCode's permission prompt, that prompt appears with the plan file + head and the human decides the outcome (reply \`always\` to approve, \`once\` for a single dispatch, or \`reject\`); respond to it honestly, do not attempt to bypass it or auto-approve.`
+  return `Human-approval escalation: only with \`escalation: "ask"\` configured does a red plan gate surface OpenCode's permission prompt — it appears with the plan file + head and the human decides the outcome (reply \`always\` to approve, \`once\` for a single dispatch, or \`reject\`); under the default \`escalation: "block"\` no prompt appears and the release channels are the human approval and waiver markers above. Respond to any prompt honestly, do not attempt to bypass it or auto-approve.`
 }
 
 /**

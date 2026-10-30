@@ -154,7 +154,14 @@ async function bootMaint(opts: {
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...(opts.plansDir ? { plansDir: opts.plansDir } : {}) },
+    // Ask mode: the once-grant flow test drives the plan-gate evaluate ask
+    // (inert under the block-mode default); the guard throws identically in
+    // both modes, so the dispatch-flow assertions are mode-independent.
+    config: {
+      metricsDir,
+      escalation: "ask",
+      ...(opts.plansDir ? { plansDir: opts.plansDir } : {}),
+    },
   })
   const dispose = (await setup(h.host)) as () => void
   return {

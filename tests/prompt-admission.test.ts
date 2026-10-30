@@ -61,8 +61,9 @@ async function boot(
   return { h, dispose, metricsDir }
 }
 
-/** Boots in a temp project dir containing a plan file so dispatches are gated. */
-async function bootWithPlan(): Promise<{
+/** Boots in a temp project dir containing a plan file so dispatches are gated.
+ *  @param config Injected config overrides (applied over the metrics dir). */
+async function bootWithPlan(config: Record<string, any> = {}): Promise<{
   h: FakeHost
   dispose: () => void
   metricsDir: string
@@ -78,7 +79,7 @@ async function bootWithPlan(): Promise<{
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -416,7 +417,9 @@ test("inbox admission is inert unless every guard holds", async () => {
  *  latched plan ask (a post-reset empty ask is inert) and drops a live user
  *  waiver (the reviewer gate re-blocks). */
 test("inbox admission resets a latched plan ask and a live user waiver", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan()
+  // Ask mode: the pre-reset latch is armed by the plan-gate evaluate ask,
+  // which only fires under `escalation: "ask"`.
+  const { h, metricsDir, restore } = await bootWithPlan({ escalation: "ask" })
   try {
     // (latch) A red plan gate escalates and latches the plan ask for p1.
     await callPermission(h, "evaluate", { sessionID: "p1", action: "task" })

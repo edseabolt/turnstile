@@ -783,11 +783,10 @@ export interface TurnstileConfig {
    * attempt arms the one-shot ask latch and forces the host permission ask
    * (the block-throw fires only when the latch cannot be armed — a
    * within-window duplicate arm — or the host never surfaces the ask). The
-   * mode still distinguishes the *first* attempt: under "ask" (default
-   * behavior on the plan-gate arm until chunk-5) escalation may surface
-   * before a recorded block, while "block" keeps the deliberate first
-   * block-throw. Retained as a config key for the plan-gate arm and the
-   * blocked-message vocabulary.
+   * mode also governs the plan-gate task arm: under "ask" a red plan gate
+   * forces the dispatch permission ask, while "block" (the default) keeps
+   * the arm inert — the dispatch guard blocks and release flows via
+   * `PLAN APPROVED:` plus the sticky waiver/ask paths.
    */
   escalation: "ask" | "block"
   /**

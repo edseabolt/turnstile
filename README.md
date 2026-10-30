@@ -240,7 +240,10 @@ what the text says.
   to restore the interactive ladder: the repeat attempt escalates to you
   through OpenCode's permission surface — reply `always` (approved for the
   task), `once` (one dispatch/edit), or `reject`. The plan-gate escalation
-  (first executor dispatch with no plan approval) still asks in both modes.
+  (first executor dispatch with no plan approval) follows the same mode:
+  under `"block"` the dispatch blocks with the stop-and-report instruction
+  and release flows via `PLAN APPROVED:` (or a waiver); under `"ask"` it
+  surfaces the permission prompt instead.
   Turnstile assumes a human actually answers these asks. If the host answers
   them automatically (`session.permissions: "autoaccept"` in
   `~/.config/opencode/cli.json`), the `"ask"`-mode human decision points,

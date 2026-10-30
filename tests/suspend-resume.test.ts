@@ -414,7 +414,9 @@ test("suspend: permission evaluate arms are inert while suspended", async () => 
   try {
     const ctx = createHooksCore({
       env: isolatedEnv(metricsDir),
-      config: { metricsDir },
+      // Ask mode: the task-arm control asserts the plan-gate ask, which only
+      // fires under `escalation: "ask"`.
+      config: { metricsDir, escalation: "ask" },
     })
     const { evaluate } = createPermissionHooks(ctx)
     // Control arm: with a live red plan gate the task arm forces the ask.

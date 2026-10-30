@@ -1,9 +1,12 @@
 /**
  * @fileoverview Permission-surface hook body: the `evaluate` handler for
- * the task-dispatch plan-gate escalation, the bash/shell landing-gate arm,
+ * the task-dispatch plan-gate escalation (ask under `escalation: "ask"`,
+ * inert under the default `"block"` — the dispatch guard blocks instead),
+ * the bash/shell landing-gate arm,
  * and the write/edit hands-on-gate arm. The payload carries NO tool input,
- * so escalation is driven purely by the parent session's plan-gate state
- * (planGateStatus), never the dispatch target; the landing and hands-on arms
+ * so the plan-gate arm is driven purely by the parent session's plan-gate
+ * state (planGateStatus), never the dispatch target; the landing and
+ * hands-on arms
  * consult the one-shot latches their guards armed rather than re-reading the
  * command. The handler never blocks the host: every failure journals
  * fail-open.
@@ -28,11 +31,15 @@ export function createPermissionHooks(ctx: TurnstileContext): {
 } {
   /**
    * Permission.evaluate body. The task arm: on a red plan gate for the
-   * parent it forces the host to ask the human, naming the plan file +
-   * head (the plan body is trace-gated per the SECURITY.md redaction
-   * contract), journals the ask, and latches the parent as awaiting its
-   * plan ask so the NEXT permission.asked stream event for this session
-   * is the one recorded (only escalated asks can ever match). The
+   * parent the behavior splits by `escalation` — under `"ask"` it forces
+   * the host to ask the human, naming the plan file + head (the plan body
+   * is trace-gated per the SECURITY.md redaction contract), journals the
+   * ask, and latches the parent as awaiting its plan ask so the NEXT
+   * permission.asked stream event for this session is the one recorded
+   * (only escalated asks can ever match); under `"block"` (the default) it
+   * stays inert — the dispatch guard blocks with the stop-and-report
+   * instruction and release flows via `PLAN APPROVED:` plus the sticky
+   * waiver/ask paths. The
    * bash/shell arm: a live one-shot landing latch (armed by the guard on
    * a repeat attempt) forces an ask for the landing requirement and
    * consumes the latch; a hasReviewApprove state or an unarmed latch
@@ -62,12 +69,16 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         if (ctx.ledger.isSuspended(parent)) return
         const status = ctx.gates.planGateStatus(ctx.currentProjectDir(parent), ctx.ledger, parent)
         if (!status.red) return
-        // Red ⇒ summary is present by construction (planGateStatus builds
-        // it from a scan whose active-plan preview was already resolved).
-        // Escalate:
-        // force the host to ask the human, naming the plan file + head.
-        // Journal the ask so a reply can be matched (the requestID rides
-        // the permission.asked stream event).
+        // Under `escalation: "block"` (the default) the arm stays inert: the
+        // dispatch guard (`enforcePlanApproval`) blocks the dispatch with the
+        // stop-and-report instruction and journals the `blocked` row, and the
+        // release channels are `PLAN APPROVED:` (replay-restored) plus the
+        // sticky waiver/ask paths — no permission ask is forced here.
+        if (ctx.config.escalation !== "ask") return
+        // Under `escalation: "ask"`: force the host to ask the human, naming
+        // the plan file + head (the plan body is trace-gated per the
+        // SECURITY.md redaction contract). Journal the ask so a reply can be
+        // matched (the requestID rides the permission.asked stream event).
         const file = status.summary!.file
         // The plan body is prompt context; journal/quote it only when the
         // trace is enabled (SECURITY.md redaction contract), mirroring how

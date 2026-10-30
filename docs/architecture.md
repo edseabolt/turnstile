@@ -82,7 +82,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/hooks-core.ts`         | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                                                                                                                                       |
 | `src/hooks-session.ts`      | Session-surface hook bodies: prompt admission, decoding clamps, the primary-turn context body (draft telemetry + policy/nudge injection), compaction snapshot                                                                                                                                                                          |
 | `src/generate-injection.ts` | Request-draft surface primitives: the usable-shape guard (`usableRequestDraft`), the in-place `appendSystemText` mutation, and the bounded content-free draft descriptor (`describeRequestDraft`) — pure, consumed by `hooks-core.ts`/`hooks-session.ts`                                                                               |
-| `src/hooks-permission.ts`   | Permission-surface hook body: plan-gate, landing-gate, and hands-on escalation (`evaluate`, forces `ask`)                                                                                                                                                                                                                              |
+| `src/hooks-permission.ts`   | Permission-surface hook body: plan-gate (ask under `escalation: "ask"`, inert under `"block"`), landing-gate, and hands-on escalation (`evaluate`, forces `ask`)                                                                                                                                                                       |
 | `src/hooks-tool.ts`         | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                                                                                                                                    |
 | `src/hooks-events.ts`       | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, the session-end summary (`session.idle`), re-subscription under a throw-only restart budget                                                                                                               |
 | `src/delivery.ts`           | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                                                                                                                                 |
@@ -256,8 +256,10 @@ re-checks when a child→parent edge resolves late (a background dispatch, via
 bounded to the parent's current task window (stamped at prompt admission).
 
 **`permission.hook("evaluate")`** (`hooks-permission.ts`) — never blocks; when the plan gate is red on
-a task dispatch it _forces_ an interactive
-`ask` to the user. The landing arm does the same when a push lacks reviewer approval and the
+a task dispatch, the task arm's behavior follows `escalation`: under `"ask"` it _forces_ an interactive
+`ask` to the user, while under the default `"block"` it stays inert — the dispatch guard
+(`enforcePlanApproval`) blocks with the stop-and-report instruction and release flows via
+`PLAN APPROVED:` plus the sticky waiver/ask paths. The landing arm does the same when a push lacks reviewer approval and the
 parent carries a live `pendingLandingAsk` latch; the write/edit arm does the
 same for the hands-on gate: a
 parent `write`/`edit` with a live `pendingHandsOnAsk` latch (each armed by the
