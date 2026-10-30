@@ -7,8 +7,8 @@
  * session-level gate suspension map (prompt-marker suspend/resume, last-wins
  * replay) survives the same way, and a
  * bounded durable approved-plan sidecar so a bound plan approval survives
- * replay-aging, a process restart, and a new-prompt reset. On a parent's
- * prompt reset, also releases that parent's registered children's metering
+ * replay-aging, a process restart, and a new-task-scope reset. On a parent's
+ * task-scope reset, also releases that parent's registered children's metering
  * counters. Pure bookkeeping; no enforcement decisions here.
  */
 
@@ -50,16 +50,25 @@ export interface GateLedger {
    */
   peek(sessionID: string): GateState | undefined
   /**
-   * Resets a session's gate state for a new user prompt (a new prompt starts a
-   * new task). The first prompt after a restart carries the journal-replayed
+   * Resets a session's gate state for a task-scope change (a plan-approval
+   * binding a different plan, a task retire, or a planless worktree
+   * change — a same-scope prompt never reaches it). The first prompt after a
+   * restart carries the journal-replayed
    * flags forward with a single-prompt grace (values, not provenance — a live
    * GATE: FAIL after replay is carried as false): `hasGatePass`,
    * `hasPlanVerdict`, `hasReviewApprove`, and its paired ensemble count
-   * `reviewerDispatches`. Every later
-   * prompt fully resets (fresh flags; `reviewRounds`/`plannerRounds`/
+   * `reviewerDispatches`. Every other reset is a full
+   * reset (fresh flags; `reviewRounds`/`plannerRounds`/
    * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/
    * `seenFrom`/`suppressedPending` are always fresh). Fail-open: pure object map
    * operations.
+   *
+   * The optional `merge` argument overrides the grace-arm decision: true
+   * forces the merge (the grace carry even without an armed `replayGrace`
+   * is never used today — callers pass the armed flag), false forces a
+   * clean rebuild (a reset-at-capture plan approval must not carry the old
+   * scope's releases through an armed grace), and undefined keeps the
+   * default (merge iff the bucket's `replayGrace` is armed).
    *
    * With continuation carry enabled, a continuation prompt (the same
    * worktree/branch — `taskFingerprint` unchanged) re-arms `replayGrace` on
@@ -72,14 +81,14 @@ export interface GateLedger {
    * reset, so a fresh bucket starts empty and the next carry predicate keys
    * off the just-stamped identity.
    *
-   * A new prompt also releases the session's registered children: their stored
-   * verdict evidence is dropped and their metering counters are cleared (see
-   * `clearMeteringCounters`), so a cap-exhausted child is re-dispatchable
-   * after the parent's next prompt.
+   * A scope-changing prompt also releases the session's registered children:
+   * their stored verdict evidence is dropped and their metering counters are
+   * cleared (see `clearMeteringCounters`), so a cap-exhausted child is
+   * re-dispatchable after the parent's next task boundary.
    *
    * The credit-bearing reviewer APPROVE trace (`markCreditedApproval` /
    * `hasCreditedApproval`) is a deliberate exception to this reset: it is
-   * bucket-free provenance, not a bucket flag, so the prompt reset that drops
+   * bucket-free provenance, not a bucket flag, so the task-scope reset that drops
    * `hasReviewApprove` leaves it intact — the window the landing gate reads to
    * escalate a credited session's first push. A refusal stamp suppresses the
    * mark at restore (replay) time, never at read time, so this reset performs
@@ -88,7 +97,7 @@ export interface GateLedger {
    * @returns The number of registered child buckets whose metering counters
    *     were non-fresh before clearing (0 for a no-op release).
    */
-  resetState(sessionID: string): number
+  resetState(sessionID: string, merge?: boolean): number
   /**
    * Maps a session to its parent, falling back to the session itself when
    * no parent edge is known.
@@ -198,7 +207,7 @@ export interface GateLedger {
    * and content key. A durable approval is a fact about a plan file's bytes
    * (recorded when a bound plan approval was captured) that lives outside the
    * journal replay window and the session bucket, so it survives replay-aging,
-   * a process restart, and a new-prompt reset. Both arguments are sanitized
+   * a process restart, and a new-task-scope reset. Both arguments are sanitized
    * before the lookup; an unbound (empty) name or key reports false.
    * @param name The plan file name (path-free).
    * @param key The plan file's sha256 content key.
@@ -224,7 +233,7 @@ export interface GateLedger {
    * Marks a parent session's reviewer APPROVE as credit-bearing — the fact
    * that a non-refused credit was earned for this session (a live mechanical
    * credit or a human `always` release) or restored from replay. The
-   * `hasReviewApprove` flag lives on the session bucket, which a prompt reset
+   * `hasReviewApprove` flag lives on the session bucket, which a task-scope reset
    * rebuilds; the journal-recorded credit outlives that reset, so the ledger
    * carries this provenance bucket-free. It is the ledger's signal for the
    * landing gate's credit-driven escalation (a credited session's first push
@@ -361,7 +370,11 @@ interface ReplayDrop {
 
 /** The five last-wins replay maps, one store per replayed entry kind.
  *  Observe-mode entries (`observe`/`would-block`) fold directly into the
- *  passed-in period state instead of a map here. */
+ *  passed-in period state instead of a map here. The task-scope fold
+ *  (`scopeFolds`) is NOT last-wins: it is the ordered per-session scope
+ *  record the journal-ordered walk maintains from the plan-APPROVE,
+ *  sticky-decision, and `task-complete` row families, and only its FINAL
+ *  record is restored. */
 interface ReplayMaps {
   lastGateResult: Map<string, string>
   lastPlanResult: Map<string, { result: string; plan: unknown; planKey: unknown; sig: unknown }>
@@ -370,9 +383,35 @@ interface ReplayMaps {
   lastRefusedApprove: Map<string, boolean>
   /** Restored child→parent edges (last-wins per child), for the setup re-seed. */
   childEdges: Map<string, { parent: string; agent: string }>
-  /** Sticky human releases (last-wins per session), for the sticky-decision
-   *  restore: the session's LAST sticky decision row decides. */
-  lastStickyDecision: Map<string, StickyDecisionRow>
+  /** Ordered per-session task-scope fold (see {@link ScopeFold}). */
+  scopeFolds: Map<string, ScopeFold>
+}
+
+/**
+ * One ordered task-scope fold record for one session, maintained in journal
+ * order by the replay walk from the three scope row families: a plan APPROVE
+ * carrying a bound plan name establishes `activePlan` (a DIFFERENT name, or a
+ * re-approval after a completion, restarts the scope — releases cleared,
+ * retire cleared); a sticky decision row records the standing human release
+ * within the current scope; a `task-complete` row clears the release and
+ * marks the task retired. Only the FINAL record is restored, so a completion
+ * supersedes earlier releases and a later approval restarts the scope.
+ */
+interface ScopeFold {
+  /** The active task's plan identity (path-free name; "" unbound). */
+  activePlan: string
+  /** True once a `task-complete` row retired the task. */
+  taskComplete: boolean
+  /** The sticky human release within the current scope, or null. */
+  sticky: StickyDecisionRow | null
+}
+
+/**
+ * A fresh empty scope fold record.
+ * @returns The empty record.
+ */
+function emptyScopeFold(): ScopeFold {
+  return { activePlan: "", taskComplete: false, sticky: null }
 }
 
 /**
@@ -444,7 +483,7 @@ function newReplayMaps(): ReplayMaps {
     lastEnsemble: new Map(),
     lastRefusedApprove: new Map(),
     childEdges: new Map(),
-    lastStickyDecision: new Map(),
+    scopeFolds: new Map(),
   }
 }
 
@@ -517,7 +556,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "would-block" &&
     entry.type !== "suspended" &&
     entry.type !== "child-edge" &&
-    entry.type !== "permission"
+    entry.type !== "permission" &&
+    entry.type !== "task-complete"
   ) {
     return null
   }
@@ -550,27 +590,47 @@ function foldGate(
 }
 
 /**
- * Folds a `plan` entry into the last-wins result map. Only `APPROVE`/`BLOCK`
- * replay (a `WAIVED`/`STALE` or other sub-kind stays inert). The identity
- * fields (plan/planKey/plansSig) are stored raw — the restore loop
- * sanitizes them.
+ * Applies a bound plan approval to the session's ordered scope fold: a
+ * binding APPROVE establishes `activePlan`; a DIFFERENT name, or a
+ * re-approval after a completion, restarts the scope (release cleared, retire
+ * cleared). An unbound approval (`""`) is a no-op for scope. Sanitizes the
+ * raw journaled name through `sanitizePlanName`.
+ * @param maps The replay maps holding the scope folds.
+ * @param sessionID The validated session ID.
+ * @param plan The raw `plan` field of the plan entry.
+ */
+function applyPlanApprovalScope(maps: ReplayMaps, sessionID: string, plan: unknown): void {
+  const name = sanitizePlanName(plan)
+  if (name === "") return
+  const fold = maps.scopeFolds.get(sessionID) ?? emptyScopeFold()
+  if (name !== fold.activePlan || fold.taskComplete) {
+    fold.sticky = null
+    fold.taskComplete = false
+    fold.activePlan = name
+    maps.scopeFolds.set(sessionID, fold)
+  }
+}
+
+/**
+ * Folds a `plan` entry into the last-wins result map and the ordered scope
+ * fold. Only `APPROVE`/`BLOCK` replay (a `WAIVED`/`STALE` or other sub-kind
+ * stays inert). The identity fields (plan/planKey/plansSig) are stored raw —
+ * the restore loop sanitizes them; a bound APPROVE additionally drives the
+ * scope fold (see {@link applyPlanApprovalScope}).
  * @param entry The parsed `plan` entry.
- * @param lastPlanResult The last-wins plan-result map to fill.
+ * @param maps The replay maps to fill.
  * @param sessionID The validated session ID.
  */
-function foldPlan(
-  entry: Record<string, unknown>,
-  lastPlanResult: ReplayMaps["lastPlanResult"],
-  sessionID: string,
-): void {
+function foldPlan(entry: Record<string, unknown>, maps: ReplayMaps, sessionID: string): void {
   const result = entry.result
   if (result !== "APPROVE" && result !== "BLOCK") return
-  lastPlanResult.set(sessionID, {
+  maps.lastPlanResult.set(sessionID, {
     result,
     plan: entry.plan,
     planKey: entry.planKey,
     sig: entry.plansSig,
   })
+  if (result === "APPROVE") applyPlanApprovalScope(maps, sessionID, entry.plan)
 }
 
 /**
@@ -777,17 +837,17 @@ function sanitizeStickyStages(stages: unknown): string[] {
 }
 
 /**
- * Folds a `permission` decision row into the sticky-release map (last-wins
- * per session). Three flavors fold inert without a drop: any row carrying
- * `action` (an ask row) or `event` (a forced-ask consume, a latch-steal, a
- * suspicion, an unrecorded reply) — audit rows, never decisions — and a
- * legacy decision row without `scope` (pre-sticky rows stay replay-inert,
- * exactly as before this fold existed). A row with `scope:"task"` and a
- * valid decision/kind pair folds; anything else (a non-allowlisted
- * decision, a bad kind, a wrong scope) is a shape drop — a hostile row
- * must not silently decide a release.
+ * Folds a `permission` decision row into the session's ordered scope fold
+ * (the sticky release within the current scope). Three flavors fold inert
+ * without a drop: any row carrying `action` (an ask row) or `event` (a
+ * forced-ask consume, a latch-steal, a suspicion, an unrecorded reply) —
+ * audit rows, never decisions — and a legacy decision row without `scope`
+ * (pre-sticky rows stay replay-inert, exactly as before this fold existed).
+ * A row with `scope:"task"` and a valid decision/kind pair folds; anything
+ * else (a non-allowlisted decision, a bad kind, a wrong scope) is a shape
+ * drop — a hostile row must not silently decide a release.
  * @param entry The parsed `permission` entry.
- * @param maps The last-wins maps to fill.
+ * @param maps The replay maps to fill.
  * @param sessionID The validated session ID.
  * @returns A shape drop for an invalid sticky row, or `null` when folded or
  *     inert.
@@ -806,12 +866,32 @@ function foldStickyDecision(
   if (kind !== "plan" && kind !== "landing" && kind !== "hands-on" && kind !== "waiver") {
     return { reason: "entry-shape", sessionID }
   }
-  maps.lastStickyDecision.set(sessionID, {
+  const fold = maps.scopeFolds.get(sessionID) ?? emptyScopeFold()
+  fold.sticky = {
     decision,
     kind,
     stages: decision === "waiver" ? sanitizeStickyStages(entry.stages) : [],
-  })
+  }
+  maps.scopeFolds.set(sessionID, fold)
   return null
+}
+
+/**
+ * Folds a `task-complete` entry into the session's ordered scope fold: the
+ * explicit/implicit retire clears the sticky human release within the
+ * current scope and marks the task complete, so the FINAL restored record
+ * carries the retirement (a later plan APPROVE restarts the scope). The
+ * optional `plan` field is audit-only (the retired plan's name, when bound)
+ * and is not validated into state.
+ * @param entry The parsed `task-complete` entry.
+ * @param maps The replay maps to fill.
+ * @param sessionID The validated session ID.
+ */
+function foldTaskComplete(maps: ReplayMaps, sessionID: string): void {
+  const fold = maps.scopeFolds.get(sessionID) ?? emptyScopeFold()
+  fold.sticky = null
+  fold.taskComplete = true
+  maps.scopeFolds.set(sessionID, fold)
 }
 
 /**
@@ -865,7 +945,7 @@ function foldReplayLine(
     return null
   }
   if (type === "plan") {
-    foldPlan(entry, maps.lastPlanResult, sessionID)
+    foldPlan(entry, maps, sessionID)
     return null
   }
   if (type === "verdict") {
@@ -885,6 +965,10 @@ function foldReplayLine(
   }
   if (type === "permission") {
     return foldStickyDecision(entry, maps, sessionID)
+  }
+  if (type === "task-complete") {
+    foldTaskComplete(maps, sessionID)
+    return null
   }
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
@@ -993,7 +1077,7 @@ function restorePlanVerdicts(
  * @param lastReviewVerdict The replayed last-wins reviewer verdicts.
  * @param lastRefusedApprove The replayed last-wins refusal stamps.
  * @param creditedApprovals The bucket-free credit trace to stamp with each
- *     restored, non-refused credit (the mark outlives a later prompt reset).
+ *     restored, non-refused credit (the mark outlives a later task-scope reset).
  */
 function restoreReviewApprovals(
   states: Map<string, GateState>,
@@ -1018,7 +1102,7 @@ function restoreReviewApprovals(
  * @param states The session→state map to populate.
  * @param lastRefusedApprove The replayed last-wins refusal stamps.
  * @param creditedApprovals The bucket-free credit trace to stamp with each
- *     restored human grant (the mark outlives a later prompt reset).
+ *     restored human grant (the mark outlives a later task-scope reset).
  */
 function restoreHumanGrants(
   states: Map<string, GateState>,
@@ -1033,31 +1117,34 @@ function restoreHumanGrants(
 }
 
 /**
- * Restores the sticky human releases per session from the last-wins
- * sticky-decision map: the session's LAST sticky row decides (last-wins, so
- * a later non-sticky decision row — a `once` or `reject` written by the
- * legacy shape — never appears here, and a later sticky row replaces an
- * earlier one). Each released surface's flag is stamped to mirror its
- * runtime grant path exactly: a `plan` grant stamps the plan-gate release
- * pair (`hasPlanVerdict` + the `humanApproval` provenance), a `landing`
- * grant stamps `hasReviewApprove` and credits the bucket-free credit trace
- * (escalation provenance, mirroring the live reply path), a `hands-on`
- * grant stamps `handsOnRelease`, and a `waiver` stamps the waiver family
- * (`userWaiver` as the redacted presence marker, the sanitized stage scope,
- * and the `stickyRelease` provenance). Buckets ride the same replay-grace
- * window as the other restore loops.
+ * Restores the ordered per-session scope fold into the replayed buckets: the
+ * FINAL scope record decides — the active plan identity, the retire stamp,
+ * and the sticky human release within the current scope (a `task-complete`
+ * row cleared it, so a completed task restores no release). Each released
+ * surface's flag is stamped to mirror its runtime grant path exactly: a
+ * `plan` grant stamps the plan-gate release pair (`hasPlanVerdict` + the
+ * `humanApproval` provenance), a `landing` grant stamps `hasReviewApprove`
+ * and credits the bucket-free credit trace (escalation provenance, mirroring
+ * the live reply path), a `hands-on` grant stamps `handsOnRelease`, and a
+ * `waiver` stamps the waiver family (`userWaiver` as the redacted presence
+ * marker, the sanitized stage scope, and the `stickyRelease` provenance).
+ * Buckets ride the same replay-grace window as the other restore loops.
  * @param states The session→state map to populate.
  * @param maps The filled replay maps.
  * @param creditedApprovals The bucket-free credit trace stamped by the
  *     landing sticky grant (its provenance for escalation).
  */
-function restoreStickyReleases(
+function restoreScopeFolds(
   states: Map<string, GateState>,
   maps: ReplayMaps,
   creditedApprovals: Map<string, number>,
 ): void {
-  for (const [sessionID, row] of maps.lastStickyDecision) {
+  for (const [sessionID, fold] of maps.scopeFolds) {
     const s = graceBucket(states, sessionID)
+    s.activePlan = fold.activePlan
+    s.taskComplete = fold.taskComplete
+    if (fold.taskComplete || fold.sticky === null) continue
+    const row = fold.sticky
     if (row.decision === "waiver") {
       s.userWaiver = "<present>"
       s.userWaiverScope = row.stages
@@ -1098,7 +1185,7 @@ function restoreEnsembleCounts(
 
 /**
  * Runs the restore loops in order (gate, plan, verdict, human-grant,
- * sticky-release, ensemble) over the replayed last-wins maps.
+ * scope fold, ensemble) over the replayed maps.
  * @param states The session→state map to populate.
  * @param maps The filled replay maps.
  * @param creditedApprovals The bucket-free credit trace stamped by the
@@ -1113,7 +1200,7 @@ function restoreBuckets(
   restorePlanVerdicts(states, maps.lastPlanResult)
   restoreReviewApprovals(states, maps.lastReviewVerdict, maps.lastRefusedApprove, creditedApprovals)
   restoreHumanGrants(states, maps.lastRefusedApprove, creditedApprovals)
-  restoreStickyReleases(states, maps, creditedApprovals)
+  restoreScopeFolds(states, maps, creditedApprovals)
   restoreEnsembleCounts(states, maps.lastEnsemble)
 }
 
@@ -1429,7 +1516,7 @@ export function createLedger(
   const parents = new Map<string, true>()
   // Credit-bearing reviewer APPROVE provenance (parent session -> mark stamp).
   // Bucket-free and LRU-capped at `maxSessions`: the `hasReviewApprove` flag
-  // lives on the session bucket (rebuilt by a prompt reset), but the
+  // lives on the session bucket (rebuilt by a task-scope reset), but the
   // journal-recorded credit outlives that reset, so the ledger carries this
   // provenance outside the bucket to drive the landing gate's escalation.
   // Refusal-stamped credits are never marked (replay honors the stamp before
@@ -1524,7 +1611,7 @@ export function createLedger(
   /**
    * Marks a parent session's reviewer APPROVE as credit-bearing on the
    * bucket-free trace (see the interface doc). The `hasReviewApprove` flag is
-   * dropped by a prompt reset but the journaled credit outlives it, so the
+   * dropped by a task-scope reset but the journaled credit outlives it, so the
    * ledger keeps this provenance outside the bucket; it is what the landing
    * gate reads to escalate a credited session's first push. Re-marks refresh
    * the stamp (idempotent); the map is LRU-capped at `maxSessions` with no
@@ -1775,11 +1862,13 @@ export function createLedger(
       // Pure read: no insertion, no LRU reorder.
       return states.get(sessionID)
     },
-    resetState(sessionID: string): number {
+    resetState(sessionID: string, merge?: boolean): number {
       // delete+set keeps the LRU MRU position and the cap, as a plain reset;
       // the restart-sticky merge arm carries the replayed flags through the
-      // first post-restart prompt (the one-prompt grace).
-      return resetBucket(sessionID, states.get(sessionID)?.replayGrace ?? false)
+      // first post-restart prompt (the one-prompt grace). An explicit
+      // `merge` argument overrides the armed-grace default (a reset-at-
+      // capture approval forces false — no old-scope carry).
+      return resetBucket(sessionID, merge ?? states.get(sessionID)?.replayGrace ?? false)
     },
     clearState(sessionID: string): number {
       // Fresh start: the same rebuild sequence with the merge arm disabled,

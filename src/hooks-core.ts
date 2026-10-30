@@ -53,6 +53,7 @@ import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
+import { approvalResetsScope, keepsTaskScope } from "./task-scope.ts"
 import { isEmptyDiffPush } from "./empty-diff.ts"
 import {
   asSessionID,
@@ -644,14 +645,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // `"no-parent-id"`: the record exists but has no parent edge (negative cache).
   const LOOKUP_REASON_NO_PARENT_ID = "no-parent-id"
   // Parent session ID → Date.now() of its LATEST plan-reviewer dispatch
-  // (last-wins; cleared on prompt reset for that parent). Plausibility
+  // (last-wins; cleared on task-scope reset for that parent). Plausibility
   // input: an unresolved-child verdict is plausible only within the parent's
   // current task scope (recorded at-or-after this time, and unique across
   // parents). Capped via boundDispatches, the same eviction idiom as
   // boundLookups.
   const planReviewerDispatch = new Map<string, number>()
   // Parent session ID → plan file names extracted from its LATEST
-  // plan-reviewer dispatch prompt (last-wins; cleared on prompt reset for
+  // plan-reviewer dispatch prompt (last-wins; cleared on task-scope reset for
   // that parent). Binding input: when the round's plan-reviewer APPROVE
   // lands, this is the candidate set the approval binds to via
   // gates.planApprovalBinding (a unique existing mention binds the plan name
@@ -748,14 +749,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // journaled `intent` row, but only the latest armed kind rides the next
   // delivery — the pending map holds one kind per parent by design (a
   // per-parent queue would let stale nudges land long after their prompt).
-  // A prompt reset drops any undelivered nudge (task-scoped delivery state);
-  // bounded by boundIntentNudges alongside the dedupe set.
+  // A task-scope drop releases any undelivered nudge (task-scoped delivery
+  // state); bounded by boundIntentNudges alongside the dedupe set.
   const intentNudgePending = new Map<string, IntentKind>()
   // Intent-nudge one-shot latch: `${sessionID}:${kind}` keys already nudged.
-  // One nudge per detected intent signal, deduped across prompts in the
-  // session (a repeated intent prompt journals but does not re-nudge); the
-  // latch is NOT cleared by a prompt reset — a plan approval clears it, so a
-  // later task's intents can nudge again. Bounded: evict oldest past the cap.
+  // One nudge per detected intent signal, deduped across the task scope (a
+  // repeated intent prompt journals but does not re-nudge); the
+  // latch is NOT cleared by a task-scope drop — a plan approval clears it, so
+  // a later task's intents can nudge again. Bounded: evict oldest past the cap.
   const intentNudgedKinds = new Set<string>()
   const maxTrackedIntentNudges = 64
 
@@ -771,9 +772,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   /**
    * Clears a session's entire intent-nudge state: the pending (undelivered)
    * nudge and every per-kind dedupe key. Called when a plan approval lands —
-   * the task got its plan, so a later task's intents may nudge again. (The
-   * prompt reset drops only the undelivered pending nudge; the dedupe keys
-   * survive it by design.)
+   * the task got its plan, so a later task's intents may nudge again — and
+   * when the active task retires (both retire paths route through
+   * `markTaskComplete`), so the successor task's first repeated intent can
+   * nudge. (The task-scope reset drops only the undelivered pending nudge;
+   * the dedupe keys survive it by design.)
    * @param sessionID The parent session whose nudge state is cleared.
    */
   function clearIntentNudge(sessionID: string): void {
@@ -1197,6 +1200,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         verified: true,
         mode: config.gateEvidence,
       })
+      // The gate's green flip is the task's completion boundary (Phase 3):
+      // the flip journals its task-complete companion row and stamps the
+      // retire, so the next admitted prompt starts a fresh scope.
+      markTaskComplete(parent, ps)
       journaler.traceEvent("test-runner", "gate", "GATE: PASS promoted on evidence", parent)
     }
   }
@@ -1392,7 +1399,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * The shared tail of the two plan-approval credit sites: records the bound
    * plan identity (name + content key) durably under the project, outside the
    * session bucket and the journal replay window, so the approval survives
-   * replay aging, a restart, and a new-prompt reset. An unbound approval
+   * replay aging, a restart, and a task-scope reset. An unbound approval
    * records nothing — a human prompt approval binds no plan identity, and a
    * reviewer approval whose dispatch named no resolvable plan stays
    * session-scoped. The ledger sanitizes its arguments and fails open, so
@@ -1698,7 +1705,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * when the parent has no plan approval (the active-plan proxy — a parent
    * already working under an approved plan needs no pipeline-entry reminder)
    * and only once per detected intent signal (the dedupe latch survives
-   * prompt resets; a plan approval clears it). Fail-open: the classification
+   * task-scope resets; a plan approval or a task retire clears it). Fail-open:
+   * the classification
    * step is wrapped, so a throw anywhere in it journals an `error` row and
    * never propagates from the prompt path.
    * @param sessionID The admitted parent session.
@@ -1953,10 +1961,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     source: string,
     traceMarker: string,
   ): Promise<void> {
+    const candidates = planReviewTarget.get(sid) ?? []
     const s = ledger.state(sid)
     s.hasPlanVerdict = result === "APPROVE"
     const projectDir = await resolveProjectDir(sid)
-    stampPlanApproval(s, result, projectDir, planReviewTarget.get(sid) ?? [])
+    // APPROVE applies the reset-at-capture scope rule (a binding different
+    // from the bucket's activePlan rebuilds the task scope before the new
+    // identity is used); BLOCK only stamps the hygiene clear.
+    const approved =
+      result === "APPROVE" ? applyApprovalBinding(sid, projectDir, candidates, false) : s
+    if (result === "BLOCK") stampPlanApproval(s, result, projectDir, candidates)
     journaler.journal({
       type: "plan",
       sessionID: sid,
@@ -1967,7 +1981,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       // Bound identity (so replay restores it) and the stamped dir signature
       // (so replay re-validates against the current plans dir); an unbound or
       // unstampable approval spreads nothing (legacy lines unchanged).
-      ...planApprovalStampFields(s),
+      ...planApprovalStampFields(approved),
     })
     journaler.traceEvent("plan-reviewer", "verdict", traceMarker, sid)
     if (result === "APPROVE") {
@@ -1976,7 +1990,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       // can nudge again.
       clearIntentNudge(sid)
     }
-    recordDurablePlanApproval(s, projectDir)
+    recordDurablePlanApproval(approved, projectDir)
   }
 
   /**
@@ -2972,6 +2986,12 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       ...evidenceStamp,
       ...suppressedCount,
     })
+    // A green gate flip is the task's completion boundary: a flipping PASS
+    // (an enforce-unverified claim never flipped) journals its task-complete
+    // companion row and stamps the retire, so the next admitted prompt
+    // starts a fresh scope.
+    const flipped = event.verified !== false || event.mode === "flag"
+    if (event.result === "PASS" && flipped) markTaskComplete(sid, s)
     journaler.traceEvent("test-runner", "gate", event.marker, sid)
     // Carry the de-tokenized marker text for the compaction snapshot; the
     // state boundary records it, the caller journals the event.
@@ -3074,8 +3094,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Under "enforce" the flip switch is the observed correlation; under "flag"
     // the flip switch is omitted (always flips) while the journal is stamped;
     // under "off" neither the flip switch nor the stamp is passed, keeping
-    // events byte-identical to legacy output.
-    const observed = config.gateEvidence === "off" ? undefined : evidence.has(sid)
+    // events byte-identical to legacy output. The correlation is windowed at
+    // the parent's task-window stamp (the same bound the promotion join
+    // uses), so a keep-scope admission cannot verify a claim with exit-0
+    // hits that predate the prompt — the per-prompt anti-fabrication bound
+    // survives the task-long-lived scope. A parent that never admitted a
+    // prompt keeps the unbounded join (stamp 0).
+    const observed =
+      config.gateEvidence === "off" ? undefined : evidence.has(sid, taskWindows.get(sid) ?? 0)
     const passVerified = config.gateEvidence === "enforce" ? observed : undefined
     const stampVerified = observed
     const stampMode = observed === undefined ? undefined : config.gateEvidence
@@ -3170,58 +3196,121 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
-   * Resets this parent's gate state for a freshly admitted prompt, carrying the
-   * restart-sticky flags when continuation carry is armed and the same
-   * worktree/branch is re-admitted. Journals a `continuation` entry when the
-   * carry fired and a `child-reset` entry when any registered child's metering
-   * counters were freed (a child never admits a prompt, so its own counters
-   * are unreachable from any reset path otherwise).
-   * @param sessionID The parent session whose state is reset.
+   * Performs a full task-scope reset for a parent: rebuilds the gate bucket
+   * (releasing registered children) and drops all task-scoped dispatch
+   * state, journaling a `child-reset` entry when any registered child's
+   * metering counters were freed. This is the clear both an admission reset
+   * (the scope-change arms of `carryOrReset`) and a reset-at-capture plan
+   * approval perform.
+   * @param sessionID The parent session whose task scope resets.
+   * @param merge Whether the rebuild may merge the restart-sticky flags
+   *     through the bucket's armed `replayGrace`. Omitted (the admission
+   *     arms) keeps the armed-grace default; false (a reset-at-capture
+   *     approval) forces a clean rebuild — the old scope's releases must
+   *     not ride the grace into the new one.
+   */
+  function resetTaskScope(sessionID: string, merge?: boolean): void {
+    const freed = ledger.resetState(sessionID, merge)
+    dropTaskScope(sessionID)
+    if (freed > 0) journaler.journal({ type: "child-reset", sessionID, children: freed })
+  }
+
+  /**
+   * Admits a same-scope prompt: no reset, no task-scope drop — every gate
+   * flag, waiver, counter, and latch survives (side chatter and follow-ups
+   * never reset anything while a plan is bound and the task is not retired).
+   * Two per-prompt duties survive the keep despite the task-long-lived scope
+   * (pinned choice — option (i) of the evidence-window decision): the
+   * evidence join stays PER-PROMPT, so every admission re-stamps the task
+   * window and a `GATE: PASS` claim can only be promoted by exit-0 hits
+   * at-or-after the prompt that admitted it (fail-closed anti-fabrication);
+   * and a failed claim's residue — the pending unverified text, its
+   * streaming-scope dedupe key, and the display marker — is dropped, so a
+   * corrected re-claim re-registers instead of wedging the task red (the
+   * claim itself is never honored: the gate stays red until a flipping
+   * PASS). Consumes the one-prompt `replayGrace` (the first post-restart
+   * prompt has now carried naturally; leaving it armed would let a much
+   * later scope-change reset carry flags across a task boundary) and
+   * refreshes the worktree fingerprint stamp (plan-bound scope ignores
+   * fingerprint changes; the stamp stays factual).
+   * @param sessionID The parent session whose scope is kept.
+   * @param fingerprint The freshly-computed worktree/branch identity.
+   */
+  function keepTaskScope(sessionID: string, fingerprint: string): void {
+    // `ledger.state` (not `peek`): this path mutates the bucket, and the
+    // session is already marked a live parent, so the mint cannot be evicted.
+    const s = ledger.state(sessionID)
+    s.replayGrace = false
+    taskWindows.set(sessionID, Date.now())
+    boundTaskWindows()
+    if (s.unverifiedPass !== "") {
+      // The streaming channels share the empty dedup scope; a task-result
+      // delivery re-scopes per delivery, so only the streaming key can wedge.
+      s.seen.delete(`gate\u0000${s.unverifiedPass}`)
+      s.unverifiedPass = ""
+      s.lastGateMarker = ""
+    }
+    s.taskFingerprint = fingerprint
+  }
+
+  /**
+   * Resets this parent's gate state for a scope-changing admitted prompt,
+   * carrying the restart-sticky flags when continuation carry is armed and
+   * the same worktree/branch is re-admitted. Journals a `continuation` entry
+   * when the carry fired and a `child-reset` entry when any registered
+   * child's metering counters were freed. A same-scope prompt (plan-bound,
+   * not retired, carry on) skips both the reset and the task-scope drop
+   * entirely — the parent is still marked pinned first either way.
+   * @param sessionID The parent session whose state is (maybe) reset.
    */
   function carryOrReset(sessionID: string): void {
-    // Mark the session a live parent before the reset: resetState
-    // re-caps `states`, and a registered parent is never evicted,
-    // so the rebuilt MRU slot stays pinned.
+    // Mark the session a live parent before any reset: resetState re-caps
+    // `states`, and a registered parent is never evicted, so the rebuilt MRU
+    // slot stays pinned.
     ledger.markParent(sessionID)
-    // Continuation carry (default on): arm the same one-prompt replay grace the
-    // journal uses so `resetState` carries the restart-sticky flags when this
-    // prompt re-admits the SAME worktree/branch the task was earned in. The
-    // git probe is total (never throws), so this stays throw-free. The
-    // carry decision is captured BEFORE mutating, not re-derived after.
+    const prior = ledger.peek(sessionID)
+    if (keepsTaskScope(prior, config.continuationCarry)) {
+      keepTaskScope(sessionID, worktreeFingerprint(currentProjectDir(sessionID)))
+      return
+    }
+    const fingerprint = worktreeFingerprint(currentProjectDir(sessionID))
+    // The carry decision is captured BEFORE mutating, not re-derived after.
+    // The git probe is total (never throws), so this stays throw-free. A
+    // retired prior bucket journals no continuation row: the merge carries
+    // nothing out of a completed task, so the audit row must not claim a
+    // carry that did not happen.
     if (config.continuationCarry) {
-      const prior = ledger.peek(sessionID)
-      const fingerprint = worktreeFingerprint(currentProjectDir(sessionID))
-      const carry = shouldCarryGate(prior, fingerprint, true)
+      const carry = shouldCarryGate(prior, fingerprint, true) && prior!.taskComplete === false
       // shouldCarryGate guarantees carry ⇒ prior is defined, so the
       // non-null assertion cannot fire; keep the predicate's contract
       // intact if it ever changes.
       if (carry) prior!.replayGrace = true
-      const freed = ledger.resetState(sessionID)
+      resetTaskScope(sessionID)
       ledger.state(sessionID).taskFingerprint = fingerprint
       if (carry) journaler.journal({ type: "continuation", sessionID })
-      if (freed > 0) journaler.journal({ type: "child-reset", sessionID, children: freed })
     } else {
-      const freed = ledger.resetState(sessionID)
-      if (freed > 0) journaler.journal({ type: "child-reset", sessionID, children: freed })
+      resetTaskScope(sessionID)
     }
   }
 
   /**
-   * Drops all prior task-scoped dispatch state for a parent so a freshly
-   * admitted prompt starts from a clean task scope: the plan-review dispatch
-   * targets, the in-memory evidence correlation, the task-window stamp, and the
-   * pending plan-ask, landing-ask, and near-miss latches.
+   * Drops all prior task-scoped dispatch state for a parent so the next task
+   * scope starts clean: the plan-review dispatch targets, the in-memory
+   * evidence correlation, the task-window stamp, and the pending plan-ask,
+   * landing-ask, and near-miss latches. Runs only on a scope change (an
+   * admission reset or a reset-at-capture approval) — a same-scope prompt
+   * never reaches it.
    * @param sessionID The parent session whose task-scoped state is dropped.
    */
   function dropTaskScope(sessionID: string): void {
-    // A prompt reset invalidates all prior dispatch-scoped
+    // A task-scope reset invalidates all prior dispatch-scoped
     // evidence for this parent, so an unresolved-child verdict is only
     // plausible within the parent's current task scope, and the prior
     // round's plan-mention candidates cannot bind a new task's approval.
     planReviewerDispatch.delete(sessionID)
     planReviewTarget.delete(sessionID)
-    // Evidence is task-scoped, exactly like gate state: a new user
-    // prompt drops the in-memory correlation.
+    // Evidence is task-scoped, exactly like gate state: a task-scope
+    // change drops the in-memory correlation.
     evidence.clear(sessionID)
     // Stamp the parent's current task window beside the evidence clear:
     // from this moment a GATE: PASS may only be promoted by executions
@@ -3230,34 +3319,88 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // claim. A parent that never admits a prompt keeps the unbounded join.
     taskWindows.set(sessionID, Date.now())
     boundTaskWindows()
-    // A prompt reset also drops any pending plan-ask latch: the
+    // A task-scope reset also drops any pending plan-ask latch: the
     // escalation's stream event belongs to the previous task scope, so
-    // a new prompt must not let a later unrelated ask be recorded as
+    // the next task must not let a later unrelated ask be recorded as
     // the plan ask.
     awaitingPlanAsk.delete(sessionID)
     // A landing-ask arm (an enforce repeat-attempt escalation) belongs
-    // to the previous task scope too: a new prompt drops it, so the new
+    // to the previous task scope too: a scope change drops it, so the new
     // task starts from a pure first block again.
     pendingLandingAsk.delete(sessionID)
     // The landing dedupe timestamp belongs to the previous task scope the
     // same way: without this delete a stale timestamp could suppress a
-    // legitimate ask row for up to `askLatchTtlMs` after the prompt reset.
+    // legitimate ask row for up to `askLatchTtlMs` after the scope change.
     lastLandingEscalateAt.delete(sessionID)
     // A hands-on-ask arm belongs to the previous task scope the same way:
-    // a new prompt drops it, so the new task starts from a pure first block.
+    // a scope change drops it, so the new task starts from a pure first block.
     pendingHandsOnAsk.delete(sessionID)
     // Mirror the hands-on dedupe timestamp (same rationale as the landing
     // one above).
     lastHandsOnEscalateAt.delete(sessionID)
-    // A prompt reset also drops undelivered near-miss diagnostics: they
+    // A task-scope reset also drops undelivered near-miss diagnostics: they
     // belong to the previous task scope. The scan below re-seeds within the
-    // same admission, so a new prompt's own near misses still surface.
+    // same admission, so the new prompt's own near misses still surface.
     nearMissPending.delete(sessionID)
-    // A pending intent nudge belongs to the previous prompt too: an
+    // A pending intent nudge belongs to the dropped task scope too: an
     // undelivered nudge must not attach to a later task's deliveries. The
-    // per-kind dedupe keys survive this reset by design (one nudge per
-    // detected intent across prompts; a plan approval clears them).
+    // per-kind dedupe keys survive this drop by design (one nudge per
+    // detected intent within the task; a plan approval or a task retire
+    // clears them, and the drop itself only runs on a scope change).
     intentNudgePending.delete(sessionID)
+  }
+
+  /**
+   * Applies a plan-approval's binding and the pinned scope-transition rule:
+   * stamps the approval against the current plans dir FIRST (the binding name
+   * falls out of the stamp), then — when the bound name differs from the
+   * bucket's `activePlan` (including the first binding over the planless "")
+   * — resets the task scope with a clean (non-merge) rebuild — counters,
+   * waiver family, ask latches, evidence, dispatch targets — BEFORE the new
+   * scope is used, re-applying the saved stamp identity to the fresh bucket.
+   * The clean rebuild matters: `resetState`'s merge arm would carry the old
+   * scope's releases into the new one whenever the boot-replay grace is
+   * still armed (a reviewer verdict arriving with no parent prompt admitted
+   * since the restart). An unbound approval (`""`) is a no-op for scope: no
+   * reset, no `activePlan` write (an unbound stamp must not wipe the live
+   * identity — the planless fallback would silently revert to per-prompt
+   * resets). Either way the approved bucket gets `hasPlanVerdict` (plus
+   * `humanApproval` when the capture is human); a bound approval also sets
+   * `activePlan` to the bound name.
+   * @param sessionID The parent session the approval binds for.
+   * @param projectDir The current project directory (for the plans-dir scan).
+   * @param candidates The plan names the approval's dispatch prompt named.
+   * @param human True when the approval provenance is a human prompt marker.
+   * @returns The approved bucket (post-reset when the scope changed).
+   */
+  function applyApprovalBinding(
+    sessionID: string,
+    projectDir: string,
+    candidates: string[],
+    human: boolean,
+  ): GateState {
+    const s0 = ledger.state(sessionID)
+    const priorActive = s0.activePlan
+    let s = s0
+    stampPlanApproval(s, "APPROVE", projectDir, candidates)
+    const bound = s.approvedPlan
+    if (approvalResetsScope(priorActive, bound, s0.taskComplete)) {
+      // Reset-at-capture: snapshot the just-stamped identity, rebuild the
+      // task scope CLEAN (no grace merge — see the doc), and re-apply it to
+      // the fresh bucket.
+      const savedPlan = s.approvedPlan
+      const savedKey = s.approvedPlanKey
+      const savedSig = s.plansSignature
+      resetTaskScope(sessionID, false)
+      s = ledger.state(sessionID)
+      s.approvedPlan = savedPlan
+      s.approvedPlanKey = savedKey
+      s.plansSignature = savedSig
+    }
+    s.hasPlanVerdict = true
+    if (human) s.humanApproval = true
+    if (bound !== "") s.activePlan = bound
+    return s
   }
 
   /**
@@ -3267,10 +3410,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * those stages' gates (the plan gate is covered by either its plan-reviewer
    * or executor stage name), and a scoped waiver stays live until that
    * stage's waiver allowance is spent — metered separately from the ordinary
-   * dispatch caps. A new user prompt drops the waiver. Read + capture in one
-   * guarded block; a coercion that throws (a malformed prompt value) is
-   * journaled under the historical "waiver capture" key and swallowed —
-   * fail-open.
+   * dispatch caps. The waiver holds for the whole task scope: only a
+   * task-scope change (a different-plan approval, a task retire, a planless
+   * fingerprint change) clears it. Read + capture in one guarded block; a
+   * coercion that throws (a malformed prompt value) is journaled under the
+   * historical "waiver capture" key and swallowed — fail-open.
    * @param sessionID The parent session the waiver is captured for.
    * @param properties The prompt payload to scan for the waiver marker.
    */
@@ -3287,7 +3431,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         s.userWaiverScope = scope
         // Task-scoped standing release: the waiver joins the sticky
         // decision-row family (no separate journal type), so the boot
-        // replay restores it through the same fold as ask `always`
+        // replay restores it through the same scope fold as ask `always`
         // grants. `stickyRelease` is provenance; the gates keep reading
         // the waiver family itself.
         s.stickyRelease = true
@@ -3302,47 +3446,91 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   /**
    * Human approval (item 7): a `PLAN APPROVED:` marker in the user prompt
    * releases the plan gate — the same release signal the plan-reviewer verdict
-   * sets. Read + capture in one guarded block: set hasPlanVerdict (execute.
-   * before reads it) and humanApproval (provenance), stamp the plans-dir
-   * signature (so a restart replays the approval stamped and an offline plan
-   * edit invalidates it), and journal an APPROVE entry that replays
-   * identically to a verdict (replayGatePasses accepts any type:"plan"
-   * APPROVE; mergeAfterReplay carries it). A coercion that throws is journaled
-   * and swallowed — fail-open.
+   * sets. Read + capture in one guarded block: bind the approval against the
+   * plan candidates the prompt itself names (the `promptPlanNames` `*.md`
+   * parse, resolved against the current plans dir — a unique existing mention
+   * binds it, so the human channel can establish `activePlan` exactly like a
+   * reviewer verdict) and apply the reset-at-capture scope rule when the
+   * binding differs from the bucket's `activePlan`; a prompt naming nothing
+   * (or no unique existing plan) binds nothing and is a no-op for scope.
+   * Also stamps the plans-dir signature (so a restart replays the approval
+   * stamped and an offline plan edit invalidates it) and journals an APPROVE
+   * entry that replays identically to a verdict. Runs BEFORE the waiver
+   * capture in the same admission, so a waiver sharing the prompt lands in
+   * the (possibly reset) new scope. A coercion that throws is journaled and
+   * swallowed — fail-open.
    * @param sessionID The parent session the approval is captured for.
    * @param properties The prompt payload to scan for the approval marker.
    */
   function captureApproval(sessionID: string, properties: PromptHookProperties): void {
     try {
       const approvalText = promptTextOf(properties)
-      const atPlan = approvalText.indexOf(config.approvalMarker)
-      if (atPlan !== -1) {
-        const s = ledger.state(sessionID)
-        s.hasPlanVerdict = true
-        s.humanApproval = true
-        // Stamp the human approval against the current plans dir (empty
-        // candidates → unbound), so replay re-validates it like a reviewer
-        // verdict and an offline plan edit invalidates it. Fail-open: an
-        // absent/unreadable dir stamps "" and keeps the accept-once path.
-        const projectDir = currentProjectDir(sessionID)
-        stampPlanApproval(s, "APPROVE", projectDir, [])
-        // The task has its plan: forget prior intent nudges so a later
-        // task's detected intents can nudge again.
-        clearIntentNudge(sessionID)
-        journaler.journal({
-          type: "plan",
-          sessionID,
-          result: "APPROVE",
-          // Provenance only: replay reads only type+result+plansSig.
-          source: "session-prompt",
-          marker: config.approvalMarker,
-          ...planApprovalStampFields(s),
-        })
-        recordDurablePlanApproval(s, projectDir)
-      }
+      if (approvalText.indexOf(config.approvalMarker) === -1) return
+      const projectDir = currentProjectDir(sessionID)
+      const s = applyApprovalBinding(
+        sessionID,
+        projectDir,
+        gates.promptPlanNames(approvalText),
+        true,
+      )
+      // The task has its plan: forget prior intent nudges so a later
+      // task's detected intents can nudge again.
+      clearIntentNudge(sessionID)
+      journaler.journal({
+        type: "plan",
+        sessionID,
+        result: "APPROVE",
+        // Provenance only: replay reads only type+result+plansSig.
+        source: "session-prompt",
+        marker: config.approvalMarker,
+        ...planApprovalStampFields(s),
+      })
+      recordDurablePlanApproval(s, projectDir)
     } catch (e) {
       // Fail-open: approval capture never blocks a prompt.
       journaler.journal({ type: "error", error: `approval capture: ${e}` })
+    }
+  }
+
+  /**
+   * Marks the parent's active task retired: stamps `taskComplete` and
+   * journals one `{type:"task-complete", plan}` row (the plan being the
+   * bucket's `activePlan`). Only a plan-bound task retires — a planless
+   * session's gate flip changes nothing (there is no plan to retire, and the
+   * planless fallback preserves today's per-task-scope reset + carry behavior).
+   * Idempotent within the task — the first PASS (or retire marker) journals,
+   * repeats are silent — so the ordered replay fold sees exactly one retire
+   * per task.
+   * @param sessionID The parent session whose task retires.
+   * @param s The parent's gate state (mutated: taskComplete).
+   */
+  function markTaskComplete(sessionID: string, s: GateState): void {
+    if (s.taskComplete || s.activePlan === "") return
+    s.taskComplete = true
+    // The successor task must be able to nudge again: a retire clears the
+    // per-kind dedupe latch exactly like a plan approval does (both retire
+    // paths — the explicit marker and the gate flip — route here).
+    clearIntentNudge(sessionID)
+    journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
+  }
+
+  /**
+   * Explicit user retire (prompt channel): a `TASK DONE:` literal in the
+   * user's own prompt retires the session's active task for the NEXT
+   * admitted prompt (admission-only: child results and dispatch prompts
+   * never retire a task). Read + capture in one guarded block; a coercion
+   * that throws is journaled under the "task-done capture" key and swallowed
+   * — fail-open.
+   * @param sessionID The parent session the retire marker is scanned for.
+   * @param properties The prompt payload to scan for the retire marker.
+   */
+  function captureTaskDone(sessionID: string, properties: PromptHookProperties): void {
+    try {
+      if (promptTextOf(properties).indexOf(config.taskDoneMarker) === -1) return
+      markTaskComplete(sessionID, ledger.state(sessionID))
+    } catch (e) {
+      // Fail-open: the retire capture never blocks a prompt.
+      journaler.journal({ type: "error", sessionID, error: `task-done capture: ${e}` })
     }
   }
 
@@ -3612,11 +3800,18 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
           "prompt channel: the session prompt hook never fired on this surface; prompt admission is served by the inbox event stream",
       })
     }
+    // Task-scope decision first: a same-scope prompt (plan-bound, not
+    // retired, continuation carry on) keeps every flag, waiver, counter, and
+    // latch — the "chat resets everything" fix. A scope-changing prompt
+    // resets (carrying restart-sticky flags when the carry is armed) and
+    // drops the task-scoped dispatch state with it (`resetTaskScope`).
     carryOrReset(sessionID)
     stampObserveAdmission(sessionID)
-    dropTaskScope(sessionID)
-    captureWaiver(sessionID, properties)
+    // Approval capture runs BEFORE the waiver capture so a waiver sharing the
+    // prompt lands in the (possibly reset) new scope.
     captureApproval(sessionID, properties)
+    captureWaiver(sessionID, properties)
+    captureTaskDone(sessionID, properties)
     captureSuspend(sessionID, properties)
     scanNearMisses(sessionID, properties)
     surfaceKeylessPrompt(sessionID, properties)

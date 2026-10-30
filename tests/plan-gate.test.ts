@@ -2756,7 +2756,10 @@ test("plan gate: a dispatch naming its durably-approved plan is exempt from unre
   )
   try {
     await reviewRound(h, "p1", "c1", "review zzz-current.md", APPROVE)
-    // A fresh prompt wipes the bucket; the sidecar still covers zzz-current.
+    // Retire the task (the plan-bound scope keeps state across ordinary
+    // prompts) and admit a fresh prompt: the bucket resets; the sidecar
+    // still covers zzz-current.
+    await callSession(h, "prompt", { sessionID: "p1", text: "TASK DONE: zzz-current landed" })
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // Naming the approved plan: admitted even though aaa-stale stays pending.
     await execDispatch(h, "p1", "implement zzz-current.md")
@@ -2839,7 +2842,10 @@ test("plan gate: an all-landed plans dir is green; a new plan blocks naming itse
   )
   try {
     await reviewRound(h, "p1", "c1", "review a-landed.md", APPROVE)
-    // The fresh prompt wipes the bucket; only the sidecar remains.
+    // Retire the task (the plan-bound scope keeps state across ordinary
+    // prompts) and admit a fresh prompt: the bucket resets; only the
+    // sidecar remains.
+    await callSession(h, "prompt", { sessionID: "p1", text: "TASK DONE: a-landed landed" })
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // All plans landed: the unnamed dispatch is admitted.
     await execDispatch(h, "p1", "do the work")

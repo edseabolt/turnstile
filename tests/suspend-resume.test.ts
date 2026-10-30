@@ -572,28 +572,36 @@ test("suspend: setSuspended is a no-op on an empty session ID", () => {
   assert.equal(ctx.ledger.isSuspended(""), false)
 })
 
-/** The three suspend/resume config keys validate and assign through the
- *  shared scalar helpers: booleans for allowSuspend, non-empty strings for
- *  the marker literals; invalid values warn and keep the defaults. */
+/** The four suspend/resume/retire config keys validate and assign through
+ *  the shared scalar helpers: booleans for allowSuspend, non-empty strings
+ *  for the marker literals; invalid values warn and keep the defaults. */
 test("suspend: config keys validate and assign through the scalar helpers", () => {
   const merged = mergeConfig(defaultConfig({}), {
     suspendMarker: "PAUSE NOW:",
     resumeMarker: "RESUME NOW:",
+    taskDoneMarker: "WRAPPED:",
     allowSuspend: false,
   })
   assert.deepEqual(merged.warnings, [])
   assert.equal(merged.config.suspendMarker, "PAUSE NOW:")
   assert.equal(merged.config.resumeMarker, "RESUME NOW:")
+  assert.equal(merged.config.taskDoneMarker, "WRAPPED:")
   assert.equal(merged.config.allowSuspend, false)
   const rejected = mergeConfig(defaultConfig({}), {
     suspendMarker: "",
     resumeMarker: "   ",
+    taskDoneMarker: "  ",
     allowSuspend: "yes",
   })
   assert.equal(rejected.config.suspendMarker, "TURNSTILE OFF:", "an empty marker keeps the default")
   assert.equal(rejected.config.resumeMarker, "TURNSTILE ON:", "a blank marker keeps the default")
+  assert.equal(
+    rejected.config.taskDoneMarker,
+    "TASK DONE:",
+    "a blank retire marker keeps the default",
+  )
   assert.equal(rejected.config.allowSuspend, true, "a non-boolean keeps the default")
-  assert.equal(rejected.warnings.length, 3, "each rejected key warns")
+  assert.equal(rejected.warnings.length, 4, "each rejected key warns")
 })
 
 /** The suspension read fails open: a ledger throw at the suppression probe

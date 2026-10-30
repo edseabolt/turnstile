@@ -649,7 +649,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * dispatch whose own plan approval is live. A plan
    * is pending when its bytes carry no durable, project-scoped approval in
    * the ledger's approval store, so a byte-identical plan's exemption
-   * survives replay-aging, a process restart, and a new-prompt reset. A
+   * survives replay-aging, a process restart, and a new-task-scope reset. A
    * bound approval (the session's plan identity) is invalidated only when
    * THAT plan's content changes or the file disappears; unbound approvals
    * invalidate on any plans-dir change (the dir-signature rule). A stale
@@ -666,9 +666,9 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * in the waiver text scopes it to those stages' gates — this gate is
    * covered by either its plan-reviewer or executor stage name — and a
    * scoped waiver stays live until that stage's waiver allowance is spent,
-   * metered separately from the ordinary dispatch caps; a new user prompt
-   * drops the waiver. A waiver covering this gate is never consumed (the
-   * plan gate is sticky).
+   * metered separately from the ordinary dispatch caps; the waiver holds for
+   * the whole task scope, a task-scope change drops it. A waiver covering
+   * this gate is never consumed (the plan gate is sticky).
    * @param sessionID The parent session ID.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.

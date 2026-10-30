@@ -21,6 +21,7 @@
   "escalation": "block",
   "suspendMarker": "TURNSTILE OFF:",
   "resumeMarker": "TURNSTILE ON:",
+  "taskDoneMarker": "TASK DONE:",
   "allowSuspend": true,
   "intentNudge": true,
   "agents": {

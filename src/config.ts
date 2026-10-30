@@ -131,6 +131,11 @@ export function defaultConfig(
     // state with no rehydrated credit. `allowSuspend: false` refuses both.
     suspendMarker: "TURNSTILE OFF:",
     resumeMarker: "TURNSTILE ON:",
+    // Explicit task-retire marker: a user prompt carrying the literal journals
+    // {type:"task-complete", plan} and stamps taskComplete, so the NEXT
+    // admitted prompt starts a fresh task scope. Admission-only (child
+    // results and dispatch prompts never retire a task).
+    taskDoneMarker: "TASK DONE:",
     allowSuspend: true,
     // Advisory intent nudge is on by default: an admitted prompt classified
     // as implementation intent with no plan approval journals `{type:"intent"}`
@@ -217,6 +222,7 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
     key === "approvalMarker" ||
     key === "suspendMarker" ||
     key === "resumeMarker" ||
+    key === "taskDoneMarker" ||
     key === "plansDir"
   ) {
     if (key === "metricsDir") {
@@ -285,6 +291,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
   else if (key === "suspendMarker") config.suspendMarker = value as string
   else if (key === "resumeMarker") config.resumeMarker = value as string
+  else if (key === "taskDoneMarker") config.taskDoneMarker = value as string
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "intentNudge") config.intentNudge = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number

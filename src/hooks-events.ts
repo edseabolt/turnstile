@@ -370,7 +370,7 @@ export function startEventStream(
       // absent/false) rather than an earlier refused APPROVE.
       s.hasReviewApprove = true
       // Credit the bucket-free trace too: the flag above dies on the next
-      // prompt reset, but this human release is credit the journal already
+      // task-scope reset, but this human release is credit the journal already
       // records (the cleared refusal stamp), so the trace keeps live and
       // restart behavior identical and lets the landing gate escalate the
       // next turn's first push instead of throwing.

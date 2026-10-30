@@ -308,14 +308,14 @@ export interface GateState {
    * Verbatim text of the task's last first-sight `GATE:` marker, de-tokenized
    * (leading `GATE:` lowercased) so an injected echo can never re-parse as an
    * authoritative marker; "" until observed. Task-scoped: fresh "" on every
-   * prompt reset and never carried through mergeAfterReplay. Display only —
+   * task-scope reset and never carried through mergeAfterReplay. Display only —
    * rendered into the compaction snapshot, never consulted by enforcement.
    */
   lastGateMarker: string
   /**
    * Same for the task's last first-sight `VERDICT:` marker (reviewer or
    * plan-reviewer), de-tokenized for echo-safety. "" until observed.
-   * Task-scoped: fresh "" on every prompt reset and never carried through
+   * Task-scoped: fresh "" on every task-scope reset and never carried through
    * mergeAfterReplay. Display only.
    */
   lastVerdictMarker: string
@@ -326,7 +326,7 @@ export interface GateState {
    * `VERDICT: APPROVE` for the parent — the landing gate's release signal.
    * Restart-sticky like `hasPlanVerdict`: restored by journal replay across a
    * restart and carried one prompt via `mergeAfterReplay`; fresh
-   * `false` on an ordinary prompt reset.
+   * `false` on an ordinary task-scope reset.
    */
   hasReviewApprove: boolean
   /**
@@ -338,8 +338,10 @@ export interface GateState {
    * scopes it to those stages' gates (the plan gate is covered by either its
    * plan-reviewer or executor stage name), and a scoped waiver stays live
    * until that stage's waiver allowance is spent — metered separately from
-   * the ordinary dispatch caps. An ordinary new user prompt drops the
-   * waiver. Task-scoped: cleared on an ordinary prompt reset, but carried
+   * the ordinary dispatch caps. The waiver holds for the whole task scope: a
+   * same-scope prompt never drops it (only a task-scope change does — a
+   * different-plan approval, a task retire, or a planless fingerprint
+   * change). Task-scoped: cleared on a scope-changing reset, but carried
    * one prompt through `mergeAfterReplay` exactly like the restart-sticky
    * gate flags, so a continuation-carry or replay grace prompt keeps the
    * waiver and its scope, consumed flag, and spent allowance the block
@@ -349,10 +351,13 @@ export interface GateState {
   /**
    * Configured agent names named by the waiver text at capture (the parsed
    * scope); `[]` = unscoped (covers every gate). See the canonical semantics
-   * on `userWaiver`. Task-scoped: cleared on an ordinary prompt reset, but
-   * carried one prompt through `mergeAfterReplay` exactly like the
-   * restart-sticky gate flags, so a continuation-carry or replay grace
-   * prompt keeps the waiver's scope the block messages will read.
+   * on `userWaiver`. Task-scoped: cleared when the task scope changes (an
+   * approval binding a different plan, a task retire, or a planless
+   * fingerprint change), but carried one prompt through `mergeAfterReplay`
+   * exactly like the restart-sticky gate flags, so a continuation-carry or
+   * replay grace prompt keeps the waiver's scope the block messages will
+   * read. A same-scope prompt (every prompt while a plan is bound and not
+   * retired) never clears it — the waiver holds for the whole task.
    */
   userWaiverScope: string[]
   /**
@@ -371,7 +376,7 @@ export interface GateState {
    * so a shared counter would mis-attribute spent slots to the waiver after a
    * mid-task restart and would break the "waived dispatches don't count
    * toward the cap" invariant. Lifecycle mirrors the `userWaiver` pair:
-   * task-scoped, fresh `0` on an ordinary prompt reset, never replay-
+   * task-scoped, fresh `0` on an ordinary task-scope reset, never replay-
    * restored, but carried one prompt through `mergeAfterReplay` exactly like
    * the restart-sticky gate flags, so a continuation-carry or replay grace
    * prompt keeps the spent allowance the block messages will read — the
@@ -383,7 +388,7 @@ export interface GateState {
    * Provenance flag: true once a human (prompt marker or permission reply)
    * rather than the plan-reviewer subagent released the plan gate. Provenance
    * only — `execute.before` never consults it; it is read by the status CLI and
-   * trace lines. Fresh `false` on each prompt reset, but restart-restored values
+   * trace lines. Fresh `false` on each task-scope reset, but restart-restored values
    * survive the first post-restart prompt via `mergeAfterReplay`, exactly like
    * `hasPlanVerdict`.
    */
@@ -410,9 +415,9 @@ export interface GateState {
   /**
    * True once this task's first parent task/subagent result delivery has
    * carried the injected orchestrator policy forward into model context.
-   * Cleared per task by `ledger.resetState()` on every user prompt, so the
-   * policy is re-injected on each task (the intended per-task re-supply,
-   * which also re-applies it after compaction).
+   * Cleared by `ledger.resetState()` on every task-scope reset, so the
+   * policy is re-injected per task (the intended per-task re-supply, which
+   * also re-applies it after compaction).
    */
   policyInjected: boolean
   /**
@@ -439,7 +444,7 @@ export interface GateState {
    * The landing credit (`hasReviewApprove`) requires `>= 2`. Unlike
    * `reviewRounds` it is restart-sticky: restored by journal replay across a
    * restart and carried one prompt via `mergeAfterReplay`; fresh `0` on an
-   * ordinary prompt reset. Waived dispatches never advance it (the waiver
+   * ordinary task-scope reset. Waived dispatches never advance it (the waiver
    * short-circuits before counting, mirroring `reviewRounds`).
    */
   reviewerDispatches: number
@@ -447,21 +452,21 @@ export interface GateState {
    * Task-scoped planner dispatch count. Exceeded ⇒ the planner leg is spinning;
    * see `maxPlannerRounds`. Waived dispatches are exempt (the waiver
    * short-circuits before counting, mirroring the reviewer-cap precedent).
-   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
    * `mergeAfterReplay`.
    */
   plannerRounds: number
   /**
    * Task-scoped plan-reviewer dispatch count. Exceeded ⇒ the plan is going in
    * circles; see `maxPlanReviewerRounds`. Waived dispatches are exempt.
-   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
    * `mergeAfterReplay`.
    */
   planReviewerRounds: number
   /**
    * Task-scoped test-runner dispatch count. Exceeded ⇒ the test loop is
    * spinning; see `maxTestRunnerRounds`. Waived dispatches are exempt.
-   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
    * `mergeAfterReplay`.
    */
   testRunnerRounds: number
@@ -470,21 +475,21 @@ export interface GateState {
    * plan-reviewer, executor, test-runner, reviewer, debugger, unknown),
    * capped by `maxTotalDispatches` as the global loop backstop. Waived
    * dispatches are exempt (the waiver short-circuits before counting).
-   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
    * `mergeAfterReplay`.
    */
   totalDispatches: number
   /**
    * Count of `git push`/PR-landing blocks this task under the landing gate —
    * telemetry that arms the permission-ask escalation on a repeat attempt.
-   * Task-scoped: fresh `0` on each prompt reset and never carried through
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
    * `mergeAfterReplay`.
    */
   landingBlocks: number
   /**
    * Task-scoped count of parent hands-on (write/edit) blocks this task under
    * the hands-on gate — arms the permission-ask escalation on a repeat
-   * attempt. Task-scoped: fresh `0` on each prompt reset and never carried
+   * attempt. Task-scoped: fresh `0` on each task-scope reset and never carried
    * through `mergeAfterReplay`. A restart mid-task drops it (never
    * replay-restored), so the ladder re-blocks and re-arms — the
    * fail-toward-strict direction.
@@ -493,7 +498,7 @@ export interface GateState {
   /**
    * Task-scoped standing release from a human `always` reply to a hands-on
    * ask: the rest of this task's parent write/edit calls are allowed. Fresh
-   * `false` on every prompt reset; restart-restored by the sticky-decision
+   * `false` on every task-scope reset; restart-restored by the sticky-decision
    * replay (a replayed `always` hands-on decision row re-stamps it) and
    * carried through `mergeAfterReplay` like the other standing releases —
    * a restart mid-task keeps the release (task-scoped human releases).
@@ -514,7 +519,7 @@ export interface GateState {
    * whole-file read result. The prefix is a once-per-task nudge: the corrected
    * `reads` counter is not monotonic (a failed read's charge is corrected
    * back down), so equality with `readWarn` could inject the warning again on
-   * a later climb. Task-scoped: fresh `false` on every prompt reset, never
+   * a later climb. Task-scoped: fresh `false` on every task-scope reset, never
    * carried through `mergeAfterReplay`, never replay-restored (`reads` itself
    * restarts at 0, so a restarted session may warn once again — intended).
    */
@@ -535,9 +540,35 @@ export interface GateState {
    * prompt named no single existing plan file). Restart-sticky and paired with
    * `hasPlanVerdict`: restored by journal replay (a `plan` entry's optional
    * `plan` field) and carried one prompt via `mergeAfterReplay`; fresh "" on
-   * an ordinary prompt reset.
+   * an ordinary task-scope reset.
    */
   approvedPlan: string
+  /**
+   * The active task's identity: the path-free name of the most recently
+   * plan-approved plan file for this parent (the `PLAN APPROVED:` capture or
+   * a reviewer-verdict binding), "" while the parent works without a bound
+   * plan (the worktree `taskFingerprint` fallback governs scope instead).
+   * Established ONLY by a plan-approval event — prompt mentions of plan files
+   * never establish or flip scope. Scope resets exactly on: an approval
+   * binding a different plan (the capture resets before stamping), an
+   * explicit retire (`taskComplete`), or a fingerprint change while this is
+   * "". Journaled in the plan-approval entry's `plan` field and restored by
+   * the ordered scope fold at replay; carried through `mergeAfterReplay`
+   * while `hasPlanVerdict` holds (and never out of a `taskComplete` bucket).
+   */
+  activePlan: string
+  /**
+   * True once the active task retired: a `GATE: PASS` journaling flip (the
+   * gate entry's `task-complete` companion row) or a user prompt carrying the
+   * configured `taskDoneMarker` literal (admission-only — child results and
+   * dispatch prompts never retire a task). The NEXT admitted task-scope resets
+   * for a fresh task; within the retiring turn, pipeline legs keep their
+   * counters. Never carried through `mergeAfterReplay`: a completed task
+   * contributes no flags, releases, or counters to the next task. Restored
+   * by the ordered scope fold at replay (a `task-complete` row marks it; a
+   * later plan APPROVE clears it).
+   */
+  taskComplete: boolean
   /**
    * sha256 hex of the bound plan file's bytes at approval time; "" = unknown.
    * A bound approval is stale when the bound plan's current file hash differs
@@ -751,7 +782,7 @@ export interface TurnstileConfig {
   escalation: "ask" | "block"
   /**
    * When true, a prompt admitted in an unchanged worktree/branch carries the
-   * current task's restart-sticky gate flags across the prompt reset instead
+   * current task's restart-sticky gate flags across the task-scope reset instead
    * of wiping them (a continuation, not a new task). The carry is
    * CREDIT-SCOPED: only earned credit (an earned gate pass `hasGatePass` or
    * a landing approval `hasReviewApprove`, each paired with the restart-
@@ -761,7 +792,7 @@ export interface TurnstileConfig {
    * when the worktree/branch is unchanged; set false to restore a clean
    * cycle every prompt. A genuinely new task on the same branch is
    * indistinguishable from a continuation, and a carried landing approval
-   * releases pushes for that new task too until a fresh prompt resets the
+   * releases pushes for that new task too until a fresh task-scope resets the
    * bucket.
    */
   continuationCarry: boolean
@@ -779,6 +810,14 @@ export interface TurnstileConfig {
    * while suspended rehydrates. Default `TURNSTILE ON:`.
    */
   resumeMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, explicitly
+   * retires the session's active task: journals `{type:"task-complete",
+   * plan}` with the bucket's `activePlan` and stamps `taskComplete`, so the
+   * NEXT admitted prompt starts a fresh task scope. Admission-only: child
+   * results and dispatch prompts never retire a task. Default `TASK DONE:`.
+   */
+  taskDoneMarker: string
   /**
    * Whether the suspend/resume markers are honored at all. When false, an
    * OFF or ON marker is refused: the refusal is journaled (`refused:true`

@@ -190,7 +190,7 @@ export interface LandingGateCapability {
   hasApproval(): boolean
   /**
    * True when the session journaled a credited reviewer APPROVE — the
-   * bucket-free credit that a prompt reset drops the `hasReviewApprove` flag
+   * bucket-free credit that a task-scope reset drops the `hasReviewApprove` flag
    * for (refuses only a refusal-stamped verdict). Lets guardLanding escalate
    * a credited session's first push instead of throwing the first block.
    */
@@ -898,7 +898,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * stateful capability from `setup.ts`. With approval: allow, no journal noise
    * beyond telemetry. Without, the first block journals
    * `no-landing-approval` and throws — unless the session already carries a
-   * credited reviewer APPROVE that a prompt reset dropped, in which case even
+   * credited reviewer APPROVE that a task-scope reset dropped, in which case even
    * the first attempt is the human decision point: it journals a `permission`
    * ask and signals escalation, allowing `execute.before` to pass so the
    * evaluate handler forces the ask. A repeat attempt escalates the same way.
@@ -941,7 +941,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         journaler.journal({ type: "tool", sessionID, tool, landing: true, exempt: "empty-diff" })
         return
       }
-      // A journaled credit escalates the first attempt too: the prompt reset
+      // A journaled credit escalates the first attempt too: the task-scope reset
       // dropped the `hasReviewApprove` flag, but the session still carries a
       // non-refused reviewer APPROVE, so the human decides this first push
       // rather than one wasted `no-landing-approval` block earlier.

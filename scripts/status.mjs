@@ -192,6 +192,29 @@ const MAX_REPLAY_MARKER_LEN = 512
 const MAX_REPLAY_OBSERVE_COUNT = 1_000_000
 
 /**
+ * Upper bound on a journaled plan file name, and its path-free alphabet.
+ * Mirrors the canonical bound/alphabet in src/ledger.ts: an over-length,
+ * path-carrying, or hostile name degrades to the unbound empty name (replay
+ * parity — a bound plan identity that fails its shape is unbound).
+ */
+const MAX_REPLAY_NAME_LEN = 128
+const PLAN_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Sanitizes a raw journaled plan name for the task-scope fold (standalone
+ * copy of ledger.ts's sanitizePlanName).
+ * @param {unknown} plan The raw `plan` field of a journal line.
+ * @returns {string} The sanitized name, or "" when unbound/malformed.
+ */
+function planNameOf(plan) {
+  return typeof plan === "string" && plan.length >= 1 && plan.length <= MAX_REPLAY_NAME_LEN
+    ? PLAN_NAME_RE.test(plan)
+      ? plan
+      : ""
+    : ""
+}
+
+/**
  * Reads and parses the config file the config layer uses, silently tolerating
  * a missing or malformed file (fail-open). Returns `null` when nothing usable
  * is present.
@@ -312,6 +335,8 @@ function freshSession() {
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
     stickyRelease: null,
+    activePlan: "",
+    taskComplete: false,
     suspended: false,
   }
 }
@@ -430,9 +455,29 @@ function aggregate(lines) {
         if (result === "APPROVE" && e.source === "session-prompt") {
           a.planApproval.promptApproval = true
         }
+        // Task-scope fold, mirroring ledger.ts's applyPlanApprovalScope: a
+        // binding APPROVE (a path-free plan name within the replay bound)
+        // establishes the active task's plan; a DIFFERENT name — or a
+        // re-approval after a completion — restarts the scope (sticky
+        // release cleared, retire cleared). An unbound approval folds
+        // nothing into the scope.
+        if (result === "APPROVE") {
+          const name = planNameOf(e.plan)
+          if (name !== "" && (name !== a.activePlan || a.taskComplete)) {
+            a.stickyRelease = null
+            a.taskComplete = false
+            a.activePlan = name
+          }
+        }
       } else if (result === "WAIVED") {
         a.waivers.push({ channel: typeof e.channel === "string" ? e.channel : "", waiver: "" })
       }
+    } else if (type === "task-complete") {
+      // Task-retire fold, mirroring ledger.ts's foldTaskComplete: the retire
+      // clears the sticky release within the current scope and marks the
+      // task complete (a later plan APPROVE restarts the scope).
+      a.stickyRelease = null
+      a.taskComplete = true
     } else if (type === "verdict") {
       // VERDICT: APPROVE/BLOCK observations (plan-reviewer verdict markers).
       const marker =
@@ -477,9 +522,18 @@ function aggregate(lines) {
       }
       // Sticky-decision fold, mirroring ledger.ts's foldStickyDecision:
       // only scope:"task" decision rows (standing `always` grants, waiver
-      // captures) participate, last-wins per session; ask rows (`action`),
-      // audit rows (`event`), and legacy scope-less rows fold nothing.
-      if (e.action === undefined && e.event === undefined && e.scope === "task") {
+      // captures) with a kind on the ledger's allowlist participate,
+      // recording the release within the current task scope; ask rows
+      // (`action`), audit rows (`event`), legacy scope-less rows, and
+      // kinds outside plan/landing/hands-on/waiver fold nothing (a
+      // malformed kind restores nothing at replay, so it must render as
+      // no release here either).
+      if (
+        e.action === undefined &&
+        e.event === undefined &&
+        e.scope === "task" &&
+        (e.kind === "plan" || e.kind === "landing" || e.kind === "hands-on" || e.kind === "waiver")
+      ) {
         if (e.decision === "always" || e.decision === "waiver") {
           a.stickyRelease = e.decision === "waiver" ? "waiver" : (e.kind ?? "")
         } else if (e.decision === "once" || e.decision === "reject") {
@@ -513,6 +567,21 @@ function fmtSession(id) {
 }
 
 /**
+ * Renders the task-scope cell: the active task's plan name, suffixed ` done`
+ * once the task retired (a GATE: PASS flip or a taskDoneMarker prompt), or
+ * `·` while no plan is bound (the planless fingerprint fallback has no
+ * journaled identity). Long names truncate for the cell; JSON keeps the
+ * full name in `activePlan`.
+ * @param {Record<string, unknown>} a The session accumulator.
+ * @returns {string} The SCOPE cell text.
+ */
+function fmtScope(a) {
+  if (a.activePlan === "") return "·"
+  const name = a.activePlan.length > 14 ? `${a.activePlan.slice(0, 11)}…` : a.activePlan
+  return a.taskComplete ? `${name} done` : name
+}
+
+/**
  * Renders the human-readable table. The REL column surfaces the folded
  * sticky-release state (the last-wins sticky decision row: `plan`,
  * `landing`, `hands-on`, `waiver`, or `·` when none). When the journal holds observe-mode
@@ -540,6 +609,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
     rel: a.stickyRelease === null ? "·" : String(a.stickyRelease),
     sus: a.suspended ? "OFF" : "·",
+    scope: fmtScope(a),
   }))
 
   const headers = [
@@ -554,6 +624,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     "PERM",
     "REL",
     "SUS",
+    "SCOPE",
   ]
   const cells = [
     (r) => r.session,
@@ -567,6 +638,7 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => `${r.ask}/${r.dec}`,
     (r) => r.rel,
     (r) => r.sus,
+    (r) => r.scope,
   ]
 
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => cells[i](r).length)))

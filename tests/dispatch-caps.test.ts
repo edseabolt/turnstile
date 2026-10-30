@@ -29,31 +29,31 @@ import {
 const PLANNER_LOOP_CAP_MESSAGE =
   "BLOCKED by turnstile: planner dispatch limit (2) reached this task — the pipeline is looping. " +
   "STOP: do not re-dispatch planner. Escalate to the user: report the repeated planner failures " +
-  "and wait for new instructions (a new user prompt resets the caps; raise maxPlannerRounds in your config to widen the cap)."
+  "and wait for new instructions (a new task resets the caps; raise maxPlannerRounds in your config to widen the cap)."
 
 /** Plan-reviewer loop-cap block message at cap 2. */
 const PLAN_REVIEWER_LOOP_CAP_MESSAGE =
   "BLOCKED by turnstile: plan-reviewer dispatch limit (2) reached this task — the pipeline is looping. " +
   "STOP: do not re-dispatch plan-reviewer. Escalate to the user: report the repeated plan-reviewer " +
-  "failures and wait for new instructions (a new user prompt resets the caps; raise maxPlanReviewerRounds in your config to widen the cap)."
+  "failures and wait for new instructions (a new task resets the caps; raise maxPlanReviewerRounds in your config to widen the cap)."
 
 /** Test-runner loop-cap block message at cap 2. */
 const TEST_RUNNER_LOOP_CAP_MESSAGE =
   "BLOCKED by turnstile: test-runner dispatch limit (2) reached this task — the pipeline is looping. " +
   "STOP: do not re-dispatch test-runner. Escalate to the user: report the repeated test-runner failures " +
-  "and wait for new instructions (a new user prompt resets the caps; raise maxTestRunnerRounds in your config to widen the cap)."
+  "and wait for new instructions (a new task resets the caps; raise maxTestRunnerRounds in your config to widen the cap)."
 
 /** Total-dispatch-budget block message at cap 2. */
 const BUDGET_MESSAGE =
   "BLOCKED by turnstile: task dispatch budget (2) exhausted — the pipeline is looping. " +
   "STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait " +
-  "for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget)."
+  "for new instructions (a new task resets the counters; raise maxTotalDispatches in your config to widen the budget)."
 
 /** Reviewer round-limit block message (kept STOP-and-escalate). */
 const ROUND_LIMIT_MESSAGE =
   "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. " +
   "STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new " +
-  "instructions (a new user prompt resets the cap)."
+  "instructions (a new task resets the cap)."
 
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(

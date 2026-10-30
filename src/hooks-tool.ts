@@ -260,7 +260,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     ctx.journaler.journal({ type: "tool", sessionID, tool: "read", reads: s.reads })
     // The warn prefix is once per task: the corrected `reads` counter
     // is not monotonic, so equality with readWarn could re-inject on
-    // a later climb — the task-scoped flag (fresh on every prompt
+    // a later climb — the task-scoped flag (fresh on every task-scope
     // reset) suppresses the repeat. `>=` rather than `==`: a burst of
     // before-reads can carry the counter past the threshold before
     // any string-output after-read runs, so equality could skip the

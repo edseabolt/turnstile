@@ -290,7 +290,7 @@ test("golden: the block messages are byte-identical", async () => {
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new task resets the cap).",
   )
   for (let i = 0; i < 15; i++) {
     await callTool(h, "execute.before", { tool: "read", sessionID: "p2" })
