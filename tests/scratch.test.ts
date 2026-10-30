@@ -147,6 +147,43 @@ test("isScratchTarget: a relative symlink target resolves before the comparison"
   }
 })
 
+test("isScratchTarget: a symlink chain deeper than the resolution cap fails toward gating", () => {
+  const dir = tempDir()
+  // An 11-hop dangling chain whose final hop points outside the temp dir:
+  // the host would write through it to the outside path, so depth
+  // exhaustion must fail toward gating, never fall back to the
+  // un-resolved (still temp-dir-prefixed) path.
+  const outsideDir = fs.mkdtempSync(path.join(repoRoot, "tests", "scratch-deep-"))
+  const finalHop = path.join(outsideDir, "escaped.md")
+  let current = finalHop
+  for (let i = 0; i < 11; i++) {
+    const hop = path.join(dir, `hop-${i}.md`)
+    fs.symlinkSync(current, hop)
+    current = hop
+  }
+  try {
+    assert.equal(isScratchTarget(current), false)
+  } finally {
+    for (let i = 0; i < 11; i++) fs.rmSync(path.join(dir, `hop-${i}.md`), { force: true })
+    fs.rmSync(outsideDir, { recursive: true, force: true })
+  }
+})
+
+test("isScratchTarget: a symlinked intermediate directory escaping the temp dir is not scratch", () => {
+  const dir = tempDir()
+  const outsideDir = fs.mkdtempSync(path.join(repoRoot, "tests", "scratch-mid-"))
+  // linkdir → outsideDir; the final component does not exist yet, so the
+  // classification must come from the canonicalized existing ancestor.
+  const target = path.join(dir, "linkdir", "new.md")
+  fs.symlinkSync(outsideDir, path.join(dir, "linkdir"))
+  try {
+    assert.equal(isScratchTarget(target), false)
+  } finally {
+    fs.rmSync(path.join(dir, "linkdir"), { force: true })
+    fs.rmSync(outsideDir, { recursive: true, force: true })
+  }
+})
+
 test("isScratchTarget: non-string and empty inputs fail toward gating", () => {
   assert.equal(isScratchTarget(undefined), false)
   assert.equal(isScratchTarget(42), false)
