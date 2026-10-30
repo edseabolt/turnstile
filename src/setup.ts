@@ -57,8 +57,9 @@ function disposeAll(cleanups: Array<() => void>): () => void {
 }
 
 /**
- * Registers the three session hooks (prompt, generate, compaction). Each
- * registration is independent: a failure journals and skips that hook only.
+ * Registers the four session hooks (prompt, generate, context, compaction).
+ * Each registration is independent: a failure journals and skips that hook
+ * only.
  * @param h The live host context.
  * @param ctx The per-setup shared context.
  * @param cleanups Disposal list for successful registrations.
@@ -72,9 +73,12 @@ async function registerSessionHooks(
   if (typeof h.session?.hook !== "function") return 0
   const hook = h.session.hook
   const sessionHooks = createSessionHooks(ctx)
-  const hooks: Array<["prompt" | "generate" | "compaction", Parameters<typeof hook>[1]]> = [
+  const hooks: Array<
+    ["prompt" | "generate" | "context" | "compaction", Parameters<typeof hook>[1]]
+  > = [
     ["prompt", sessionHooks.prompt],
     ["generate", sessionHooks.generate],
+    ["context", sessionHooks.context],
     ["compaction", sessionHooks.compaction],
   ]
   let count = 0
@@ -370,7 +374,7 @@ export function readPluginVersion(pkgPath?: string): string | null {
 /**
  * Registers every hook surface and returns the total count. Each registration
  * is independent (a failure journals and skips only that hook). The count
- * feeds the load heartbeat (7 on a full host: 3 session + 1 permission + 2
+ * feeds the load heartbeat (8 on a full host: 4 session + 1 permission + 2
  * tool + 1 event subscriber).
  * @param h The live host context.
  * @param ctx The per-setup shared context.

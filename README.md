@@ -77,8 +77,9 @@ with the planner.
 An [OpenCode](https://opencode.ai) v2 plugin that mechanically enforces an
 agent pipeline: planner → plan-reviewer → executor → test-runner → reviewer.
 The orchestrator policy is injected at runtime by the plugin (nothing is
-written to any instructions file), and turnstile **blocks the dispatches
-that violate it**.
+written to any instructions file) — appended to the parent session's system
+prompt at the pre-first-model-call context hook, with the task-result prepend
+as fallback — and turnstile **blocks the dispatches that violate it**.
 
 **1. Start a task by invoking the planner.** Paste an issue or a topic into
 your prompt and ask for a plan:

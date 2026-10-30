@@ -51,6 +51,12 @@ import * as path from "node:path"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
+import {
+  appendSystemText,
+  describeRequestDraft,
+  usableRequestDraft,
+  type UsableRequestDraft,
+} from "./generate-injection.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
 import { approvalResetsScope, keepsTaskScope } from "./task-scope.ts"
@@ -72,6 +78,7 @@ import type {
   Host,
   MarkerEvent,
   MarkerNearMiss,
+  GenerateDraft,
   PromptHookProperties,
   SessionRecord,
   ToolHookEvent,
@@ -326,6 +333,16 @@ export interface TurnstileContext {
     delivery: Extract<Delivery, { kind: "string" | "structured" }>,
   ): void
   /**
+   * Journals the one-per-boot generation-draft telemetry row for a context or
+   * generate hook fire (bounded, content-free descriptor).
+   */
+  observeRequestDraft(surface: "context" | "generate", draft: GenerateDraft): void
+  /**
+   * Injects the policy head and any pending intent nudge into a primary-turn
+   * context draft's system array (parent-guarded, latched, fail-open).
+   */
+  injectContextPolicy(draft: GenerateDraft): void
+  /**
    * Delivers a pending intent nudge on a classified task delivery: consumes
    * the parent's pending nudge (one-shot) and prepends the advisory text.
    */
@@ -425,6 +442,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // carries string output (see `surfaceObserveSummary`); a default (off)
   // period never arms it.
   let observeSummaryPending = false
+  // One-per-boot generation-draft telemetry: the first context/generate fire
+  // journals a single bounded `generate-draft` row (spike-once); a descriptor
+  // build failure is journaled as `type:"error"` and never retried. Both
+  // latches are closure state so each surface degrades independently and
+  // exactly once per plugin load.
+  let draftDiagnosticDone = false
+  let draftShapeErrorJournaled = false
   // Surfaces unresolved config-validation warnings once per plugin load by
   // prepending a `[turnstile] config:` block to the first tool result with
   // string output — from any session, primary or child — the model-facing
@@ -484,6 +508,121 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         sessionID,
         error: `observe summary injection: ${e}`,
       })
+    }
+  }
+
+  /**
+   * Journals the one-per-boot generation-draft telemetry row: a single
+   * bounded, content-free descriptor (`{type:"generate-draft", …}`) for the
+   * first context or generate fire, whichever comes first. Fail-open: a
+   * descriptor build that throws (a hostile draft with a throwing getter)
+   * journals `type:"error"` instead and never retries.
+   * @param surface Which generation hook fired ("context" or "generate").
+   * @param draft The host hook draft.
+   */
+  function observeRequestDraft(surface: "context" | "generate", draft: GenerateDraft): void {
+    if (draftDiagnosticDone) return
+    draftDiagnosticDone = true
+    try {
+      journaler.journal({ type: "generate-draft", ...describeRequestDraft(surface, draft) })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `generate-draft describe: ${e}` })
+    }
+  }
+
+  /**
+   * Shape guard arm of the context injection: an unusable draft shape
+   * journals one error row per boot (with the shape descriptor) — the
+   * `execute.after` delivery channel stays armed as the fallback.
+   * @param draft The host context-hook draft.
+   * @returns True (narrowing the draft to the appendable shape) when the
+   *     draft's system array is usable.
+   */
+  function usableContextDraft(draft: GenerateDraft): draft is UsableRequestDraft {
+    if (usableRequestDraft(draft)) return true
+    if (!draftShapeErrorJournaled) {
+      draftShapeErrorJournaled = true
+      try {
+        journaler.journal({
+          type: "error",
+          error: "context hook: unusable draft shape",
+          shape: describeRequestDraft("context", draft),
+        })
+      } catch (e) {
+        journaler.journal({ type: "error", error: `context hook shape describe: ${e}` })
+      }
+    }
+    return false
+  }
+
+  /**
+   * Resolves the context draft's skip verdict against the parent-guard
+   * matrix: a config-known pipeline agent name on the draft (a pipeline
+   * agent's own primary turn), a registered child→parent edge, or an
+   * unresolvable session id each skips with a journaled, observable reason.
+   * @param draft The usable context-hook draft.
+   * @param sid The draft's resolved session id ("" when unresolvable).
+   * @returns The skip reason, or "" when injection may proceed.
+   */
+  function contextSkipReason(draft: UsableRequestDraft, sid: string): string {
+    const agent = typeof draft.agent === "string" ? draft.agent : ""
+    if (agent !== "" && subagentNames.has(agent)) return "context-agent"
+    if (ledger.childToParent.has(sid)) return "context-child"
+    if (sid === "") return "context-no-id"
+    return ""
+  }
+
+  /**
+   * Injects the policy head and any pending intent nudge into a primary-turn
+   * context draft's `system` array — the pre-first-model-call channel, so the
+   * model carries the governance prose before it can reason or act. The
+   * shared `policyInjected` latch dedupes against the `execute.after`
+   * prepend (whichever channel fires first wins), and the nudge is consumed
+   * one-shot from the same pending map the fallback channel reads. The head
+   * and the nudge are independent fail-open paths: a head failure keeps the
+   * nudge pending (its own fallback delivery), and a nudge append failure
+   * journals and leaves the head landed. Never throws.
+   * @param draft The host context-hook draft (mutated in place).
+   */
+  function injectContextPolicy(draft: GenerateDraft): void {
+    if (!usableContextDraft(draft)) return
+    const sid = asSessionID(draft.sessionID)
+    const skip = contextSkipReason(draft, sid)
+    if (skip !== "") {
+      journalPolicy(sid, false, { skipped: true, reason: skip })
+      return
+    }
+    const st = ledger.state(sid)
+    if (!st.policyInjected) {
+      try {
+        appendSystemText(draft.system, policyText)
+        st.policyInjected = true
+        journalPolicy(sid, true, { surface: "context" })
+      } catch (e) {
+        journalPolicy(sid, false, { error: String(e), surface: "context" })
+        return
+      }
+    }
+    appendContextNudge(sid, draft)
+  }
+
+  /**
+   * Consumes the parent's pending intent nudge into a context draft's system
+   * array (one-shot, after a successful head-or-already-injected pass). The
+   * pending entry is consumed before the append, mirroring the read-channel
+   * delivery: a throwing append journals `type:"error"` and never throws or
+   * retries.
+   * @param sid The draft's resolved parent session id.
+   * @param draft The usable context-hook draft.
+   */
+  function appendContextNudge(sid: string, draft: UsableRequestDraft): void {
+    const kind = intentNudgePending.get(sid)
+    if (kind === undefined) return
+    intentNudgePending.delete(sid)
+    try {
+      appendSystemText(draft.system, intentNudge(kind))
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: sid, error: `intent nudge: ${e}` })
     }
   }
   const gateRe = compileMarkerRegex(config.gateMarker, GATE_RE, (cause) =>
@@ -3944,6 +4083,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     prependPolicy,
     prependIntentNudge,
     prependIntentNudgeRead,
+    observeRequestDraft,
+    injectContextPolicy,
     applyPolicyResult,
     attributePlanVerdict,
     creditReviewApproval,

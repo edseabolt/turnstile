@@ -373,7 +373,7 @@ test("setup: a throwing permission.hook journals the failure (fail-open)", async
   )
 })
 
-/** A host without the permission surface still registers (degraded, 6 hooks). */
+/** A host without the permission surface still registers (degraded, 7 hooks). */
 test("setup: a host without the permission surface degrades without registering", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost({ permission: false })
@@ -381,7 +381,7 @@ test("setup: a host without the permission surface degrades without registering"
   await setup(h.host)
   assert.equal(h.permissionHooks.evaluate, undefined)
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
-  assert.equal(setups[0]?.hooks, 6)
+  assert.equal(setups[0]?.hooks, 7)
 })
 
 /**

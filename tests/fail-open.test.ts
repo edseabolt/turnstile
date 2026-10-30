@@ -819,7 +819,7 @@ test("a subscribe that throws after dispose stays silent", async () => {
 
 /** Registration failures journal and leave the plugin functional. */
 test("hook registration failures journal per hook and do not crash setup", async () => {
-  for (const name of ["prompt", "generate", "compaction"]) {
+  for (const name of ["prompt", "generate", "context", "compaction"]) {
     const { host } = makeThrowingRegHost([name])
     const { dispose, metricsDir } = await boot(host)
     dispose()

@@ -108,10 +108,20 @@ export interface PromptHookProperties {
   messageID?: unknown
 }
 
-/** Generation draft passed to the `session.generate` hook. */
+/**
+ * Generation draft passed to the `session.generate`/`session.context` hooks.
+ * The context hook is the primary-turn surface (v2.2.x): its draft carries
+ * the mutable system block array the policy head and intent nudge append to.
+ */
 export interface GenerateDraft {
   agent?: unknown
   options?: { temperature?: number }
+  /** Lenient: the v2.2.x primary-turn draft carries the host session id. */
+  sessionID?: unknown
+  /** Lenient: mutable system block array on the context draft (v2.2.x). */
+  system?: Array<{ type?: string; text?: string }>
+  /** Lenient: message list on the context draft (never read, only described). */
+  messages?: unknown
 }
 
 /** Compaction draft passed to the `session.compaction` hook. */

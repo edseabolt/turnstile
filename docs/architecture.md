@@ -80,7 +80,8 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/setup.ts`              | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                                                                                                                 |
 | `src/host-compat.ts`        | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                                                                                                                                             |
 | `src/hooks-core.ts`         | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                                                                                                                                       |
-| `src/hooks-session.ts`      | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                                                                                                                                    |
+| `src/hooks-session.ts`      | Session-surface hook bodies: prompt admission, decoding clamps, the primary-turn context body (draft telemetry + policy/nudge injection), compaction snapshot                                                                                                                                                                          |
+| `src/generate-injection.ts` | Request-draft surface primitives: the usable-shape guard (`usableRequestDraft`), the in-place `appendSystemText` mutation, and the bounded content-free draft descriptor (`describeRequestDraft`) — pure, consumed by `hooks-core.ts`/`hooks-session.ts`                                                                               |
 | `src/hooks-permission.ts`   | Permission-surface hook body: plan-gate, landing-gate, and hands-on escalation (`evaluate`, forces `ask`)                                                                                                                                                                                                                              |
 | `src/hooks-tool.ts`         | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                                                                                                                                    |
 | `src/hooks-events.ts`       | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, the session-end summary (`session.idle`), re-subscription under a throw-only restart budget                                                                                                               |
@@ -124,13 +125,13 @@ one-time `compat` warning (`event:"unknown-host"`); its heartbeat reads
 pre-guard behavior with `compat:"compatible"` on the heartbeat. The guard is
 fail-open: evaluation or toast failures are journaled, never thrown.
 
-`setup(h)` then registers seven interception points, each tracked for disposal and
+`setup(h)` then registers eight interception points, each tracked for disposal and
 counted into the load heartbeat (`type:"setup"`). The hook bodies live in the
 per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 
 ![Hook surface](images/d02-hooks.svg)
 
-**`session.hook` ×3** (`hooks-session.ts`)
+**`session.hook` ×4** (`hooks-session.ts`)
 
 - **`prompt`** → `admitPrompt` (`hooks-core.ts`): the single prompt-admission body,
   shared with the inbox stream and deduped on the host message id. Marks the
@@ -170,8 +171,30 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   in `hooks-core.ts`, text from `intentNudge` in `src/policy.ts`). Advisory
   only: nothing gates, a throw in classification journals `type:"error"` and
   never propagates from the prompt path.
-- **`generate`** → decoding clamps: reviewer/plan-reviewer temperature forced
-  to 0; executor/test-runner/debugger clamped ≤ 0.2.
+- **`generate`** → decoding clamps (`applyClamps`): reviewer/plan-reviewer
+  temperature forced to 0; executor/test-runner/debugger clamped ≤ 0.2 — plus
+  one-per-boot draft telemetry (`observeRequestDraft`, a bounded
+  `type:"generate-draft"` descriptor). Background generations (goal judge,
+  warming) stay clean of policy prose.
+- **`context`** → the primary-turn surface (pre-first-model-call; on v2.2.x
+  hosts the main conversation turn fires `session.context`, not
+  `session.generate`). The body applies the same decoding clamps via the
+  shared `applyClamps` helper (registering both hooks repairs the clamp gap —
+  primary turns never rode `session.generate`), observes the draft once per
+  boot, then `injectContextPolicy` (`hooks-core.ts`) injects the orchestrator
+  policy head (`orchestratorPolicyFor`) and any pending intent nudge into the
+  draft's `system` array in place — the host builds the model request from the
+  same object, so the prose precedes the first model call. Injection is
+  parent-guarded: a config-known pipeline agent name on the draft, a
+  registered child→parent edge (`ledger.childToParent`), or an unresolvable
+  session id each skips with a journaled `reason`
+  (`context-agent` / `context-child` / `context-no-id`). The shared
+  `policyInjected` latch (src/state.ts) dedupes against the `execute.after`
+  prepend — whichever channel fires first wins — and the nudge is consumed
+  one-shot from the same pending map. Fail-open throughout: an unusable draft
+  shape journals one `type:"error"` row per boot and degrades to the
+  `execute.after` fallback channel; a head append failure keeps the nudge
+  pending; nothing ever throws.
 - **`compaction`** → appends a system block demanding verbatim preservation of
   open findings, AC status, and the last GATE/VERDICT markers, then the live
   gate-state snapshot (`formatGateSnapshot`) from the ledger — concrete state,
@@ -432,13 +455,13 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (27 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (28 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
   `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
   `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
-  `session-summary`, `compat`). A `dispatch` entry is written at
+  `session-summary`, `generate-draft`, `compat`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -471,6 +494,12 @@ event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   no message — one per unreadable generation file, so the entries are
   bounded by the generation count. It is replay-inert and status-inert, like
   the drop entries above.
+  A `generate-draft` entry is the one-per-boot request-draft telemetry row
+  from the first `session.context`/`session.generate` fire:
+  `{type:"generate-draft", surface, agent, hasSessionID, systemKind,
+systemLen, messagesKind, messagesLen, hasOptions, keys}` — kinds, counts,
+  and presence flags only, never block or message text. It is replay-inert
+  and status-inert.
   A `config` entry is the surface audit for the once-per-load `[turnstile]
  config:` block: `{type:"config", sessionID, surfaced:true, count}` on a
   successful prepend, or `{..., surfaced:false, error}` when the prepend threw
@@ -743,11 +772,16 @@ probe; a disjoint custom syntax stays silent).
 ## 9. Policy injection
 
 Turnstile does not read orchestrator policy from a file at install time — it
-makes that policy available by injecting it at runtime. When the plugin is
-loaded, the `execute.after` body in `src/hooks-tool.ts` prepends the
-orchestrator policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to
-the first `task` (or `subagent`) result delivery per task,
-once per task, and appends a per-delivery `PIPELINE:` status tail to every
+makes that policy available by injecting it at runtime. The primary channel is
+the pre-first-model-call `session.context` hook: `injectContextPolicy` in
+`src/hooks-core.ts` appends the policy head (and any pending intent nudge)
+into the parent's primary-turn draft `system` array before the first model
+call, parent-guarded and latched (see the `context` hook in §3). The
+`execute.after` body in `src/hooks-tool.ts` stays armed as the fallback: it
+prepends the orchestrator policy paragraph from `src/policy.ts` (via
+`src/delivery.ts`) to the first `task` (or `subagent`) result delivery per
+task, once per task, and appends a per-delivery `PIPELINE:` status tail to
+every
 pipeline-stage delivery (see Pipeline continuation below), via the
 `tool.hook("execute.after")` handler — the same hook the plugin already uses
 to rewrite tool output reaching the model. Each
@@ -792,7 +826,12 @@ reason:"unknown-shape", shape:<descriptor>}` — where the descriptor is a
 - **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
   each new prompt, so the block re-injects per task) means the policy is
   prepended exactly once per task, not once per turn. The `PIPELINE:` tail
-  has no such once-flag — it is per-delivery by design.
+  has no such once-flag — it is per-delivery by design. The shared latch also
+  gates the context-hook channel: its success journals
+  `{type:"policy", injected:true, surface:"context"}` and its skips journal
+  `skipped:true` with reason `context-agent` / `context-child` /
+  `context-no-id`, discoverable by grepping `type:"policy"` like every other
+  decision.
 - **Pipeline continuation.** Every pipeline-stage delivery — the delivery's
   agent matched against the configured `config.agents` names, so a renamed
   install names its renamed stages — gains a one-line status tail rendered

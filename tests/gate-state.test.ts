@@ -1408,7 +1408,7 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   // strict semver regex so prerelease versions cannot fail this).
   assert.ok(entry.version === null || (typeof entry.version === "string" && entry.version !== ""))
   assert.match(entry.digest, /^[0-9a-f]{12}$/)
-  assert.equal(entry.hooks, 7)
+  assert.equal(entry.hooks, 8)
   // trace:true (boot default) carries the human-readable trace fields.
   assert.equal(entry.trace, true)
   assert.equal(typeof entry.agents, "object")
@@ -1442,8 +1442,8 @@ test("setup heartbeat redacts trace fields when trace is false", async () => {
   dispose()
 })
 
-/** A degraded host without event.subscribe registers 6 hooks (permission stays). */
-test("setup journals hooks === 6 when event.subscribe is absent", async () => {
+/** A degraded host without event.subscribe registers 7 hooks (permission stays). */
+test("setup journals hooks === 7 when event.subscribe is absent", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost()
   // A degraded host never exposes the event stream.
@@ -1452,21 +1452,21 @@ test("setup journals hooks === 6 when event.subscribe is absent", async () => {
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
-  assert.equal(setups[0]?.hooks, 6)
+  assert.equal(setups[0]?.hooks, 7)
   dispose()
 })
 
-/** A degraded host without the permission surface registers 6 hooks. */
-test("setup journals hooks === 6 when the permission surface is absent", async () => {
+/** A degraded host without the permission surface registers 7 hooks. */
+test("setup journals hooks === 7 when the permission surface is absent", async () => {
   const metricsDir = tmpDir()
   // A host without the permission surface (older host) still registers the
-  // event stream, so it lands one below the full host's 7.
+  // event stream, so it lands one below the full host's 8.
   const h = makeFakeHost({ permission: false })
   const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
-  assert.equal(setups[0]?.hooks, 6)
+  assert.equal(setups[0]?.hooks, 7)
   dispose()
 })
 

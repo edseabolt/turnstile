@@ -1,14 +1,17 @@
 direction: right
 
-session: "session.hook ×3 (hooks-session.ts)" {
+session: "session.hook ×4 (hooks-session.ts)" {
   prompt: "prompt"
   generate: "generate"
+  context: "context"
   compaction: "compaction"
 }
 
 admit: "admitPrompt (hooks-core.ts):\ndedupe by message id ▸ markParent ▸ resetState\n(+continuation carry) ▸ capture\nUSER WAIVER: / PLAN APPROVED:"
 
 clamp: "clamp temperature:\nreviewer/plan-reviewer → 0,\nexecutor/test-runner/debugger ≤ 0.2"
+
+inject: "injectContextPolicy (hooks-core.ts):\nparent-guarded (agent name / child edge /\nunresolvable id — journaled skips) ▸ policy head\nappend once per task (latched) ▸ pending\nintent nudge append (one-shot) — in-place\nsystem push; unusable shape journals\none error row per boot, fallback stays armed"
 
 preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-tokenized)"
 
@@ -43,6 +46,7 @@ eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart 
 
 session.prompt -> admit
 session.generate -> clamp
+session.context -> inject
 session.compaction -> preserve
 tool.before -> before-task
 tool.before -> before-read
