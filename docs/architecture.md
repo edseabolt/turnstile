@@ -99,6 +99,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/gates-common.ts`       | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                                                                                                                                       |
 | `src/tool-policy.ts`        | Stateless bash denylist, commit-message lint, landing-gate matching, parent hands-on gate — throws the same `BlockError` as gates; the block-journal seam (`journalBlock`) and the guard ladder tail (`guardLadderTail`) are shared single implementations behind the landing, commit-lint, and hands-on ladders                       |
 | `src/bash-write.ts`         | Stateless write-shape classifier for bash/shell commands (`classifyBashWrite`: `gate` / `telemetry` / `none`) plus the shell-aware tokenizer (`splitCommands`/`tokenizeWords`, re-exported by `tool-policy.ts`) — shared by the hands-on bash telemetry and the bash write gate, no second parser                                      |
+| `src/scratch.ts`            | The scratch-target predicate (`isScratchTarget`): a write/edit target that resolves under the platform temp dir (realpath-based, fail-toward-gating on an unresolvable path) is zero-governance scratch — consumed by the write/edit arm's exemption; the bash write classifier is its second consumer (DRY anchor)                    |
 | `src/empty-diff.ts`         | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true)                                                                                                                  |
 | `src/evidence.ts`           | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                                                                                                                                  |
 | `src/fingerprint.ts`        | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                                                                                                                                          |
@@ -221,7 +222,11 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   → landing gate (with the empty-diff
   exemption, default on — ref-equality with upstream, force pushes always
   gate; `false` opts out).
-- `write`/`edit`: path denylist → hands-on gate (parent sessions and
+- `write`/`edit`: path denylist → scratch-target exemption (a target
+  resolving under the platform temp dir is zero-governance scratch work —
+  allowed with a `{type:"tool", scratch:true}` audit row carrying the target
+  path, before any once-grant consume or ladder run; the denylist decision
+  wins first) → hands-on gate (parent sessions and
   non-pipeline subagents — a registered pipeline child's write/edit is the
   executor's own work and never gates; the exemption keys off the event's
   agent name first — a configured pipeline name alone exempts — with the

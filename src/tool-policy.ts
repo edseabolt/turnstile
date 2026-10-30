@@ -415,6 +415,19 @@ export interface ToolPolicy {
    */
   observeBashWrite(sessionID: string, command: unknown, verdict: BashWriteVerdict): void
   /**
+   * Journals `{type:"tool", tool:"write"|"edit", scratch:true, path}` telemetry
+   * for a scratch-target parent write/edit — the audit trail for the
+   * temp-dir exemption (every exempt write is journaled with its target
+   * path, so the exemption can only ever exempt, never gate, and stays
+   * observable). The path is recorded unconditionally (bounded), unlike the
+   * trace-gated `session_move` directory: the audit trail is the point of
+   * the row. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal (`"write"` or `"edit"`).
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in the journal entry.
+   */
+  observeScratchWrite(tool: "write" | "edit", filePath: unknown, sessionID: string): void
+  /**
    * Gates confident file-writing bash commands through the hands-on ladder
    * (mirroring {@link ToolPolicy.guardHandsOn}): a no-op unless
    * `toolPolicy.bashWriteGate` is set and `verdict` is `"gate"`. A live
@@ -844,6 +857,30 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   /**
+   * Journals scratch-target write/edit telemetry (`{type:"tool",
+   * tool:"write"|"edit", scratch:true, path}`) — the audit trail for the
+   * temp-dir exemption. The target path is recorded unconditionally
+   * (bounded), unlike the trace-gated `session_move` directory: the audit
+   * trail is the point of the row. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal.
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in the journal entry.
+   */
+  function observeScratchWrite(tool: "write" | "edit", filePath: unknown, sessionID: string): void {
+    try {
+      journaler.journal({
+        type: "tool",
+        sessionID,
+        tool,
+        scratch: true,
+        path: typeof filePath === "string" ? filePath.slice(0, 200) : "<redacted>",
+      })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
    * Journals hands-on bash write telemetry (`{type:"tool", tool:"bash",
    * handsOn:true}`) for write-shaped commands — always, in every mode, for
    * every session (children included, like landing telemetry), and never
@@ -969,6 +1006,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     guardLanding,
     guardHandsOn,
     observeBashWrite,
+    observeScratchWrite,
     guardBashWrite,
   }
 }

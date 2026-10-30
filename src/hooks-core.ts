@@ -40,6 +40,7 @@ import {
   type ToolPolicy,
 } from "./tool-policy.ts"
 import { classifyBashWrite } from "./bash-write.ts"
+import { isScratchTarget } from "./scratch.ts"
 import {
   MAINTENANCE_MAX_PER_PLAN,
   maintenanceDeclared,
@@ -2961,10 +2962,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
-   * Handles a parent-session `write`/`edit` tool call: the path denylist
-   * guard first (a configured `pathDeny` wins outright and the two journal
+   * Guards a parent-session `write`/`edit` target path. Ordering: the path
+   * denylist first (a configured `pathDeny` wins outright and the two journal
    * reasons stay disjoint — the same denylist-before-gate ordering the bash
-   * path uses), then the hands-on gate. A pipeline child's
+   * path uses), then the scratch-target exemption, then the hands-on gate.
+   * The scratch check sits before the once-grant consume and the gate: a
+   * scratch write is a zero-governance operation that must never burn a
+   * pending once-grant (a scarce human release) — it journals its telemetry
+   * row and returns. A pipeline child's
    * write/edit is the executor's own work and never gates: a non-empty
    * event agent name in the configured pipeline set is authoritative
    * evidence (edge or not — parents never carry a subagent agent name);
@@ -2986,6 +2991,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // (agent-name precedence first, then the edge + emitter fallback), and
     // an unresolved status fails closed (gated).
     if (childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") return
+    // Scratch-target exemption: a write/edit resolving under the platform
+    // temp dir is zero-governance work — journal the audit row and allow,
+    // before any grant economy runs (a scratch write never consumes a
+    // pending once-grant and never reaches the hands-on ladder).
+    if (isScratchTarget(filePath)) {
+      toolPolicy.observeScratchWrite(tool, filePath, sid)
+      return
+    }
     const parent = ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
     const st = ledger.state(parent)
     if (consumeHandsOnGrant(st)) return // once-grant: released for this one edit

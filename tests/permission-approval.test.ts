@@ -14,6 +14,7 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
 import { turnstile } from "../turnstile.ts"
@@ -2652,6 +2653,166 @@ test("hands-on dispatch: prompt reset clears the hands-on task state", async () 
     )
     assert.equal(asks.length, 2, "exactly one ask per task cycle (2 cycles)")
   } finally {
+    restore()
+  }
+})
+
+/**
+ * The scratch-target exemption: a parent write/edit whose target resolves
+ * under the platform temp dir is zero-governance work — it is allowed with
+ * the `{type:"tool", scratch:true}` audit row and never reaches the hands-on
+ * ladder, while a non-scratch path still gates (first block throws).
+ */
+test("hands-on dispatch: a scratch temp-dir write allows with telemetry, non-scratch gates", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  const scratch = path.join(tmpdir(), `turnstile-scratch-dispatch-${process.pid}`)
+  fs.mkdirSync(scratch, { recursive: true })
+  try {
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: path.join(scratch, "issue-body.md") },
+    })
+    // Non-scratch: the hands-on gate still owns the decision (first block).
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const scratchRows = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.scratch === true,
+    )
+    assert.equal(scratchRows.length, 1, "exactly one scratch audit row")
+    assert.equal(scratchRows[0]!.tool, "write")
+    assert.equal(scratchRows[0]!.sessionID, "p1")
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+      ),
+      "the non-scratch write still gated",
+    )
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+    restore()
+  }
+})
+
+/**
+ * Denylist beats the scratch exemption: a configured `pathDeny` match on a
+ * temp-dir target throws the tool-policy block and journals no scratch row.
+ */
+test("hands-on dispatch: denylist wins over the scratch exemption", async () => {
+  const { h, metricsDir, restore } = await bootLanding({
+    toolPolicy: { pathDeny: ["secret"] },
+  })
+  const scratch = path.join(tmpdir(), `turnstile-scratch-deny-${process.pid}`)
+  fs.mkdirSync(scratch, { recursive: true })
+  try {
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: path.join(scratch, "secret.txt") },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    assert.equal(
+      journalEntries(metricsDir).some((e) => e.type === "tool" && e.scratch === true),
+      false,
+      "a denylisted scratch target journals no scratch row",
+    )
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+    restore()
+  }
+})
+
+/**
+ * A scratch write never burns a pending hands-on once-grant: the scratch
+ * check runs before the grant consume, so after a `once` reply a temp-dir
+ * write is allowed with telemetry while the grant stays pending, and the
+ * next non-scratch write is the one released by it.
+ */
+test("hands-on dispatch: a scratch write does not consume the pending once-grant", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  const scratch = path.join(tmpdir(), `turnstile-scratch-grant-${process.pid}`)
+  fs.mkdirSync(scratch, { recursive: true })
+  try {
+    // First write: first block throws. Second write: arms the ask latch.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // The evaluate forces the hands-on ask; the human answers `once`.
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "h-1", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "h-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // Scratch write: allowed with telemetry, grant NOT consumed.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: path.join(scratch, "issue-body.md") },
+    })
+    assert.equal(
+      journalEntries(metricsDir).filter((e) => e.type === "tool" && e.scratch === true).length,
+      1,
+      "the scratch write journaled its audit row",
+    )
+    // Non-scratch write: the once-grant releases exactly this one.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/b.ts" },
+    })
+    // The grant is consumed by the non-scratch write: the next non-scratch
+    // write re-enters the armed ladder (repeat attempt → escalation ask,
+    // fail-toward-strict — no second grant).
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/c.ts" },
+    })
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(
+      blocked.length,
+      1,
+      "only the pre-grant write blocks; the scratch write burned no grant",
+    )
+    assert.equal(
+      journalEntries(metricsDir).filter((e) => e.type === "tool" && e.scratch === true).length,
+      1,
+      "exactly one scratch audit row",
+    )
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
     restore()
   }
 })

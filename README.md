@@ -195,7 +195,11 @@ repeat attempt raises a human permission ask — `always` releases the rest of
 the task, `once` releases one edit, `reject` re-blocks and re-arms on the
 next attempt. `TURNSTILE OFF:` suspends it session-wide, but plan approval
 alone does not release the gate. A new user prompt resets the block count
-and any release.
+and any release. One exemption: a `write`/`edit` whose target path resolves
+under the platform temp directory is scratch — zero-governance work (not
+implementation, not project I/O) — so it is allowed with a journaled audit
+row (`scratch: true`, target path) and never reaches the ladder or burns a
+pending `once` grant; a configured `pathDeny` still wins first.
 
 **Parent file-writing bash.** The hands-on gate also covers confident
 file-writing bash commands in parents and non-pipeline subagents: redirects
