@@ -470,13 +470,15 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (28 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (33 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
-  `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
+  `continuation`, `child-reset`, `child-edge`, `evidence`, `violation`, `tool`,
+  `error`,
   `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
-  `session-summary`, `generate-draft`, `compat`). A `dispatch` entry is written at
+  `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
+  `task-complete`, `plan-rekey`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
@@ -600,6 +602,13 @@ waivers, text}` — the counts mirror the recap line (`text`, bounded to 300
   per host process (an in-memory dedupe set; a restarted host may re-summary
   a still-idle session once). It is audit-only, replay-inert (an unknown
   replay type folds nothing), and status-inert.
+  A `plan-rekey` entry is the durable-store scheme-migration audit row:
+  `{type:"plan-rekey", sessionID?, plan, reason:"durable-key-scheme", from,
+to}` — appended when a content-verified legacy (or untagged) approved-plan
+  record is transparently re-keyed to the current spec-region scheme (see the
+  `approved-plans.jsonl` bullet below). It is an audit row that folds nothing:
+  replay-inert (an unlisted type returns no state) and surfaced only through
+  the status report's re-key advisory line.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `journalRotateEveryEntries` appends (default 512), only
@@ -623,7 +632,24 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
   the approval was recorded under (derived from the resolved project
-  directory). At boot the ledger loads the store (a missing file is a silent
+  directory). New records carry a `scheme: "spec"` tag (the key is the
+  plan's spec-region sha256); a record without the tag was written under the
+  legacy whole-file scheme (or an unknown newer scheme). A record covers a
+  plan when its key equals the file's spec-region key or its whole-file key,
+  so the plan is not pending. The whole-file key is the sha256 of the file's
+  bytes at the current plans scan; a cached scan may reflect the bytes at
+  its last refresh rather than the current file — a progress-only edit
+  leaves the spec region (and the cached scan signature) unchanged, so a
+  legacy record can be honored across such an edit, and the re-key it
+  performs writes the current spec key. The first legacy match transparently
+  re-keys the
+  record to the current scheme (in-memory, sidecar append, and one
+  replay-inert `plan-rekey` journal row with `reason: "durable-key-scheme"`).
+  A record matching neither key leaves the plan pending with cause
+  `durable-key-stale`: the enforcing dispatch journals the blocked row with
+  that reason and a recovery message (one re-approval re-keys it) instead of
+  the `no-plan-verdict` never-approved message. At boot the ledger loads the
+  store (a missing file is a silent
   empty; another read error is journaled once and degrades to empty); the
   in-memory map is last-wins per (project, plan), capped at 256 records, and
   rewritten on eviction. A record is written when a _bound_ plan-reviewer
@@ -698,7 +724,11 @@ JSON field and the table's SUS column. When the journal holds observe-mode
 entries, the
 report header adds the folded period line
 (`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
-would-blocks`); journals without them render byte-identically.
+would-blocks`); journals without them render byte-identically. When the
+journal holds `plan-rekey` rows (the durable-store scheme migration above),
+one advisory line naming the re-keyed plans (capped at five, `+N more`
+beyond) renders under the observe line; journals without them render
+byte-identically too.
 
 `opencode-turnstile evidence [--task <session|latest>]` is the publishable
 half of that view: the same tail window and shape checks, folded to one task

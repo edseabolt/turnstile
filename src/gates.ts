@@ -14,6 +14,7 @@ import type { TurnstileConfig } from "./types.ts"
 import { createDispatchGates } from "./gates-dispatch.ts"
 import type { EvidenceSearch } from "./gates-dispatch.ts"
 import { createPlanGates } from "./gates-plan.ts"
+import type { PlanGateRed } from "./gates-plan.ts"
 
 export { BlockError } from "./gates-common.ts"
 export type { EvidenceSearch } from "./gates-dispatch.ts"
@@ -221,8 +222,10 @@ export interface Gates {
    * result implies the task's waiver does not cover this gate's stage group
    * (no live waiver, or a waiver scoped to other stages), `hasPlanVerdict`
    * is false, and at least one genuine blocker is pending, so the caller
-   * only tests `red`. "Pending" means the plan's bytes carry no durable,
-   * project-scoped approval in the ledger's approval store. The gate resolves
+   * only tests `red`. "Pending" means the plan's bytes carry no live durable,
+   * project-scoped approval in the ledger's approval store (a legacy
+   * whole-file record whose bytes are unchanged is live and transparently
+   * re-keyed). The gate resolves
    * the dispatch's relevant plans — the prompt-referenced existing plans, else
    * the session-bound plan, else (nothing resolvable) every pending plan —
    * and is red only when that resolution still holds a pending plan: a
@@ -233,20 +236,24 @@ export interface Gates {
    * prompt-referenced pending plans in prompt order, else the session-bound
    * pending plan, else (nothing resolvable) every pending plan in sorted
    * scan order; the preview names `blockers[0]`, so a stale bound
-   * approval's ask still names that plan.
+   * approval's ask still names that plan. The red `cause` classifies
+   * `blockers[0]`: `durable-key-stale` when a durable record matches neither
+   * key scheme (the plan changed after approval, or the record is from an
+   * obsolete scheme that cannot prove the spec region unchanged — one
+   * re-approval re-keys it), `never-approved` otherwise.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
    * @param prompt Optional dispatch prompt text for active-plan resolution.
-   * @returns `{ red: false }` when not red, or `{ red: true, summary,
-   *     blockers }` when red (summary is the first blocker's preview).
+   * @returns `{ red: false }` when not red, or the red shape (summary is the
+   *     first blocker's preview, `cause` its pending classification).
    */
   planGateStatus(
     projectDir: string,
     ledger: GateLedger,
     sessionID: string,
     prompt?: string,
-  ): { red: false } | { red: true; summary: { file: string; head: string }; blockers: string[] }
+  ): { red: false } | PlanGateRed
   /**
    * Extracts the plan file names a dispatch prompt mentions: the basenames of
    * every `*.md` token, last five (keeps a hostile or pathological prompt

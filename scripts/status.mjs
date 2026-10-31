@@ -393,12 +393,14 @@ function observeCountsOf(entry) {
  * journal holds observe-mode entries at all — the report's observe header
  * line renders only then, so journals without them stay byte-identical.
  * @param {string[]} lines Journal lines, oldest-first.
- * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number } }}
- *     sessionID → accumulator, plus the folded observe-mode state.
+ * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number }, rekeys: Array<{ ts: string, plan: string }> }}
+ *     sessionID → accumulator, plus the folded observe-mode state, and the
+ *     `plan-rekey` rows (the durable-store scheme-migration audit).
  */
 function aggregate(lines) {
   const sessions = new Map()
   const observe = { seen: 0, observed: 0, wouldBlocks: 0 }
+  const rekeys = []
   const forSession = (id) => {
     let a = sessions.get(id)
     if (!a) {
@@ -551,10 +553,17 @@ function aggregate(lines) {
       if (counts === null) continue
       observe.observed = counts.observed
       observe.wouldBlocks = counts.wouldBlocks
+    } else if (type === "plan-rekey") {
+      // Durable-store scheme-migration audit row: collected for the report's
+      // advisory line (observation-only — it folds no session state).
+      rekeys.push({
+        ts: typeof e.ts === "string" ? e.ts : "",
+        plan: typeof e.plan === "string" ? e.plan : "",
+      })
     }
   }
 
-  return { sessions, observe }
+  return { sessions, observe, rekeys }
 }
 
 /**
@@ -588,14 +597,18 @@ function fmtScope(a) {
  * entries, the report gains one extra line right below the header line with
  * the folded phase and running period totals — journals without observe
  * entries render byte-identically to before (the observe argument carries
- * `seen: 0` and no line is emitted).
+ * `seen: 0` and no line is emitted). When the journal holds `plan-rekey`
+ * rows (the durable-store scheme migration), one advisory line naming the
+ * re-keyed plans renders under the observe line — journals without them
+ * render byte-identically to before (the rekeys argument is empty).
  * @param {Map<string, Record<string, unknown>>} sessions Aggregated sessions.
  * @param {string} journalPath The journal file path for the header.
  * @param {{ seen: number, observed: number, wouldBlocks: number }} observe The folded observe-mode state.
  * @param {number} observeSessions The configured observe period (from the config file).
+ * @param {Array<{ ts: string, plan: string }>} rekeys The folded `plan-rekey` rows.
  * @returns {string} The table text.
  */
-function renderTable(sessions, journalPath, observe, observeSessions) {
+function renderTable(sessions, journalPath, observe, observeSessions, rekeys) {
   const rows = [...sessions.entries()].map(([id, a]) => ({
     session: fmtSession(id),
     gate: a.hasGatePass ? "PASS" : "red",
@@ -656,6 +669,18 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     const phase = observe.observed > observeSessions ? "enforce" : "observe"
     out.push(
       `observe: ${phase} ${observe.observed}/${observeSessions} sessions, ${observe.wouldBlocks} would-blocks`,
+    )
+  }
+  if (rekeys.length > 0) {
+    // The durable-store scheme migration is observable: one advisory line
+    // naming the re-keyed plans (capped, with a +N more suffix). First-seen
+    // dedupe: two sessions re-keying the same legacy record journal two rows
+    // for one plan, and the advisory names each plan once.
+    const names = [...new Set(rekeys.map((r) => r.plan))]
+    const shown = names.slice(0, 5).join(", ")
+    const more = names.length > 5 ? ` +${names.length - 5} more` : ""
+    out.push(
+      `plan approvals re-keyed to the spec-region scheme (durable-key-scheme): ${shown}${more}`,
     )
   }
   if (rows.length === 0) {
@@ -794,7 +819,7 @@ async function main(argv) {
     return 0
   }
 
-  const { sessions, observe } = aggregate(lines)
+  const { sessions, observe, rekeys } = aggregate(lines)
   for (const [id, a] of sessions) {
     base.sessions[id] = a
   }
@@ -805,7 +830,7 @@ async function main(argv) {
       `${JSON.stringify({ ...base, ...(update ? { update } : {}), ...(advisory ? { advisories: [advisory] } : {}) }, null, 2)}\n`,
     )
   } else {
-    let table = renderTable(sessions, journalPath, observe, observeSessions)
+    let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
     if (update) {
       const line = updateLineText(update)
       if (line) table += `\n${line}`
