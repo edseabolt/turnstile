@@ -113,7 +113,7 @@
     },
     "allowSuspend": {
       "type": "boolean",
-      "description": "Whether the suspend/resume markers are honored; false refuses an OFF marker with a journaled refused:true entry and a surfaced diagnostic (default true)."
+      "description": "Whether the suspend/resume markers are honored; false refuses both the OFF and ON markers (journaled refused:true entry and a surfaced diagnostic; no state change) (default true)."
     },
     "intentNudge": {
       "type": "boolean",

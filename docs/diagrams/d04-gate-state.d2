@@ -53,7 +53,7 @@ suspend -> suspend: "would-block + suppressed\naudit entries journaled" {
 }
 start -> suspend: "TURNSTILE OFF: in the user prompt\n(clearState fresh; survives restart via replay)"
 suspend -> start: "TURNSTILE ON: (fresh start again)"
-refused-note: "allowSuspend:false refuses an OFF marker\n(journaled refused:true + surfaced diagnostic;\nno state change)." {
+refused-note: "allowSuspend:false refuses OFF and ON markers\n(journaled refused:true + surfaced diagnostic;\nno state change)." {
   style.stroke-dash: 4
   shape: parallelogram
 }
