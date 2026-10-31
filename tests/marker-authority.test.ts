@@ -34,6 +34,9 @@ import {
 const GATE_PASS = "GATE: PASS tests=5 passed=5 failed=0"
 const GATE_FAIL = "GATE: FAIL tests=1 passed=0 failed=1"
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+const GATE_PASS_TICKED = "`GATE: PASS tests=5 passed=5 failed=0`"
+const GATE_PASS_FENCED = "```\nGATE: PASS tests=5 passed=5 failed=0\n```"
+const GATE_MALFORMED_TICKED = "`GATE: PASS tests=5`"
 
 /** Boots the plugin over a fake host in a temp metrics dir. */
 async function boot(
@@ -125,6 +128,40 @@ test("unit: the default predicate is byte-identical to the legacy flip", () => {
   assert.equal(s.hasGatePass, true)
   assert.equal(events.length, 1)
   assert.equal(events[0]!.authority, undefined)
+})
+
+/** An inline-backticked gate marker parses and flips exactly like the bare form. */
+test("unit: an inline-backticked gate marker parses and flips like a bare marker", () => {
+  const s = newState()
+  const events = parseGateMarkers(s, GATE_PASS_TICKED, GATE_RE, VERDICT_RE)
+  assert.equal(events.length, 1)
+  assert.equal(events[0]!.result, "PASS")
+  assert.equal(s.hasGatePass, true)
+})
+
+/** A fenced gate marker parses and flips exactly like the bare form. */
+test("unit: a fenced gate marker parses and flips like a bare marker", () => {
+  const s = newState()
+  const events = parseGateMarkers(s, GATE_PASS_FENCED, GATE_RE, VERDICT_RE)
+  assert.equal(events.length, 1)
+  assert.equal(events[0]!.result, "PASS")
+  assert.equal(s.hasGatePass, true)
+})
+
+/** A backticked marker missing required fields is not a marker at all. */
+test("unit: a backticked malformed marker emits no event", () => {
+  const s = newState()
+  const events = parseGateMarkers(s, GATE_MALFORMED_TICKED, GATE_RE, VERDICT_RE)
+  assert.equal(events.length, 0)
+  assert.equal(s.hasGatePass, false)
+})
+
+/** An inline-backticked verdict marker parses like the bare form. */
+test("unit: a backticked verdict marker parses", () => {
+  const s = newState()
+  const events = parseGateMarkers(s, `\`${APPROVE}\``, GATE_RE, VERDICT_RE)
+  assert.equal(events.length, 1)
+  assert.equal(events[0]!.kind, "verdict")
 })
 
 /** A denied `FAIL` never clears a prior authorized PASS (latest-wins only runs
@@ -456,4 +493,116 @@ test("inertness: replay over suppressed-only journal restores nothing", () => {
   const ledger = createLedger(journalPath, 8, 2000)
   const s = ledger.state("p1")
   assert.equal(s.hasGatePass, false, "a suppressed-only journal restores no gate")
+})
+
+/** A streamed fenced gate marker from the contracted test-runner credits the
+ *  gate — backtick decoration is consumed by the parser, not a denial. */
+test("wiring: a streamed fenced gate marker from the test-runner credits the gate", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  try {
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "test-runner" },
+    })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: GATE_PASS_FENCED },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+    )
+    assert.equal(journalEntries(metricsDir).filter((l) => l.type === "suppressed").length, 0)
+  } finally {
+    dispose()
+  }
+})
+
+/** A task-result delivery of an inline-backticked gate marker from a
+ *  test-runner child credits the gate (the recovery channel). */
+test("wiring: a task-result inline-backticked gate marker credits the gate", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "test-runner" },
+      result: { output: `${GATE_PASS_TICKED}\n` },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** An uncontracted agent's backticked marker is suppressed, and the audit
+ *  entry names the denial cause. */
+test("wiring: an uncontracted agent's backticked marker journals suppressed with a reason", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  try {
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "build" },
+    })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: GATE_PASS_TICKED },
+    })
+    await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "suppressed"))
+    const suppressed = journalEntries(metricsDir).filter((l) => l.type === "suppressed")
+    assert.equal(suppressed.length, 1)
+    assert.equal(suppressed[0]!.kind, "gate")
+    assert.equal(suppressed[0]!.reason, "agent not contracted for kind")
+    assert.equal(
+      journalEntries(metricsDir).some((l) => l.type === "gate"),
+      false,
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** A session with no resolvable emitter agent is suppressed with the
+ *  unresolved-emitter reason. */
+test("wiring: an unresolved emitter's backticked marker journals suppressed with the unresolved reason", async () => {
+  const { h, dispose, metricsDir } = await boot(
+    {},
+    { sessionRecords: new Map([["c1", { parentID: "p1" }]]) },
+  )
+  try {
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: GATE_PASS_TICKED },
+    })
+    await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "suppressed"))
+    const suppressed = journalEntries(metricsDir).filter((l) => l.type === "suppressed")
+    assert.equal(suppressed.length, 1)
+    assert.equal(suppressed[0]!.reason, "emitter agent unresolved")
+  } finally {
+    dispose()
+  }
+})
+
+/** The documented config fix: a test-runner doing work under the name "build"
+ *  is credited once configured as `agents.testRunner`. */
+test("wiring: a renamed test-runner's backticked marker is credited", async () => {
+  const { h, metricsDir, dispose } = await boot({
+    agents: { testRunner: "build", bareOutput: ["build"] },
+  })
+  try {
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "build" },
+    })
+    await h.pushEvent({
+      type: "session.text.ended",
+      data: { sessionID: "c1", text: GATE_PASS_FENCED },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+    )
+  } finally {
+    dispose()
+  }
 })

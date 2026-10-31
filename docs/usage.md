@@ -102,6 +102,10 @@ emits its marker as the first line of its output:
 GATE: PASS tests=12 passed=12 failed=0
 ```
 
+The marker may be wrapped in markdown backticks (inline or inside a fenced
+code block) — the parser credits the backticked form identically. A marker
+that is missing or malformed keeps the gate red.
+
 Under the default `gateEvidence:enforce`, that marker only flips the gate
 when a real exit-0 test execution exists in this task's bash/shell history
 (matched against `evidencePattern`). A pass claimed without a run is held
@@ -547,7 +551,11 @@ Two sanctioned ways to change the pipeline:
   `agents.reviewer`, `agents.executor`, `agents.testRunner`, and
   `agents.debugger` take the names turnstile should recognize, clamp, and
   hold to the marker contract. Your agents get the same gates the shipped
-  ones do.
+  ones do. Gate authority follows these configured names, not the agent's
+  role: an agent that runs the test suite under a custom name (e.g. `build`)
+  must be configured as `agents.testRunner` — `agents.bareOutput` then
+  derives — or its `GATE:` markers are journaled as `suppressed` and the
+  gate stays red.
 - **Fork the repo.** To change the pipeline content itself, fork and edit
   `agents/*.md` there; your installer serves your fork.
 

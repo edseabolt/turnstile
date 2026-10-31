@@ -3089,7 +3089,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * on the emitter (not the parent) because nothing replays against a denied
    * observation; this runs for every non-empty sessionID, including
    * unresolved-edge ones (self-keyed).
-   * @param event The denied marker observation.
+   * @param event The denied marker observation. The `reason` field names the
+   *   denial cause (unresolved emitter vs. kind not in the emitter's contract)
+   *   so journal forensics do not require source reading.
    * @param sessionID The emitter (raw child) session ID.
    * @param source Provenance label for the text.
    */
@@ -3098,14 +3100,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     sessionID: string,
     source: string,
   ): void {
+    const agent = emitterAgent(sessionID)
     journaler.journal({
       type: "suppressed",
       sessionID,
       raw: sessionID,
-      agent: emitterAgent(sessionID),
+      agent,
       kind: event.kind,
       marker: event.marker,
       source,
+      reason: agent === "" ? "emitter agent unresolved" : "agent not contracted for kind",
     })
   }
 
