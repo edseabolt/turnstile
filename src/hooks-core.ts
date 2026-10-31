@@ -680,6 +680,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     config.replayTailLines,
     opts.approvalLedgerPath,
     config.observeSessions,
+    config.agents.reviewer,
   )
   // Re-arm the end-of-period summary at boot: the replayed tail may show a
   // completed period whose summary never surfaced (the process died between
@@ -3159,13 +3160,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
 
   /**
    * Journals a first-sight `VERDICT:` observation: keyed by parent session
-   * with the raw child ID kept for forensics, spreading the
-   * suppressed-match count (only when > 0). Streaming verdict dedup is per
-   * (child, marker, source) via the store (a source change with an unchanged
-   * marker re-journals; identical re-delivery never emits an event here
-   * because the parent-bucket dedup on (scope, marker) suppresses it first).
-   * Gate-kind events are unaffected. Carries the de-tokenized marker text
-   * for the compaction snapshot.
+   * with the raw child ID kept for forensics, the emitting agent (the
+   * authority-checked emitter — the same resolution `markerKindAllowed` used
+   * to authorize this event one synchronous step earlier — so replay
+   * attributes the verdict and credits only reviewer-attributed ones),
+   * spreading the suppressed-match count (only when > 0). Streaming verdict
+   * dedup is per (child, marker, source) via the store (a source change with
+   * an unchanged marker re-journals; identical re-delivery never emits an
+   * event here because the parent-bucket dedup on (scope, marker) suppresses
+   * it first). Gate-kind events are unaffected. Carries the de-tokenized
+   * marker text for the compaction snapshot.
    * @param event The verdict marker observation (authority never "suppressed").
    * @param suppressedCount The suppressed-match count spread, empty when 0.
    * @param sid The parent session the `verdict` entry is keyed on.
@@ -3185,6 +3189,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       type: "verdict",
       sessionID: sid,
       raw: sessionID,
+      agent: emitterAgent(sessionID),
       marker: event.marker,
       rounds: event.rounds,
       source,

@@ -435,6 +435,64 @@ test("a restart-replayed interrupted review recovers through a real prompt", asy
   }
 })
 
+test("a fully-live interrupted review recovers across a restart", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    // Boot 1: the full live pipeline up to the abort — prompt, plan-review
+    // approval, green gate (retiring the plan-bound task), one counted
+    // reviewer dispatch, then the process dies (dispose).
+    const h1 = makeFakeHost()
+    const setup1 = turnstile(h1.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, gateEvidence: "flag" },
+    })
+    const dispose1 = (await setup1(h1.host)) as () => void
+    await callSession(h1, "prompt", { sessionID: "p1", text: "start the task" })
+    await reviewRound(h1, "p1", "c1", "review plan.md", APPROVE)
+    await execDispatch(h1, "p1", "work chunk-1")
+    await callTool(h1, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+    })
+    await reviewerDispatch(h1, "p1")
+    dispose1()
+    // Boot 2 over the SAME project dir and metrics dir: the replayed journal
+    // (plan row, plan-reviewer-attributed verdict row, fingerprint-stamped
+    // gate row, ensemble count, task-complete) restores the interrupted
+    // review — the plan-reviewer verdict does not credit the landing gate, so
+    // the recovery predicate still sees an interrupted review — and the first
+    // prompt carries it instead of wiping.
+    const h2 = makeFakeHost()
+    const setup2 = turnstile(h2.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, gateEvidence: "flag" },
+    })
+    const dispose2 = (await setup2(h2.host)) as () => void
+    await callSession(h2, "prompt", { sessionID: "p1", text: "re-dispatch the reviewer" })
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "continuation" && l.sessionID === "p1" && l.recovery === true,
+      ),
+      "the restart recovery journaled a recovery continuation row",
+    )
+    const snapshot = snapshotOf(await compact(h2, "p1"))
+    assert.match(snapshot, /gate: GREEN/, "the green gate was recovered")
+    assert.match(snapshot, /plan: APPROVED plan=plan\.md/, "the plan approval was recovered")
+    // The recovered gate unblocks the reviewer re-dispatch.
+    await reviewerDispatch(h2, "p1")
+    dispose2()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
 test("an evidence-promoted gate row carries the prompt-stamped fingerprint", async () => {
   const { h, metricsDir, restore } = await bootWithPlans({})
   try {

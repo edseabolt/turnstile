@@ -79,6 +79,16 @@ export const DEFAULT_COMMIT_FORMAT =
 export const BARE_OUTPUT_UNSET: string[] = []
 
 /**
+ * Canonical default name of the reviewer agent whose task-result verdicts
+ * credit the landing gate. `defaultConfig()` stores it for `agents.reviewer`,
+ * and the ledger's verdict replay credits only verdict rows attributed to the
+ * configured reviewer name (passed through from `config.agents.reviewer`), so
+ * a plan-reviewer verdict, a legacy unattributed row, or a hostile/degraded
+ * agent never restores `hasReviewApprove` on restart.
+ */
+export const CANONICAL_REVIEWER_AGENT = "reviewer"
+
+/**
  * Builds the code defaults for every config key.
  * @param env Environment consulted for XDG_DATA_HOME only.
  * @returns The default TurnstileConfig matching the historical hardcoded
@@ -145,7 +155,7 @@ export function defaultConfig(
     intentNudge: true,
     agents: {
       planner: "planner",
-      reviewer: "reviewer",
+      reviewer: CANONICAL_REVIEWER_AGENT,
       planReviewer: "plan-reviewer",
       executor: "executor",
       testRunner: "test-runner",
