@@ -285,10 +285,12 @@ export function formatPipelineStatus(
  * `hasPlanVerdict` — the `plansSignature` stamp and the bound plan identity
  * (`approvedPlan`/`approvedPlanKey`) — carried only while `hasPlanVerdict`
  * itself survives. The waiver family (`userWaiver`, `userWaiverScope`,
- * `userWaiverConsumed`, `reviewWaiverRounds`) travels as a unit: replay never
- * restores it, so on a journal-replay bucket the prior waiver is "" and the
- * carry is a no-op; it is the continuation-carry bucket that may arrive with
- * a live waiver, and the family must stay self-consistent because the
+ * `userWaiverConsumed`, `reviewWaiverRounds`) travels as a unit: replay
+ * restores the redacted presence marker (`"<present>"`) through the scope
+ * folds (`restoreScopeFolds` in `src/ledger.ts`), so a journal-replay bucket
+ * can arrive with a live waiver — the carry keeps the restored family intact
+ * for the grace prompt (and a continuation-carry bucket may hold a fully-
+ * captured one). The family must stay self-consistent because the
  * block-message readers pair its fields (`waiverCovers` reads the quote +
  * scope, `waiverStateNote` adds the consumed flag, and the reviewer round-cap
  * allowance clause reads the scope + spent slots) — dropping any one would

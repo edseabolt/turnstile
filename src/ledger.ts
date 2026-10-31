@@ -60,9 +60,15 @@ export interface GateLedger {
    * change — a same-scope prompt never reaches it). The first prompt after a
    * restart carries the journal-replayed
    * flags forward with a single-prompt grace (values, not provenance — a live
-   * GATE: FAIL after replay is carried as false): `hasGatePass`,
-   * `hasPlanVerdict`, `hasReviewApprove`, and its paired ensemble count
-   * `reviewerDispatches`. Every other reset is a full
+   * GATE: FAIL after replay is carried as false). The grace-carry set is
+   * representative, not exhaustive: the restart-sticky flags (`hasGatePass`,
+   * `hasPlanVerdict`, `hasReviewApprove`, `humanApproval`, `handsOnRelease`,
+   * `stickyRelease`, the paired `reviewerDispatches`), the waiver family
+   * (`userWaiver`, `userWaiverScope`, `userWaiverConsumed`,
+   * `reviewWaiverRounds`), and the plan identity fields (`plansSignature`,
+   * `approvedPlan`/`approvedPlanKey`, `activePlan`) carried while
+   * `hasPlanVerdict` holds. `mergeAfterReplay` in `src/state.ts` is the
+   * authority for the exact carry set. Every other reset is a full
    * reset (fresh flags; `reviewRounds`/`plannerRounds`/
    * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/
    * `seenFrom`/`suppressedPending` are always fresh). Fail-open: pure object map
@@ -190,13 +196,12 @@ export interface GateLedger {
    */
   recordChildVerdict(childID: string, marker: string, source: string): boolean
   /**
-   /**
-    * Returns the child's latest `VERDICT:` marker observation, or an empty
-    * verdict (`{ marker: "", source: "", recordedAt: 0 }`) when the child has
-    * none. Touches the child to keep it most-recently-used (LRU).
-    * @param childID The child session ID.
-    * @returns The stored observation, or the empty verdict default.
-    */
+   * Returns the child's latest `VERDICT:` marker observation, or an empty
+   * verdict (`{ marker: "", source: "", recordedAt: 0 }`) when the child has
+   * none. Touches the child to keep it most-recently-used (LRU).
+   * @param childID The child session ID.
+   * @returns The stored observation, or the empty verdict default.
+   */
   childVerdict(childID: string): ChildVerdict
   /**
    * Snapshot of children with a stored (non-empty) verdict, as

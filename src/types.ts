@@ -381,9 +381,10 @@ export interface GateState {
   userWaiverConsumed: boolean
   /**
    * Waiver-allowance slots spent by scoped-waived reviewer dispatches.
-   * Deliberately NOT shared with `reviewRounds`: that counter is
-   * journal-replayed and restart-sticky (carried through `mergeAfterReplay`),
-   * so a shared counter would mis-attribute spent slots to the waiver after a
+   * Deliberately NOT shared with `reviewRounds`: that counter is deliberately
+   * neither journal-replayed nor restart-sticky (`mergeAfterReplay` skips
+   * loop-cap counters by design), so a shared counter would mis-attribute
+   * spent slots to the waiver after a
    * mid-task restart and would break the "waived dispatches don't count
    * toward the cap" invariant. Lifecycle mirrors the `userWaiver` pair:
    * task-scoped, fresh `0` on an ordinary task-scope reset, never replay-
@@ -564,7 +565,9 @@ export interface GateState {
    * explicit retire (`taskComplete`), or a fingerprint change while this is
    * "". Journaled in the plan-approval entry's `plan` field and restored by
    * the ordered scope fold at replay; carried through `mergeAfterReplay`
-   * while `hasPlanVerdict` holds (and never out of a `taskComplete` bucket).
+   * while `hasPlanVerdict` holds (and never out of a `taskComplete` bucket,
+   * except the interrupted-review recovery: a retired task whose review was
+   * interrupted mid-flight carries it via `isInterruptedReview`).
    */
   activePlan: string
   /**
@@ -713,9 +716,9 @@ export interface TurnstileConfig {
    */
   journalRotateEveryEntries: number
   /**
-   * Replay tail window in lines: the most recent this-many journal lines
-   * (current file plus the previous generation, combined) are replayed at
-   * boot; older lines are dropped.
+   * Replay tail window in lines: the most recent this-many journal lines,
+   * walked newest-first across all retained generations (current file plus
+   * rotated generations), are replayed at boot; older lines are dropped.
    */
   replayTailLines: number
   /**

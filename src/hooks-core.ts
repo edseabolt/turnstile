@@ -845,7 +845,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   const pendingLandingAskTtlMs = askLatchTtlMs
   // Landing-gate permission asks, keyed by host request id → the parent session
   // the ask was raised for + when it was recorded. Only asks by the evaluate
-  // handler's landing arm (message prefixed `turnstile: push/PR …`) are
+  // handler's landing arm (message prefixed with `LANDING_ASK_MESSAGE_PREFIX`
+  // from `src/delivery.ts`) are
   // recorded, so a reply to an unrelated permission ask can never match or
   // release the landing gate; per-reason keying keeps a landing `once` grant
   // from ever being consumed by a plan-gate (task) dispatch and vice versa.
@@ -875,8 +876,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   const lastHandsOnEscalateAt = new Map<string, number>()
   // Hands-on-gate permission asks, keyed by host request id → the parent
   // session the ask was raised for + when it was recorded. Only asks by the
-  // evaluate handler's hands-on arm (message prefixed
-  // `turnstile: hands-on edits …`) are recorded, so a reply to an unrelated
+  // evaluate handler's hands-on arm (message prefixed with
+  // `HANDSON_ASK_MESSAGE_PREFIX` from `src/delivery.ts`) are recorded, so a reply to an unrelated
   // permission ask can never match or release the hands-on gate; per-reason
   // keying keeps a hands-on `once` grant from ever being consumed by a
   // plan-gate (task) dispatch or a landing push and vice versa. Bounded: evict

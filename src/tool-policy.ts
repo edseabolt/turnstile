@@ -80,8 +80,9 @@ export function isPushLanding(command: string): boolean {
 /**
  * Core landing-gate text shared by the enforce-path throw and the human ask
  * message, so the two never drift. Stamped after `BLOCKED by turnstile:` (the
- * ask message is `turnstile: ${LANDING_REQUIREMENT}`, prefixed so the stream
- * consumer can recognize a landing ask by its `turnstile: push/PR …` prefix).
+ * ask message is `turnstile: ${LANDING_REQUIREMENT}`, prefixed with
+ * `LANDING_ASK_MESSAGE_PREFIX` in `src/delivery.ts` so the stream
+ * consumer can recognize a landing ask).
  * Mode-true in both escalation modes: it instructs stop-and-report and names
  * the release signals (user waiver / earned reviewer verdict), promising no
  * permission ask — correct under `escalation: "block"`, and still the right
@@ -94,8 +95,9 @@ export const LANDING_REQUIREMENT =
 /**
  * Core hands-on-gate text (enforce throw + ask message share it, so the two
  * never drift). Stamped after `BLOCKED by turnstile:` (the ask message is
- * `turnstile: ${HANDSON_REQUIREMENT}`, prefixed so the stream consumer can
- * recognize a hands-on ask by its `turnstile: hands-on edits …` prefix).
+ * `turnstile: ${HANDSON_REQUIREMENT}`, prefixed with
+ * `HANDSON_ASK_MESSAGE_PREFIX` in `src/delivery.ts` so the stream consumer
+ * can recognize a hands-on ask).
  * Mode-true in both escalation modes (see LANDING_REQUIREMENT): it instructs
  * stop-and-report and drops the ask promise.
  */
