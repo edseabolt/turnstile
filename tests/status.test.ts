@@ -915,6 +915,79 @@ test("maintenance rows count admitted dispatches into the MNT column", () => {
   }
 })
 
+/** `plan-rekey` rows (the durable-store scheme migration) render one
+ *  advisory line under the observe line, naming the re-keyed plans capped at
+ *  five with a `+N more` suffix; the `--json` shape stays unchanged and a
+ *  journal without rekey rows renders no line. */
+test("plan-rekey rows render the re-key advisory line and leave the json shape unchanged", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "gate",
+        sessionID: "sp-rekey",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+      }),
+      line(2, {
+        type: "plan-rekey",
+        sessionID: "sp-rekey",
+        plan: "plan.md",
+        reason: "durable-key-scheme",
+        from: "a",
+        to: "b",
+      }),
+      line(3, {
+        type: "plan-rekey",
+        sessionID: "sp-rekey",
+        plan: "other.md",
+        reason: "durable-key-scheme",
+        from: "c",
+        to: "d",
+      }),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(
+      out[1],
+      "plan approvals re-keyed to the spec-region scheme (durable-key-scheme): plan.md, other.md",
+    )
+    // The json shape carries no rekey state (table-only advisory).
+    const json = runStatus(dir, ["--json"])
+    assert.equal(code(json), 0)
+    const obj = JSON.parse(json.stdout) as StatusJSON
+    assert.ok(!("rekeys" in obj), "the json shape carries no rekey state")
+    assertReplayParity(obj, join(dir, "turnstile.jsonl"))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** More than five re-keyed plans cap the advisory's name list with a
+ *  `+N more` suffix. */
+test("the re-key advisory caps the plan list at five names with a +N more suffix", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      ...Array.from({ length: 7 }, (_, i) =>
+        line(i + 1, { type: "plan-rekey", sessionID: "sp-cap", plan: `p-${i}.md` }),
+      ),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(
+      out[1],
+      "plan approvals re-keyed to the spec-region scheme (durable-key-scheme): " +
+        "p-0.md, p-1.md, p-2.md, p-3.md, p-4.md +2 more",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /** A journal without observe-mode entries renders byte-identically to the
  *  pre-observe table even when a period is configured: the observe line only
  *  renders over a journal that actually holds observe-mode entries. */
