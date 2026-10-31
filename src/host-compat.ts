@@ -14,7 +14,7 @@ export const HOST_COMPAT = {
   /** Next major assumed breaking. */
   maxExclusive: "3.0.0",
   /** Host versions turnstile has been explicitly tested against. */
-  tested: ["2.0.22", "2.0.27", "2.0.29", "2.2.0"],
+  tested: ["2.0.22", "2.0.27", "2.0.29", "2.2.0", "2.2.5"],
 } as const
 
 /** Outcome of the host-compat evaluation at setup. */

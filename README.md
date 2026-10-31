@@ -430,16 +430,16 @@ tools remain unguarded. The full threat model:
 
 ### OpenCode compatibility matrix
 
-| OpenCode host       | turnstile | Status                                            |
-| ------------------- | --------- | ------------------------------------------------- |
-| ≥ 2.0.22, < 3.0.0   | 0.8.x     | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0) |
-| ≥ 3.0.0 or < 2.0.22 | 0.8.x     | Refuses to enforce at setup; upgrade turnstile    |
-| version unreadable  | 0.8.x     | Enforces; one-time journal warning                |
+| OpenCode host       | turnstile | Status                                                   |
+| ------------------- | --------- | -------------------------------------------------------- |
+| ≥ 2.0.22, < 3.0.0   | 0.9.x     | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0, 2.2.5) |
+| ≥ 3.0.0 or < 2.0.22 | 0.9.x     | Refuses to enforce at setup; upgrade turnstile           |
+| version unreadable  | 0.9.x     | Enforces; one-time journal warning                       |
 
 On an incompatible host turnstile toasts the upgrade instruction and
 registers no hooks (a full no-op — fail-open):
 
-> turnstile 0.8.x expects opencode >=2.0.22,<3.0.0; you're on 3.1.0 —
+> turnstile 0.9.x expects opencode >=2.0.22,<3.0.0; you're on 3.1.0 —
 > upgrade turnstile (npm i opencode-turnstile@latest) or pin opencode
 
 `npx opencode-turnstile status --check-updates` (opt-in, network, cached 24 h)
