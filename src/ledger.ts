@@ -351,6 +351,9 @@ const MAX_APPROVAL_RECORDS = 256
 /** Upper bound on a replayed emitter agent name (a real agent name fits
  *  well under this; anything longer is hostile padding). */
 const MAX_REPLAY_AGENT_LEN = 128
+/** Upper bound on a replayed task fingerprint (an internal worktree/branch
+ *  identity string; anything longer is hostile padding). */
+const MAX_REPLAY_FP_LEN = 1024
 
 /** Shape of a stored project scope token (a `projectScope` output). */
 const PROJECT_SCOPE_RE = /^[0-9a-f]{16}$/
@@ -368,15 +371,19 @@ interface ReplayDrop {
   sessionID?: string
 }
 
-/** The five last-wins replay maps, one store per replayed entry kind.
+/** The six last-wins replay maps, one store per replayed entry kind.
  *  Observe-mode entries (`observe`/`would-block`) fold directly into the
  *  passed-in period state instead of a map here. The task-scope fold
  *  (`scopeFolds`) is NOT last-wins: it is the ordered per-session scope
  *  record the journal-ordered walk maintains from the plan-APPROVE,
  *  sticky-decision, and `task-complete` row families, and only its FINAL
- *  record is restored. */
+ *  record is restored. `lastGateFp` parallels `lastGateResult` for the same
+ *  `gate` entry kind: the last recorded flip's task fingerprint. */
 interface ReplayMaps {
   lastGateResult: Map<string, string>
+  /** The last recorded flip's task fingerprint (sanitized; absent when the
+   *  row carried no usable `fp`). */
+  lastGateFp: Map<string, string>
   lastPlanResult: Map<string, { result: string; plan: unknown; planKey: unknown; sig: unknown }>
   lastReviewVerdict: Map<string, string>
   lastEnsemble: Map<string, number>
@@ -478,6 +485,7 @@ interface ApprovalRecord {
 function newReplayMaps(): ReplayMaps {
   return {
     lastGateResult: new Map(),
+    lastGateFp: new Map(),
     lastPlanResult: new Map(),
     lastReviewVerdict: new Map(),
     lastEnsemble: new Map(),
@@ -565,28 +573,56 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
 }
 
 /**
- * Folds a `gate` entry into the last-wins result map. Only `PASS`/`FAIL`
- * replay (a `WAIVED` or other sub-kind stays inert). The flipping-entry rule:
- * an enforce-mode unverified PASS never flipped (nor did it at runtime), so
- * it is not recorded as the deciding last result; a flag-mode unverified PASS
- * DID flip at runtime and restores green; a field-less legacy PASS restores
- * (fail-open, documented).
+ * Folds a `gate` entry into the last-wins result and fingerprint maps. Only
+ * `PASS`/`FAIL` replay (a `WAIVED` or other sub-kind stays inert). The
+ * flipping-entry rule: an enforce-mode unverified PASS never flipped (nor did
+ * it at runtime), so it is not recorded as the deciding last result; a
+ * flag-mode unverified PASS DID flip at runtime and restores green; a
+ * field-less legacy PASS restores (fail-open, documented). The task
+ * fingerprint is last-wins on PASS and FAIL alike (a trailing FAIL's
+ * fingerprint is restored even though the gate stays red, so a later
+ * recovery sees the right identity); the enforce-unverified early return
+ * folds neither result nor fingerprint.
  * @param entry The parsed `gate` entry.
  * @param lastGateResult The last-wins gate-result map to fill.
+ * @param lastGateFp The last-wins gate-fingerprint map to fill.
  * @param sessionID The validated session ID.
  */
 function foldGate(
   entry: Record<string, unknown>,
   lastGateResult: Map<string, string>,
+  lastGateFp: Map<string, string>,
   sessionID: string,
 ): void {
   const result = entry.result
   if (result === "PASS") {
     if (entry.verified === false && entry.mode !== "flag") return
-    lastGateResult.set(sessionID, result)
+    recordGateFlip(lastGateResult, lastGateFp, sessionID, result, entry.fp)
     return
   }
-  if (result === "FAIL") lastGateResult.set(sessionID, result)
+  if (result === "FAIL") recordGateFlip(lastGateResult, lastGateFp, sessionID, result, entry.fp)
+}
+
+/**
+ * Records one flipping gate result last-wins: the result always, and the
+ * sanitized task fingerprint only when the row carries a non-empty one (a
+ * legacy row without `fp` leaves a previously folded fingerprint standing).
+ * @param lastGateResult The last-wins gate-result map to fill.
+ * @param lastGateFp The last-wins gate-fingerprint map to fill.
+ * @param sessionID The validated session ID.
+ * @param result The flipping result (`PASS` or `FAIL`).
+ * @param fp The raw `fp` field of the gate entry.
+ */
+function recordGateFlip(
+  lastGateResult: Map<string, string>,
+  lastGateFp: Map<string, string>,
+  sessionID: string,
+  result: string,
+  fp: unknown,
+): void {
+  lastGateResult.set(sessionID, result)
+  const fingerprint = sanitizeFingerprint(fp)
+  if (fingerprint !== "") lastGateFp.set(sessionID, fingerprint)
 }
 
 /**
@@ -941,7 +977,7 @@ function foldReplayLine(
 ): ReplayDrop | null {
   const type = entry.type
   if (type === "gate") {
-    foldGate(entry, maps.lastGateResult, sessionID)
+    foldGate(entry, maps.lastGateResult, maps.lastGateFp, sessionID)
     return null
   }
   if (type === "plan") {
@@ -1030,16 +1066,25 @@ function graceBucket(states: Map<string, GateState>, sessionID: string): GateSta
 /**
  * Restores the last flipping `GATE: PASS` per session (a trailing
  * `GATE: FAIL` keeps the gate red), tagging each bucket with replay grace.
+ * A PASS whose fold recorded a task fingerprint stamps it onto the bucket,
+ * so the restart-recovery carry matches the same worktree/branch identity
+ * the live path stamped; a legacy row (no `fp`) restores the empty
+ * fingerprint, byte-compatible with pre-fingerprint journals.
  * @param states The session→state map to populate.
  * @param lastGateResult The replayed last-wins gate results.
+ * @param lastGateFp The replayed last-wins gate fingerprints (sanitized).
  */
 function restoreGatePasses(
   states: Map<string, GateState>,
   lastGateResult: Map<string, string>,
+  lastGateFp: Map<string, string>,
 ): void {
   for (const [sessionID, result] of lastGateResult) {
     if (result !== "PASS") continue
-    graceBucket(states, sessionID).hasGatePass = true
+    const s = graceBucket(states, sessionID)
+    s.hasGatePass = true
+    const fp = lastGateFp.get(sessionID) ?? ""
+    if (fp !== "") s.taskFingerprint = fp
   }
 }
 
@@ -1196,12 +1241,27 @@ function restoreBuckets(
   maps: ReplayMaps,
   creditedApprovals: Map<string, number>,
 ): void {
-  restoreGatePasses(states, maps.lastGateResult)
+  restoreGatePasses(states, maps.lastGateResult, maps.lastGateFp)
   restorePlanVerdicts(states, maps.lastPlanResult)
   restoreReviewApprovals(states, maps.lastReviewVerdict, maps.lastRefusedApprove, creditedApprovals)
   restoreHumanGrants(states, maps.lastRefusedApprove, creditedApprovals)
   restoreScopeFolds(states, maps, creditedApprovals)
   restoreEnsembleCounts(states, maps.lastEnsemble)
+}
+
+/**
+ * Sanitizes a replayed task fingerprint: a string within the length bound.
+ * Anything else — a non-string, an empty value, or an over-length one —
+ * degrades to the empty fingerprint (the restore then leaves the bucket
+ * unstamped). The fingerprint is an internal worktree/branch identity that
+ * is only ever equality-compared, so the length bound is the only defense
+ * needed; never throws.
+ * @param fp The raw `fp` field of a replayed gate entry.
+ * @returns The fingerprint, or `""` when unstamped.
+ */
+export function sanitizeFingerprint(fp: unknown): string {
+  if (typeof fp !== "string" || fp.length < 1 || fp.length > MAX_REPLAY_FP_LEN) return ""
+  return fp
 }
 
 /**

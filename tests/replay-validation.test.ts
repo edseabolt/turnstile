@@ -11,7 +11,7 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger } from "../src/ledger.ts"
+import { createLedger, sanitizeFingerprint } from "../src/ledger.ts"
 import { REVIEW_ENSEMBLE_SIZE } from "../src/state.ts"
 import { journalEntries, tmpDir } from "./helpers.ts"
 
@@ -31,10 +31,19 @@ function writeJournal(metricsDir: string, lines: string[]): string {
  * A well-shaped replay-typed gate entry line.
  * @param sessionID The session ID to journal.
  * @param result The gate result (default PASS).
+ * @param fp The optional task fingerprint to journal (omitted when
+ *     undefined, matching the legacy row shape).
  * @returns The raw JSONL line.
  */
-function gateLine(sessionID: string, result = "PASS"): string {
-  return JSON.stringify({ ts: "t", type: "gate", sessionID, raw: "c1", result })
+function gateLine(sessionID: string, result = "PASS", fp?: unknown): string {
+  return JSON.stringify({
+    ts: "t",
+    type: "gate",
+    sessionID,
+    raw: "c1",
+    result,
+    ...(fp === undefined ? {} : { fp }),
+  })
 }
 
 /**
@@ -497,6 +506,77 @@ test("replay restores duplicate-keyed gate entries last-wins", () => {
   const red = createLedger(redPath, 64, 2000)
   assert.equal(red.peek("p1"), undefined, "a trailing FAIL keeps the gate red (no bucket)")
   assert.equal(replayDrops(redDir).length, 0, "a trailing FAIL is a fold, not a drop")
+})
+
+/** The fingerprint sanitizer is total: a string of length 1..1024 passes
+ *  through (both bounds inclusive), and a non-string, an empty value, or an
+ *  over-length one degrades to the empty fingerprint — never a throw. */
+test("sanitizeFingerprint passes bounded strings and degrades everything else", () => {
+  assert.equal(
+    sanitizeFingerprint("wt\u0000dev"),
+    "wt\u0000dev",
+    "a valid fingerprint passes through",
+  )
+  assert.equal(
+    sanitizeFingerprint("a".repeat(1024)),
+    "a".repeat(1024),
+    "the length bound is inclusive",
+  )
+  assert.equal(sanitizeFingerprint("a".repeat(1025)), "", "an over-length fingerprint degrades")
+  assert.equal(sanitizeFingerprint(""), "", "an empty fingerprint degrades")
+  assert.equal(sanitizeFingerprint(42), "", "a non-string fingerprint degrades")
+  assert.equal(sanitizeFingerprint(undefined), "", "an absent fingerprint degrades")
+})
+
+/** A gate row's task fingerprint restores onto the PASS bucket: a stamped
+ *  PASS stamps the worktree identity the recovery carry matches against,
+ *  while a legacy row (no `fp`), an empty, an over-length, or a non-string
+ *  value degrades to the empty fingerprint — inert, never a drop. */
+test("replay restores a stamped gate fingerprint and degrades hostile ones", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    gateLine("p1", "PASS", "wt\u0000dev"),
+    gateLine("p2"), // legacy row: no fp field
+    gateLine("p3", "PASS", ""), // empty value
+    gateLine("p4", "PASS", "a".repeat(1025)), // over-length
+    gateLine("p5", "PASS", 42), // non-string
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(
+    ledger.peek("p1")?.taskFingerprint,
+    "wt\u0000dev",
+    "a stamped PASS restores its fingerprint",
+  )
+  for (const id of ["p2", "p3", "p4", "p5"]) {
+    assert.equal(
+      ledger.peek(id)?.taskFingerprint,
+      "",
+      `a degraded fingerprint (${id}) restores the empty stamp`,
+    )
+  }
+  assert.equal(replayDrops(metricsDir).length, 0, "a degraded fingerprint is inert, not a drop")
+})
+
+/** The gate fingerprint folds last-wins beside the result: a stamped FAIL's
+ *  fingerprint wins over an earlier stamped PASS and stamps the trailing
+ *  legacy PASS's restore (the legacy row leaves the standing fingerprint
+ *  untouched), while the gate itself restores green per the result map. */
+test("replay folds the gate fingerprint last-wins across PASS and FAIL rows", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    gateLine("p1", "PASS", "fp-a"),
+    gateLine("p1", "FAIL", "fp-b"),
+    gateLine("p1"), // legacy PASS: no fp, leaves the FAIL's fingerprint standing
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  const bucket = ledger.peek("p1")
+  assert.equal(bucket?.hasGatePass, true, "the trailing PASS restores green")
+  assert.equal(
+    bucket?.taskFingerprint,
+    "fp-b",
+    "the FAIL's fingerprint won last-wins and stamped the restore",
+  )
+  assert.equal(replayDrops(metricsDir).length, 0, "fingerprint folding journals no drop")
 })
 
 /** A task-result verdict whose marker is full of regex metacharacters

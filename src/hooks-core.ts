@@ -1321,7 +1321,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * correlates an in-window exit-0 hit for it, flips the gate green, clears
    * the claim, and journals the promoted gate entry plus its trace event —
    * byte-identical to the evidence-arrival promotion this helper was
-   * extracted from. A parent with no admitted-prompt task-window stamp keeps
+   * extracted from. The promoted entry carries the parent's task fingerprint
+   * only when its bucket has stamped one (omitted when empty, like the live
+   * gate rows), so replay restores the carry identity. A parent with no
+   * admitted-prompt task-window stamp keeps
    * the unbounded join (`?? 0`), preserving today's correlation for hosts
    * that never admit a prompt (fail-open, documented). No-op otherwise;
    * never throws.
@@ -1339,6 +1342,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         event: "promoted",
         verified: true,
         mode: config.gateEvidence,
+        ...(ps.taskFingerprint !== "" ? { fp: ps.taskFingerprint } : {}),
       })
       // The gate's green flip is the task's completion boundary (Phase 3):
       // the flip journals its task-complete companion row and stamps the
@@ -3107,10 +3111,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * Journals a first-sight `GATE:` observation: keyed by parent session so
    * journal replay restores state where the reviewer gate looks it up; raw
    * child ID kept for forensics. Spreads the evidence stamp (present only
-   * when the evidence mode is not "off") and the suppressed-match count
-   * (only when > 0), and carries the de-tokenized marker text for the
-   * compaction snapshot (the state boundary records it, this helper
-   * journals the event).
+   * when the evidence mode is not "off"), the task fingerprint (only when
+   * the parent's bucket has stamped one, so replay can restore the carry
+   * identity), and the suppressed-match count (only when > 0), and carries
+   * the de-tokenized marker text for the compaction snapshot (the state
+   * boundary records it, this helper journals the event).
    * @param event The gate marker observation (authority never "suppressed").
    * @param suppressedCount The suppressed-match count spread, empty when 0.
    * @param sid The parent session the `gate` entry is keyed on.
@@ -3128,6 +3133,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   ): void {
     const evidenceStamp =
       event.verified !== undefined ? { verified: event.verified, mode: event.mode } : {}
+    const fp = s.taskFingerprint !== "" ? { fp: s.taskFingerprint } : {}
     journaler.journal({
       type: "gate",
       sessionID: sid,
@@ -3136,6 +3142,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       source,
       marker: event.marker,
       ...evidenceStamp,
+      ...fp,
       ...suppressedCount,
     })
     // A green gate flip is the task's completion boundary: a flipping PASS

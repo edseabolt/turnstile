@@ -17,6 +17,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { approvalResetsScope, isInterruptedReview, keepsTaskScope } from "../src/task-scope.ts"
+import { worktreeFingerprint } from "../src/fingerprint.ts"
 import { createLedger } from "../src/ledger.ts"
 import { newState } from "../src/state.ts"
 import { turnstile } from "../turnstile.ts"
@@ -369,6 +370,113 @@ test("a restart-replayed interrupted review recovers on the first prompt", async
   assert.equal(carried.hasPlanVerdict, true, "the plan approval carried")
   assert.equal(carried.activePlan, "plan.md", "the bound plan identity carried")
   assert.equal(carried.taskComplete, false, "the retire was lifted by the recovery")
+})
+
+test("a restart-replayed interrupted review recovers through a real prompt", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const prev = process.cwd()
+  process.chdir(project)
+  try {
+    // A journaled interrupted review: bound plan approval, green gate carrying
+    // the worktree fingerprint (the identity the recovery carry matches
+    // against), one counted dispatch, then the retire — exactly the abort
+    // state at rest.
+    fs.writeFileSync(
+      path.join(metricsDir, "turnstile.jsonl"),
+      [
+        JSON.stringify({
+          ts: "t",
+          type: "plan",
+          sessionID: "p1",
+          result: "APPROVE",
+          plan: "plan.md",
+        }),
+        JSON.stringify({
+          ts: "t",
+          type: "gate",
+          sessionID: "p1",
+          result: "PASS",
+          verified: true,
+          // The cwd-resolved identity: the same value a live prompt stamps
+          // (process.cwd() is the kernel-resolved real path on macOS).
+          fp: worktreeFingerprint(process.cwd()),
+        }),
+        JSON.stringify({ ts: "t", type: "ensemble", sessionID: "p1", agent: "reviewer", count: 1 }),
+        JSON.stringify({ ts: "t", type: "task-complete", sessionID: "p1", plan: "plan.md" }),
+      ].join("\n") + "\n",
+    )
+    // Boot over the SAME project dir and journal: the replayed gate row
+    // restores the stamped fingerprint, so the recovery carry matches the
+    // same worktree identity and rides the ordinary carry predicate.
+    const h2 = makeFakeHost()
+    const setup2 = turnstile(h2.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, gateEvidence: "flag" },
+    })
+    const dispose2 = (await setup2(h2.host)) as () => void
+    await callSession(h2, "prompt", { sessionID: "p1", text: "re-dispatch the reviewer" })
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "continuation" && l.sessionID === "p1" && l.recovery === true,
+      ),
+      "the restart recovery journaled a recovery continuation row",
+    )
+    const snapshot = snapshotOf(await compact(h2, "p1"))
+    assert.match(snapshot, /gate: GREEN/, "the green gate was recovered")
+    assert.match(snapshot, /plan: APPROVED plan=plan\.md/, "the plan approval was recovered")
+    // The recovered gate unblocks the reviewer re-dispatch.
+    await reviewerDispatch(h2, "p1")
+    dispose2()
+  } finally {
+    process.chdir(prev)
+  }
+})
+
+test("an evidence-promoted gate row carries the prompt-stamped fingerprint", async () => {
+  const { h, metricsDir, restore } = await bootWithPlans({})
+  try {
+    // The prompt stamps the fingerprint the gate rows carry from here on.
+    await callSession(h, "prompt", { sessionID: "p1", text: "start the task" })
+    // The PASS lands unverified first (enforce mode, no evidence yet).
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+    })
+    // A session never admitted by a prompt journals no fingerprint field.
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p2",
+      input: { agent: "test-runner" },
+      result: { output: "GATE: PASS tests=1 passed=1 failed=0\n" },
+    })
+    // Matching exit-0 evidence arrives for p1 and promotes the claim.
+    await callTool(h, "execute.after", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "npm test" },
+      result: { metadata: { exit: 0 } },
+    })
+    const rows = journalEntries(metricsDir).filter((l) => l.type === "gate" && l.result === "PASS")
+    const stamped = rows.find((l) => l.sessionID === "p1" && l.event !== "promoted")
+    assert.ok(stamped, "the prompt-stamped PASS row was journaled")
+    assert.ok(
+      typeof stamped.fp === "string" && stamped.fp !== "",
+      "the prompt-stamped PASS row carries the fingerprint",
+    )
+    const promo = rows.find((l) => l.sessionID === "p1" && l.event === "promoted")
+    assert.ok(promo, "the evidence promotion fired")
+    assert.equal(promo.fp, stamped.fp, "the promoted row carries the same fingerprint")
+    const unstamped = rows.find((l) => l.sessionID === "p2")
+    assert.ok(unstamped, "the unprompted session's PASS row was journaled")
+    assert.equal(unstamped.fp, undefined, "an unprompted session's PASS row carries no fp field")
+  } finally {
+    restore()
+  }
 })
 
 test("a taskDoneMarker prompt retires the active task for the next prompt", async () => {
