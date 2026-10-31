@@ -497,7 +497,10 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   (`GATE:`↔`test-runner`, `VERDICT:`↔`reviewer` / `plan-reviewer`), or one
   whose agent could not be resolved; its marker string carries the digits for
   forensics, and a re-delivery of identical text adds none (dedup stays
-  registered). `kind:"replay"` is the replay-drop audit: one entry per
+  registered). Each entry carries a `reason` naming the denial cause —
+  `emitter agent unresolved` when no agent was resolved for the session,
+  `agent not contracted for kind` when the resolved agent lacks the marker
+  contract for the kind. `kind:"replay"` is the replay-drop audit: one entry per
   journal line the boot replay dropped for failing a shape check —
   `{ts, type:"suppressed", kind:"replay", reason}` with `reason` one of
   `malformed`, `session-id`, `entry-shape`, `count-invalid`, plus `sessionID`

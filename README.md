@@ -305,6 +305,11 @@ VERDICT: APPROVE crit=0 high=0 med=2 low=1
 VERDICT: BLOCK crit=1 high=0 med=0 low=2
 ```
 
+The parser accepts these markers wrapped in markdown backticks — inline code
+(`GATE: PASS tests=12 passed=12 failed=0`) or inside a fenced code block — and
+credits them identically to the bare form; only a marker that does not match
+the fields above is treated as absent.
+
 Waiver and approval markers (must appear in the user's prompt, verbatim — a
 dispatch prompt that merely contains the marker unlocks nothing):
 

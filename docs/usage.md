@@ -102,6 +102,10 @@ emits its marker as the first line of its output:
 GATE: PASS tests=12 passed=12 failed=0
 ```
 
+The marker may be wrapped in markdown backticks (inline or inside a fenced
+code block) — the parser credits the backticked form identically. A marker
+that is missing or malformed keeps the gate red.
+
 Under the default `gateEvidence:enforce`, that marker only flips the gate
 when a real exit-0 test execution exists in this task's bash/shell history
 (matched against `evidencePattern`). A pass claimed without a run is held
@@ -109,6 +113,20 @@ as `unverifiedPass` and promoted the moment the execution is journaled —
 including when a background child's edge resolves late. A `GATE: FAIL`
 latest-wins: it un-greens an earlier PASS and sends the orchestrator back to
 the executor.
+
+**Diagnosing a red gate.** A `no-gate-pass` block despite a real green test
+run usually means the marker was emitted by an agent turnstile does not
+contract for gate markers, so the marker was journaled as `suppressed`
+instead of flipping state. Check
+`~/.local/share/opencode/metrics/turnstile.jsonl` for entries with
+`type:"suppressed", kind:"gate"`: the `reason` field names the cause —
+`emitter agent unresolved` (the emitting session's agent could not be
+resolved) versus `agent not contracted for kind` (the agent is known but is
+not the configured emitter for gate markers, e.g. a test runner named
+`build` without `agents.testRunner` set). The fix is configuration, not
+marker retry: set `agents.testRunner` (and the other `agents.*` names if
+your pipeline uses custom names) as described in "Installing and
+maintaining", then re-run.
 
 **Prompt continues — reviewer, twice.** The **reviewer** is gated on the
 verified pass and capped at 2 dispatches per task. Under the default
@@ -547,7 +565,11 @@ Two sanctioned ways to change the pipeline:
   `agents.reviewer`, `agents.executor`, `agents.testRunner`, and
   `agents.debugger` take the names turnstile should recognize, clamp, and
   hold to the marker contract. Your agents get the same gates the shipped
-  ones do.
+  ones do. Gate authority follows these configured names, not the agent's
+  role: an agent that runs the test suite under a custom name (e.g. `build`)
+  must be configured as `agents.testRunner` — `agents.bareOutput` then
+  derives — or its `GATE:` markers are journaled as `suppressed` and the
+  gate stays red.
 - **Fork the repo.** To change the pipeline content itself, fork and edit
   `agents/*.md` there; your installer serves your fork.
 
