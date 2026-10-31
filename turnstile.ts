@@ -36,36 +36,9 @@
  *   Invalid keys are ignored and journaled; restart to apply.
  *
  * Module layout — one boundary per file; this file stays the thin entry
- * point (shape + factory only). Update this list when `src/` changes:
- * - `src/types.ts`: host wire shapes, `GateState`, `TurnstileConfig`.
- * - `src/config.ts`: layered config, per-key validation, `configDigest`.
- * - `src/host-compat.ts`: host-version guard (semver, shipped range).
- * - `src/journal.ts`: JSONL journal + trace persistence, fail-open appends.
- * - `src/state.ts`: gate-state shape, snapshot/pipeline rendering, replay
- *   merge.
- * - `src/ledger.ts`: per-parent LRU buckets, edges, verdict store, journal
- *   replay, eviction protection.
- * - `src/fingerprint.ts`: worktree/branch identity, carry predicate.
- * - `src/markers.ts`: GATE/VERDICT parsing, dedup, waiver scope parsing.
- * - `src/gates.ts`: composition of the gate modules (`Gates` contract).
- * - `src/gates-dispatch.ts`: reviewer gate, loop caps, read horizon,
- *   ensemble.
- * - `src/gates-plan.ts`: plan-approval and decomposition gates, plans scan.
- * - `src/gates-common.ts`: `BlockError`, waiver coverage semantics.
- * - `src/tool-policy.ts`: denylist matching, commit lint, landing gate.
- * - `src/empty-diff.ts`: landing empty-diff probe (pure ref-equality check).
- * - `src/evidence.ts`: GATE↔exit-0 test-execution correlation.
- * - `src/bounded.ts`: shared bounded-FIFO trim loops.
- * - `src/policy.ts`: orchestrator policy prose (`orchestratorPolicyFor`).
- * - `src/summary.ts`: session-end summary counting + formatting.
- * - `src/delivery.ts`: result-shape classification, text mutation,
- *   ask-message prefixes.
- * - `src/hooks-core.ts`: shared hook state/services (`TurnstileContext`).
- * - `src/hooks-session.ts`: prompt, generate, compaction hook bodies.
- * - `src/hooks-permission.ts`: permission-escalation hook body.
- * - `src/hooks-tool.ts`: execute.before gating, execute.after observation.
- * - `src/hooks-events.ts`: event stream consume + supervised re-subscribe.
- * - `src/setup.ts`: wiring only — registration, heartbeat, lifecycle.
+ * point (shape + factory only). The authoritative module map (every file
+ * + responsibility, kept in sync with `src/`) is `docs/architecture.md`
+ * §2 — do not hand-copy the list here.
  */
 import { createTurnstile } from "./src/setup.ts"
 import type { Host, TurnstileOptions } from "./src/types.ts"

@@ -89,10 +89,11 @@ low=<n>`, or obtain an explicit user waiver (a user prompt this task must
 contain the literal marker 'USER WAIVER:' followed by the user's words).
 ```
 
-— and, with no approval holding, the first executor attempt escalates to
-you as an interactive permission ask naming the plan file and its head
-(`always` = approved for the task, `once` = one dispatch, `reject` = gate
-stays red).
+— and, with no approval holding, the first executor attempt escalates:
+under the default `escalation: "block"` it blocks outright, while
+`escalation: "ask"` raises it to you as an interactive permission ask naming
+the plan file and its head (`always` = approved for the task, `once` = one
+dispatch, `reject` = gate stays red).
 
 **Prompt continues — test-runner.** The **test-runner** runs the suite and
 emits its marker as the first line of its output:
@@ -123,7 +124,7 @@ releases `git push` and it goes through. A push without approval is
 refused (`"reason":"no-landing-approval"`) and, under the default
 `escalation: "block"`, every retry blocks again (no permission ask — the
 agent is instructed to stop and report, and the gate releases only on your
-explicit `PLAN APPROVED:`/`USER WAIVER:` prompt marker or an earned reviewer
+explicit `PLAN APPROVED:` prompt marker or an earned reviewer
 verdict); `escalation: "ask"` restores the interactive human permission ask
 on the repeat. Commit subjects are linted as conventional
 commits (`gitGates.commitMessages: true`, the default) and an invalid
@@ -553,7 +554,8 @@ Two sanctioned ways to change the pipeline:
 One coupling to know when customizing either way: the shipped definitions
 reference `.opencode/plans/` as turnstile's **default** `plansDir`, not a
 constant — the plan path travels in the dispatch prompt, and the agents are
-instructed to honor it over the default. If you reconfigure `plansDir`,
+instructed to honor it over the default (see the frontmatter comment in
+`agents/planner.md`). If you reconfigure `plansDir`,
 update your agent definitions' write permission (planner) accordingly; a
 copy-mode user edits their installed copies, a fork edits `agents/*.md`.
 
@@ -671,7 +673,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `continuationCarry`                                                                                                        | `true`                                                                                                                                                                       | carry the task's gate flags across a prompt reset when the worktree/branch is unchanged (continuation), instead of starting a clean cycle                                                                                                                                                                           |
 | `suspendMarker`                                                                                                            | `TURNSTILE OFF:`                                                                                                                                                             | literal prompt marker that suspends gate blocking for the session (decisions keep journaling, nothing blocks, state cleared fresh); honored only from the user's own prompt                                                                                                                                         |
 | `resumeMarker`                                                                                                             | `TURNSTILE ON:`                                                                                                                                                              | literal prompt marker that resumes enforcement with fresh task state (no credit earned while suspended rehydrates)                                                                                                                                                                                                  |
-| `allowSuspend`                                                                                                             | `true`                                                                                                                                                                       | whether the suspend/resume markers are honored; `false` refuses an OFF marker (journaled `refused:true` + surfaced diagnostic) with no state change                                                                                                                                                                 |
+| `allowSuspend`                                                                                                             | `true`                                                                                                                                                                       | whether the suspend/resume markers are honored; `false` refuses both the OFF and ON markers (journaled `refused:true` + surfaced diagnostic) with no state change                                                                                                                                                   |
 | `intentNudge`                                                                                                              | `true`                                                                                                                                                                       | advisory intent nudge: a prompt classified as implementation intent (work verb at code, gh issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals `{type:"intent"}` and prepends one advisory pipeline-entry nudge to the next tool delivery; `false` is a full no-op       |
 | `sessionSummary`                                                                                                           | `quiet`                                                                                                                                                                      | session-end summary surface: `quiet` prints one recap line at session.idle for sessions that did something (silent for zero-activity sessions); `on` also prints an all-gates-green line for zero-activity sessions; `off` disables the surface                                                                     |
 | `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` / `agents.planner` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger` / `planner`                                                                                           | agent names recognized in dispatches                                                                                                                                                                                                                                                                                |
