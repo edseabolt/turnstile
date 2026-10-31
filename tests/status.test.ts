@@ -965,6 +965,50 @@ test("plan-rekey rows render the re-key advisory line and leave the json shape u
   }
 })
 
+/** Two sessions re-keying the same legacy record journal two `plan-rekey`
+ *  rows for one plan; the advisory dedupes the names in first-seen order so
+ *  each plan renders once, and distinct names are unaffected. */
+test("the re-key advisory dedupes repeated plan names across sessions", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "plan-rekey",
+        sessionID: "sp-dup-a",
+        plan: "plan.md",
+        reason: "durable-key-scheme",
+        from: "a",
+        to: "b",
+      }),
+      line(2, {
+        type: "plan-rekey",
+        sessionID: "sp-dup-b",
+        plan: "plan.md",
+        reason: "durable-key-scheme",
+        from: "a",
+        to: "b",
+      }),
+      line(3, {
+        type: "plan-rekey",
+        sessionID: "sp-dup-b",
+        plan: "zed.md",
+        reason: "durable-key-scheme",
+        from: "c",
+        to: "d",
+      }),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(
+      out[1],
+      "plan approvals re-keyed to the spec-region scheme (durable-key-scheme): plan.md, zed.md",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /** More than five re-keyed plans cap the advisory's name list with a
  *  `+N more` suffix. */
 test("the re-key advisory caps the plan list at five names with a +N more suffix", () => {

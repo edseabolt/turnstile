@@ -201,6 +201,15 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     const pairs = entries.map((e) => ({ name: e.name, hash: hashEntry(planSpecRegion(e.bytes)) }))
     const key = plansKey(pairs)
     const cached = plansCache
+    // Cache-hit caveat, accepted: the signature hashes spec regions only, so
+    // a progress-only edit lands here and the returned scan's `wholeFileKeys`
+    // still hash the bytes at the last refresh — the durable store's legacy
+    // arm can then match against last-scan bytes rather than the current
+    // file. Sound to honor: the hit proves the spec region unchanged since
+    // that scan, and the re-key it triggers writes the current spec key. The
+    // mirror edit-then-revert can leave whole-file hashes from the interim
+    // bytes, false-blocking a legacy record until restart or the next
+    // signature change rescan — fail-toward-strict, self-healing.
     if (cached !== null && cached.key === key) return cached.scan
     const names = entries.map((e) => e.name)
     const decomp = new Set<string>()

@@ -724,8 +724,13 @@ Environment variables (override the file):
     journal APPROVE line has aged out of `replayTailLines` and across
     prompt resets; an edited or replaced plan (key mismatch) stays
     pending. A legacy record whose whole-file key still matches the
-    current file is honored and re-keyed to the spec scheme on first touch
-    (journaled `plan-rekey`); a record matching neither key blocks with
+    whole-file sha256 at the current plans scan is honored and re-keyed to
+    the spec scheme on first touch (journaled `plan-rekey`; the re-key
+    writes the current spec key). A cached scan may reflect the bytes at
+    its last refresh rather than the current file — a progress-only edit
+    leaves the spec region (and the cached scan signature) unchanged, so a
+    legacy record can be honored across such an edit. A record matching
+    neither key blocks with
     the `durable-key-stale` reason and a one-re-approval recovery message.
     Fail-open: read/write errors are journaled and the gate
     degrades to journal-replay semantics

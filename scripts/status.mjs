@@ -673,8 +673,10 @@ function renderTable(sessions, journalPath, observe, observeSessions, rekeys) {
   }
   if (rekeys.length > 0) {
     // The durable-store scheme migration is observable: one advisory line
-    // naming the re-keyed plans (capped, with a +N more suffix).
-    const names = rekeys.map((r) => r.plan)
+    // naming the re-keyed plans (capped, with a +N more suffix). First-seen
+    // dedupe: two sessions re-keying the same legacy record journal two rows
+    // for one plan, and the advisory names each plan once.
+    const names = [...new Set(rekeys.map((r) => r.plan))]
     const shown = names.slice(0, 5).join(", ")
     const more = names.length > 5 ? ` +${names.length - 5} more` : ""
     out.push(
