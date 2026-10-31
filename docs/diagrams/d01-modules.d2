@@ -1,8 +1,8 @@
 direction: right
 
 # Module map: curated view — key boundaries plus the setup wiring spine.
-# Not every import edge is drawn (e.g. type-only imports are shown,
-# some cross-boundary imports are omitted).
+# Not every import edge is drawn: type-only imports are labeled as such,
+# and some cross-boundary value imports are omitted for readability.
 
 host: "OpenCode host\n(v2 promise-plugin API)" {
   session-hook: "session.hook\nprompt · generate · compaction"
@@ -43,6 +43,10 @@ core: "src/ — one concern per boundary" {
   journal: "journal.ts\nturnstile.jsonl + trace, rotation, fail-open appends,\nfail-open journal reader (readJournalEntries)"
   summary: "summary.ts\nsession-end summary counting + one-line\nformatting over parsed entries (pure)"
   policy: "policy.ts\norchestratorPolicyFor prose\nbuilt from resolved config"
+  scratch: "scratch.ts\nisScratchTarget: temp-dir write/edit\nexemption predicate (zero-governance)"
+  intent: "intent.ts\nclassifyIntent: implementation-intent\nsignals vs deliberate non-intent"
+  generateinjection: "generate-injection.ts\nrequest-draft primitives: usableRequestDraft,\nappendSystemText, describeRequestDraft"
+  taskscope: "task-scope.ts\nkeepsTaskScope, isInterruptedReview,\napprovalResetsScope (pure predicates)"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
 }
 
@@ -96,7 +100,6 @@ core.hookspermission -> core.hookscore: "type-only"
 core.hookspermission -> core.delivery
 core.hookspermission -> core.toolpolicy
 core.hookstool -> core.hookscore: "type-only"
-core.hookstool -> core.markers
 core.childreg -> core.markers
 core.childreg -> core.ledger: "type-only"
 core.childreg -> core.types: "type-only"
@@ -105,6 +108,11 @@ core.hooksevents -> core.hookscore: "type-only"
 core.hooksevents -> core.delivery
 core.hookscore -> core.policy
 core.hookscore -> core.maintenance
+core.hookscore -> core.scratch
+core.hookscore -> core.intent
+core.hookscore -> core.generateinjection
+core.state -> core.taskscope
+core.fingerprint -> core.taskscope
 core.gatesplan -> core.planregion
 core.ledger -> core.journal: "replay (fs)"
 core.ledger -> core.state: "newState, counters, merge"

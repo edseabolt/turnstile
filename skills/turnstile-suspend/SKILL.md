@@ -6,14 +6,14 @@ description: Suspend or resume turnstile gate enforcement for the current sessio
 # Turnstile suspend / resume
 
 Turnstile's gate enforcement can be paused for the whole session by typing a
-literal marker at the start of your own prompt. These markers are **plain
+literal marker anywhere in your own prompt. These markers are **plain
 text you type yourself** — they are read only from admitted user prompts, so
 quoting them in a message to an agent or a child task does nothing. There is
 no agent-dispatchable off switch, by design.
 
 ## `TURNSTILE OFF:` — suspend enforcement
 
-Type it at the start of a prompt, e.g.:
+Type it in a prompt, e.g.:
 
 ```
 TURNSTILE OFF: let's iterate on the design doc first
@@ -32,7 +32,7 @@ What it does for this session:
 
 ## `TURNSTILE ON:` — resume enforcement
 
-Type it at the start of a prompt:
+Type it in a prompt:
 
 ```
 TURNSTILE ON: back to the implementation plan
