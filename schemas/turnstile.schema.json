@@ -107,9 +107,22 @@
       "type": "string",
       "description": "Literal marker that, appearing in the user's own prompt, resumes enforcement with fresh task state — no credit earned while suspended survives (default TURNSTILE ON:). Never agent-dispatchable."
     },
+    "taskDoneMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, explicitly retires the session's active task: journals {type:\"task-complete\", plan} with the bucket's activePlan and stamps taskComplete, so the next admitted prompt starts a fresh task scope (default TASK DONE:). Admission-only: child results and dispatch prompts never retire a task."
+    },
     "allowSuspend": {
       "type": "boolean",
-      "description": "Whether the suspend/resume markers are honored; false refuses an OFF marker with a journaled refused:true entry and a surfaced diagnostic (default true)."
+      "description": "Whether the suspend/resume markers are honored; false refuses both the OFF and ON markers (journaled refused:true entry and a surfaced diagnostic; no state change) (default true)."
+    },
+    "intentNudge": {
+      "type": "boolean",
+      "description": "Advisory intent nudge: a user prompt classified as implementation intent (work verb at code, issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals {type:\"intent\"} and prepends one advisory pipeline-entry nudge to the next tool delivery; false is a full no-op (default true)."
+    },
+    "escalation": {
+      "type": "string",
+      "enum": ["block", "ask"],
+      "description": "Repeat-attempt escalation mode for the landing and hands-on gates: block (default) re-throws the block with no permission ask — release is waiver/approval-marker or earned reviewer verdict only; ask arms a one-shot latch and forces the host permission ask (collapses to allow under auto-accepting hosts)."
     },
     "sessionSummary": {
       "type": "string",
@@ -167,11 +180,6 @@
       "additionalProperties": false,
       "description": "Denylist policy for bash/shell and write/edit tools in execute.before.",
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["enforce", "shadow", "off"],
-          "description": "Enforcement mode (default enforce)."
-        },
         "bashDeny": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
@@ -185,19 +193,18 @@
         "observeSessionMove": {
           "type": "boolean",
           "description": "Journal session_move dispatches as telemetry (default true)."
+        },
+        "bashWriteGate": {
+          "type": "boolean",
+          "description": "Gate confident file-writing bash commands (redirects from writer commands, tee, sed -i/--in-place, cp/mv/dd/truncate/touch) through the parent hands-on ladder (default true); write-shaped commands always journal handsOn telemetry."
         }
       }
     },
     "gitGates": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Git-and-commit gate configuration (default mode shadow, audit-only).",
+      "description": "Git-and-commit gate configuration (commitMessages and landingGate default true).",
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["enforce", "shadow", "off"],
-          "description": "Enforcement mode (default shadow)."
-        },
         "commitMessages": {
           "type": "boolean",
           "description": "Whether git commit messages are linted as conventional commits (default true)."

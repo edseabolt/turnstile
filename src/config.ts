@@ -28,7 +28,6 @@ import type {
   TurnstileConfig,
   TurnstileGitGates,
   TurnstileToolPolicy,
-  ToolPolicyMode,
 } from "./types.ts"
 
 /** Default config file location. */
@@ -80,6 +79,16 @@ export const DEFAULT_COMMIT_FORMAT =
 export const BARE_OUTPUT_UNSET: string[] = []
 
 /**
+ * Canonical default name of the reviewer agent whose task-result verdicts
+ * credit the landing gate. `defaultConfig()` stores it for `agents.reviewer`,
+ * and the ledger's verdict replay credits only verdict rows attributed to the
+ * configured reviewer name (passed through from `config.agents.reviewer`), so
+ * a plan-reviewer verdict, a legacy unattributed row, or a hostile/degraded
+ * agent never restores `hasReviewApprove` on restart.
+ */
+export const CANONICAL_REVIEWER_AGENT = "reviewer"
+
+/**
  * Builds the code defaults for every config key.
  * @param env Environment consulted for XDG_DATA_HOME only.
  * @returns The default TurnstileConfig matching the historical hardcoded
@@ -117,6 +126,12 @@ export function defaultConfig(
     // also prints an all-gates-green line for zero-activity sessions; "off"
     // restores pre-summary behavior exactly.
     sessionSummary: "quiet",
+    // Escalation ladder: "block" (default) re-throws the block on a retried
+    // landing/hands-on attempt and never raises a permission ask, so an
+    // auto-accepting host cannot silently collapse the ask tier into an
+    // allow; release is waiver/approval-marker or earned reviewer verdict
+    // only. "ask" restores the interactive permission-ask ladder verbatim.
+    escalation: "block",
     // Continuation carry is on by default: a reviewer-approved landing prompt
     // re-arms earned credit when the worktree/branch is unchanged; set
     // `continuationCarry: false` to restore a clean cycle every prompt.
@@ -126,10 +141,21 @@ export function defaultConfig(
     // state with no rehydrated credit. `allowSuspend: false` refuses both.
     suspendMarker: "TURNSTILE OFF:",
     resumeMarker: "TURNSTILE ON:",
+    // Explicit task-retire marker: a user prompt carrying the literal journals
+    // {type:"task-complete", plan} and stamps taskComplete, so the NEXT
+    // admitted prompt starts a fresh task scope. Admission-only (child
+    // results and dispatch prompts never retire a task).
+    taskDoneMarker: "TASK DONE:",
     allowSuspend: true,
+    // Advisory intent nudge is on by default: an admitted prompt classified
+    // as implementation intent with no plan approval journals `{type:"intent"}`
+    // and prepends one advisory pipeline-entry nudge to the next tool
+    // delivery. `intentNudge: false` disables detection entirely (no journal
+    // row, no nudge).
+    intentNudge: true,
     agents: {
       planner: "planner",
-      reviewer: "reviewer",
+      reviewer: CANONICAL_REVIEWER_AGENT,
       planReviewer: "plan-reviewer",
       executor: "executor",
       testRunner: "test-runner",
@@ -142,7 +168,6 @@ export function defaultConfig(
     reviewEnsemble: "enforce",
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
     toolPolicy: {
-      mode: "enforce",
       // `bashDeny` is the tool for pattern-based shell denies the host
       // permission system cannot express; a configured list replaces this
       // default wholesale (the merge semantics are unchanged). Empty by
@@ -155,14 +180,19 @@ export function defaultConfig(
       // on block, journaled) without breaking ordinary editing.
       pathDeny: [],
       observeSessionMove: true,
+      // File-writing bash goes through the hands-on ladder: only confident
+      // writer shapes gate (`cat > f`, `tee f`, `sed -i`, `cp`/`mv`/...);
+      // output capture (`npm test > log`, `> /dev/null`) never gates, so the
+      // writer-head set is the zero-false-positive surface. The session-wide
+      // escape hatch is the TURNSTILE OFF: suspend marker.
+      bashWriteGate: true,
     },
-    // Git-and-commit gates ship in `shadow` (audit-only) by default: the gates
-    // are active but non-blocking until a user flips a key to `enforce`,
-    // mirroring the tool-policy "adopt shadow first" adoption path. `commitFormat`
+    // Git-and-commit gates are per-feature switches with no meta-mode: while
+    // `commitMessages` is true commit subjects are linted, and while
+    // `landingGate` is true pushes wait for a reviewer verdict. `commitFormat`
     // is a conventional-commits regex SOURCE (no anchors): callers wrap it with
     // `^…$` + the `"s"` flag (see src/tool-policy.ts).
     gitGates: {
-      mode: "shadow",
       commitMessages: true,
       commitFormat: DEFAULT_COMMIT_FORMAT,
       landingGate: true,
@@ -187,15 +217,22 @@ export function defaultConfig(
  *     explicitly to end an observe period.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (key === "trace" || key === "continuationCarry" || key === "allowSuspend")
+  if (
+    key === "trace" ||
+    key === "continuationCarry" ||
+    key === "allowSuspend" ||
+    key === "intentNudge"
+  )
     return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
+  if (key === "escalation") return value === "ask" || value === "block"
   if (
     key === "metricsDir" ||
     key === "waiverMarker" ||
     key === "approvalMarker" ||
     key === "suspendMarker" ||
     key === "resumeMarker" ||
+    key === "taskDoneMarker" ||
     key === "plansDir"
   ) {
     if (key === "metricsDir") {
@@ -264,7 +301,9 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "continuationCarry") config.continuationCarry = value as boolean
   else if (key === "suspendMarker") config.suspendMarker = value as string
   else if (key === "resumeMarker") config.resumeMarker = value as string
+  else if (key === "taskDoneMarker") config.taskDoneMarker = value as string
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
+  else if (key === "intentNudge") config.intentNudge = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
   else config[key as NumericConfigKey] = value as number
 }
@@ -344,20 +383,17 @@ export function mergeConfig(
       const merged: TurnstileToolPolicy = { ...config.toolPolicy }
       for (const [tpKey, tpValue] of Object.entries(value as Record<string, unknown>)) {
         if (tpKey === "mode") {
-          if (tpValue === "enforce" || tpValue === "shadow" || tpValue === "off") {
-            merged.mode = tpValue as ToolPolicyMode
-          } else {
-            warnings.push(
-              'config: toolPolicy.mode must be "enforce", "shadow", or "off"; keeping default',
-            )
-          }
-        } else if (tpKey === "observeSessionMove") {
+          // Legacy key from the removed tool-policy meta-mode: dropped, never
+          // honored, and surfaced so a user config cannot silently lose the
+          // knob it still names.
+          warnings.push(
+            'config: unknown key "toolPolicy.mode" removed — the bash/path denylist is now always enforced; use TURNSTILE OFF: to suspend',
+          )
+        } else if (tpKey === "observeSessionMove" || tpKey === "bashWriteGate") {
           if (typeof tpValue === "boolean") {
-            merged.observeSessionMove = tpValue
+            merged[tpKey] = tpValue
           } else {
-            warnings.push(
-              "config: toolPolicy.observeSessionMove must be a boolean; keeping default",
-            )
+            warnings.push(`config: toolPolicy.${tpKey} must be a boolean; keeping default`)
           }
         } else if (tpKey === "bashDeny" || tpKey === "pathDeny") {
           // Only the value itself being non-array falls back to the default
@@ -410,13 +446,11 @@ export function mergeConfig(
       const merged: TurnstileGitGates = { ...config.gitGates }
       for (const [gk, gv] of Object.entries(value as Record<string, unknown>)) {
         if (gk === "mode") {
-          if (gv === "enforce" || gv === "shadow" || gv === "off") {
-            merged.mode = gv as ToolPolicyMode
-          } else {
-            warnings.push(
-              'config: gitGates.mode must be "enforce", "shadow", or "off"; keeping default',
-            )
-          }
+          // Legacy key from the removed gitGates meta-mode: dropped, never
+          // honored, and surfaced; the booleans are the only switches now.
+          warnings.push(
+            'config: unknown key "gitGates.mode" removed — commit lint and the landing gate are always enforced when their boolean keys are true; use TURNSTILE OFF: to suspend',
+          )
         } else if (gk === "commitMessages" || gk === "landingGate" || gk === "emptyDiffExempt") {
           if (typeof gv === "boolean") {
             if (gk === "commitMessages") merged.commitMessages = gv
@@ -454,6 +488,15 @@ export function mergeConfig(
       }
       continue
     }
+    if (key === "handsOnGate") {
+      // Legacy key from the removed hands-on meta-mode: dropped, never
+      // honored, and surfaced so a user config cannot silently lose the knob
+      // it still names; the gate is always enforced now.
+      warnings.push(
+        'config: unknown key "handsOnGate" removed — the parent hands-on gate is now always enforced; use TURNSTILE OFF: to suspend',
+      )
+      continue
+    }
     if (!(key in config)) {
       warnings.push(`config: unknown key "${key}" ignored`)
       continue
@@ -486,6 +529,17 @@ export function mergeConfig(
         assignScalar(config, key as keyof TurnstileConfig, value)
       } else {
         warnings.push('config: sessionSummary must be "on", "quiet", or "off"; keeping default')
+      }
+      continue
+    }
+    if (key === "escalation") {
+      // Mirrors the sessionSummary special case: shared validate/assign
+      // helpers, only the warning wording is special-cased to name the two
+      // accepted literals.
+      if (isValidScalar(key as keyof TurnstileConfig, value)) {
+        assignScalar(config, key as keyof TurnstileConfig, value)
+      } else {
+        warnings.push('config: escalation must be "block" or "ask"; keeping default')
       }
       continue
     }

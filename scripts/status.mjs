@@ -192,6 +192,29 @@ const MAX_REPLAY_MARKER_LEN = 512
 const MAX_REPLAY_OBSERVE_COUNT = 1_000_000
 
 /**
+ * Upper bound on a journaled plan file name, and its path-free alphabet.
+ * Mirrors the canonical bound/alphabet in src/ledger.ts: an over-length,
+ * path-carrying, or hostile name degrades to the unbound empty name (replay
+ * parity — a bound plan identity that fails its shape is unbound).
+ */
+const MAX_REPLAY_NAME_LEN = 128
+const PLAN_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Sanitizes a raw journaled plan name for the task-scope fold (standalone
+ * copy of ledger.ts's sanitizePlanName).
+ * @param {unknown} plan The raw `plan` field of a journal line.
+ * @returns {string} The sanitized name, or "" when unbound/malformed.
+ */
+function planNameOf(plan) {
+  return typeof plan === "string" && plan.length >= 1 && plan.length <= MAX_REPLAY_NAME_LEN
+    ? PLAN_NAME_RE.test(plan)
+      ? plan
+      : ""
+    : ""
+}
+
+/**
  * Reads and parses the config file the config layer uses, silently tolerating
  * a missing or malformed file (fail-open). Returns `null` when nothing usable
  * is present.
@@ -308,8 +331,12 @@ function freshSession() {
     waivers: [],
     dispatches: 0,
     blocks: 0,
+    maintenance: 0,
     permissionAsks: 0,
     permissionDecisions: { once: 0, always: 0, reject: 0 },
+    stickyRelease: null,
+    activePlan: "",
+    taskComplete: false,
     suspended: false,
   }
 }
@@ -349,6 +376,10 @@ function observeCountsOf(entry) {
  * Verdict markers over the replay marker bound degrade to "" (they then flow
  * into the empty-marker BLOCK fallback below). Parent-keyed.
  *
+ * Maintenance lines (`type:"maintenance"`) count admitted dispatches
+ * (`capped` falsy) into the MNT column; a `capped:true` attempt row folds
+ * nothing (its block is already counted by the guard's `blocked` entry).
+ *
  * Suspension lines (`type:"suspended"`) fold last-wins like ledger.ts's
  * foldSuspended: `action:"off"` marks the session suspended, `action:"on"`
  * clears it, an `event:"would-block"` audit entry folds inert, and an unknown
@@ -362,12 +393,14 @@ function observeCountsOf(entry) {
  * journal holds observe-mode entries at all — the report's observe header
  * line renders only then, so journals without them stay byte-identical.
  * @param {string[]} lines Journal lines, oldest-first.
- * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number } }}
- *     sessionID → accumulator, plus the folded observe-mode state.
+ * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number }, rekeys: Array<{ ts: string, plan: string }> }}
+ *     sessionID → accumulator, plus the folded observe-mode state, and the
+ *     `plan-rekey` rows (the durable-store scheme-migration audit).
  */
 function aggregate(lines) {
   const sessions = new Map()
   const observe = { seen: 0, observed: 0, wouldBlocks: 0 }
+  const rekeys = []
   const forSession = (id) => {
     let a = sessions.get(id)
     if (!a) {
@@ -424,9 +457,29 @@ function aggregate(lines) {
         if (result === "APPROVE" && e.source === "session-prompt") {
           a.planApproval.promptApproval = true
         }
+        // Task-scope fold, mirroring ledger.ts's applyPlanApprovalScope: a
+        // binding APPROVE (a path-free plan name within the replay bound)
+        // establishes the active task's plan; a DIFFERENT name — or a
+        // re-approval after a completion — restarts the scope (sticky
+        // release cleared, retire cleared). An unbound approval folds
+        // nothing into the scope.
+        if (result === "APPROVE") {
+          const name = planNameOf(e.plan)
+          if (name !== "" && (name !== a.activePlan || a.taskComplete)) {
+            a.stickyRelease = null
+            a.taskComplete = false
+            a.activePlan = name
+          }
+        }
       } else if (result === "WAIVED") {
         a.waivers.push({ channel: typeof e.channel === "string" ? e.channel : "", waiver: "" })
       }
+    } else if (type === "task-complete") {
+      // Task-retire fold, mirroring ledger.ts's foldTaskComplete: the retire
+      // clears the sticky release within the current scope and marks the
+      // task complete (a later plan APPROVE restarts the scope).
+      a.stickyRelease = null
+      a.taskComplete = true
     } else if (type === "verdict") {
       // VERDICT: APPROVE/BLOCK observations (plan-reviewer verdict markers).
       const marker =
@@ -455,6 +508,12 @@ function aggregate(lines) {
       // the guard's `blocked` entry, so exclude the `blocked:true` stamp from
       // the dispatches counter (no double count).
       if (e.blocked !== true) a.dispatches++
+    } else if (type === "maintenance") {
+      // Maintenance dispatch fold: admitted maintenance dispatches count in
+      // their own column (bookkeeping rides the lighter path, so it is not
+      // an implementation dispatch); a `capped:true` attempt row is already
+      // visible through the blocked entry the escalation journals.
+      if (e.capped !== true) a.maintenance++
     } else if (type === "blocked") {
       a.blocks++
     } else if (type === "permission") {
@@ -462,6 +521,26 @@ function aggregate(lines) {
         a.permissionAsks++
       } else if (e.decision === "once" || e.decision === "always" || e.decision === "reject") {
         a.permissionDecisions[e.decision]++
+      }
+      // Sticky-decision fold, mirroring ledger.ts's foldStickyDecision:
+      // only scope:"task" decision rows (standing `always` grants, waiver
+      // captures) with a kind on the ledger's allowlist participate,
+      // recording the release within the current task scope; ask rows
+      // (`action`), audit rows (`event`), legacy scope-less rows, and
+      // kinds outside plan/landing/hands-on/waiver fold nothing (a
+      // malformed kind restores nothing at replay, so it must render as
+      // no release here either).
+      if (
+        e.action === undefined &&
+        e.event === undefined &&
+        e.scope === "task" &&
+        (e.kind === "plan" || e.kind === "landing" || e.kind === "hands-on" || e.kind === "waiver")
+      ) {
+        if (e.decision === "always" || e.decision === "waiver") {
+          a.stickyRelease = e.decision === "waiver" ? "waiver" : (e.kind ?? "")
+        } else if (e.decision === "once" || e.decision === "reject") {
+          a.stickyRelease = null
+        }
       }
     } else if (type === "observe" || type === "would-block") {
       // Observe-mode fold (see the function doc): the line is present no
@@ -474,10 +553,17 @@ function aggregate(lines) {
       if (counts === null) continue
       observe.observed = counts.observed
       observe.wouldBlocks = counts.wouldBlocks
+    } else if (type === "plan-rekey") {
+      // Durable-store scheme-migration audit row: collected for the report's
+      // advisory line (observation-only — it folds no session state).
+      rekeys.push({
+        ts: typeof e.ts === "string" ? e.ts : "",
+        plan: typeof e.plan === "string" ? e.plan : "",
+      })
     }
   }
 
-  return { sessions, observe }
+  return { sessions, observe, rekeys }
 }
 
 /**
@@ -490,18 +576,39 @@ function fmtSession(id) {
 }
 
 /**
- * Renders the human-readable table. When the journal holds observe-mode
+ * Renders the task-scope cell: the active task's plan name, suffixed ` done`
+ * once the task retired (a GATE: PASS flip or a taskDoneMarker prompt), or
+ * `·` while no plan is bound (the planless fingerprint fallback has no
+ * journaled identity). Long names truncate for the cell; JSON keeps the
+ * full name in `activePlan`.
+ * @param {Record<string, unknown>} a The session accumulator.
+ * @returns {string} The SCOPE cell text.
+ */
+function fmtScope(a) {
+  if (a.activePlan === "") return "·"
+  const name = a.activePlan.length > 14 ? `${a.activePlan.slice(0, 11)}…` : a.activePlan
+  return a.taskComplete ? `${name} done` : name
+}
+
+/**
+ * Renders the human-readable table. The REL column surfaces the folded
+ * sticky-release state (the last-wins sticky decision row: `plan`,
+ * `landing`, `hands-on`, `waiver`, or `·` when none). When the journal holds observe-mode
  * entries, the report gains one extra line right below the header line with
  * the folded phase and running period totals — journals without observe
  * entries render byte-identically to before (the observe argument carries
- * `seen: 0` and no line is emitted).
+ * `seen: 0` and no line is emitted). When the journal holds `plan-rekey`
+ * rows (the durable-store scheme migration), one advisory line naming the
+ * re-keyed plans renders under the observe line — journals without them
+ * render byte-identically to before (the rekeys argument is empty).
  * @param {Map<string, Record<string, unknown>>} sessions Aggregated sessions.
  * @param {string} journalPath The journal file path for the header.
  * @param {{ seen: number, observed: number, wouldBlocks: number }} observe The folded observe-mode state.
  * @param {number} observeSessions The configured observe period (from the config file).
+ * @param {Array<{ ts: string, plan: string }>} rekeys The folded `plan-rekey` rows.
  * @returns {string} The table text.
  */
-function renderTable(sessions, journalPath, observe, observeSessions) {
+function renderTable(sessions, journalPath, observe, observeSessions, rekeys) {
   const rows = [...sessions.entries()].map(([id, a]) => ({
     session: fmtSession(id),
     gate: a.hasGatePass ? "PASS" : "red",
@@ -509,13 +616,29 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     verdict: a.planApproval.effective ?? "·",
     wv: a.waivers.length,
     dis: a.dispatches,
+    mnt: a.maintenance,
     bl: a.blocks,
     ask: a.permissionAsks,
     dec: a.permissionDecisions.once + a.permissionDecisions.always + a.permissionDecisions.reject,
+    rel: a.stickyRelease === null ? "·" : String(a.stickyRelease),
     sus: a.suspended ? "OFF" : "·",
+    scope: fmtScope(a),
   }))
 
-  const headers = ["SESSION", "GATE", "PLAN", "VERDICT", "WV", "DIS", "BLK", "PERM", "SUS"]
+  const headers = [
+    "SESSION",
+    "GATE",
+    "PLAN",
+    "VERDICT",
+    "WV",
+    "DIS",
+    "MNT",
+    "BLK",
+    "PERM",
+    "REL",
+    "SUS",
+    "SCOPE",
+  ]
   const cells = [
     (r) => r.session,
     (r) => r.gate,
@@ -523,9 +646,12 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     (r) => r.verdict,
     (r) => String(r.wv),
     (r) => String(r.dis),
+    (r) => String(r.mnt),
     (r) => String(r.bl),
     (r) => `${r.ask}/${r.dec}`,
+    (r) => r.rel,
     (r) => r.sus,
+    (r) => r.scope,
   ]
 
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => cells[i](r).length)))
@@ -543,6 +669,18 @@ function renderTable(sessions, journalPath, observe, observeSessions) {
     const phase = observe.observed > observeSessions ? "enforce" : "observe"
     out.push(
       `observe: ${phase} ${observe.observed}/${observeSessions} sessions, ${observe.wouldBlocks} would-blocks`,
+    )
+  }
+  if (rekeys.length > 0) {
+    // The durable-store scheme migration is observable: one advisory line
+    // naming the re-keyed plans (capped, with a +N more suffix). First-seen
+    // dedupe: two sessions re-keying the same legacy record journal two rows
+    // for one plan, and the advisory names each plan once.
+    const names = [...new Set(rekeys.map((r) => r.plan))]
+    const shown = names.slice(0, 5).join(", ")
+    const more = names.length > 5 ? ` +${names.length - 5} more` : ""
+    out.push(
+      `plan approvals re-keyed to the spec-region scheme (durable-key-scheme): ${shown}${more}`,
     )
   }
   if (rows.length === 0) {
@@ -602,6 +740,35 @@ async function updateLine(metricsDir) {
 }
 
 /**
+ * Detects a host CLI config that auto-answers permission asks. Reads
+ * `~/.config/opencode/cli.json` (read-only, fail-open like every other read
+ * here) and reports when `session.permissions` is `"autoaccept"` — with that
+ * setting the human decision points turnstile's permission-ask gates rely on
+ * are rubber-stamped (the landing gate's human release, the plan-gate
+ * escalation, the ensemble's human release), degrading those gates to
+ * delays. Missing or malformed config reports nothing.
+ * @param {Record<string, string | undefined>} env The process environment.
+ * @returns {string} The advisory line, or "" when nothing is detected.
+ */
+function autoacceptAdvisory(env) {
+  const configPath =
+    typeof env.TURNSTILE_CLI_CONFIG === "string" && env.TURNSTILE_CLI_CONFIG
+      ? env.TURNSTILE_CLI_CONFIG
+      : path.join(os.homedir(), ".config", "opencode", "cli.json")
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    if (cfg?.session?.permissions !== "autoaccept") return ""
+    return (
+      `advisory: session.permissions is "autoaccept" in ${configPath} — permission asks are ` +
+      `answered automatically, so the landing gate's human release, the plan-gate escalation, ` +
+      `and the ensemble's human release are rubber-stamped; those gates degrade to delays`
+    )
+  } catch {
+    return "" // missing/unreadable/malformed host config: nothing to report.
+  }
+}
+
+/**
  * Entry point. Parses args, resolves the journal, aggregates, and prints.
  * @param {string[]} argv Arguments after the `status` subcommand.
  * @returns {Promise<number>} The process exit code.
@@ -632,6 +799,8 @@ async function main(argv) {
     sessions: {},
   }
 
+  const advisory = autoacceptAdvisory(process.env)
+
   if (files.length === 0) {
     // Read-only no-op: nothing recorded yet.
     if (flags.json) {
@@ -639,30 +808,34 @@ async function main(argv) {
         ? await resolveUpdateCheck(process.env, metricsDir)
         : undefined
       process.stdout.write(
-        `${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`,
+        `${JSON.stringify({ ...base, ...(update ? { update } : {}), ...(advisory ? { advisories: [advisory] } : {}) }, null, 2)}\n`,
       )
     } else {
       let text = `No turnstile journal yet at ${journalPath} — nothing to report.\n`
       if (flags.checkUpdates) text += `${await updateLine(metricsDir)}\n`
+      if (advisory) text += `${advisory}\n`
       process.stdout.write(text)
     }
     return 0
   }
 
-  const { sessions, observe } = aggregate(lines)
+  const { sessions, observe, rekeys } = aggregate(lines)
   for (const [id, a] of sessions) {
     base.sessions[id] = a
   }
 
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
   if (flags.json) {
-    process.stdout.write(`${JSON.stringify({ ...base, ...(update ? { update } : {}) }, null, 2)}\n`)
+    process.stdout.write(
+      `${JSON.stringify({ ...base, ...(update ? { update } : {}), ...(advisory ? { advisories: [advisory] } : {}) }, null, 2)}\n`,
+    )
   } else {
-    let table = renderTable(sessions, journalPath, observe, observeSessions)
+    let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
     if (update) {
       const line = updateLineText(update)
       if (line) table += `\n${line}`
     }
+    if (advisory) table += `\n${advisory}`
     process.stdout.write(`${table}\n`)
   }
   return 0

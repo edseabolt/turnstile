@@ -1,8 +1,8 @@
 /**
  * @fileoverview Commit-lint tests: the decision matrix for
- * `ToolPolicy.guardCommitMessage` — the three enforcement modes (off/shadow/
- * enforce) crossed with the three payload shapes (a matching conventional
- * message, a non-conventional one, and an uninspectable form) — plus the
+ * `ToolPolicy.guardCommitMessage` — the guard crossed with the three payload
+ * shapes (a matching conventional message, a non-conventional one, and an
+ * uninspectable form) — plus the
  * shell-separator parsing negatives, the `-m`/`-F` argument extraction, and the
  * compile-once + invalid-config fallback of `commitFormat`.
  */
@@ -72,12 +72,13 @@ function allows(fn: () => void): void {
 }
 
 /**
- * The commit-lint decision matrix: modes (off/shadow/enforce) crossed with the
- * three payload shapes (matching / non-conventional / uninspectable). A
- * matching message never blocks; a non-conventional or uninspectable one
- * journals a block and throws only under `enforce`.
+ * The commit-lint decision matrix: the guard (on via `commitMessages: true`)
+ * crossed with the three payload shapes (matching / non-conventional /
+ * uninspectable), and the `commitMessages: false` off switch. A matching
+ * message never blocks; a non-conventional or uninspectable one journals a
+ * block and throws; the off switch never throws and journals nothing.
  */
-test("guardCommitMessage: mode x payload decision matrix", () => {
+test("guardCommitMessage: payload decision matrix and the commitMessages off switch", () => {
   const payloads = {
     match: 'git commit -m "feat: add the thing"',
     noMatch: 'git commit -m "this is not conventional"',
@@ -89,39 +90,27 @@ test("guardCommitMessage: mode x payload decision matrix", () => {
     uninspectable: "commit-message-uninspectable",
   }
   for (const [key, command] of Object.entries(payloads)) {
-    for (const mode of ["off", "shadow", "enforce"] as const) {
-      const { policy, entries } = makePolicy({ gitGates: { mode } })
-      const reason = reasons[key as keyof typeof reasons]
-      const invoke = () => policy.guardCommitMessage("bash", command, "s1")
-      if (mode === "off") {
-        // off is a silent no-op: never throws, journals nothing.
-        allows(invoke)
-        assert.deepEqual(
-          entries.filter((e) => e.type === "blocked"),
-          [],
-        )
-        continue
-      }
-      if (reason === null) {
-        // A matching conventional message never blocks in any mode.
-        allows(invoke)
-        continue
-      }
-      // shadow journals a block but does not throw; enforce journals and throws.
-      const expectThrow = mode === "enforce"
-      if (expectThrow) blocks(invoke)
-      else allows(invoke)
-      const blocks_ = blockEntries(entries, reason)
-      assert.equal(blocks_.length, 1, `expected one ${reason} block under ${mode}`)
-      assert.equal(blocks_[0].mode, mode)
+    const { policy, entries } = makePolicy({ gitGates: { commitMessages: true } })
+    const reason = reasons[key as keyof typeof reasons]
+    const invoke = () => policy.guardCommitMessage("bash", command, "s1")
+    if (reason === null) {
+      // A matching conventional message never blocks.
+      allows(invoke)
+      continue
     }
+    blocks(invoke)
+    assert.equal(blockEntries(entries, reason).length, 1, `expected one ${reason} block`)
+    // The off switch disables the guard entirely: no block, no throw.
+    const off = makePolicy({ gitGates: { commitMessages: false } })
+    allows(() => off.policy.guardCommitMessage("bash", command, "s1"))
+    assert.deepEqual(blockEntries(off.entries, reason), [])
   }
 })
 
-/** A matching conventional message is allowed in every shape and mode. */
+/** A matching conventional message is allowed in every shape. */
 test("guardCommitMessage: accepts conventional messages (single/double quoted)", () => {
-  for (const mode of ["off", "shadow", "enforce"] as const) {
-    const { policy } = makePolicy({ gitGates: { mode } })
+  {
+    const { policy } = makePolicy()
     allows(() => policy.guardCommitMessage("bash", 'git commit -m "feat: add x"', "s1"))
     allows(() => policy.guardCommitMessage("bash", "git commit -m 'feat: add x'", "s1"))
     allows(() => policy.guardCommitMessage("bash", "git commit -m 'fix(scope): y'", "s1"))
@@ -139,15 +128,15 @@ test("guardCommitMessage: accepts conventional messages (single/double quoted)",
  */
 test("guardCommitMessage: rejects glued --message= and -m<msg> forms", () => {
   for (const command of ["git commit --message=ci: pipeline", "git commit -mfeat: glued"]) {
-    const { policy } = makePolicy({ gitGates: { mode: "enforce" } })
+    const { policy } = makePolicy()
     blocks(() => policy.guardCommitMessage("bash", command, "s1"))
   }
 })
 
-/** A non-conventional first-line message is blocked under enforce, audited under shadow. */
+/** A non-conventional first-line message is blocked. */
 test("guardCommitMessage: rejects non-conventional messages", () => {
   for (const bad of ["not a commit", "feat x", "fixes: plural", "feature: bogus"]) {
-    const { policy } = makePolicy({ gitGates: { mode: "enforce" } })
+    const { policy } = makePolicy()
     assert.throws(
       () => policy.guardCommitMessage("bash", `git commit -m "${bad}"`, "s1"),
       (e: Error) => e instanceof BlockError && e.message.includes(bad),
@@ -157,7 +146,7 @@ test("guardCommitMessage: rejects non-conventional messages", () => {
 
 /** The BlockError names the offending subject and the expected conventional shape. */
 test("guardCommitMessage: the enforce error names the subject and the expected shape", () => {
-  const { policy } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy } = makePolicy()
   assert.throws(
     () => policy.guardCommitMessage("bash", 'git commit -m "garbage subject"', "s1"),
     (e: Error) => {
@@ -168,8 +157,8 @@ test("guardCommitMessage: the enforce error names the subject and the expected s
   )
 })
 
-/** Each uninspectable form fail-closes under enforce; a bare commit is uninspectable too. */
-test("guardCommitMessage: each uninspectable form blocks under enforce", () => {
+/** Each uninspectable form fail-closes; a bare commit is uninspectable too. */
+test("guardCommitMessage: each uninspectable form blocks", () => {
   for (const command of [
     "git commit -F /tmp/p.txt",
     "git commit --file /tmp/p.txt",
@@ -180,7 +169,7 @@ test("guardCommitMessage: each uninspectable form blocks under enforce", () => {
     "git commit",
     "git commit -m",
   ]) {
-    const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+    const { policy, entries } = makePolicy()
     blocks(() => policy.guardCommitMessage("bash", command, "s1"))
     assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 1)
   }
@@ -188,9 +177,9 @@ test("guardCommitMessage: each uninspectable form blocks under enforce", () => {
 
 /** --amend with -m is inspectable: the message is linted, not treated as uninspectable. */
 test("guardCommitMessage: --amend -m is inspectable (lints the message)", () => {
-  const enforce = makePolicy({ gitGates: { mode: "enforce" } })
+  const enforce = makePolicy()
   blocks(() => enforce.policy.guardCommitMessage("bash", 'git commit --amend -m "garbage"', "s1"))
-  const ok = makePolicy({ gitGates: { mode: "enforce" } })
+  const ok = makePolicy()
   allows(() => ok.policy.guardCommitMessage("bash", 'git commit --amend -m "feat: x"', "s1"))
 })
 
@@ -199,7 +188,7 @@ test("guardCommitMessage: --amend -m is inspectable (lints the message)", () => 
  * (a hyphenated subcommand word, never equal to `commit`) are never linted.
  */
 test("guardCommitMessage: does not parse substrings as commit invocations", () => {
-  const { policy } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy } = makePolicy()
   allows(() => policy.guardCommitMessage("bash", "echo git commit", "s1"))
   allows(() => policy.guardCommitMessage("bash", 'echo "git commit -m bad"', "s1"))
   allows(() => policy.guardCommitMessage("bash", "git commit-graph show", "s1"))
@@ -220,7 +209,7 @@ test("guardCommitMessage: detects a commit after each shell separator", () => {
     cr: 'git commit -m "feat: a"\rgit commit -m "bad"',
   }
   for (const [name, command] of Object.entries(separators)) {
-    const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+    const { policy, entries } = makePolicy()
     blocks(() => policy.guardCommitMessage("bash", command, "s1"))
     assert.ok(
       blockEntries(entries, "invalid-commit-message").length === 1,
@@ -231,7 +220,7 @@ test("guardCommitMessage: detects a commit after each shell separator", () => {
 
 /** A quoted `-m` spanning a separator stays inside the message (not split). */
 test("guardCommitMessage: a quoted newline stays inside the message, not a separator", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   const command = 'git commit -m "feat: x\nbody line"'
   allows(() => policy.guardCommitMessage("bash", command, "s1"))
   assert.deepEqual(blockEntries(entries, "invalid-commit-message"), [])
@@ -239,15 +228,15 @@ test("guardCommitMessage: a quoted newline stays inside the message, not a separ
 
 /** Repeatable -m validates each message; a valid pair passes, a bad pair blocks. */
 test("guardCommitMessage: validates each repeatable -m message", () => {
-  const ok = makePolicy({ gitGates: { mode: "enforce" } })
+  const ok = makePolicy()
   allows(() => ok.policy.guardCommitMessage("bash", 'git commit -m "feat: a" -m "fix: b"', "s1"))
-  const bad = makePolicy({ gitGates: { mode: "enforce" } })
+  const bad = makePolicy()
   blocks(() => bad.policy.guardCommitMessage("bash", 'git commit -m "feat: a" -m "nope"', "s1"))
 })
 
 /** An empty or absent command fails open with misconfiguration telemetry. */
 test("guardCommitMessage: empty or absent command fails open", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   allows(() => policy.guardCommitMessage("bash", "", "s1"))
   allows(() => policy.guardCommitMessage("bash", undefined, "s1"))
   assert.ok(
@@ -257,16 +246,16 @@ test("guardCommitMessage: empty or absent command fails open", () => {
   )
 })
 
-/** commitMessages:false short-circuits the guard entirely (even under enforce). */
+/** commitMessages:false short-circuits the guard entirely. */
 test("guardCommitMessage: commitMessages:false disables linting", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", commitMessages: false } })
+  const { policy, entries } = makePolicy({ gitGates: { commitMessages: false } })
   allows(() => policy.guardCommitMessage("bash", "git commit -F /tmp/p.txt", "s1"))
   assert.deepEqual(blockEntries(entries, "commit-message-uninspectable"), [])
 })
 
 /** A non-string command is treated as empty and fails open. */
 test("guardCommitMessage: a non-string command fails open", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   allows(() => policy.guardCommitMessage("bash", 42, "s1"))
   assert.ok(entries.some((e) => e.type === "error" && /no command/.test(String(e.error))))
 })
@@ -303,12 +292,11 @@ test("guardCommitMessage: invalid commitFormat source journals a compile error a
 /**
  * A non-string commitFormat falls back to the conventional-commit default and
  * lints normally (the defensive fallback `mergeConfig` also normalizes away).
- * Under shadow the non-conventional subject journals an invalid-commit-message
- * block (no throw) and no config error is journaled.
+ * A non-conventional subject journals an invalid-commit-message block.
  */
 test("guardCommitMessage: a non-string commitFormat falls back to the default", () => {
   const { policy, entries } = makePolicy({ gitGates: { commitFormat: undefined } })
-  allows(() => policy.guardCommitMessage("bash", 'git commit -m "garbage"', "s1"))
+  blocks(() => policy.guardCommitMessage("bash", 'git commit -m "garbage"', "s1"))
   assert.deepEqual(blockEntries(entries, "invalid-commit-message").length, 1)
   assert.ok(!entries.some((e) => /commitFormat/.test(String(e.error ?? ""))))
 })
@@ -330,7 +318,7 @@ test("guardCommitMessage: the DEFAULT_COMMIT_FORMAT constant compiles as expecte
  * skips global options before resolving the subcommand.
  */
 test("guardCommitMessage: bare-word commit args and global-option commits are not false positives", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   allows(() => policy.guardCommitMessage("bash", "git log --grep commit", "s1"))
   allows(() => policy.guardCommitMessage("bash", "git status --porcelain commit", "s1"))
   allows(() => policy.guardCommitMessage("bash", "echo commit", "s1"))
@@ -347,18 +335,18 @@ test("guardCommitMessage: bare-word commit args and global-option commits are no
  * `invalid-commit-message` (never `commit-message-uninspectable`).
  */
 test("guardCommitMessage: bundled -m clusters are inspectable", () => {
-  const ok = makePolicy({ gitGates: { mode: "enforce" } })
+  const ok = makePolicy()
   allows(() => ok.policy.guardCommitMessage("bash", 'git commit -am "feat: x"', "s1"))
   allows(() => ok.policy.guardCommitMessage("bash", 'git commit -am"feat: x"', "s1"))
   allows(() => ok.policy.guardCommitMessage("bash", 'git commit -aqm "feat: x"', "s1"))
   assert.deepEqual(blockEntries(ok.entries, "commit-message-uninspectable"), [])
 
-  const bad = makePolicy({ gitGates: { mode: "enforce" } })
+  const bad = makePolicy()
   blocks(() => bad.policy.guardCommitMessage("bash", 'git commit -am "garbage"', "s1"))
   assert.equal(blockEntries(bad.entries, "invalid-commit-message").length, 1)
   assert.deepEqual(blockEntries(bad.entries, "commit-message-uninspectable"), [])
 
-  const noMsg = makePolicy({ gitGates: { mode: "enforce" } })
+  const noMsg = makePolicy()
   blocks(() => noMsg.policy.guardCommitMessage("bash", "git commit -am", "s1"))
   assert.equal(blockEntries(noMsg.entries, "commit-message-uninspectable").length, 1)
 })
@@ -369,18 +357,18 @@ test("guardCommitMessage: bundled -m clusters are inspectable", () => {
  * also blocks `commit-message-uninspectable`.
  */
 test("guardCommitMessage: a bundled cluster with an editor flag blocks uninspectable", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   blocks(() => policy.guardCommitMessage("bash", "git commit -aem", "s1"))
   assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 1)
 
-  const { policy: p2, entries: e2 } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy: p2, entries: e2 } = makePolicy()
   blocks(() => p2.guardCommitMessage("bash", "git commit -am -e", "s1"))
   assert.equal(blockEntries(e2, "commit-message-uninspectable").length, 1)
 })
 
 /** A bundled cluster without `-m` (e.g. `-aq`) has no message and blocks uninspectable. */
 test("guardCommitMessage: a bundled cluster without -m blocks uninspectable", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   blocks(() => policy.guardCommitMessage("bash", "git commit -aq", "s1"))
   assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 1)
 })
@@ -392,23 +380,20 @@ test("guardCommitMessage: a bundled cluster without -m blocks uninspectable", ()
  * reach the lint, none is lost to mispairing).
  */
 test("guardCommitMessage: bundled cluster advancement keeps later -m messages linted", () => {
-  const ok = makePolicy({ gitGates: { mode: "enforce" } })
+  const ok = makePolicy()
   allows(() => ok.policy.guardCommitMessage("bash", 'git commit -am "feat: a" -m "fix: b"', "s1"))
   assert.deepEqual(blockEntries(ok.entries, "commit-message-uninspectable"), [])
 
-  const bad = makePolicy({ gitGates: { mode: "enforce" } })
+  const bad = makePolicy()
   blocks(() => bad.policy.guardCommitMessage("bash", 'git commit -am "feat: a" -m "garbage"', "s1"))
   assert.equal(blockEntries(bad.entries, "invalid-commit-message").length, 1)
   assert.deepEqual(blockEntries(bad.entries, "commit-message-uninspectable"), [])
 })
 
-/**
- * Under shadow, a bundled `-am "garbage"` journals exactly one
- * `invalid-commit-message` block (no throw, no `commit-message-uninspectable`).
- */
-test("guardCommitMessage: shadow mode journals bundled -am invalid message without throwing", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "shadow" } })
-  allows(() => policy.guardCommitMessage("bash", 'git commit -am "garbage"', "s1"))
+/** The bundled `-am "garbage"` block is `invalid-commit-message`, never uninspectable. */
+test("guardCommitMessage: a bundled -am invalid message journals invalid-commit-message", () => {
+  const { policy, entries } = makePolicy()
+  blocks(() => policy.guardCommitMessage("bash", 'git commit -am "garbage"', "s1"))
   assert.equal(blockEntries(entries, "invalid-commit-message").length, 1)
   assert.equal(blockEntries(entries, "commit-message-uninspectable").length, 0)
 })

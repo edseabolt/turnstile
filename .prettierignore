@@ -3,6 +3,11 @@ package-lock.json
 # Ephemeral planning/session state (planned drafts, sessions, knowledge). Not
 # source: kept out of the formatting gate and not version-controlled.
 .opencode/
+# Plan files are pipeline-maintained bookkeeping surfaces whose exact bytes are
+# hash-keyed by the plan-approval gate (spec-region keying): a Prettier reflow
+# would invalidate every live approval. Explicit below the .opencode/ rule so
+# the contract survives any future loosening of the parent entry.
+.opencode/plans/
 # Generated evidence artifact: its bytes must stay the emitter's own, so the
 # committed sibling markdown still matches the validator's re-render byte-for-byte.
 .turnstile/

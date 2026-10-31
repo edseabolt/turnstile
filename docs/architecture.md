@@ -59,7 +59,10 @@ Human decision points exist at every gate: a literal `USER WAIVER:`
 (scope-aware — naming configured agent stages in the waiver text scopes it to
 those stages' gates; an unscoped waiver covers every gate) or `PLAN APPROVED:`
 in the **user's own prompt** (never in an agent-composed dispatch prompt), or
-an interactive permission ask the plugin escalates when a gate is red.
+an interactive permission ask the plugin escalates when a gate is red —
+except for the landing/hands-on repeat-attempt ladder, which is waiver-only
+by default (`escalation: "block"`: a retried attempt re-blocks with no ask;
+`escalation: "ask"` restores the interactive ask).
 
 ---
 
@@ -71,34 +74,42 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 
 ![Module map](images/d01-modules.svg)
 
-| Module                    | Responsibility                                                                                                                                                                                                           |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `turnstile.ts`            | Entry point: module shape + factory; its doc comment is a contract-level summary pointing here as the authoritative reference                                                                                            |
-| `src/setup.ts`            | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                   |
-| `src/host-compat.ts`      | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                               |
-| `src/hooks-core.ts`       | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                         |
-| `src/hooks-session.ts`    | Session-surface hook bodies: prompt admission, decoding clamps, compaction snapshot                                                                                                                                      |
-| `src/hooks-permission.ts` | Permission-surface hook body: plan-gate and landing-gate escalation (`evaluate`, forces `ask`)                                                                                                                           |
-| `src/hooks-tool.ts`       | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                      |
-| `src/hooks-events.ts`     | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, the session-end summary (`session.idle`), re-subscription under a throw-only restart budget |
-| `src/delivery.ts`         | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                   |
-| `src/config.ts`           | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                                        |
-| `src/state.ts`            | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                               |
-| `src/ledger.ts`           | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                                                                             |
-| `src/markers.ts`          | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                                                                   |
-| `src/gates.ts`            | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                       |
-| `src/gates-dispatch.ts`   | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                                                                   |
-| `src/gates-plan.ts`       | Plan-approval and decomposition gates, with the plans-dir scan and its cache                                                                                                                                             |
-| `src/gates-common.ts`     | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                         |
-| `src/tool-policy.ts`      | Stateless bash denylist, commit-message lint, landing-gate matching — throws the same `BlockError` as gates                                                                                                              |
-| `src/empty-diff.ts`       | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true)    |
-| `src/evidence.ts`         | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                    |
-| `src/fingerprint.ts`      | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                            |
-| `src/bounded.ts`          | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                               |
-| `src/journal.ts`          | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends, the fail-open journal reader (`readJournalEntries`)                            |
-| `src/policy.ts`           | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers)             |
-| `src/summary.ts`          | Session-end summary counting + one-line formatting over parsed journal entries (`countSessionActivity`, `formatSessionSummary`, `formatAllGreenLine`) — pure and host-free, shared with the observe-period summary       |
-| `src/types.ts`            | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                         |
+| Module                      | Responsibility                                                                                                                                                                                                                                                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `turnstile.ts`              | Entry point: module shape + factory; its doc comment is a contract-level summary pointing here as the authoritative reference                                                                                                                                                                                                          |
+| `src/setup.ts`              | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                                                                                                                 |
+| `src/host-compat.ts`        | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                                                                                                                                             |
+| `src/hooks-core.ts`         | Shared hook state and services, built once per setup: `TurnstileContext` (config load, journaler, gates, ledger, admission, marker parsing, verdict attribution)                                                                                                                                                                       |
+| `src/hooks-session.ts`      | Session-surface hook bodies: prompt admission, decoding clamps, the primary-turn context body (draft telemetry + policy/nudge injection), compaction snapshot                                                                                                                                                                          |
+| `src/generate-injection.ts` | Request-draft surface primitives: the usable-shape guard (`usableRequestDraft`), the in-place `appendSystemText` mutation, and the bounded content-free draft descriptor (`describeRequestDraft`) — pure, consumed by `hooks-core.ts`                                                                                                  |
+| `src/hooks-permission.ts`   | Permission-surface hook body: plan-gate (ask under `escalation: "ask"`, inert under `"block"`), landing-gate, and hands-on escalation (`evaluate`, forces `ask`)                                                                                                                                                                       |
+| `src/hooks-tool.ts`         | Tool-surface hook bodies: all `execute.before` gating; `execute.after` observation (marker parsing, verdict attribution, policy head/tail, config/marker surfacing)                                                                                                                                                                    |
+| `src/hooks-events.ts`       | Event-surface stream: child→parent edges, marker parsing from child text, permission ask/reply bookkeeping, inbox admission, the session-end summary (`session.idle`), re-subscription under a throw-only restart budget                                                                                                               |
+| `src/delivery.ts`           | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                                                                                                                                 |
+| `src/config.ts`             | Four-layer config (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts), per-key validation, `configDigest`                                                                                                                                                                                                      |
+| `src/state.ts`              | Gate-state shape: fresh `GateState` bucket, metering-counter clearing, snapshot and pipeline rendering, replay-merge carry                                                                                                                                                                                                             |
+| `src/ledger.ts`             | `GateLedger`: per-parent `GateState` buckets (LRU), child→parent edges, child-verdict store, journal replay, live-parent eviction protection                                                                                                                                                                                           |
+| `src/markers.ts`            | Pure parsing of `GATE:`/`VERDICT:` regexes, dedup with first-sight provenance, cross-child suppression                                                                                                                                                                                                                                 |
+| `src/child-registration.ts` | Pipeline-child registration boundary: `resolveChildStatus` (event agent-name precedence, then the child→parent edge + emitter fallback, fail-closed `"unknown"`), `isPipelineChildDispatch`, and the dispatch/delivery agent resolvers — consumed by `hooks-core.ts` and `hooks-tool.ts`                                               |
+| `src/gates.ts`              | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                                                                                                                                     |
+| `src/gates-dispatch.ts`     | Reviewer dispatch gate, loop caps, read horizon, ensemble completeness                                                                                                                                                                                                                                                                 |
+| `src/gates-plan.ts`         | Plan-approval and decomposition gates, with the plans-dir scan and its cache (per-file keys hash the spec region via `plan-region.ts`)                                                                                                                                                                                                 |
+| `src/plan-region.ts`        | The plan spec-region extractor (`planSpecRegion`): everything from the first top-level heading after a leading exact `# Progress` to EOF, with whole-file fallbacks on a missing/misplaced header or a progress-only file — the one shared slice behind approval capture, reconcile, and the durable sidecar key                       |
+| `src/maintenance.ts`        | Maintenance-dispatch classification rules (`maintenanceDeclared`, `maintenanceFileEligible`, `maintenanceDiffEligible`, `maintenanceMarkerSensitive`): the structural eligibility of a bookkeeping-only executor dispatch (declaration + non-src diff surfaces; marker-validated files need a passing marker guard)                    |
+| `src/gates-common.ts`       | Shared `BlockError`, waiver coverage semantics, and pure journal-entry composers                                                                                                                                                                                                                                                       |
+| `src/tool-policy.ts`        | Stateless bash denylist, commit-message lint, landing-gate matching, parent hands-on gate — throws the same `BlockError` as gates; the block-journal seam (`journalBlocked`) and the guard ladder tail (`guardLadderTail`) are shared single implementations behind the landing, commit-lint, and hands-on ladders                     |
+| `src/bash-write.ts`         | Stateless write-shape classifier for bash/shell commands (`classifyBashWrite`: `gate` / `telemetry` / `none`) plus the shell-aware tokenizer (`splitCommands`/`tokenizeWords`, re-exported by `tool-policy.ts`) — shared by the hands-on bash telemetry and the bash write gate, no second parser                                      |
+| `src/scratch.ts`            | The scratch-target predicate (`isScratchTarget`): a write/edit target that resolves under the platform temp dir (realpath-based, fail-toward-gating on an unresolvable path) is zero-governance scratch — consumed by the write/edit arm's exemption; the bash write classifier is its second consumer (DRY anchor)                    |
+| `src/empty-diff.ts`         | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true)                                                                                                                  |
+| `src/evidence.ts`           | Correlates `GATE: PASS` against recorded exit-0 test executions per parent, with an optional task-window lower bound and a pure-read snapshot for refusal diagnostics                                                                                                                                                                  |
+| `src/fingerprint.ts`        | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                                                                                                                                          |
+| `src/task-scope.ts`         | The interrupted-review predicate (`isInterruptedReview`): a retired task whose review was interrupted mid-flight (green gate, ≥1 counted reviewer dispatch or a waived reviewer round, no credited approval) carries its earned context through `mergeAfterReplay` — consumed by `state.ts` and `fingerprint.ts`                       |
+| `src/bounded.ts`            | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                                                                                                                                             |
+| `src/journal.ts`            | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends, the fail-open journal reader (`readJournalEntries`)                                                                                                                                          |
+| `src/intent.ts`             | Stateless prompt-intent classifier (`classifyIntent`): implementation-intent signals (work verbs at code, gh issue refs, `*.md` plan refs, plan-dispatch phrasing) vs. deliberate non-intent framings (questions, explanations, status, chat) — total on any string, never throws, consumed by prompt admission for the advisory nudge |
+| `src/policy.ts`             | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers), plus the advisory intent-nudge text (`intentNudge`, marker-syntax-free)                                                  |
+| `src/summary.ts`            | Session-end summary counting + one-line formatting over parsed journal entries (`countSessionActivity`, `formatSessionSummary`, `formatAllGreenLine`) — pure and host-free, shared with the observe-period summary                                                                                                                     |
+| `src/types.ts`              | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                                                                                                                                       |
 
 ---
 
@@ -116,13 +127,13 @@ one-time `compat` warning (`event:"unknown-host"`); its heartbeat reads
 pre-guard behavior with `compat:"compatible"` on the heartbeat. The guard is
 fail-open: evaluation or toast failures are journaled, never thrown.
 
-`setup(h)` then registers seven interception points, each tracked for disposal and
+`setup(h)` then registers eight interception points, each tracked for disposal and
 counted into the load heartbeat (`type:"setup"`). The hook bodies live in the
 per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 
 ![Hook surface](images/d02-hooks.svg)
 
-**`session.hook` ×3** (`hooks-session.ts`)
+**`session.hook` ×4** (`hooks-session.ts`)
 
 - **`prompt`** → `admitPrompt` (`hooks-core.ts`): the single prompt-admission body,
   shared with the inbox stream and deduped on the host message id. Marks the
@@ -151,9 +162,41 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   of the two literals (case, separator, or colon variants) — diagnostic-only:
   the strict
   literal capture is untouched, the hits are journaled `type:"marker"` and
-  parked for one-shot surfacing.
-- **`generate`** → decoding clamps: reviewer/plan-reviewer temperature forced
-  to 0; executor/test-runner/debugger clamped ≤ 0.2.
+  parked for one-shot surfacing. Under `intentNudge` (default on), admission
+  also classifies the prompt via `classifyIntent`
+  (`src/intent.ts`): a detected implementation intent with no plan approval
+  in the same admission journals `type:"intent"` (sessionID + signal kind)
+  and arms a one-shot advisory nudge — one nudge per detected intent signal
+  per session (a plan approval clears the latch), delivered by prepending
+  marker-syntax-free advisory prose to the first task delivery or the
+  parent's own read delivery (`prependIntentNudge` / `prependIntentNudgeRead`
+  in `hooks-core.ts`, text from `intentNudge` in `src/policy.ts`). Advisory
+  only: nothing gates, a throw in classification journals `type:"error"` and
+  never propagates from the prompt path.
+- **`generate`** → decoding clamps (`applyClamps`): reviewer/plan-reviewer
+  temperature forced to 0; executor/test-runner/debugger clamped ≤ 0.2 — plus
+  one-per-boot draft telemetry (`observeRequestDraft`, a bounded
+  `type:"generate-draft"` descriptor). Background generations (goal judge,
+  warming) stay clean of policy prose.
+- **`context`** → the primary-turn surface (pre-first-model-call; on v2.2.x
+  hosts the main conversation turn fires `session.context`, not
+  `session.generate`). The body applies the same decoding clamps via the
+  shared `applyClamps` helper (registering both hooks repairs the clamp gap —
+  primary turns never rode `session.generate`), observes the draft once per
+  boot, then `injectContextPolicy` (`hooks-core.ts`) injects the orchestrator
+  policy head (`orchestratorPolicyFor`) and any pending intent nudge into the
+  draft's `system` array in place — the host builds the model request from the
+  same object, so the prose precedes the first model call. Injection is
+  parent-guarded: a config-known pipeline agent name on the draft, a
+  registered child→parent edge (`ledger.childToParent`), or an unresolvable
+  session id each skips with a journaled `reason`
+  (`context-agent` / `context-child` / `context-no-id`). The shared
+  `policyInjected` latch (src/state.ts) dedupes against the `execute.after`
+  prepend — whichever channel fires first wins — and the nudge is consumed
+  one-shot from the same pending map. Fail-open throughout: an unusable draft
+  shape journals one `type:"error"` row per boot and degrades to the
+  `execute.after` fallback channel; a head append failure keeps the nudge
+  pending; nothing ever throws.
 - **`compaction`** → appends a system block demanding verbatim preservation of
   open findings, AC status, and the last GATE/VERDICT markers, then the live
   gate-state snapshot (`formatGateSnapshot`) from the ledger — concrete state,
@@ -171,9 +214,26 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   decomposition gate, reviewer gate (green tests + round cap 2), one-shot
   grants; the counters advance at guard exit, only for admitted dispatches.
 - `read`: parent-keyed read horizon — warn at 8 whole-file reads (once per task), block at 15.
-- `bash`/`shell`: bash denylist → commit-message lint → landing gate (with the empty-diff
-  exemption, default on — ref-equality with upstream, force pushes always gate; `false` opts out).
-- `write`/`edit`: path denylist.
+- `bash`/`shell`: bash denylist → commit-message lint → hands-on bash
+  telemetry + write-shaped bash gate (parent sessions and non-pipeline
+  subagents — a registered pipeline child's own file-writing bash is the
+  executor's own work and never gates, keyed off the event's agent name with
+  the child→parent edge + emitter fallback behind it (`resolveChildStatus`),
+  fail-closed on an unresolved agent, after the telemetry row is journaled)
+  → landing gate (with the empty-diff
+  exemption, default on — ref-equality with upstream, force pushes always
+  gate; `false` opts out).
+- `write`/`edit`: path denylist → scratch-target exemption (a target
+  resolving under the platform temp dir is zero-governance scratch work —
+  allowed with a `{type:"tool", scratch:true}` audit row carrying the target
+  path, before any once-grant consume or ladder run; the denylist decision
+  wins first) → hands-on gate (parent sessions and
+  non-pipeline subagents — a registered pipeline child's write/edit is the
+  executor's own work and never gates; the exemption keys off the event's
+  agent name first — a configured pipeline name alone exempts — with the
+  child→parent edge + emitter fallback behind it, so an unresolved or
+  non-pipeline agent fails closed; the denylist decision wins first and the
+  journal reasons stay disjoint).
 
   The deliberate blocks above (bash denylist, commit lint, landing gate) all
   rethrow through the same `guardedToolBefore` choke point in `setup.ts`,
@@ -202,15 +262,26 @@ re-checks when a child→parent edge resolves late (a background dispatch, via
 bounded to the parent's current task window (stamped at prompt admission).
 
 **`permission.hook("evaluate")`** (`hooks-permission.ts`) — never blocks; when the plan gate is red on
-a task dispatch, or a push lacks reviewer approval, it _forces_ an interactive
-`ask` to the user. Replies are matched to recorded ask request-IDs only:
-`always` stands a verdict/approval, `once` releases exactly one dispatch/push,
+a task dispatch, the task arm's behavior follows `escalation`: under `"ask"` it _forces_ an interactive
+`ask` to the user, while under the default `"block"` it stays inert — the dispatch guard
+(`enforcePlanApproval`) blocks with the stop-and-report instruction and release flows via
+`PLAN APPROVED:` plus the sticky waiver/ask paths. The landing arm does the same when a push lacks reviewer approval and the
+parent carries a live `pendingLandingAsk` latch; the write/edit arm does the
+same for the hands-on gate: a
+parent `write`/`edit` with a live `pendingHandsOnAsk` latch (each armed by the
+guard only under `escalation: "ask"` — under the default `"block"` the repeat
+attempt re-blocks and no latch is ever armed, so both arms stay inert by
+construction) is forced to `ask`. Replies are matched to recorded ask request-IDs only:
+`always` stands a verdict/approval, `once` releases exactly one dispatch/push/edit,
 `reject` keeps the gate red. Both arms are inert while the parent's gate
 enforcement is suspended (§5's suspension overlay): the task arm returns
 before the ask and its latch, and the landing arm returns after deleting the
 parent's armed `pendingLandingAsk` latch (the one-shot consume), so a latch
 armed before the suspension cannot fire a mislabeled landing ask after a
-`TURNSTILE ON:` resume — the guard re-arms on a fresh repeat attempt.
+`TURNSTILE ON:` resume — the guard re-arms on a fresh repeat attempt. The
+landing and hands-on arms consume their latches the same one-shot way, and
+all three arms are inert when the parent's gate state carries the matching
+standing release (`handsOnRelease` / an executor-scoped waiver).
 
 **`event.subscribe` loop** (`hooks-events.ts`) — child→parent edges (`session.created`), marker
 parsing from streamed child text (`message.part.updated`,
@@ -255,8 +326,25 @@ A typical enforced run:
 3. The plan-reviewer must APPROVE. A BLOCK dead-ends nothing: the plan is
    revised and re-review is attributed via round-scoped evidence (the newest
    dispatched plan-reviewer round wins within the parent).
-4. The executor is gated on plan approval; its result must cite `chunk-N` /
-   `AC-n` entries from the decomposition.
+4. The executor is gated on plan approval (keyed on the plan's **spec
+   region** — everything from `# Objective` onward; the leading `# Progress`
+   section is pipeline-maintained and excluded from the hashed key, so a
+   progress-note edit keeps the approval live while any spec edit invalidates
+   it); its result must cite `chunk-N` / `AC-n` entries from the
+   decomposition.
+   **Maintenance dispatches**: an executor dispatch whose prompt declares
+   maintenance scope for the live bound plan (names the plan + the literal
+   word "maintenance") AND whose current working-tree diff touches only
+   non-src surfaces (the active plan file under the configured `plansDir`,
+   `docs/*.md`, `README.md`/`CONTRIBUTING.md`,
+   `agents/*.md` — marker-validated ones only when the repo's
+   `scripts/check-markers.mjs` guard passes) rides a lighter path: it skips
+   the plan-approval and decomposition gates (without consuming a pending
+   plan-gate once-grant) and journals
+   `{type:"maintenance", capped:false}`, capped at 4 per plan (a cap-exceeded
+   attempt escalates like any blocked dispatch). Any `src/`, `tests/`,
+   `bin/`, `scripts/`, or config/schema/example touch gates it as ordinary
+   implementation work.
 5. The test-runner's `GATE: PASS` may require corroborating exit-0 bash
    evidence (`gateEvidence:"enforce"`); without it the flag is held as
    `unverifiedPass` and promoted when evidence arrives — including when a
@@ -275,22 +363,31 @@ A typical enforced run:
 All state is keyed per parent session. `replayGrace` gives restart-restored
 flags a one-prompt survival window; continuation carry (default on) re-arms
 it when a continuing prompt has an unchanged worktree fingerprint and earned
-credit (a green test gate or a reviewer approval).
+credit (a green test gate or a reviewer approval). A retired task's credit
+also rides the same window when the review phase was interrupted mid-flight:
+a green test gate, at least one counted reviewer dispatch or waived reviewer
+round, and no credited reviewer approval (`isInterruptedReview`,
+`src/task-scope.ts`) — both the live abort path and the restart-replay path
+recover identically, and the journaled `continuation` row carries
+`recovery: true` in that case. The recovery re-opens the retired task's
+plan-bound scope, which then persists like any live plan-bound green task
+(bounded by the ensemble cap and the landing gate, not by prompt count).
 
 ![Gate state machine](images/d04-gate-state.svg)
 
 ### What each gate blocks
 
-| Gate               | Guard                                            | Blocks                                                                                                                                                                                                                                                                                                                                                                                                                                                | Escape hatches                                                                                                                                                             |
-| ------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reviewer dispatch  | `guardReviewerDispatch`                          | reviewer task until `hasGatePass`; round cap 2 (a scoped waiver spends its own allowance: max 2 waiver-unblocked dispatches on `reviewWaiverRounds`, metered apart from `reviewRounds`)                                                                                                                                                                                                                                                               | `userWaiver` covering `reviewer` (unscoped covers every stage)                                                                                                             |
-| Plan approval      | `enforcePlanApproval`                            | executor task while any plan the dispatch resolves to (prompt-referenced → session-bound → all pending) is _pending_ — holds neither a current `hasPlanVerdict` (a bound approval (dispatch-named plan) is stale only on that plan's edit/removal (`plan-edited` / `plan-missing`); unbound approvals go stale on any plans-dir change (`signature-mismatch`; a same-content move survives)) nor a durable approved-plan record for this project (§6) | `userWaiver` covering `plan-reviewer` or `executor` (the plan-gate stage group; unscoped covers every stage), `PLAN APPROVED:`, permission `always`, one-shot `once` grant |
-| Decomposition      | `enforceDecomposition`                           | executor task without a chunk cite when the resolved plan (dispatch-named → session-bound → first sorted _pending_ decomposed) carries `## Decomposition`                                                                                                                                                                                                                                                                                             | —                                                                                                                                                                          |
-| Loop caps / budget | `guardDispatchBudget`                            | planner>3, plan-reviewer>3, test-runner>4, total>16 — a block on an edge-registered child carries the end-the-turn-and-report clause (it never admits a user prompt) and stamps `parent` on the entries                                                                                                                                                                                                                                               | `userWaiver` covering the dispatched stage (unscoped covers every stage); the parent's next prompt (releases the registered children's counters)                           |
-| Read horizon       | `guardReadLimit`                                 | whole-file read #15+ per parent (warn once at 8)                                                                                                                                                                                                                                                                                                                                                                                                      | —                                                                                                                                                                          |
-| Reviewer ensemble  | `reviewEnsembleComplete`                         | landing credit below 2 unwaived reviewer dispatches                                                                                                                                                                                                                                                                                                                                                                                                   | `reviewEnsemble:"advise"`                                                                                                                                                  |
-| Landing            | `guardLanding`                                   | `git push` without `hasReviewApprove`                                                                                                                                                                                                                                                                                                                                                                                                                 | permission `always` / `once` / provable empty diff (`emptyDiffExempt`)                                                                                                     |
-| Tool policy        | `guardBash` / `guardCommitMessage` / `guardPath` | denied git operations (worktree, branch switch, merge, `gh pr`), non-conforming commit subjects (`enforce` mode)                                                                                                                                                                                                                                                                                                                                      | mode `shadow` / `off`                                                                                                                                                      |
+| Gate               | Guard                                            | Blocks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Escape hatches                                                                                                                                                             |
+| ------------------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reviewer dispatch  | `guardReviewerDispatch`                          | reviewer task until `hasGatePass`; round cap 2 (a scoped waiver spends its own allowance: max 2 waiver-unblocked dispatches on `reviewWaiverRounds`, metered apart from `reviewRounds`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `userWaiver` covering `reviewer` (unscoped covers every stage)                                                                                                             |
+| Plan approval      | `enforcePlanApproval`                            | executor task while any plan the dispatch resolves to (prompt-referenced → session-bound → all pending) is _pending_ — holds neither a current `hasPlanVerdict` (a bound approval (dispatch-named plan) is stale only on that plan's **spec-region** edit/removal (`plan-edited` / `plan-missing`; the key hashes everything from `# Objective` onward, excluding the leading `# Progress` section, via `src/plan-region.ts` — a malformed or missing Progress header falls back to whole-file keying); unbound approvals go stale on any plans-dir change (`signature-mismatch`; a same-content move survives)) nor a durable approved-plan record for this project (§6)                                                                                                                                                                                                                                                                                                                                                                                          | `userWaiver` covering `plan-reviewer` or `executor` (the plan-gate stage group; unscoped covers every stage), `PLAN APPROVED:`, permission `always`, one-shot `once` grant |
+| Decomposition      | `enforceDecomposition`                           | executor task without a chunk cite when the resolved plan (dispatch-named → session-bound → first sorted _pending_ decomposed) carries `## Decomposition`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | —                                                                                                                                                                          |
+| Loop caps / budget | `guardDispatchBudget`                            | planner>3, plan-reviewer>3, test-runner>4, total>16 — a block on an edge-registered child carries the end-the-turn-and-report clause (it never admits a user prompt) and stamps `parent` on the entries                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `userWaiver` covering the dispatched stage (unscoped covers every stage); the parent's next prompt (releases the registered children's counters)                           |
+| Read horizon       | `guardReadLimit`                                 | whole-file read #15+ per parent (warn once at 8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | —                                                                                                                                                                          |
+| Reviewer ensemble  | `reviewEnsembleComplete`                         | landing credit below 2 unwaived reviewer dispatches                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `reviewEnsemble:"advise"`                                                                                                                                                  |
+| Landing            | `guardLanding`                                   | `git push` without `hasReviewApprove` — under `escalation: "ask"` a repeat attempt (or a credited first attempt) journals the permission ask and arms the latch; under the default `"block"` it re-blocks (no ask; within-TTL dedupe hits take the block path too)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | reviewer `VERDICT: APPROVE` / `PLAN APPROVED:` / permission `always` / `once` / provable empty diff (`emptyDiffExempt`)                                                    |
+| Hands-on           | `guardHandsOn` / `guardBashWrite`                | parent-session and non-pipeline-subagent `write`/`edit` (always on; a registered pipeline child never gates — a configured pipeline agent name on the event exempts, with the child→parent edge + emitter fallback behind it via `resolveChildStatus`, fail-closed on an unresolved agent; plan approval does not release it) and, via `guardBashWrite` (`toolPolicy.bashWriteGate`, default true), confident file-writing bash commands (`cat > f`, `echo x >> f`, `tee f`, `sed -i`/`--in-place`, `cp`/`mv`/`dd`/`truncate`/`touch`) — output capture (`> /dev/null`, `npm test > log`), `2>&1`, heredoc-bearing commands (`cat <<EOF`: body lines are stdin data, so the command is observed, never gated), `tee /dev/null`/fd-dup operands, and `dd of=/dev/...` never gate, and every write-shaped command journals `handsOn` telemetry via `observeBashWrite` — under `escalation: "ask"` a repeat attempt journals the permission ask and arms the latch; under the default `"block"` it re-blocks (no ask; within-TTL dedupe hits take the block path too) | `handsOnRelease` (permission `always`), `pendingOnceGrant.handsOn`, `userWaiver` covering `executor` (unscoped covers every stage)                                         |
+| Tool policy        | `guardBash` / `guardCommitMessage` / `guardPath` | denied git operations (worktree, branch switch, merge, `gh pr`), non-conforming commit subjects                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | the denylists default empty — configuring a rule is what turns it on; `TURNSTILE OFF:` suspends session-wide                                                               |
 
 ### Observe mode (adoption period)
 
@@ -343,25 +440,28 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 
 ### Key `GateState` fields (`src/types.ts`)
 
-| Field                                                                                        | Set by                                                                                                                                                                                                                             | Cleared by                                                                                                                                                  | Blocks                                                                                                                     |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `hasGatePass`                                                                                | first-sight `GATE: PASS`; evidence promotion; replay                                                                                                                                                                               | `GATE: FAIL` (latest-wins); prompt reset                                                                                                                    | reviewer dispatch                                                                                                          |
-| `unverifiedPass`                                                                             | `GATE: PASS` without correlated exit-0 test (`gateEvidence:"enforce"`)                                                                                                                                                             | green flip; FAIL; task reset                                                                                                                                | reviewer block reason becomes `gate-unverified`                                                                            |
-| `hasPlanVerdict`                                                                             | plan-reviewer APPROVE; `PLAN APPROVED:`; permission `always`; replay                                                                                                                                                               | BLOCK; signature mismatch; prompt reset                                                                                                                     | executor dispatch                                                                                                          |
-| `plansSignature`                                                                             | stamped at approval from the path-free plans-dir signature; replayed from the `plansSig` journal field; governs **unbound** approvals only                                                                                         | BLOCK; (unbound) plans-dir change ⇒ `signature-mismatch` STALE journaled + re-review                                                                        | stale unbound approvals                                                                                                    |
-| `approvedPlan` / `approvedPlanKey`                                                           | stamped at approval when the dispatch prompt names exactly one existing plan file (replayed from the `plan`/`planKey` journal fields); a bound approval is also recorded in the durable approved-plan sidecar (project-scoped, §6) | BLOCK; the bound plan's edit ⇒ `plan-edited` STALE; its removal ⇒ `plan-missing` STALE; prompt reset                                                        | stale bound approvals (per-plan staleness)                                                                                 |
-| `hasReviewApprove`                                                                           | reviewer APPROVE on task-result delivery, ensemble-gated; landing permission `always`; replay                                                                                                                                      | prompt reset                                                                                                                                                | `git push`                                                                                                                 |
-| `userWaiver`                                                                                 | `USER WAIVER:` in the user's prompt only (trace-gated quote, or `<present>` when `trace` is off)                                                                                                                                   | unscoped: the first reviewer dispatch it unlocks; prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags)                | every gate while unscoped; the named stages' gates when scoped (the plan gate is covered by `plan-reviewer` or `executor`) |
-| `userWaiverScope`                                                                            | parsed at capture from the waiver text — the configured agent names named in it (`parseWaiverScope`, `src/markers.ts`); `[]` = unscoped                                                                                            | prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags)                                                                  | none — scopes `userWaiver` to the named stages' gates (a name with no guarded gate scopes it to nothing)                   |
-| `userWaiverConsumed`                                                                         | the reviewer gate consuming an unscoped waiver                                                                                                                                                                                     | prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags)                                                                  | none — reports the consumed state to block messages and the compaction snapshot                                            |
-| `reviewWaiverRounds`                                                                         | scoped-waived reviewer dispatches (one allowance slot each)                                                                                                                                                                        | prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags; deliberately not shared with the replay-restored `reviewRounds`) | reviewer dispatch past the waiver allowance (`maxReviewerRounds` waiver-unblocked dispatches)                              |
-| `pendingOnceGrant.plan/.landing`                                                             | permission reply `once`                                                                                                                                                                                                            | consumed by one executor dispatch / one push                                                                                                                | per-reason keying prevents cross-consumption                                                                               |
-| `reviewRounds`, `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`, `totalDispatches` | dispatch guards                                                                                                                                                                                                                    | prompt reset                                                                                                                                                | round caps / budget                                                                                                        |
-| `reads`                                                                                      | `execute.before` increments; `execute.after` corrects a failed read                                                                                                                                                                | prompt reset                                                                                                                                                | warn once at 8 / block 15                                                                                                  |
-| `readWarned`                                                                                 | first string-output read at-or-past `readWarn`                                                                                                                                                                                     | prompt reset                                                                                                                                                | read-budget warn injection (once per task)                                                                                 |
-| `replayGrace`                                                                                | journal replay; continuation-carry re-arm                                                                                                                                                                                          | consumed by first `resetState`                                                                                                                              | one-prompt survival of restored flags                                                                                      |
-| `taskFingerprint`                                                                            | stamped when continuation carry is enabled (default on)                                                                                                                                                                            | new stamp                                                                                                                                                   | identity signal for carry                                                                                                  |
-| `lastGateMarker`, `lastVerdictMarker`                                                        | stamped at first-sight `GATE:`/`VERDICT:` (de-tokenized, so they cannot re-parse)                                                                                                                                                  | prompt reset                                                                                                                                                | rendered into the compaction snapshot; display only, never enforces                                                        |
+| Field                                                                                        | Set by                                                                                                                                                                                                                             | Cleared by                                                                                                                                                                                                  | Blocks                                                                                                                                          |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hasGatePass`                                                                                | first-sight `GATE: PASS`; evidence promotion; replay                                                                                                                                                                               | `GATE: FAIL` (latest-wins); prompt reset                                                                                                                                                                    | reviewer dispatch                                                                                                                               |
+| `unverifiedPass`                                                                             | `GATE: PASS` without correlated exit-0 test (`gateEvidence:"enforce"`)                                                                                                                                                             | green flip; FAIL; task reset                                                                                                                                                                                | reviewer block reason becomes `gate-unverified`                                                                                                 |
+| `hasPlanVerdict`                                                                             | plan-reviewer APPROVE; `PLAN APPROVED:`; permission `always`; replay                                                                                                                                                               | BLOCK; signature mismatch; prompt reset                                                                                                                                                                     | executor dispatch                                                                                                                               |
+| `plansSignature`                                                                             | stamped at approval from the path-free plans-dir signature; replayed from the `plansSig` journal field; governs **unbound** approvals only                                                                                         | BLOCK; (unbound) plans-dir change ⇒ `signature-mismatch` STALE journaled + re-review                                                                                                                        | stale unbound approvals                                                                                                                         |
+| `approvedPlan` / `approvedPlanKey`                                                           | stamped at approval when the dispatch prompt names exactly one existing plan file (replayed from the `plan`/`planKey` journal fields); a bound approval is also recorded in the durable approved-plan sidecar (project-scoped, §6) | BLOCK; the bound plan's edit ⇒ `plan-edited` STALE; its removal ⇒ `plan-missing` STALE; prompt reset                                                                                                        | stale bound approvals (per-plan staleness)                                                                                                      |
+| `hasReviewApprove`                                                                           | reviewer APPROVE on task-result delivery, ensemble-gated; landing permission `always`; replay                                                                                                                                      | prompt reset                                                                                                                                                                                                | `git push`                                                                                                                                      |
+| `userWaiver`                                                                                 | `USER WAIVER:` in the user's prompt only (trace-gated quote, or `<present>` when `trace` is off)                                                                                                                                   | unscoped: the first reviewer dispatch it unlocks; prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags)                                                                | every gate while unscoped; the named stages' gates when scoped (the plan gate is covered by `plan-reviewer` or `executor`)                      |
+| `userWaiverScope`                                                                            | parsed at capture from the waiver text — the configured agent names named in it (`parseWaiverScope`, `src/markers.ts`); `[]` = unscoped                                                                                            | prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags)                                                                                                                  | none — scopes `userWaiver` to the named stages' gates (a name with no guarded gate scopes it to nothing)                                        |
+| `userWaiverConsumed`                                                                         | the reviewer gate consuming an unscoped waiver                                                                                                                                                                                     | prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags)                                                                                                                  | none — reports the consumed state to block messages and the compaction snapshot                                                                 |
+| `reviewWaiverRounds`                                                                         | scoped-waived reviewer dispatches (one allowance slot each)                                                                                                                                                                        | prompt reset (carried one prompt through `mergeAfterReplay` like the restart-sticky flags; deliberately not shared with the replay-restored `reviewRounds`)                                                 | reviewer dispatch past the waiver allowance (`maxReviewerRounds` waiver-unblocked dispatches)                                                   |
+| `pendingOnceGrant.plan/.landing`                                                             | permission reply `once`                                                                                                                                                                                                            | consumed by one executor dispatch / one push                                                                                                                                                                | per-reason keying prevents cross-consumption                                                                                                    |
+| `pendingOnceGrant.handsOn`                                                                   | permission reply `once` on a hands-on ask                                                                                                                                                                                          | consumed by one parent write/edit or one gate-tier bash write (the bash consume runs inside `guardBashWrite`, after its flag and verdict checks); prompt reset; dropped by `mergeAfterReplay` (task-scoped) | per-reason keying prevents cross-consumption                                                                                                    |
+| `handsOnBlocks`                                                                              | `guardHandsOn` on a parent write/edit                                                                                                                                                                                              | prompt reset; dropped by `mergeAfterReplay` (task-scoped); never replay-restored (a restart mid-task re-arms the ladder — fail-toward-strict)                                                               | arms the hands-on permission ask on a repeat attempt under `escalation: "ask"` (`prior >= 1`); under the default `"block"` the repeat re-blocks |
+| `handsOnRelease`                                                                             | permission reply `always` on a hands-on ask                                                                                                                                                                                        | prompt reset; restart-sticky — carried through `mergeAfterReplay` and restored by replay (a restart mid-task keeps it)                                                                                      | standing release of the hands-on gate for the task                                                                                              |
+| `reviewRounds`, `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`, `totalDispatches` | dispatch guards                                                                                                                                                                                                                    | prompt reset                                                                                                                                                                                                | round caps / budget                                                                                                                             |
+| `reads`                                                                                      | `execute.before` increments; `execute.after` corrects a failed read                                                                                                                                                                | prompt reset                                                                                                                                                                                                | warn once at 8 / block 15                                                                                                                       |
+| `readWarned`                                                                                 | first string-output read at-or-past `readWarn`                                                                                                                                                                                     | prompt reset                                                                                                                                                                                                | read-budget warn injection (once per task)                                                                                                      |
+| `replayGrace`                                                                                | journal replay; continuation-carry re-arm                                                                                                                                                                                          | consumed by first `resetState`                                                                                                                                                                              | one-prompt survival of restored flags                                                                                                           |
+| `taskFingerprint`                                                                            | stamped when continuation carry is enabled (default on)                                                                                                                                                                            | new stamp                                                                                                                                                                                                   | identity signal for carry                                                                                                                       |
+| `lastGateMarker`, `lastVerdictMarker`                                                        | stamped at first-sight `GATE:`/`VERDICT:` (de-tokenized, so they cannot re-parse)                                                                                                                                                  | prompt reset                                                                                                                                                                                                | rendered into the compaction snapshot; display only, never enforces                                                                             |
 
 ---
 
@@ -371,17 +471,25 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (26 entry types:
-  `setup`, `dispatch`, `gate`, `plan`, `verdict`, `ensemble`, `blocked`,
+- **`turnstile.jsonl`** — the always-on audit trail (33 entry types:
+  `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
+  `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
-  `continuation`, `child-reset`, `evidence`, `violation`, `tool`, `error`,
+  `continuation`, `child-reset`, `child-edge`, `evidence`, `violation`, `tool`,
+  `error`,
   `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
-  `session-summary`, `compat`). A `dispatch` entry is written at
+  `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
+  `task-complete`, `plan-rekey`). A `dispatch` entry is written at
   guard exit and stamps `blocked:true` when a guard rejected the attempt (the
   guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
   excludes the stamp from its dispatches counter to avoid a double count).
   That same guard exit is where the admitted dispatch is metered against the
-  loop counters, so a blocked attempt leaves every counter untouched.
+  loop counters, so a blocked attempt leaves every counter untouched. An
+  admitted **maintenance dispatch** (bookkeeping-only, lighter path —
+  §4) journals one `{type:"maintenance", sessionID, plan, capped:false}` row;
+  a cap-exceeded attempt journals `capped:true` before its blocked dispatch
+  entry, and `scripts/status.mjs` counts only the admitted rows (MNT column +
+  JSON `maintenance`).
   A `suppressed` entry is the audit trail for a marker the pipeline
   deliberately did not honor, in two flavors discriminated by `kind`.
   `kind:"gate"` / `kind:"verdict"` is the first-observed-from-an-unauthoritative-emitter
@@ -404,6 +512,12 @@ event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   no message — one per unreadable generation file, so the entries are
   bounded by the generation count. It is replay-inert and status-inert, like
   the drop entries above.
+  A `generate-draft` entry is the one-per-boot request-draft telemetry row
+  from the first `session.context`/`session.generate` fire:
+  `{type:"generate-draft", surface, agent, hasSessionID, systemKind,
+systemLen, messagesKind, messagesLen, hasOptions, keys}` — kinds, counts,
+  and presence flags only, never block or message text. It is replay-inert
+  and status-inert.
   A `config` entry is the surface audit for the once-per-load `[turnstile]
  config:` block: `{type:"config", sessionID, surfaced:true, count}` on a
   successful prepend, or `{..., surfaced:false, error}` when the prepend threw
@@ -472,7 +586,8 @@ reason:"plan-gate"}`) journals an empty-message `permission.asked` that
   wins a live plan latch over the prefixed escalate echo (the steal-able
   window); `event:"forced"` (`{type:"permission", sessionID,
 reason:"landing", event:"forced"}`) stamps the evaluate landing arm's
-  one-shot consume of a live landing latch; and `event:"unrecorded-reply"`
+  one-shot consume of a live landing latch (the hands-on evaluate arm
+  journals the same shape with `reason:"hands-on"`), and `event:"unrecorded-reply"`
   (`{type:"permission", sessionID, event:"unrecorded-reply", requestID}`)
   journals a non-empty `requestID` `permission.replied` that matches neither
   recorded ask (a requestID-less reply stays silent — a distinct broken-host
@@ -488,6 +603,13 @@ waivers, text}` — the counts mirror the recap line (`text`, bounded to 300
   per host process (an in-memory dedupe set; a restarted host may re-summary
   a still-idle session once). It is audit-only, replay-inert (an unknown
   replay type folds nothing), and status-inert.
+  A `plan-rekey` entry is the durable-store scheme-migration audit row:
+  `{type:"plan-rekey", sessionID?, plan, reason:"durable-key-scheme", from,
+to}` — appended when a content-verified legacy (or untagged) approved-plan
+  record is transparently re-keyed to the current spec-region scheme (see the
+  `approved-plans.jsonl` bullet below). It is an audit row that folds nothing:
+  replay-inert (an unlisted type returns no state) and surfaced only through
+  the status report's re-key advisory line.
   Rotation: the append hot path never stats or renames — `journal()` only
   appends and advances a per-file counter. The rotate-then-rename sequence
   runs once per `journalRotateEveryEntries` appends (default 512), only
@@ -506,12 +628,29 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   generations, so such an entry simply joins the tail window when it is
   read back (the window is small and clock-free).
   Rotates at 5 MB, 5 generations.
-- **`gate-events.jsonl`** — human-readable trace, only when `trace:true`.
+- **`gate-events.log`** — human-readable trace, only when `trace:true`.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
   the approval was recorded under (derived from the resolved project
-  directory). At boot the ledger loads the store (a missing file is a silent
+  directory). New records carry a `scheme: "spec"` tag (the key is the
+  plan's spec-region sha256); a record without the tag was written under the
+  legacy whole-file scheme (or an unknown newer scheme). A record covers a
+  plan when its key equals the file's spec-region key or its whole-file key,
+  so the plan is not pending. The whole-file key is the sha256 of the file's
+  bytes at the current plans scan; a cached scan may reflect the bytes at
+  its last refresh rather than the current file — a progress-only edit
+  leaves the spec region (and the cached scan signature) unchanged, so a
+  legacy record can be honored across such an edit, and the re-key it
+  performs writes the current spec key. The first legacy match transparently
+  re-keys the
+  record to the current scheme (in-memory, sidecar append, and one
+  replay-inert `plan-rekey` journal row with `reason: "durable-key-scheme"`).
+  A record matching neither key leaves the plan pending with cause
+  `durable-key-stale`: the enforcing dispatch journals the blocked row with
+  that reason and a recovery message (one re-approval re-keys it) instead of
+  the `no-plan-verdict` never-approved message. At boot the ledger loads the
+  store (a missing file is a silent
   empty; another read error is journaled once and degrades to empty); the
   in-memory map is last-wins per (project, plan), capped at 256 records, and
   rewritten on eviction. A record is written when a _bound_ plan-reviewer
@@ -586,7 +725,11 @@ JSON field and the table's SUS column. When the journal holds observe-mode
 entries, the
 report header adds the folded period line
 (`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
-would-blocks`); journals without them render byte-identically.
+would-blocks`); journals without them render byte-identically. When the
+journal holds `plan-rekey` rows (the durable-store scheme migration above),
+one advisory line naming the re-keyed plans (capped at five, `+N more`
+beyond) renders under the observe line; journals without them render
+byte-identically too.
 
 `opencode-turnstile evidence [--task <session|latest>]` is the publishable
 half of that view: the same tail window and shape checks, folded to one task
@@ -612,16 +755,16 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                                                     | Defaults worth knowing                                                                                                                                                                |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                                                               | 5 MB / 5 / 512 / 2000                                                                                                                                                                 |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                             | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                               |
-| Reads       | `readWarn`, `readBlock`                                                                                                                                                  | 8 / 15 (clamped)                                                                                                                                                                      |
-| Observe     | `observeSessions`                                                                                                                                                        | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                               |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `evidencePattern`                                                      | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`                                        |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `plansDir`, `allowSuspend`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `.opencode/plans`, `true`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers)            |
-| Tool policy | `toolPolicy.mode`, `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`                                                                         | both denylists default empty; mode `enforce` still applies to configured rules; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking |
-| Git gates   | `gitGates.mode`, `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                                                  | mode ships `shadow` — the adoption path; `enforce` is recommended, and this repo runs it                                                                                              |
+| Group       | Keys                                                                                                                                                                                                  | Defaults worth knowing                                                                                                                                                                                                                                                                                                                                         |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                                                                                            | 5 MB / 5 / 512 / 2000                                                                                                                                                                                                                                                                                                                                          |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                                                          | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                                                                                                                                                                                                        |
+| Reads       | `readWarn`, `readBlock`                                                                                                                                                                               | 8 / 15 (clamped)                                                                                                                                                                                                                                                                                                                                               |
+| Observe     | `observeSessions`                                                                                                                                                                                     | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                                                                                                                                                                                                        |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `evidencePattern`                                                                                   | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`                                                                                                                                                                                                                 |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `escalation`, `plansDir`, `allowSuspend`, `intentNudge`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `block`, `.opencode/plans`, `true`, `true`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers; `intentNudge:false` disables the advisory intent nudge entirely)                                                                                                   |
+| Tool policy | `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`, `toolPolicy.bashWriteGate`                                                                                             | both denylists default empty — the empty lists are the off switch; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking; `bashWriteGate` (default `true`) gates confident file-writing bash commands through the hands-on ladder (`false` opts out; write-shaped commands always journal `handsOn` telemetry) |
+| Git gates   | `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                                                                                                | `commitMessages` and `landingGate` default `true` (enforced); `false` is the per-feature opt-out                                                                                                                                                                                                                                                               |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically
@@ -650,7 +793,11 @@ probe; a disjoint custom syntax stays silent).
   stays live until that stage's waiver allowance is spent, metered separately
   from the ordinary dispatch caps. The family rides the same one-prompt
   replay grace (a restart resume or a `continuationCarry` re-admission) and
-  is otherwise dropped on a new prompt.
+  is otherwise dropped on a new prompt. One exception to "covers every
+  gate": the landing gate never consults the waiver — `git push` is released
+  only by the credited reviewer `VERDICT: APPROVE` or the human permission
+  ask, so a waiver aimed at landing is captured at admission and inert at
+  that gate.
 - **Latest-wins markers.** A `GATE: FAIL` un-greens an earlier PASS, within
   and across texts; dedup is per parent with first-sight provenance;
   cross-child duplicate observations are suppressed (counted, not silently
@@ -671,11 +818,16 @@ probe; a disjoint custom syntax stays silent).
 ## 9. Policy injection
 
 Turnstile does not read orchestrator policy from a file at install time — it
-makes that policy available by injecting it at runtime. When the plugin is
-loaded, the `execute.after` body in `src/hooks-tool.ts` prepends the
-orchestrator policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to
-the first `task` (or `subagent`) result delivery per task,
-once per task, and appends a per-delivery `PIPELINE:` status tail to every
+makes that policy available by injecting it at runtime. The primary channel is
+the pre-first-model-call `session.context` hook: `injectContextPolicy` in
+`src/hooks-core.ts` appends the policy head (and any pending intent nudge)
+into the parent's primary-turn draft `system` array before the first model
+call, parent-guarded and latched (see the `context` hook in §3). The
+`execute.after` body in `src/hooks-tool.ts` stays armed as the fallback: it
+prepends the orchestrator policy paragraph from `src/policy.ts` (via
+`src/delivery.ts`) to the first `task` (or `subagent`) result delivery per
+task, once per task, and appends a per-delivery `PIPELINE:` status tail to
+every
 pipeline-stage delivery (see Pipeline continuation below), via the
 `tool.hook("execute.after")` handler — the same hook the plugin already uses
 to rewrite tool output reaching the model. Each
@@ -720,7 +872,12 @@ reason:"unknown-shape", shape:<descriptor>}` — where the descriptor is a
 - **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
   each new prompt, so the block re-injects per task) means the policy is
   prepended exactly once per task, not once per turn. The `PIPELINE:` tail
-  has no such once-flag — it is per-delivery by design.
+  has no such once-flag — it is per-delivery by design. The shared latch also
+  gates the context-hook channel: its success journals
+  `{type:"policy", injected:true, surface:"context"}` and its skips journal
+  `skipped:true` with reason `context-agent` / `context-child` /
+  `context-no-id`, discoverable by grepping `type:"policy"` like every other
+  decision.
 - **Pipeline continuation.** Every pipeline-stage delivery — the delivery's
   agent matched against the configured `config.agents` names, so a renamed
   install names its renamed stages — gains a one-line status tail rendered
@@ -850,13 +1007,14 @@ Use OpenCode's permission and sandboxing mechanisms against hostile agents.
 Treat turnstile's journal as the record of what was _claimed_, and treat the
 journal itself as sensitive data (see SECURITY.md).
 
-The shadow-first adoption path applies to both policy layers:
-`toolPolicy.mode: shadow` journals would-block commands/paths with
-`"reason":"tool-policy"` without throwing; `gitGates.mode: shadow` (the
-default) journals `"reason":"invalid-commit-message"` /
-`"reason":"no-landing-approval"` the same way. Boot a session in shadow,
-grep the journal for those reasons, review and tune the rules, then flip to
-`enforce` and restart sessions (config is read once at setup).
+There is no audit-only mode: every configured rule blocks. The opt-outs
+are per-feature config keys — `gitGates.commitMessages: false` disables
+commit lint, `gitGates.landingGate: false` disables the landing gate, an
+empty denylist leaves the tool policy idle — and `TURNSTILE OFF:` (the
+suspend marker) suspends all blocking session-wide. Legacy configs that
+still carry `toolPolicy.mode`, `gitGates.mode`, or `handsOnGate` have
+those keys dropped with a surfaced warning at load; the enforcement stays
+on.
 
 ---
 

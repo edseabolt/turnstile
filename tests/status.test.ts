@@ -77,7 +77,14 @@ function metricsDir(): string {
  */
 function runStatus(dir: string, args: string[] = [], extraEnv: Record<string, string> = {}) {
   return spawnSync(process.execPath, [statusScript, ...args], {
-    env: { ...process.env, TURNSTILE_METRICS_DIR: dir, ...extraEnv },
+    env: {
+      ...process.env,
+      TURNSTILE_METRICS_DIR: dir,
+      // Pin the host-config probe off the real ~/.config/opencode/cli.json so
+      // the autoaccept advisory never leaks into an assertion unexpectedly.
+      TURNSTILE_CLI_CONFIG: join(dir, "absent-cli.json"),
+      ...extraEnv,
+    },
     encoding: "utf8",
   })
 }
@@ -886,6 +893,145 @@ test("an in-period journal renders the observe phase on the header line", () => 
   }
 })
 
+/** Maintenance dispatch rows (`type:"maintenance"`) fold into the MNT column:
+ *  an admitted row (`capped` falsy) increments the count; a `capped:true`
+ *  attempt row folds nothing (its block is visible through the `blocked`
+ *  entry). */
+test("maintenance rows count admitted dispatches into the MNT column", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "maintenance", sessionID: "sp-mnt", plan: "plan.md", capped: false }),
+      line(2, { type: "maintenance", sessionID: "sp-mnt", plan: "plan.md", capped: false }),
+      line(3, { type: "maintenance", sessionID: "sp-mnt", plan: "plan.md", capped: true }),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  MNT  BLK  PERM  REL  SUS  SCOPE")
+    assert.match(table.stdout, /sp-mnt\s+\S+\s+\S+\s+\S+\s+0\s+0\s+2\s+/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** `plan-rekey` rows (the durable-store scheme migration) render one
+ *  advisory line under the observe line, naming the re-keyed plans capped at
+ *  five with a `+N more` suffix; the `--json` shape stays unchanged and a
+ *  journal without rekey rows renders no line. */
+test("plan-rekey rows render the re-key advisory line and leave the json shape unchanged", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "gate",
+        sessionID: "sp-rekey",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+      }),
+      line(2, {
+        type: "plan-rekey",
+        sessionID: "sp-rekey",
+        plan: "plan.md",
+        reason: "durable-key-scheme",
+        from: "a",
+        to: "b",
+      }),
+      line(3, {
+        type: "plan-rekey",
+        sessionID: "sp-rekey",
+        plan: "other.md",
+        reason: "durable-key-scheme",
+        from: "c",
+        to: "d",
+      }),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(
+      out[1],
+      "plan approvals re-keyed to the spec-region scheme (durable-key-scheme): plan.md, other.md",
+    )
+    // The json shape carries no rekey state (table-only advisory).
+    const json = runStatus(dir, ["--json"])
+    assert.equal(code(json), 0)
+    const obj = JSON.parse(json.stdout) as StatusJSON
+    assert.ok(!("rekeys" in obj), "the json shape carries no rekey state")
+    assertReplayParity(obj, join(dir, "turnstile.jsonl"))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** Two sessions re-keying the same legacy record journal two `plan-rekey`
+ *  rows for one plan; the advisory dedupes the names in first-seen order so
+ *  each plan renders once, and distinct names are unaffected. */
+test("the re-key advisory dedupes repeated plan names across sessions", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "plan-rekey",
+        sessionID: "sp-dup-a",
+        plan: "plan.md",
+        reason: "durable-key-scheme",
+        from: "a",
+        to: "b",
+      }),
+      line(2, {
+        type: "plan-rekey",
+        sessionID: "sp-dup-b",
+        plan: "plan.md",
+        reason: "durable-key-scheme",
+        from: "a",
+        to: "b",
+      }),
+      line(3, {
+        type: "plan-rekey",
+        sessionID: "sp-dup-b",
+        plan: "zed.md",
+        reason: "durable-key-scheme",
+        from: "c",
+        to: "d",
+      }),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(
+      out[1],
+      "plan approvals re-keyed to the spec-region scheme (durable-key-scheme): plan.md, zed.md",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** More than five re-keyed plans cap the advisory's name list with a
+ *  `+N more` suffix. */
+test("the re-key advisory caps the plan list at five names with a +N more suffix", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      ...Array.from({ length: 7 }, (_, i) =>
+        line(i + 1, { type: "plan-rekey", sessionID: "sp-cap", plan: `p-${i}.md` }),
+      ),
+    ])
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    const out = table.stdout.split("\n")
+    assert.equal(
+      out[1],
+      "plan approvals re-keyed to the spec-region scheme (durable-key-scheme): " +
+        "p-0.md, p-1.md, p-2.md, p-3.md, p-4.md +2 more",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /** A journal without observe-mode entries renders byte-identically to the
  *  pre-observe table even when a period is configured: the observe line only
  *  renders over a journal that actually holds observe-mode entries. */
@@ -910,7 +1056,7 @@ test("a journal without observe entries renders byte-identically despite a confi
     assert.equal(code(res), 0)
     const out = res.stdout.split("\n")
     assert.equal(out[0], `turnstile status — ${join(dir, "turnstile.jsonl")}`)
-    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM  SUS")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  MNT  BLK  PERM  REL  SUS  SCOPE")
     assert.ok(!res.stdout.includes("observe:"), "no observe line renders")
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -961,7 +1107,7 @@ test("suspended entries fold last-wins into the suspension flag and SUS column",
     const table = runStatus(dir, [])
     assert.equal(code(table), 0)
     const out = table.stdout.split("\n")
-    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  BLK  PERM  SUS")
+    assert.equal(out[1], "SESSION  GATE  PLAN  VERDICT  WV  DIS  MNT  BLK  PERM  REL  SUS  SCOPE")
     assert.match(table.stdout, /sp-sus2.*OFF/)
     const rows = out.filter((l) => l.startsWith("sp-"))
     assert.ok(
@@ -999,7 +1145,13 @@ async function runStatusAsync(
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [statusScript, ...args], {
-      env: { ...process.env, TURNSTILE_METRICS_DIR: dir, ...extraEnv },
+      env: {
+        ...process.env,
+        TURNSTILE_METRICS_DIR: dir,
+        // Same host-config pin as the sync helper above.
+        TURNSTILE_CLI_CONFIG: join(dir, "absent-cli.json"),
+        ...extraEnv,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     })
     let stdout = ""
@@ -1158,6 +1310,59 @@ test("status output without --check-updates stays byte-identical (no update bloc
     assert.equal("update" in parsed, false)
     const table = runStatus(dir, [])
     assert.doesNotMatch(table.stdout, /update:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status reports the autoaccept advisory in JSON and table modes when the host config sets it", () => {
+  const dir = metricsDir()
+  try {
+    const cliConfig = join(dir, "cli.json")
+    writeFileSync(cliConfig, `${JSON.stringify({ session: { permissions: "autoaccept" } })}\n`)
+    const json = runStatus(dir, ["--json"], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.equal(code(json), 0)
+    const parsed = JSON.parse(json.stdout) as Record<string, unknown>
+    const advisories = parsed.advisories as string[]
+    assert.ok(Array.isArray(advisories) && advisories.length === 1, "one advisory entry")
+    assert.match(advisories[0] as string, /autoaccept/)
+    assert.match(advisories[0] as string, /degrade to delays/)
+    const table = runStatus(dir, [], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.match(table.stdout, /advisory: session\.permissions is "autoaccept"/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status omits the autoaccept advisory when the host config does not set it", () => {
+  const dir = metricsDir()
+  try {
+    const cliConfig = join(dir, "cli.json")
+    writeFileSync(cliConfig, `${JSON.stringify({ session: { permissions: "ask" } })}\n`)
+    const json = runStatus(dir, ["--json"], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.equal(code(json), 0)
+    const parsed = JSON.parse(json.stdout) as Record<string, unknown>
+    assert.equal("advisories" in parsed, false)
+    const table = runStatus(dir, [], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.doesNotMatch(table.stdout, /advisory:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("status omits the autoaccept advisory when the host config is missing or malformed", () => {
+  const dir = metricsDir()
+  try {
+    const cliConfig = join(dir, "cli.json")
+    writeFileSync(cliConfig, "{not json")
+    const malformed = runStatus(dir, ["--json"], { TURNSTILE_CLI_CONFIG: cliConfig })
+    assert.equal(code(malformed), 0)
+    assert.equal("advisories" in JSON.parse(malformed.stdout), false)
+    const missing = runStatus(dir, ["--json"], {
+      TURNSTILE_CLI_CONFIG: join(dir, "absent.json"),
+    })
+    assert.equal(code(missing), 0)
+    assert.equal("advisories" in JSON.parse(missing.stdout), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

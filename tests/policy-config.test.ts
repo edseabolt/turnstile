@@ -64,7 +64,7 @@ test("policy config: custom waiver and approval markers replace the defaults", (
 test("policy config: the custom metrics dir renders both journal paths without the tilde literal", () => {
   const dir = "/srv/turnstile/metrics"
   const policy = expectedPolicy({ metricsDir: dir })
-  assert.ok(policy.includes(`${dir}/gate-events.jsonl`), "the trace path uses the configured dir")
+  assert.ok(policy.includes(`${dir}/gate-events.log`), "the trace path uses the configured dir")
   assert.ok(policy.includes(`${dir}/turnstile.jsonl`), "the journal path uses the configured dir")
   assert.ok(!policy.includes("~/.local/share"), "the tilde literal is gone")
 })

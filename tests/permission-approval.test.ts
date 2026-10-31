@@ -14,6 +14,7 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
 import { turnstile } from "../turnstile.ts"
@@ -22,6 +23,7 @@ import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
 import { createLedger } from "../src/ledger.ts"
 import { LANDING_REQUIREMENT } from "../src/tool-policy.ts"
+import { HANDSON_ASK_MESSAGE_PREFIX } from "../src/delivery.ts"
 import { PLAN_ASK_MESSAGE_PREFIX } from "../src/delivery.ts"
 import {
   callPermission,
@@ -77,11 +79,16 @@ async function bootWithPlan(
     env: isolatedEnv(metricsDir),
     // emptyDiffExempt pinned false: push-blocking assertions must not depend
     // on the fixture project's git state (the dedicated empty-diff tests opt
-    // in explicitly).
+    // in explicitly). `config` spreads first so its gitGates cannot override
+    // the pin below.
     config: {
+      // Ask mode: these suites exercise the interactive ask ladder
+      // (repeat attempts journal the permission ask and arm the latch);
+      // the block-mode default has dedicated guard-level tests.
+      escalation: "ask" as const,
+      ...config,
       metricsDir,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
-      ...config,
     },
   })
   const dispose = (await setup(h.host)) as () => void
@@ -112,10 +119,15 @@ async function bootLanding(
     env: isolatedEnv(metricsDir),
     // emptyDiffExempt pinned false: the landing-ladder tests assert pushes
     // BLOCK, which must not depend on the live repo's git state at cwd.
+    // `config` spreads first so its gitGates cannot override the pin below.
     config: {
+      // Ask mode: these suites exercise the interactive landing ask ladder
+      // (see bootWithPlan); the block-mode default has dedicated
+      // guard-level tests.
+      escalation: "ask" as const,
+      ...config,
       metricsDir,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
-      ...config,
     },
   })
   const dispose = (await setup(h.host)) as () => void
@@ -205,6 +217,7 @@ test("planGateStatus / planSummary: the five red-gate outcomes", () => {
     red: true,
     summary: { file: "plan.md", head: "Body text." },
     blockers: ["plan.md"],
+    cause: "never-approved",
   })
   assert.deepEqual(gates.planSummary(project), { file: "plan.md", head: "Body text." })
 
@@ -259,6 +272,39 @@ test("evaluate: red plan gate forces an ask naming the plan file + head", async 
     assert.equal(ask?.sessionID, "p1")
     assert.equal(ask?.reason, "plan-gate")
     assert.equal(ask?.plan, "plan.md")
+  } finally {
+    restore()
+  }
+})
+
+/** Under the default `escalation: "block"` the task arm is inert on a red
+ *  plan gate: no forced ask, no message, no journaled ask row, and no
+ *  awaiting-ask latch — the dispatch guard blocks instead, and release flows
+ *  via `PLAN APPROVED:` plus the sticky waiver/ask paths. */
+test("evaluate: block mode keeps the red plan-gate task arm inert", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan(
+    { escalation: "block" },
+    "# Plan\n\nBody line.\n",
+  )
+  try {
+    const event: Record<string, any> = { sessionID: "p1", action: "task" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "block mode never forces the ask")
+    assert.equal(event.message, undefined)
+    assert.ok(
+      !journalEntries(metricsDir).some((l) => l.type === "permission" && l.action === "ask"),
+      "no ask row is journaled in block mode",
+    )
+    // The dispatch guard still blocks with the plan-approval message.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "executor", prompt: "do the work" },
+        }),
+      /no plan approval for "plan\.md"/,
+    )
   } finally {
     restore()
   }
@@ -362,7 +408,7 @@ test("setup: a throwing permission.hook journals the failure (fail-open)", async
   )
 })
 
-/** A host without the permission surface still registers (degraded, 6 hooks). */
+/** A host without the permission surface still registers (degraded, 7 hooks). */
 test("setup: a host without the permission surface degrades without registering", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost({ permission: false })
@@ -370,7 +416,7 @@ test("setup: a host without the permission surface degrades without registering"
   await setup(h.host)
   assert.equal(h.permissionHooks.evaluate, undefined)
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
-  assert.equal(setups[0]?.hooks, 6)
+  assert.equal(setups[0]?.hooks, 7)
 })
 
 /**
@@ -925,7 +971,7 @@ test("reply: a message-prefixed plan ask is recorded and the map stays bounded",
  * `landingGateAsks` bounder (the reviewer's unbounded-growth finding).
  */
 test("reply: landing-gate asks stay bounded and a recent ask still matches", async () => {
-  const { h, restore, metricsDir } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore, metricsDir } = await bootLanding()
   try {
     // 51 landing-prefix asks (the evaluate echo message shape), no latch needed.
     for (let i = 1; i <= 51; i++) {
@@ -933,7 +979,7 @@ test("reply: landing-gate asks stay bounded and a recent ask still matches", asy
         type: "permission.asked",
         properties: {
           id: `land-old-${i}`,
-          message: "turnstile: push/PR requires a reviewer — landing",
+          message: "turnstile: pushing requires a reviewer — landing",
         },
       })
     }
@@ -1052,7 +1098,7 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
  * TTL window is untouched (the next push re-blocks and re-arms).
  */
 test("evaluate: a live pending-landing-ask arm forces the landing ask", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: no approval, first block under enforce → throws, records a block.
     await assert.rejects(
@@ -1108,7 +1154,6 @@ test("evaluate: an approved landing gate releases without forcing the ask", asyn
   // flag flips the gate on a plain PASS; the task still needs two reviewer
   // dispatches before the verdict is credited.
   const { h, restore } = await bootLanding({
-    gitGates: { mode: "enforce" },
     gateEvidence: "flag",
   })
   try {
@@ -1155,7 +1200,7 @@ test("evaluate: an approved landing gate releases without forcing the ask", asyn
  * clock aged past the TTL.
  */
 test("evaluate: an expired pending-landing-ask arm does not force the ask", async (t) => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore } = await bootLanding()
   // The clock restore rides on the test's after hook: the final assertion
   // runs while time is still frozen, as the latch age it measures.
   const clock = frozenClock(t)
@@ -1190,7 +1235,7 @@ test("evaluate: an expired pending-landing-ask arm does not force the ask", asyn
  * on the never-latched direction (`at === undefined`). No effect is forced.
  */
 test("evaluate: a bash action with no landing latch is left untouched", async () => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore } = await bootLanding()
   try {
     const event: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", event)
@@ -1223,8 +1268,148 @@ test("evaluate: an unrelated action is left untouched", async () => {
  * enforce — its first push records a block so the second escalates. The most
  * recent arm (p051) is still live and forces the ask.
  */
+/**
+ * Same-tick escalation dedupe (landing): two guard arms on one parent inside
+ * the ask-latch TTL window journal exactly ONE `permission` ask row — the
+ * second arm is a dedupe hit, so the guard takes the full block path (throws,
+ * journals a block row) while the already-armed latch stays live for the
+ * evaluate handler. After the window ages out, a genuinely new escalation
+ * journals a fresh ask row and allows.
+ */
+test("dedupe: a within-window landing re-arm throws and collapses the ask row", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // First push: first block throws.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Second push: fresh escalation — journals the ask row and allows.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    // Third push inside the TTL window: dedupe hit — the guard throws and
+    // journals a block row; no second ask row is journaled.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "git push origin main" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // The block row of the dedupe hit is journaled (no permission ask row).
+    const asksSoFar = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "landing" && l.action === "ask",
+    )
+    assert.equal(asksSoFar.length, 1, "exactly one ask row within the window")
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "blocked" && l.reason === "no-landing-approval",
+      ),
+      "the dedupe-hit guard journaled its block row",
+    )
+    // The existing latch stays live: a subsequent evaluate within the TTL
+    // still forces the ask (the dedupe collapsed only the ask row).
+    const event: Record<string, any> = { sessionID: "p1", action: "bash" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    // Age past the TTL: the next push is a genuinely new escalation — it
+    // journals a fresh ask row and allows.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
+    const asksAfter = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "landing" && l.action === "ask",
+    )
+    assert.equal(asksAfter.length, 2, "a post-window escalation journals a second ask row")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Same-tick escalation dedupe (hands-on, mirrors the landing test): a
+ * within-window repeat write is a dedupe hit — the guard throws and journals
+ * its block row instead of a second ask, the latch stays live for the
+ * evaluate handler, and a post-window write journals a fresh ask row.
+ */
+test("dedupe: a within-window hands-on re-arm throws and collapses the ask row", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // First write: first block throws.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Second write: fresh escalation — journals the ask row and allows.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Third write inside the TTL window: dedupe hit — throws, block row
+    // journaled, no second ask row.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const asksSoFar = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "hands-on" && l.action === "ask",
+    )
+    assert.equal(asksSoFar.length, 1, "exactly one ask row within the window")
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (l) => l.type === "blocked" && l.reason === "parent-hands-on",
+      ),
+      "the dedupe-hit guard journaled its block row",
+    )
+    // The existing latch stays live: the evaluate within the TTL still
+    // forces the hands-on ask.
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    // Age past the TTL: the next write journals a fresh ask row and allows.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    const asksAfter = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "hands-on" && l.action === "ask",
+    )
+    assert.equal(asksAfter.length, 2, "a post-window escalation journals a second ask row")
+  } finally {
+    restore()
+  }
+})
+
 test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async () => {
-  const { h, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, restore } = await bootLanding()
   try {
     for (let i = 1; i <= 51; i++) {
       const parent = `p${String(i).padStart(3, "0")}`
@@ -1260,8 +1445,9 @@ test("evaluate: the pending-landing-ask map stays bounded across 51 arms", async
  * decides. The landing-ask recording is the empty-message sibling of the
  * plan-gate escalate echo (different prefix, disjoint map).
  */
-test("asked: an empty-message landing escalate echo grants one push via the .landing short-circuit", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+test("asked: an empty-message landing escalate echo grants one push via the .landing short-circuit", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: first block under enforce throws, records one landing block.
     await assert.rejects(
@@ -1300,10 +1486,10 @@ test("asked: an empty-message landing escalate echo grants one push via the .lan
     )
     // The grant is scoped to landing candidates: a NON-push bash command does
     // not consume it. Re-arm (the repeat push after the granted one journals
-    // the ask and allows — the escalation UX), re-grant, run a non-push
-    // command first (does not burn the grant), then the push (released by the
-    // still-pending grant — a grant burned on `git status` would make this
-    // push re-block).
+    // the ask and allows — the escalation UX). The immediate re-arm would be
+    // a within-TTL dedupe hit (block path), so age past the ask-latch TTL
+    // first: the new escalation journals a fresh ask row and allows.
+    clock.advance(6001)
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
@@ -1357,7 +1543,7 @@ test("asked: an empty-message landing escalate echo grants one push via the .lan
  * empty-message escalate echo tested above.
  */
 test("asked: a landing-prefix ask echo records the ask and its once reply grants one push", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: block. Repeat push: arm the pending-landing-ask latch.
     await assert.rejects(
@@ -1405,7 +1591,7 @@ test("asked: a landing-prefix ask echo records the ask and its once reply grants
  * guard sees the approval). Contrasts with the `once` and `reject` replies.
  */
 test("reply: a landing always-grant stands a reviewer approval and releases the gate", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     await assert.rejects(
       () =>
@@ -1455,8 +1641,9 @@ test("reply: a landing always-grant stands a reviewer approval and releases the 
  * attempt re-arms the landing ask instead of being allowed. Contrasts with the
  * `always` reply and confirms a reject never releases the landing gate.
  */
-test("reply: a landing reject leaves the gate red and re-arms the ask", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+test("reply: a landing reject leaves the gate red and re-arms the ask", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     await assert.rejects(
       () =>
@@ -1480,18 +1667,53 @@ test("reply: a landing reject leaves the gate red and re-arms the ask", async ()
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "reject"),
     )
-    // The gate is still red: a repeat attempt escalates (no throw on execute),
-    // and the evaluate handler then forces the landing ask again.
-    assert.doesNotThrow(() =>
-      callTool(h, "execute.before", {
-        tool: "bash",
-        sessionID: "p1",
-        input: { command: "git push origin main" },
-      }),
-    )
+    // The gate is still red: a within-window re-arm after the reject is a
+    // dedupe hit (it throws — the block path), so age past the ask-latch TTL
+    // first; the genuinely new escalation journals a fresh ask row and
+    // allows, and the evaluate handler then forces the landing ask again.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "git push origin main" },
+    })
     const event: Record<string, any> = { sessionID: "p1", action: "bash" }
     await callPermission(h, "evaluate", event)
     assert.equal(event.effect, "ask", "a reject keeps the landing gate red and re-forces the ask")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Latch expiry: a pending-hands-on arm older than the TTL is dropped, so a
+ * late `permission.evaluate` does not force the ask (fail-toward-strict: the
+ * gate re-blocks). Mirrors the landing expiry test, using a frozen clock aged
+ * past the TTL.
+ */
+test("evaluate: an expired pending-hands-on arm does not force the ask", async (t) => {
+  const { h, restore } = await bootLanding()
+  const clock = frozenClock(t)
+  try {
+    // First write: block (frozen time used for its journal ts).
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    // Repeat write: escalate arms the latch at the frozen time.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Age the latch past the pending-hands-on ask TTL.
+    clock.advance(6001)
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "an expired arm arms nothing")
   } finally {
     restore()
   }
@@ -1632,7 +1854,7 @@ test("asked: a prefixed plan-ask echo journals no latch-steal", async () => {
  * record stays the single PERM-ask entry status.mjs counts.
  */
 test("evaluate: the landing consume stamps event:forced with no action:ask", async () => {
-  const { h, metricsDir, restore } = await bootLanding({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, restore } = await bootLanding()
   try {
     // First push: first block under enforce throws.
     await assert.rejects(
@@ -1764,6 +1986,834 @@ test("fail-open: a throwing permission.replied payload journals the event error 
       ),
     )
   } finally {
+    restore()
+  }
+})
+
+/**
+ * The hands-on gate dispatch: a parent-session write/edit gates (first block
+ * under enforce throws and records `parent-hands-on`), while a registered
+ * pipeline child's write/edit with the same path never gates (the executor's
+ * own work). The child edge is seeded by a `session.created` stream event,
+ * the same edge the read budget and landing gate key off.
+ */
+test("hands-on dispatch: parent write/edit gates, child write/edit does not", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // A registered pipeline child.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "executor" },
+    })
+    // Parent write: first block under enforce throws and records the block.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Child write with the same path: no hands-on entries at all.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "c1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the parent write is gated")
+    assert.equal(blocked[0]!.sessionID, "p1")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The narrowed child exemption keys off the child→parent edge plus the
+ * configured pipeline agent set: a child whose tool event reports a pipeline
+ * agent name (`event.agent`) is exempt, while a non-pipeline subagent
+ * (e.g. an explore/analysis agent) is gated like a parent and its block is
+ * journaled with reason `parent-hands-on`.
+ */
+test("hands-on dispatch: pipeline child exempt via event.agent, non-pipeline child gated", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Pipeline child: the agent is reported on the tool event itself.
+    await h.pushEvent({ type: "session.created", properties: { sessionID: "c1", parentID: "p1" } })
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "c1",
+      agent: "executor",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Non-pipeline child: edge present, but the agent is not in the pipeline set.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c2", parentID: "p1", agent: "codebase-analyst" },
+    })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "c2",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the non-pipeline child write is gated")
+    assert.equal(blocked[0]!.sessionID, "c2")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Agent resolution paths for the child exemption: with no agent on the tool
+ * event, the seeded emitter cache (`session.created`'s agent) still exempts a
+ * pipeline child; an unresolved agent (nothing seeded, non-string
+ * `event.agent`) fails closed and the child gates like a parent.
+ */
+test("hands-on dispatch: pipeline child exempt via emitterAgent fallback, unresolved child gated", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Fallback path: the tool event carries no agent; session.created seeded it.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "executor" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "edit",
+      sessionID: "c1",
+      input: { filePath: "/repo/b.ts" },
+    })
+    // Fail-closed: edge present but no resolvable agent anywhere.
+    await h.pushEvent({ type: "session.created", properties: { sessionID: "c3", parentID: "p1" } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "c3",
+          agent: 42,
+          input: { filePath: "/repo/c.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the unresolved child write is gated")
+    assert.equal(blocked[0]!.sessionID, "c3")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The bash write gate exempts a registered pipeline child exactly like the
+ * write/edit arm: a gate-tier command (`cp`) from a child whose tool event
+ * reports a pipeline agent never blocks (the executor's own work) while an
+ * unresolved agent fails closed and gates like a parent. The child's
+ * hands-on telemetry row is still journaled — only the guard is skipped —
+ * and a blocked bash write journals reason `parent-hands-on`.
+ */
+test("hands-on dispatch: pipeline child gate-tier bash passes, unresolved child gated", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Pipeline child: the agent is reported on the tool event itself.
+    await h.pushEvent({
+      type: "session.created",
+      properties: { sessionID: "c1", parentID: "p1", agent: "executor" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "c1",
+      agent: "executor",
+      input: { command: "cp a b" },
+    })
+    // Fail-closed: edge present but no resolvable agent anywhere.
+    await h.pushEvent({ type: "session.created", properties: { sessionID: "c3", parentID: "p1" } })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "c3",
+          agent: 42,
+          input: { command: "cp a b" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the unresolved child bash is gated")
+    assert.equal(blocked[0]!.sessionID, "c3")
+    // Telemetry precedes the exemption: the exempt child still journaled its
+    // hands-on row for the same gate-tier command.
+    const handsOn = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.handsOn === true && e.sessionID === "c1",
+    )
+    assert.equal(handsOn.length, 1, "the exempt child still journals its hands-on row")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * Ordering: a configured `pathDeny` match wins over the hands-on gate and the
+ * two journal reasons stay disjoint — the denylisted path journals reason
+ * "tool-policy", a plain path
+ * journals "parent-hands-on". A denylisted path is forbidden outright
+ * regardless of any hands-on release.
+ */
+test("hands-on dispatch: denylist wins over the hands-on gate", async () => {
+  const { h, metricsDir, restore } = await bootLanding({
+    toolPolicy: { pathDeny: ["secret"] },
+  })
+  try {
+    // Denylisted path: the denylist guard throws; no hands-on entry exists.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/secret.txt" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Plain path: the hands-on gate owns the decision (first block throws).
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/plain.txt" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const denies = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "tool-policy",
+    )
+    const hands = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(denies.length, 1, "the denylisted write journals the denylist reason")
+    assert.equal(hands.length, 1, "the plain write journals the hands-on reason")
+    assert.equal(hands[0]!.tool, "write")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A hands-on `once` grant releases exactly one edit: the first write is
+ * allowed and the grant is consumed; the second write takes the (still-armed)
+ * first block and throws.
+ */
+test("hands-on dispatch: once-grant releases exactly one edit", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // First write: block (handsOnBlocks = 1). Repeat write: arm the ask latch.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Evaluate forces the hands-on ask off the live latch.
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    assert.match(
+      String(event.message),
+      /^turnstile: parent-session write\/edit requires the pipeline/,
+    )
+    // The host echoes the prefixed ask; the `once` reply grants one edit.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "h-1", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "h-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // The granted write is released (no throw, no new block entry).
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    // The grant is consumed: the next write re-enters the armed ladder
+    // (repeat attempt → escalation ask, fail-toward-strict — no third grant).
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(blocked.length, 1, "only the pre-grant write blocks; the once grant released one")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A write/edit event with no input (or no path key) is a no-op, not a crash:
+ * the denylist's empty-path telemetry fires (fail-open) and the hands-on gate
+ * journals its own misconfiguration error — but nothing throws and no block
+ * entry lands.
+ */
+test("hands-on dispatch: a write/edit event with no input is a no-op, not a crash", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    await callTool(h, "execute.before", { tool: "write", sessionID: "p1" })
+    await callTool(h, "execute.before", { tool: "edit", sessionID: "p1", input: {} })
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.deepEqual(blocked, [], "no block without a path")
+    const errs = journalEntries(metricsDir).filter(
+      (e) => e.type === "error" && /hands-on gate carried no target path/.test(String(e.error)),
+    )
+    assert.equal(errs.length, 2, "both dispatches journal the misconfiguration telemetry")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The hands-on evaluate arm: a live pending-hands-on latch (armed by the guard
+ * on a repeat attempt) forces the ask and is consumed one-shot; an unarmed
+ * latch leaves the event untouched; a suspended parent deletes the latch and
+ * stays inert.
+ */
+test("evaluate: the hands-on arm forces the ask off a live latch", async () => {
+  const { h, restore } = await bootLanding()
+  try {
+    // First write: block. Repeat write: arm the pending-hands-on latch.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "edit",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "edit",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Live latch forces the ask and is consumed (one-shot).
+    const event: Record<string, any> = { sessionID: "p1", action: "edit" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    // One-shot: a second evaluate inside the TTL window is untouched.
+    const second: Record<string, any> = { sessionID: "p1", action: "edit" }
+    await callPermission(h, "evaluate", second)
+    assert.equal(second.effect, undefined)
+    // Unarmed latch: inert.
+    const third: Record<string, any> = { sessionID: "p1", action: "edit" }
+    await callPermission(h, "evaluate", third)
+    assert.equal(third.effect, undefined)
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A live `always` release or an executor-scoped user waiver inerts the
+ * hands-on evaluate arm without consuming the latch (the release outlives the
+ * one-shot ask). Both disjuncts are exercised separately.
+ */
+test("evaluate: a live task release or executor waiver inerts the hands-on arm", async () => {
+  // (a) `always` release: granted after arming, then the arm stays live but
+  // inert — the evaluate returns without touching effect.
+  const always = await bootLanding()
+  try {
+    const { h, metricsDir } = always
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "hw-1", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "hw-1", reply: "always" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "always"),
+    )
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "a standing always release inerts the arm")
+  } finally {
+    always.restore()
+  }
+  // (b) Executor-scoped waiver: a user prompt carrying the waiver literal
+  // names the executor stage, so the waiver covers the hands-on gate.
+  const waiver = await bootLanding()
+  try {
+    const { h } = waiver
+    await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: executor, go ahead" })
+    // No latch is armed here (no prior block), so a plain inert return is the
+    // expectation for the armed case is covered by (a); here assert a write is
+    // allowed silently under enforce (the waiver releases the guard too).
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    // Unscoped waiver covers it the same way.
+    const unscoped = await bootLanding()
+    try {
+      await callSession(unscoped.h, "prompt", {
+        sessionID: "p1",
+        text: "USER WAIVER: I approve the executor",
+      })
+      assert.doesNotThrow(() =>
+        callTool(unscoped.h, "execute.before", {
+          tool: "edit",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      )
+    } finally {
+      unscoped.restore()
+    }
+    // A waiver scoped AWAY from executor does not release: the first edit
+    // still blocks under enforce.
+    const scopedAway = await bootLanding()
+    try {
+      await callSession(scopedAway.h, "prompt", {
+        sessionID: "p1",
+        text: "USER WAIVER: reviewer only",
+      })
+      await assert.rejects(() =>
+        callTool(scopedAway.h, "execute.before", {
+          tool: "edit",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      )
+    } finally {
+      scopedAway.restore()
+    }
+  } finally {
+    waiver.restore()
+  }
+})
+
+/**
+ * Plan approval does not release the hands-on arm: a `PLAN APPROVED:` prompt
+ * (hasPlanVerdict true, human provenance) with a live hands-on latch still
+ * forces the ask — the gate is plan-independent.
+ */
+test("evaluate: plan approval does not release the hands-on arm", async () => {
+  const { h, restore } = await bootLanding()
+  try {
+    // Approve the plan through the prompt channel.
+    await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: go" })
+    // First write: block. Repeat write: arm the latch.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask", "an approved plan does not release the hands-on arm")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The hands-on ask prefix records the ask for the hands-on gate (disjoint
+ * from the plan and landing maps): `always` sets the task-scoped release,
+ * `once` stamps the single-edit grant, `reject` journals the decision only and
+ * leaves the gate red. A plan-prefix ask never populates the hands-on map.
+ */
+test("permission.asked/replied: hands-on prefix records and grants", async (t) => {
+  const clock = frozenClock(t)
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // Reject first: journals the decision only, gate stays red.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "h-r", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "h-r", reply: "reject" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "reject"),
+    )
+    // The reject left the gate red: a within-window re-arm after the reject
+    // is a dedupe hit — the guard takes the block path (throws) instead of
+    // re-asking while the previous latch stays live (binding dedupe
+    // semantics: only duplicate ask rows are collapsed, the block is real).
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // Age past the ask-latch TTL: the next write is a genuinely new
+    // escalation — it journals a fresh ask row and allows.
+    clock.advance(6001)
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // A plan-prefix ask is disjoint: it must never record a hands-on ask.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: {
+        sessionID: "p1",
+        id: "plan-pfx",
+        message: "turnstile: plan approval required — plan.md",
+      },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "plan-pfx", reply: "always" },
+    })
+    await waitUntil(
+      () =>
+        journalEntries(metricsDir).filter((l) => l.type === "permission" && l.decision === "always")
+          .length >= 1,
+    )
+    // The plan always-release did not release the hands-on gate: the armed
+    // evaluate still forces the hands-on ask (plan prefix ≠ hands-on prefix).
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    // Now the real `always`: a fresh arm → reply → standing release.
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "h-a", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "h-a", reply: "always" },
+    })
+    // Two always decisions by now: the plan-prefix one above and this
+    // hands-on one — counting both avoids matching the earlier plan always
+    // before the hands-on reply is applied.
+    await waitUntil(
+      () =>
+        journalEntries(metricsDir).filter(
+          (l) => l.type === "permission" && l.decision === "always" && l.sessionID === "p1",
+        ).length >= 2,
+    )
+    // The standing release allows the parent write silently.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    const handsOnAsks = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "hands-on" && l.action === "ask",
+    )
+    assert.equal(handsOnAsks.length, 2, "two guard-side hands-on asks (arm attempts)")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * A prompt reset clears the hands-on task state: after a block + `always`
+ * release (and an unused once-grant), a new user prompt drops the block
+ * counter, the standing release, and the once-grant — the next write takes a
+ * fresh first block instead of escalating or being released.
+ */
+test("hands-on dispatch: prompt reset clears the hands-on task state", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  try {
+    // First write: block. Repeat write: arm the ask.
+    await assert.rejects(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // Reply `always` (release) and then grant a `once` that goes unused.
+    h.pushEvent({ type: "permission.asked", properties: { sessionID: "p1", id: "hr-1" } })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "hr-1", reply: "always" },
+    })
+    await callPermission(h, "evaluate", { sessionID: "p1", action: "write" })
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "hr-2", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "hr-2", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // A released write is allowed silently, then a new user prompt resets.
+    assert.doesNotThrow(() =>
+      callTool(h, "execute.before", {
+        tool: "write",
+        sessionID: "p1",
+        input: { filePath: "/repo/a.ts" },
+      }),
+    )
+    await callSession(h, "prompt", { sessionID: "p1", text: "new task" })
+    // Fresh bucket: the write takes a first block again (no release, no
+    // once-grant, no prior blocks — the escalation path would have allowed).
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    // And the repeat now escalates again (the block counter restarted at 0,
+    // so this is the arming repeat, not a deeper escalation).
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    const asks = journalEntries(metricsDir).filter(
+      (l) => l.type === "permission" && l.reason === "hands-on" && l.action === "ask",
+    )
+    assert.equal(asks.length, 2, "exactly one ask per task cycle (2 cycles)")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The scratch-target exemption: a parent write/edit whose target resolves
+ * under the platform temp dir is zero-governance work — it is allowed with
+ * the `{type:"tool", scratch:true}` audit row and never reaches the hands-on
+ * ladder, while a non-scratch path still gates (first block throws).
+ */
+test("hands-on dispatch: a scratch temp-dir write allows with telemetry, non-scratch gates", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  const scratch = path.join(tmpdir(), `turnstile-scratch-dispatch-${process.pid}`)
+  fs.mkdirSync(scratch, { recursive: true })
+  try {
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: path.join(scratch, "issue-body.md") },
+    })
+    // Non-scratch: the hands-on gate still owns the decision (first block).
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    const scratchRows = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.scratch === true,
+    )
+    assert.equal(scratchRows.length, 1, "exactly one scratch audit row")
+    assert.equal(scratchRows[0]!.tool, "write")
+    assert.equal(scratchRows[0]!.sessionID, "p1")
+    assert.ok(
+      journalEntries(metricsDir).some(
+        (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+      ),
+      "the non-scratch write still gated",
+    )
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+    restore()
+  }
+})
+
+/**
+ * Denylist beats the scratch exemption: a configured `pathDeny` match on a
+ * temp-dir target throws the tool-policy block and journals no scratch row.
+ */
+test("hands-on dispatch: denylist wins over the scratch exemption", async () => {
+  const { h, metricsDir, restore } = await bootLanding({
+    toolPolicy: { pathDeny: ["secret"] },
+  })
+  const scratch = path.join(tmpdir(), `turnstile-scratch-deny-${process.pid}`)
+  fs.mkdirSync(scratch, { recursive: true })
+  try {
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: path.join(scratch, "secret.txt") },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    assert.equal(
+      journalEntries(metricsDir).some((e) => e.type === "tool" && e.scratch === true),
+      false,
+      "a denylisted scratch target journals no scratch row",
+    )
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+    restore()
+  }
+})
+
+/**
+ * A scratch write never burns a pending hands-on once-grant: the scratch
+ * check runs before the grant consume, so after a `once` reply a temp-dir
+ * write is allowed with telemetry while the grant stays pending, and the
+ * next non-scratch write is the one released by it.
+ */
+test("hands-on dispatch: a scratch write does not consume the pending once-grant", async () => {
+  const { h, metricsDir, restore } = await bootLanding()
+  const scratch = path.join(tmpdir(), `turnstile-scratch-grant-${process.pid}`)
+  fs.mkdirSync(scratch, { recursive: true })
+  try {
+    // First write: first block throws. Second write: arms the ask latch.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: "/repo/a.ts" },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/a.ts" },
+    })
+    // The evaluate forces the hands-on ask; the human answers `once`.
+    const event: Record<string, any> = { sessionID: "p1", action: "write" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    h.pushEvent({
+      type: "permission.asked",
+      properties: { sessionID: "p1", id: "h-1", message: HANDSON_ASK_MESSAGE_PREFIX },
+    })
+    h.pushEvent({
+      type: "permission.replied",
+      properties: { sessionID: "p1", requestID: "h-1", reply: "once" },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some((l) => l.type === "permission" && l.decision === "once"),
+    )
+    // Scratch write: allowed with telemetry, grant NOT consumed.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: path.join(scratch, "issue-body.md") },
+    })
+    assert.equal(
+      journalEntries(metricsDir).filter((e) => e.type === "tool" && e.scratch === true).length,
+      1,
+      "the scratch write journaled its audit row",
+    )
+    // Non-scratch write: the once-grant releases exactly this one.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/b.ts" },
+    })
+    // The grant is consumed by the non-scratch write: the next non-scratch
+    // write re-enters the armed ladder (repeat attempt → escalation ask,
+    // fail-toward-strict — no second grant).
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "/repo/c.ts" },
+    })
+    const blocked = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "parent-hands-on",
+    )
+    assert.equal(
+      blocked.length,
+      1,
+      "only the pre-grant write blocks; the scratch write burned no grant",
+    )
+    assert.equal(
+      journalEntries(metricsDir).filter((e) => e.type === "tool" && e.scratch === true).length,
+      1,
+      "exactly one scratch audit row",
+    )
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
     restore()
   }
 })

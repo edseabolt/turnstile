@@ -48,7 +48,7 @@ const NO_PLAN_MESSAGE =
 
 /** The base reviewer round-limit block message (before any appended clause). */
 const ROUND_LIMIT_MESSAGE =
-  "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)."
+  "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new task resets the cap)."
 
 /** The clause a round-limit block appends when a scoped waiver's own
  *  allowance of waiver-unblocked dispatches is exhausted. */
@@ -62,7 +62,7 @@ const PLAN_OUT_OF_SCOPE_REVIEWER_CLAUSE =
 
 /** The base planner loop-cap block message (before any appended clause). */
 const PLANNER_LOOP_CAP_BASE =
-  "BLOCKED by turnstile: planner dispatch limit (3) reached this task — the pipeline is looping. STOP: do not re-dispatch planner. Escalate to the user: report the repeated planner failures and wait for new instructions (a new user prompt resets the caps; raise maxPlannerRounds in your config to widen the cap)."
+  "BLOCKED by turnstile: planner dispatch limit (3) reached this task — the pipeline is looping. STOP: do not re-dispatch planner. Escalate to the user: report the repeated planner failures and wait for new instructions (a new task resets the caps; raise maxPlannerRounds in your config to widen the cap)."
 
 /** The clause a planner block appends when the live waiver is scoped to a
  *  stage outside the planner leg (the reviewer stage here). */
@@ -71,7 +71,7 @@ const PLANNER_OUT_OF_SCOPE_CLAUSE =
 
 /** The base dispatch-budget block message (before any appended clause). */
 const DISPATCH_BUDGET_MESSAGE =
-  "BLOCKED by turnstile: task dispatch budget (16) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new user prompt resets the counters; raise maxTotalDispatches in your config to widen the budget)."
+  "BLOCKED by turnstile: task dispatch budget (16) exhausted — the pipeline is looping. STOP: do not dispatch further subagents. Escalate to the user: report the stuck pipeline and wait for new instructions (a new task resets the counters; raise maxTotalDispatches in your config to widen the budget)."
 
 /** Boots the plugin in a temp project dir containing a plan file, so the
  *  plan gate is live. */

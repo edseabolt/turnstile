@@ -77,6 +77,7 @@ test("delivery.ts exposes only the delivery helpers and key tables at runtime", 
   assert.deepEqual(Object.keys(mod).sort(), [
     "AGENT_KEYS",
     "DIRECTORY_KEYS",
+    "HANDSON_ASK_MESSAGE_PREFIX",
     "LANDING_ASK_MESSAGE_PREFIX",
     "PARENT_KEYS",
     "PLAN_ASK_MESSAGE_PREFIX",

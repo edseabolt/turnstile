@@ -20,6 +20,7 @@ import { createGates, type Gates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
 import { createLedger, type GateLedger } from "../src/ledger.ts"
+import { planSpecRegion } from "../src/plan-region.ts"
 import {
   callPermission,
   callSession,
@@ -2105,6 +2106,7 @@ test("plan gate: the no-prompt red shape pairs the preview with its single block
     red: true,
     summary: { file: "aaa-stale.md", head: "alpha body" },
     blockers: ["aaa-stale.md"],
+    cause: "never-approved",
   })
 })
 
@@ -2386,10 +2388,12 @@ test("multi-plan: other-plan changes never invalidate a bound approval; the boun
     await execDispatch(h, "p1", "do the work")
     assert.equal(journalEntries(metricsDir).filter((l) => l.result === "STALE").length, 0)
     // Edit the bound plan → the next dispatch blocks + journals plan-edited.
+    // The durable record now matches neither key scheme, so the block names
+    // the durable-key-stale recovery instead of the never-approved ask.
     fs.appendFileSync(workPath, "edit\n")
     await assert.rejects(
       () => execDispatch(h, "p1", "do the work"),
-      /no plan approval for "z-work\.md"/,
+      /durable plan approval for "z-work\.md" no longer covers the plan's current content/,
     )
     let stale = journalEntries(metricsDir).filter((l) => l.result === "STALE")
     assert.equal(stale.length, 1)
@@ -2447,10 +2451,15 @@ test("multi-plan: a later review round naming another plan rebinds the session",
  * names the session's plan (z-work.md), not the alphabetically-first plan.
  */
 test("multi-plan: the plan-gate ask names the session's bound plan, not the first sorted", async () => {
-  const { h, restore, project, metricsDir } = await bootWithPlans({
-    "a-decoy.md": "# A\ndecoy body line.\n",
-    "z-work.md": "# Z\nwork body line.\n",
-  })
+  const { h, restore, project, metricsDir } = await bootWithPlans(
+    {
+      "a-decoy.md": "# A\ndecoy body line.\n",
+      "z-work.md": "# Z\nwork body line.\n",
+    },
+    // Ask mode: the test asserts the evaluate ask's message, which only
+    // fires under `escalation: "ask"`.
+    { escalation: "ask" },
+  )
   try {
     const workPath = path.join(project, ".opencode", "plans", "z-work.md")
     await reviewRound(h, "p1", "c1", `review ${workPath}`, APPROVE)
@@ -2609,6 +2618,10 @@ test("multi-plan: a self-keyed round APPROVE binds the plan identity from the di
 test("plan-gate-blocked executor dispatches draw down no budget; the grant-released dispatch still passes", async () => {
   const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
     maxTotalDispatches: 2,
+    // Ask mode: the once-grant release rides the plan-gate evaluate ask,
+    // which only fires under `escalation: "ask"`; the blocked-dispatch
+    // assertions above are guard-level and mode-independent.
+    escalation: "ask",
   })
   try {
     for (let i = 0; i < 3; i++) {
@@ -2756,7 +2769,10 @@ test("plan gate: a dispatch naming its durably-approved plan is exempt from unre
   )
   try {
     await reviewRound(h, "p1", "c1", "review zzz-current.md", APPROVE)
-    // A fresh prompt wipes the bucket; the sidecar still covers zzz-current.
+    // Retire the task (the plan-bound scope keeps state across ordinary
+    // prompts) and admit a fresh prompt: the bucket resets; the sidecar
+    // still covers zzz-current.
+    await callSession(h, "prompt", { sessionID: "p1", text: "TASK DONE: zzz-current landed" })
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // Naming the approved plan: admitted even though aaa-stale stays pending.
     await execDispatch(h, "p1", "implement zzz-current.md")
@@ -2792,8 +2808,10 @@ test("plan gate: a dispatch naming its durably-approved plan is exempt from unre
 /**
  * Editing the plan invalidates its durable approval: the approval recorded
  * under the original bytes, the journal dropped (replay-aging), and the plan
- * bytes changed while "down" — the fresh process sees a pending plan and
- * blocks the dispatch naming it (the content wall survives durability).
+ * bytes changed while "down" — the fresh process sees a pending plan whose
+ * record matches neither key scheme and blocks the dispatch naming it with
+ * the durable-key-stale recovery message (the content wall survives
+ * durability, and the cause is distinguishable from never-approved).
  */
 test("plan gate: an edited plan is pending despite its durable record", async () => {
   const metricsDir = tmpDir()
@@ -2813,9 +2831,149 @@ test("plan gate: an edited plan is pending despite its durable record", async ()
   await restartOver(metricsDir, project, sidecar, async (h2) => {
     await assert.rejects(
       () => execDispatch(h2, "p1", "implement plan.md"),
-      /no plan approval for "plan\.md"/,
+      (e: Error) =>
+        /durable plan approval for "plan\.md" no longer covers the plan's current content/.test(
+          e.message,
+        ) && e.message.includes("One plan-reviewer re-approval re-keys it"),
     )
   })
+  const blocked = journalEntries(metricsDir).filter((e) => e.type === "blocked")
+  assert.equal(blocked.length, 1, "one blocked row")
+  assert.equal(blocked[0]!.reason, "durable-key-stale", "the row names the stale-key cause")
+  assert.equal(blocked[0]!.plan, "plan.md")
+})
+
+/**
+ * R3 repro (unit level): a sidecar record written under the pre-spec-region
+ * scheme (whole-file sha256, untagged) still covers a plan whose bytes are
+ * unchanged — the gate is green without a review round, the record is
+ * transparently re-keyed to the tagged spec shape, and one `plan-rekey` row
+ * is journaled.
+ */
+test("plan gate: a legacy whole-file-keyed record covers an unchanged plan and is re-keyed", () => {
+  const { project, plansDir, gates, ledger, metricsDir } = bootUnitPlans({
+    "plan.md": "# Progress\n\n- done\n\n# Objective\n\nSpec.\n",
+  })
+  const planPath = path.join(plansDir, "plan.md")
+  const wholeKey = createHash("sha256").update(fs.readFileSync(planPath)).digest("hex")
+  const specKey = gates.planApprovalBinding(project, ["plan.md"])!.key
+  assert.notEqual(specKey, wholeKey, "the plan's Progress section separates the two schemes")
+  // Record the spec approval through the first ledger, then rewind the
+  // sidecar record to the pre-3.5 shape: the whole-file key, untagged.
+  ledger.recordPlanApprovalDurable("plan.md", specKey, project)
+  const sidecar = path.join(metricsDir, "approved-plans.jsonl")
+  const scope = (JSON.parse(fs.readFileSync(sidecar, "utf8").trim()) as { project: string }).project
+  fs.writeFileSync(
+    sidecar,
+    `${JSON.stringify({ name: "plan.md", key: wholeKey, project: scope })}\n`,
+  )
+  // A fresh ledger over the same metrics dir (the production wiring: the
+  // ledger's journal is the journaler's turnstile.jsonl).
+  const ledger2 = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000)
+  assert.deepEqual(gates.planGateStatus(project, ledger2, "p1", "implement plan.md"), {
+    red: false,
+  })
+  const lines = fs.readFileSync(sidecar, "utf8").split("\n").filter(Boolean)
+  assert.deepEqual(
+    JSON.parse(lines[lines.length - 1]!),
+    { name: "plan.md", key: specKey, project: scope, scheme: "spec" },
+    "the record was re-keyed to the tagged spec shape",
+  )
+  const rekeys = journalEntries(metricsDir).filter((e) => e.type === "plan-rekey")
+  assert.equal(rekeys.length, 1, "one plan-rekey row")
+  assert.equal(rekeys[0]!.sessionID, "p1")
+  assert.equal(rekeys[0]!.plan, "plan.md")
+  assert.equal(rekeys[0]!.reason, "durable-key-scheme")
+  assert.equal(rekeys[0]!.from, wholeKey)
+  assert.equal(rekeys[0]!.to, specKey)
+})
+
+/**
+ * R3 repro (e2e level): after a restart with the journal aged out, a seeded
+ * legacy whole-file-keyed sidecar record admits the executor dispatch naming
+ * the unchanged plan — no plan-review round — and the record leaves the scan
+ * re-keyed to the tagged spec shape.
+ */
+test("plan gate: a legacy sidecar record admits an unchanged plan after a restart", async () => {
+  const metricsDir = tmpDir()
+  const sidecar = path.join(tmpDir(), "approved-plans.jsonl")
+  const { h, restore, project } = await bootWithPlan(
+    "# Progress\n\n- started\n\n# P\n",
+    "plan.md",
+    { metricsDir, approvalLedgerPath: sidecar },
+  )
+  try {
+    await reviewRound(h, "p1", "c1", `review plan.md`, APPROVE)
+  } finally {
+    restore()
+  }
+  // Rewind the record to the pre-3.5 shape and age the journal out: only the
+  // legacy sidecar line remains.
+  const planPath = path.join(project, ".opencode", "plans", "plan.md")
+  const wholeKey = createHash("sha256").update(fs.readFileSync(planPath)).digest("hex")
+  const specKey = createHash("sha256")
+    .update(planSpecRegion(fs.readFileSync(planPath)))
+    .digest("hex")
+  const scope = (JSON.parse(fs.readFileSync(sidecar, "utf8").trim()) as { project: string }).project
+  fs.writeFileSync(
+    sidecar,
+    `${JSON.stringify({ name: "plan.md", key: wholeKey, project: scope })}\n`,
+  )
+  fs.rmSync(path.join(metricsDir, "turnstile.jsonl"), { force: true })
+  await restartOver(metricsDir, project, sidecar, async (h2) => {
+    // No review round: the legacy record's whole-file match admits the dispatch.
+    await execDispatch(h2, "p1", "implement plan.md")
+  })
+  const lines = fs.readFileSync(sidecar, "utf8").split("\n").filter(Boolean)
+  assert.deepEqual(
+    JSON.parse(lines[lines.length - 1]!),
+    { name: "plan.md", key: specKey, project: scope, scheme: "spec" },
+    "the record was re-keyed to the tagged spec shape",
+  )
+  assert.equal(journalEntries(metricsDir).filter((e) => e.type === "plan-rekey").length, 1)
+})
+
+/**
+ * The block path distinguishes the two pending causes: a never-approved plan
+ * keeps the `no-plan-verdict` row and the no-approval message; a plan whose
+ * durable record matches neither key scheme journals `durable-key-stale` and
+ * throws the one-re-approval recovery message.
+ */
+test("plan gate: the block path distinguishes never-approved from durable-key-stale", () => {
+  const { project, plansDir, gates, ledger, metricsDir } = bootUnitPlans({
+    "a-fresh.md": "# A\n",
+    "z-edited.md": "# Z\n",
+  })
+  // z-edited.md holds a durable record from before an offline edit: the
+  // record matches neither key scheme. a-fresh.md was never approved.
+  const specKey = gates.planApprovalBinding(project, ["z-edited.md"])!.key
+  ledger.recordPlanApprovalDurable("z-edited.md", specKey, project)
+  fs.appendFileSync(path.join(plansDir, "z-edited.md"), "edit\n")
+  const fresh = gates.planGateStatus(project, ledger, "p1", "implement a-fresh.md")
+  assert.equal(fresh.red, true)
+  assert.equal(fresh.cause, "never-approved")
+  const stale = gates.planGateStatus(project, ledger, "p2", "implement z-edited.md")
+  assert.equal(stale.red, true)
+  assert.equal(stale.cause, "durable-key-stale")
+  assert.throws(
+    () => gates.enforcePlanApproval("p1", project, ledger, "implement a-fresh.md"),
+    /no plan approval for "a-fresh\.md"/,
+  )
+  assert.throws(
+    () => gates.enforcePlanApproval("p2", project, ledger, "implement z-edited.md"),
+    (e: Error) =>
+      /durable plan approval for "z-edited\.md" no longer covers the plan's current content/.test(
+        e.message,
+      ) && e.message.includes("One plan-reviewer re-approval re-keys it"),
+  )
+  const blocked = journalEntries(metricsDir).filter((e) => e.type === "blocked")
+  assert.deepEqual(
+    blocked.map((e) => [e.reason, e.plan]),
+    [
+      ["no-plan-verdict", "a-fresh.md"],
+      ["durable-key-stale", "z-edited.md"],
+    ],
+  )
 })
 
 /**
@@ -2839,7 +2997,10 @@ test("plan gate: an all-landed plans dir is green; a new plan blocks naming itse
   )
   try {
     await reviewRound(h, "p1", "c1", "review a-landed.md", APPROVE)
-    // The fresh prompt wipes the bucket; only the sidecar remains.
+    // Retire the task (the plan-bound scope keeps state across ordinary
+    // prompts) and admit a fresh prompt: the bucket resets; only the
+    // sidecar remains.
+    await callSession(h, "prompt", { sessionID: "p1", text: "TASK DONE: a-landed landed" })
     await callSession(h, "prompt", { sessionID: "p1", text: "start a new task" })
     // All plans landed: the unnamed dispatch is admitted.
     await execDispatch(h, "p1", "do the work")

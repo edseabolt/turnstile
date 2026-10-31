@@ -7,10 +7,10 @@ writers: "Writers" {
 jsonl: "turnstile.jsonl\n5 MB × 5 generations" {
   shape: cylinder
 }
-trace: "gate-events.jsonl" {
+trace: "gate-events.log" {
   shape: cylinder
 }
-approval: "approved-plans.jsonl\nbound plan approvals\nname + content key + project scope\n256 cap, rewrite on eviction" {
+approval: "approved-plans.jsonl\nbound plan approvals\nname + content key + project scope\nscheme tag (spec | legacy)\n256 cap, rewrite on eviction" {
   shape: cylinder
 }
 
@@ -19,7 +19,7 @@ ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
 
-writers.hooks -> jsonl: "every decision,\n26 entry types\n(incl. observe / would-block /\nsuspended / session-summary)"
+writers.hooks -> jsonl: "every decision,\n33 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
 approval -> ledger: "at ledger creation:\nload, last-wins per (project, plan),\nevict to cap"

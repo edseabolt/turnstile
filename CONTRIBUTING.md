@@ -29,9 +29,9 @@ Node 18.
 ## Repo rules
 
 1. **Marker drift:** the regex literals in `src/markers.ts` and the marker
-   examples in `README.md`, `agents/*.md`, and the policy templates in
-   `src/policy.ts` are synced by `scripts/check-markers.mjs`, which extracts
-   the literals by name and asserts every example parses.
+   examples in `README.md`, `docs/usage.md`, `agents/*.md`, and the policy
+   templates in `src/policy.ts` are synced by `scripts/check-markers.mjs`,
+   which extracts the literals by name and asserts every example parses.
    Edit all sides together; `prettier-ignore` comments on the literals
    keep them single-line so the extraction keeps working.
 2. **Erasable TypeScript only:** `src/` and `tests/` must stay erasable TS

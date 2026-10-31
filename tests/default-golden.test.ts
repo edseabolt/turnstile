@@ -171,6 +171,7 @@ test("golden: verdict entry shape with rounds", async () => {
       type: "verdict",
       sessionID: "p1",
       raw: "p1",
+      agent: "reviewer",
       marker: "VERDICT: APPROVE crit=0 high=0 med=1 low=2",
       rounds: 0,
       source: "task-result",
@@ -290,7 +291,7 @@ test("golden: the block messages are byte-identical", async () => {
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new task resets the cap).",
   )
   for (let i = 0; i < 15; i++) {
     await callTool(h, "execute.before", { tool: "read", sessionID: "p2" })
@@ -322,7 +323,10 @@ async function bootDefaultPlan(): Promise<{
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    // Ask mode: the plan-gate ask golden exercises the evaluate ask entry,
+    // which only fires under `escalation: "ask"`; the prompt-channel goldens
+    // are mode-independent.
+    config: { metricsDir, escalation: "ask" },
   })
   const dispose = (await setup(h.host)) as () => void
   return {

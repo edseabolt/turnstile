@@ -99,13 +99,41 @@ export function reviewerEnsembleEntry(
 /**
  * Builds a permission-decision journal entry recording a human gate reply.
  * Pure: returns the entry, journals nothing.
+ *
+ * The sticky overload: a standing, task-scoped human release (`decision`
+ * `"always"` from a gate ask, or `"waiver"` from prompt capture) is journaled
+ * with `scope:"task"` plus a `kind` naming the released surface, so the boot
+ * replay's sticky-decision fold can restore the release after a restart.
+ * Only sticky rows carry `scope`/`kind` — `once`/`reject` rows stay in the
+ * legacy shape and remain replay-inert. No new entry type: the decision row
+ * is extended in place (single journal family for human releases).
  * @param sessionID The session that raised the gate ask.
- * @param decision The resolved reply (`"always"`, `"once"`, or `"reject"`).
+ * @param decision The resolved reply (`"always"`, `"once"`, `"reject"`, or
+ *     `"waiver"` for a prompt-captured waiver).
+ * @param sticky The sticky-release stamp for a task-scoped standing release:
+ *     `kind` names the released surface (`"plan"`, `"landing"`, `"hands-on"`,
+ *     `"waiver"`) and `stages` carries a waiver's stage scope (empty for an
+ *     unscoped waiver). Omitted for non-sticky rows.
  * @returns The `permission` journal entry.
  */
-export function decisionEntry(sessionID: string, decision: string): Record<string, unknown> {
-  return { type: "permission", sessionID, decision }
+export function decisionEntry(
+  sessionID: string,
+  decision: string,
+  sticky?: { kind: StickyReleaseKind; stages?: readonly string[] },
+): Record<string, unknown> {
+  if (sticky === undefined) return { type: "permission", sessionID, decision }
+  return {
+    type: "permission",
+    sessionID,
+    decision,
+    scope: "task",
+    kind: sticky.kind,
+    ...(sticky.stages === undefined ? {} : { stages: [...sticky.stages] }),
+  }
 }
+
+/** The released surface a sticky decision row names. */
+export type StickyReleaseKind = "plan" | "landing" | "hands-on" | "waiver"
 
 /**
  * Builds an `observe` journal entry stamped at a session's first admission

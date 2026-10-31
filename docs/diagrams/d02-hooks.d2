@@ -1,8 +1,9 @@
 direction: right
 
-session: "session.hook ×3 (hooks-session.ts)" {
+session: "session.hook ×4 (hooks-session.ts)" {
   prompt: "prompt"
   generate: "generate"
+  context: "context"
   compaction: "compaction"
 }
 
@@ -10,11 +11,14 @@ admit: "admitPrompt (hooks-core.ts):\ndedupe by message id ▸ markParent ▸ re
 
 clamp: "clamp temperature:\nreviewer/plan-reviewer → 0,\nexecutor/test-runner/debugger ≤ 0.2"
 
+inject: "injectContextPolicy (hooks-core.ts):\nparent-guarded (agent name / child edge /\nunresolvable id — journaled skips) ▸ policy head\nappend once per task (latched) ▸ pending\nintent nudge append (one-shot) — in-place\nsystem push; unusable shape journals\none error row per boot, fallback stays armed"
+
 preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-tokenized)"
 
 permission: "permission.hook('evaluate') (hooks-permission.ts)\nnever blocks, forces 'ask'" {
   plan-arm: "action == task\nand plan gate red?"
-  landing-arm: "action == bash/shell\npush without approve?\n(empty-diff exempt if proved)"
+  landing-arm: "action == bash/shell\npush without approve + live\npendingLandingAsk latch?\n(armed by the guard only under\nescalation:\"ask\"; inert on\nsuspension/approval)"
+  handson-arm: "action == write/edit\nlive pendingHandsOnAsk latch?\n(inert on handsOnRelease /\nexecutor waiver or suspension)"
 }
 
 tool: "tool.hook (hooks-tool.ts)" {
@@ -22,10 +26,10 @@ tool: "tool.hook (hooks-tool.ts)" {
   after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\",\nnear-miss diagnostics → type:\"marker\")"
 }
 
-before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nonce-grant short-circuit ▸ reviewer gate ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit"
+before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nreviewer gate ▸ once-grant short-circuit ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
-before-bash: "bash/shell: denylist ▸ commit lint ▸ landing gate"
-before-write: "write/edit: path denylist"
+before-bash: "bash/shell: denylist ▸ commit lint ▸ bash write gate\n(guardBashWrite, default-on) ▸ landing gate"
+before-write: "write/edit: path denylist ▸ hands-on gate\n(parent sessions only — a registered pipeline\nchild's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
 
 after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ PIPELINE status append\n(per delivery) ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
@@ -34,14 +38,15 @@ after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE 
 eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart budget)" {
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
   text: "message.part.updated /\nsession.text.ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
-  permbook: "permission.asked / replied\n→ plan & landing ask bookkeeping"
-  inbox: "session.inbox.enqueued\n→ prompt admission (v2.0.29)"
+  permbook: "permission.asked / replied\n→ plan, landing & hands-on\nask bookkeeping"
+  inbox: "session.inbox.enqueued\n→ prompt admission (≥ 2.0.29)"
   idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"
   errors: "session.error → telemetry"
 }
 
 session.prompt -> admit
 session.generate -> clamp
+session.context -> inject
 session.compaction -> preserve
 tool.before -> before-task
 tool.before -> before-read
@@ -53,3 +58,4 @@ tool.after -> after-bash
 eventloop.inbox -> admit: "same admission path"
 permission.plan-arm -> admit: "reply 'always' → PLAN APPROVED state"
 permission.landing-arm -> tool.before-bash: "consume pendingOnceGrant.landing"
+permission.handson-arm -> tool.before-write: "consume pendingOnceGrant.handsOn\n(one edit)"

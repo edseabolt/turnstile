@@ -1,16 +1,21 @@
 /**
  * @fileoverview Permission-surface hook body: the `evaluate` handler for
- * the task-dispatch plan-gate escalation and the bash/shell landing-gate
- * arm. The payload carries NO tool input, so escalation is driven purely
- * by the parent session's plan-gate state (planGateStatus), never the
- * dispatch target; the landing arm consults the one-shot latch the bash
- * guard armed rather than re-reading the command. The handler never
- * blocks the host: every failure journals fail-open.
+ * the task-dispatch plan-gate escalation (ask under `escalation: "ask"`,
+ * inert under the default `"block"` — the dispatch guard blocks instead),
+ * the bash/shell landing-gate arm,
+ * and the write/edit hands-on-gate arm. The payload carries NO tool input,
+ * so the plan-gate arm is driven purely by the parent session's plan-gate
+ * state (planGateStatus), never the dispatch target; the landing and
+ * hands-on arms
+ * consult the one-shot latches their guards armed rather than re-reading the
+ * command. The handler never blocks the host: every failure journals
+ * fail-open.
  */
 
 import { asSessionID, PLAN_ASK_MESSAGE_PREFIX } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import { LANDING_REQUIREMENT } from "./tool-policy.ts"
+import { waiverCovers } from "./gates-common.ts"
+import { HANDSON_REQUIREMENT, LANDING_REQUIREMENT } from "./tool-policy.ts"
 import type { PermissionEvaluateEvent } from "./types.ts"
 
 /**
@@ -26,15 +31,27 @@ export function createPermissionHooks(ctx: TurnstileContext): {
 } {
   /**
    * Permission.evaluate body. The task arm: on a red plan gate for the
-   * parent it forces the host to ask the human, naming the plan file +
-   * head (the plan body is trace-gated per the SECURITY.md redaction
-   * contract), journals the ask, and latches the parent as awaiting its
-   * plan ask so the NEXT permission.asked stream event for this session
-   * is the one recorded (only escalated asks can ever match). The
+   * parent the behavior splits by `escalation` — under `"ask"` it forces
+   * the host to ask the human, naming the plan file + head (the plan body
+   * is trace-gated per the SECURITY.md redaction contract), journals the
+   * ask, and latches the parent as awaiting its plan ask so the NEXT
+   * permission.asked stream event for this session is the one recorded
+   * (only escalated asks can ever match); under `"block"` (the default) it
+   * stays inert — the dispatch guard blocks with the stop-and-report
+   * instruction and release flows via `PLAN APPROVED:` plus the sticky
+   * waiver/ask paths. The
    * bash/shell arm: a live one-shot landing latch (armed by the guard on
    * a repeat attempt) forces an ask for the landing requirement and
    * consumes the latch; a hasReviewApprove state or an unarmed latch
-   * returns inert. Returns without effect for any other action.
+   * returns inert. The write/edit arm mirrors the landing arm for the
+   * hands-on gate: a live one-shot hands-on latch forces an ask naming the
+   * hands-on requirement and consumes the latch; a live `always` release,
+   * an executor-scoped waiver, a suspended parent, or an unarmed latch
+   * returns inert (suspension also deletes the latch — the one-shot
+   * consume, so a pre-suspension arm cannot fire a mislabeled ask after
+   * `TURNSTILE ON:`; the guard re-arms on a fresh repeat attempt). Plan
+   * approval does not release the hands-on arm. Returns without effect for
+   * any other action.
    * @param event The host permission evaluate payload (untyped at the wire).
    */
   function evaluate(event: unknown): void {
@@ -52,12 +69,16 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         if (ctx.ledger.isSuspended(parent)) return
         const status = ctx.gates.planGateStatus(ctx.currentProjectDir(parent), ctx.ledger, parent)
         if (!status.red) return
-        // Red ⇒ summary is present by construction (planGateStatus builds
-        // it from a scan whose active-plan preview was already resolved).
-        // Escalate:
-        // force the host to ask the human, naming the plan file + head.
-        // Journal the ask so a reply can be matched (the requestID rides
-        // the permission.asked stream event).
+        // Under `escalation: "block"` (the default) the arm stays inert: the
+        // dispatch guard (`enforcePlanApproval`) blocks the dispatch with the
+        // stop-and-report instruction and journals the `blocked` row, and the
+        // release channels are `PLAN APPROVED:` (replay-restored) plus the
+        // sticky waiver/ask paths — no permission ask is forced here.
+        if (ctx.config.escalation !== "ask") return
+        // Under `escalation: "ask"`: force the host to ask the human, naming
+        // the plan file + head (the plan body is trace-gated per the
+        // SECURITY.md redaction contract). Journal the ask so a reply can be
+        // matched (the requestID rides the permission.asked stream event).
         const file = status.summary!.file
         // The plan body is prompt context; journal/quote it only when the
         // trace is enabled (SECURITY.md redaction contract), mirroring how
@@ -85,14 +106,15 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         return
       }
       // Landing arm: a bash/shell permission.evaluate whose landing ask
-      // is armed (the guard set the pending-landing-ask latch under
-      // enforce on a repeat attempt). Candidate detection lives in
+      // is armed (the guard set the pending-landing-ask latch on an armed
+      // attempt under `escalation: "ask"` — under the default `"block"` no
+      // latch is ever armed, so this arm stays inert by construction). Candidate detection lives in
       // `isPushLanding` (used by the guard); the evaluate handler
       // consults the arm rather than re-reading the command from the
       // (host-shape-uncertain) permission event — the guard is the single
       // source of truth for landing-candidate detection. Approval
       // releases the gate; a live latch means the human must decide this
-      // landing (the first block already threw, and shadow never arms).
+      // landing (the first block already threw).
       // The arm is ONE-SHOT: it is consumed by the first evaluate it
       // forces. The permission request the arm is meant to attach to is
       // the very next one (the repeat push the guard just allowed through
@@ -107,12 +129,19 @@ export function createPermissionHooks(ctx: TurnstileContext): {
         // no enforcement is lost.
         if (ctx.ledger.isSuspended(parent)) {
           ctx.pendingLandingAsk.delete(parent)
+          // Mirror the suspension consume on the dedupe map: a stale
+          // timestamp must not suppress a legitimate ask row after the
+          // suspension (the guard re-arms on a fresh attempt).
+          ctx.lastLandingEscalateAt.delete(parent)
           return
         }
         const st = ctx.ledger.state(parent)
         if (st.hasReviewApprove) return
         if (!ctx.hasLiveLandingAsk(parent)) return
         ctx.pendingLandingAsk.delete(parent)
+        // One-shot consume: the dedupe timestamp goes with the latch so the
+        // next (genuinely new) escalation can journal a fresh ask row.
+        ctx.lastLandingEscalateAt.delete(parent)
         pe.effect = "ask"
         pe.message = `turnstile: ${LANDING_REQUIREMENT}`
         // Stamp the consume, not the ask: the guard already journaled the
@@ -125,6 +154,53 @@ export function createPermissionHooks(ctx: TurnstileContext): {
           type: "permission",
           sessionID: parent,
           reason: "landing",
+          event: "forced",
+        })
+        return
+      }
+      // Hands-on arm: a write/edit permission.evaluate whose hands-on ask is
+      // armed (the guard set the pending-hands-on-ask latch on a repeat
+      // parent attempt under `escalation: "ask"` — under the default
+      // `"block"` no latch is ever armed, so this arm stays inert by
+      // construction). The guard is the single source of truth for
+      // the parent-only contract; the evaluate handler consults the arm
+      // rather than re-reading the (host-shape-uncertain) event. A live
+      // `always` release or an executor-scoped waiver inerts the arm without
+      // consuming the latch (the release outlives the one-shot ask). Plan
+      // approval never releases it. The arm is ONE-SHOT (consumed by the
+      // first evaluate it forces, same contract as the landing arm).
+      if (pe?.action === "write" || pe?.action === "edit") {
+        const parent = ctx.ledger.parentOf(sessionID)
+        // Gate suspension: inert, and the armed hands-on latch is deleted
+        // (the one-shot consume, mirroring the forced ask below) so a latch
+        // armed before the suspension cannot fire a mislabeled hands-on ask
+        // after `TURNSTILE ON:` — the guard re-arms on a fresh repeat
+        // attempt, so no enforcement is lost.
+        if (ctx.ledger.isSuspended(parent)) {
+          ctx.pendingHandsOnAsk.delete(parent)
+          // Mirror the suspension consume on the dedupe map (same rationale
+          // as the landing arm above).
+          ctx.lastHandsOnEscalateAt.delete(parent)
+          return
+        }
+        const st = ctx.ledger.state(parent)
+        if (st.handsOnRelease || waiverCovers(st, ["executor"])) return
+        if (!ctx.hasLiveHandsOnAsk(parent)) return
+        ctx.pendingHandsOnAsk.delete(parent)
+        // One-shot consume: the dedupe timestamp goes with the latch so the
+        // next (genuinely new) escalation can journal a fresh ask row.
+        ctx.lastHandsOnEscalateAt.delete(parent)
+        pe.effect = "ask"
+        pe.message = `turnstile: ${HANDSON_REQUIREMENT}`
+        // Stamp the consume, not the ask: the guard already journaled the
+        // `{action:"ask", reason:"hands-on"}` entry (the single PERM-ask
+        // record status.mjs counts), so this row deliberately omits action
+        // and carries event:"forced" — the consume is diagnosed by event.
+        // Replay-inert (the ledger never replays permission rows).
+        ctx.journaler.journal({
+          type: "permission",
+          sessionID: parent,
+          reason: "hands-on",
           event: "forced",
         })
         return

@@ -1,12 +1,11 @@
 /**
- * @fileoverview Landing-gate tests: the three-mode decision matrix for
- * `ToolPolicy.guardLanding` (off/shadow/enforce), first-block vs.
- * repeat-attempt escalation, approval release, `landingGate:false` no-op,
- * empty-command misconfiguration telemetry, `gh pr` (not this guard's target —
- * its telemetry is `observeLanding`'s, and a `gh pr` deny, when configured, is
- * `guardBash`'s territory), the fail-open internal-error path, the landing
- * block entry stamping `gitGates.mode`, plus `isPushLanding` and
- * `observeLanding` telemetry coverage.
+ * @fileoverview Landing-gate tests: the `guardLanding` decision matrix,
+ * first-block vs. repeat-attempt escalation, approval release,
+ * `landingGate:false` no-op, empty-command misconfiguration telemetry, `gh pr`
+ * (not this guard's target — its telemetry is `observeLanding`'s, and a `gh pr`
+ * deny, when configured, is `guardBash`'s territory), the fail-open
+ * internal-error path, plus `isPushLanding` and `observeLanding` telemetry
+ * coverage.
  */
 
 import { test } from "node:test"
@@ -47,10 +46,17 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
 /**
  * Builds a policy over the default config with one-level-deep `gitGates`
  * override, with a capturing journaler.
- * @param overrides `gitGates` fields to merge over the defaults.
+ * @param overrides `gitGates` fields to merge over the defaults, plus a
+ *     top-level `escalation` override (e.g. `"ask"` to exercise the
+ *     interactive ask ladder).
  * @returns The policy, its journaled entries, and its trace lines.
  */
-function makePolicy(overrides: { gitGates?: Partial<TurnstileGitGates> } = {}): {
+function makePolicy(
+  overrides: {
+    gitGates?: Partial<TurnstileGitGates>
+    escalation?: "ask" | "block"
+  } = {},
+): {
   policy: ToolPolicy
   entries: any[]
   traces: string[]
@@ -58,6 +64,7 @@ function makePolicy(overrides: { gitGates?: Partial<TurnstileGitGates> } = {}): 
   const { journaler, entries, traces } = captureJournaler()
   const cfg: TurnstileConfig = {
     ...defaultConfig({}),
+    escalation: overrides.escalation ?? "block",
     gitGates: { ...defaultConfig({}).gitGates, ...(overrides.gitGates ?? {}) },
   }
   return { policy: createToolPolicy(cfg, journaler), entries, traces }
@@ -86,6 +93,7 @@ function recordingCapability(opts?: {
   approval?: boolean
   credited?: boolean
   emptyDiff?: boolean
+  escalateReturns?: boolean
   throwIn?: keyof LandingGateCapability
 }): { gate: LandingGateCapability; log: Record<string, number | boolean> } {
   const log: Record<string, number | boolean> = {
@@ -114,10 +122,11 @@ function recordingCapability(opts?: {
       log.blockCount = (log.blockCount as number) + 1
       log.recordBlock = (log.recordBlock as number) + 1
     },
-    escalate: () => {
+    escalate: (): boolean => {
       if (throwAt === "escalate") throw new Error("escalate boom")
       log.escalate = (log.escalate as number) + 1
       log.escalated = true
+      return opts?.escalateReturns ?? true
     },
     isEmptyDiff: () => {
       if (throwAt === "isEmptyDiff") throw new Error("isEmptyDiff boom")
@@ -134,43 +143,38 @@ function landingBlocks(entries: any[]): any[] {
 }
 
 /**
- * First block this task: three-mode matrix. `off` is a silent no-op; `shadow`
- * journals a `no-landing-approval` block (stamping `gitGates.mode`, never the
- * toolPolicy mode) without throwing; `enforce` journals it and throws. Each of
- * shadow/enforce records exactly one capability block.
+ * First block this task decision matrix: with `landingGate` on (default) the
+ * unapproved push throws and journals exactly one `no-landing-approval` block;
+ * with `landingGate: false` the guard is a silent no-op.
  */
-test("guardLanding: first-block x off/shadow/enforce decision matrix", () => {
+test("guardLanding: first-block decision matrix over the landingGate switch", () => {
   const push = "git push origin main"
-  for (const mode of ["off", "shadow", "enforce"] as const) {
-    const { policy, entries } = makePolicy({ gitGates: { mode } })
+  {
+    const { policy, entries } = makePolicy()
     const { gate, log } = recordingCapability()
-    const invoke = () => policy.guardLanding("bash", push, "s1", gate)
-    if (mode === "off") {
-      allows(invoke)
-      assert.deepEqual(entries, [], "off is a silent no-op")
-      continue
-    }
-    if (mode === "enforce") blocks(invoke)
-    else allows(invoke)
+    blocks(() => policy.guardLanding("bash", push, "s1", gate))
     const blocked = landingBlocks(entries)
-    assert.equal(blocked.length, 1, `one block under ${mode}`)
-    // The block stamps gitGates.mode: toolPolicy
-    // mode still defaults to "enforce" while gitGates.mode is "shadow" here.
-    assert.equal(blocked[0].mode, mode)
+    assert.equal(blocked.length, 1, "one block with the gate on")
     assert.equal(log.recordBlock, 1, "recordBlock called once on the first block")
     assert.equal(log.escalate, 0, "no escalate on the first block")
+  }
+  {
+    const { policy, entries } = makePolicy({ gitGates: { landingGate: false } })
+    const { gate } = recordingCapability()
+    allows(() => policy.guardLanding("bash", push, "s1", gate))
+    assert.deepEqual(entries, [], "landingGate:false is a silent no-op")
   }
 })
 
 /**
- * Repeat attempt without approval. Under `enforce` it journals a
+ * Repeat attempt without approval under `escalation: "ask"`. It journals a
  * `{type:"permission", action:"ask", reason:"landing"}` and calls
  * `gate.escalate()` (allowing execute.before to pass so the setup-side evaluate
- * handler forces the human ask); the escalation is a documented no-op on the
- * real capability, so the guard itself allows. Under `shadow` it re-blocks.
+ * handler forces the human ask); the escalation arm journals the ask row (the
+ * dedupe returns true for a fresh escalation), so the guard itself allows.
  */
-test("guardLanding: repeat attempt under enforce escalates and allows", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+test("guardLanding: repeat attempt under escalation ask escalates and allows", () => {
+  const { policy, entries } = makePolicy({ escalation: "ask" })
   const { gate, log } = recordingCapability({ prior: 1 })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.escalate, 1, "escalate called on the repeat attempt")
@@ -178,29 +182,56 @@ test("guardLanding: repeat attempt under enforce escalates and allows", () => {
   const perm = entries.find((e) => e.type === "permission" && e.reason === "landing")
   assert.ok(perm, "a permission ask is journaled on the repeat attempt")
   assert.equal(perm.action, "ask")
-  assert.equal(perm.mode, "enforce")
 })
 
-/** Under `shadow`, a repeat attempt re-blocks (no throw, no escalate). */
-test("guardLanding: repeat attempt under shadow re-blocks and records", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "shadow" } })
+/**
+ * Repeat attempt under the default `escalation: "block"` escalates too
+ * (ask-first, Phase 2): the armed repeat journals the permission ask row,
+ * calls `gate.escalate()` once, does not throw, and journals no second
+ * blocked entry — the evaluate handler forces the human ask off the armed
+ * latch in both modes. The block-throw is the no-latch fallback only.
+ */
+test("guardLanding: repeat attempt under the default block mode escalates too", () => {
+  const { policy, entries } = makePolicy()
   const { gate, log } = recordingCapability({ prior: 1 })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
-  assert.equal(log.recordBlock, 1, "recordBlock called once on the repeat attempt")
-  assert.equal(log.escalate, 0, "no escalate under shadow")
-  const blocked = landingBlocks(entries)
-  assert.equal(blocked.length, 1)
-  assert.equal(blocked[0].mode, "shadow")
+  assert.equal(log.escalate, 1, "block mode escalates the armed repeat")
+  assert.equal(log.recordBlock, 0, "no second block on the escalation")
+  assert.equal(landingBlocks(entries).length, 0, "no block row on the repeat attempt")
+  const perm = entries.find((e) => e.type === "permission" && e.reason === "landing")
+  assert.ok(perm, "the landing ask is journaled under block mode too")
+  assert.equal(perm.action, "ask")
+})
+
+/**
+ * No-latch fallback: when the escalation is armed but the latch cannot be
+ * armed (`gate.escalate()` reports a within-window duplicate), the repeat
+ * attempt takes the block path — journal, record, throw. The deliberate
+ * block-throw fires only when no ask latch can be armed.
+ */
+test("guardLanding: a within-window duplicate arm re-blocks (no-latch fallback)", () => {
+  const { policy, entries } = makePolicy()
+  const { gate, log } = recordingCapability({ prior: 1, escalateReturns: false })
+  blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
+  assert.equal(log.escalate, 1, "the fallback is reached through escalate()")
+  assert.equal(log.recordBlock, 1, "the fallback records the block")
+  assert.equal(landingBlocks(entries).length, 1, "one block row on the fallback")
+  assert.equal(
+    entries.some((e) => e.type === "permission"),
+    false,
+    "the fallback journals no permission ask row",
+  )
 })
 
 /**
  * A session journaled with a credited reviewer APPROVE whose `hasReviewApprove`
- * flag a prompt reset dropped escalates on the FIRST enforce attempt: no
- * first-block throw, no block recorded, one landing ask journaled, and
- * `gate.escalate()` armed so the evaluate handler can force the human ask.
+ * flag a prompt reset dropped escalates on the FIRST attempt under the
+ * default `escalation: "block"` too (ask-first): no first-block throw, no
+ * block recorded, one landing ask journaled, and `gate.escalate()` armed so
+ * the evaluate handler can force the human ask.
  */
-test("guardLanding: a credited session escalates on the first enforce attempt", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+test("guardLanding: a credited session escalates on the first attempt under block mode", () => {
+  const { policy, entries } = makePolicy()
   const { gate, log } = recordingCapability({ credited: true })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.escalate, 1, "escalate is called on the credited first attempt")
@@ -209,29 +240,12 @@ test("guardLanding: a credited session escalates on the first enforce attempt", 
   const perm = entries.find((e) => e.type === "permission" && e.reason === "landing")
   assert.ok(perm, "the landing ask is journaled on the credited first attempt")
   assert.equal(perm.action, "ask")
-  assert.equal(perm.mode, "enforce")
   assert.deepEqual(landingBlocks(entries), [], "a credited first attempt journals no block")
-})
-
-/**
- * A journaled credit under `shadow` journals the first block unchanged: shadow
- * never arms the escalation — one `no-landing-approval` block is recorded and
- * journaled, with no throw and no escalate.
- */
-test("guardLanding: a credited session under shadow journals the first block", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "shadow" } })
-  const { gate, log } = recordingCapability({ credited: true })
-  allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
-  assert.equal(log.escalate, 0, "shadow never escalates")
-  assert.equal(log.recordBlock, 1, "a credited first attempt records one block under shadow")
-  const blocked = landingBlocks(entries)
-  assert.equal(blocked.length, 1)
-  assert.equal(blocked[0].mode, "shadow")
 })
 
 /** Approval releases the gate: no block, no capability call, nothing journaled. */
 test("guardLanding: approval releases the gate", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   const { gate, log } = recordingCapability({ approval: true })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.deepEqual(landingBlocks(entries), [], "approval emits no block")
@@ -245,7 +259,7 @@ test("guardLanding: approval releases the gate", () => {
  * journaled and no landing block is recorded.
  */
 test("guardLanding: an exempted empty-diff push is journaled, not blocked", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", emptyDiffExempt: true } })
+  const { policy, entries } = makePolicy({ gitGates: { emptyDiffExempt: true } })
   const { gate, log } = recordingCapability({ emptyDiff: true })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.emptyDiff, 1, "the probe is consulted exactly once")
@@ -262,7 +276,7 @@ test("guardLanding: an exempted empty-diff push is journaled, not blocked", () =
 /** With the exemption explicitly disabled (the strict opt-out), the probe is never consulted. */
 test("guardLanding: the probe is not consulted while the exemption is off", () => {
   const { policy, entries } = makePolicy({
-    gitGates: { mode: "enforce", emptyDiffExempt: false },
+    gitGates: { emptyDiffExempt: false },
   })
   const { gate, log } = recordingCapability({ emptyDiff: true })
   blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
@@ -272,7 +286,7 @@ test("guardLanding: the probe is not consulted while the exemption is off", () =
 
 /** Exemption on but the probe proves the push non-empty: the ladder is unchanged. */
 test("guardLanding: a non-empty probe under the exemption leaves the ladder unchanged", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", emptyDiffExempt: true } })
+  const { policy, entries } = makePolicy({ gitGates: { emptyDiffExempt: true } })
   const { gate, log } = recordingCapability({ emptyDiff: false })
   blocks(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.equal(log.emptyDiff, 1, "the probe is consulted while on")
@@ -286,7 +300,7 @@ test("guardLanding: a non-empty probe under the exemption leaves the ladder unch
 
 /** A capability error from `isEmptyDiff` fails open: journaled, never thrown. */
 test("guardLanding: an isEmptyDiff capability error fails open", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", emptyDiffExempt: true } })
+  const { policy, entries } = makePolicy({ gitGates: { emptyDiffExempt: true } })
   const { gate } = recordingCapability({ throwIn: "isEmptyDiff" })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   const errs = entries.filter(
@@ -295,9 +309,9 @@ test("guardLanding: an isEmptyDiff capability error fails open", () => {
   assert.equal(errs.length, 1)
 })
 
-/** `landingGate:false` is a no-op even under enforce. */
-test("guardLanding: landingGate:false is a no-op under enforce", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce", landingGate: false } })
+/** `landingGate:false` is a no-op. */
+test("guardLanding: landingGate:false is a no-op", () => {
+  const { policy, entries } = makePolicy({ gitGates: { landingGate: false } })
   const { gate } = recordingCapability()
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   assert.deepEqual(entries, [], "landingGate:false journals nothing")
@@ -305,7 +319,7 @@ test("guardLanding: landingGate:false is a no-op under enforce", () => {
 
 /** An empty or absent command fails open with misconfiguration telemetry. */
 test("guardLanding: empty or absent command fails open", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   const { gate } = recordingCapability()
   allows(() => policy.guardLanding("bash", "", "s1", gate))
   allows(() => policy.guardLanding("bash", undefined, "s1", gate))
@@ -322,7 +336,7 @@ test("guardLanding: empty or absent command fails open", () => {
  * from `observeLanding`; the landing gate itself journals nothing for `gh pr`.
  */
 test("guardLanding: gh pr is not the landing gate's target", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   const { gate, log } = recordingCapability()
   allows(() => policy.guardLanding("bash", "gh pr create", "s1", gate))
   allows(() => policy.guardLanding("bash", "gh pr merge --squash", "s1", gate))
@@ -336,7 +350,7 @@ test("guardLanding: gh pr is not the landing gate's target", () => {
  * contract).
  */
 test("guardLanding: an internal capability error fails open", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   const { gate } = recordingCapability({ throwIn: "hasApproval" })
   allows(() => policy.guardLanding("bash", "git push origin main", "s1", gate))
   const errs = entries.filter(
@@ -350,11 +364,11 @@ test("guardLanding: an internal capability error fails open", () => {
  * trace line is written (enforce).
  */
 test("guardLanding: the enforce error names the landing requirement", () => {
-  const { policy } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy } = makePolicy()
   const { gate } = recordingCapability()
   assert.throws(
     () => policy.guardLanding("bash", "git push origin main", "s1", gate),
-    (e: Error) => e instanceof BlockError && e.message.includes("push/PR requires a reviewer"),
+    (e: Error) => e instanceof BlockError && e.message.includes("pushing requires a reviewer"),
   )
 })
 
@@ -415,23 +429,23 @@ test("isPushLanding: a bare git verb and separator-only input are not pushes", (
 
 /**
  * `observeLanding` journals `{type:"tool", tool:"bash", landing:true}` for a
- * `git push` and a `gh pr` candidate in every mode (telemetry is
- * mode-independent and non-blocking); an empty or non-landing command journals
+ * `git push` and a `gh pr` candidate regardless of the landing switch
+ * (telemetry is non-blocking); an empty or non-landing command journals
  * nothing.
  */
-test("observeLanding: journals landing telemetry for push and gh pr in every mode", () => {
-  for (const mode of ["off", "shadow", "enforce"] as const) {
-    const { policy, entries } = makePolicy({ gitGates: { mode } })
+test("observeLanding: journals landing telemetry for push and gh pr", () => {
+  for (const landingGate of [true, false]) {
+    const { policy, entries } = makePolicy({ gitGates: { landingGate } })
     allows(() => policy.observeLanding("s1", "git push origin main"))
     allows(() => policy.observeLanding("s2", "gh pr create"))
     const lands = entries.filter((e) => e.type === "tool" && e.landing === true)
-    assert.equal(lands.length, 2, `two landing telemetry entries under ${mode}`)
+    assert.equal(lands.length, 2, "two landing telemetry entries")
   }
 })
 
 /** observeLanding is silent for an empty command, a non-string, or a non-landing command. */
 test("observeLanding: empty, non-string and non-landing commands journal nothing", () => {
-  const { policy, entries } = makePolicy({ gitGates: { mode: "enforce" } })
+  const { policy, entries } = makePolicy()
   allows(() => policy.observeLanding("s1", ""))
   allows(() => policy.observeLanding("s1", undefined))
   allows(() => policy.observeLanding("s1", 42))

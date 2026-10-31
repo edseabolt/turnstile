@@ -1,7 +1,7 @@
 /**
- * @fileoverview Policy boundary: enforcement decisions: the reviewer
- * dispatch gate, the plan-approval gate, the whole-file read horizon, and
- * the decomposition gate.
+ * @fileoverview Policy boundary: composition of the per-gate enforcement
+ * modules (dispatch gates, plan gates) — this module wires them into the
+ * host-facing `Gates` interface.
  * Functions here either return normally or throw a deliberate BLOCKED
  * error; every other failure fails open upstream (hooks guard and journal).
  * All tunables (thresholds, marker, agent names) come from the injected
@@ -14,6 +14,7 @@ import type { TurnstileConfig } from "./types.ts"
 import { createDispatchGates } from "./gates-dispatch.ts"
 import type { EvidenceSearch } from "./gates-dispatch.ts"
 import { createPlanGates } from "./gates-plan.ts"
+import type { PlanGateRed } from "./gates-plan.ts"
 
 export { BlockError } from "./gates-common.ts"
 export type { EvidenceSearch } from "./gates-dispatch.ts"
@@ -32,7 +33,8 @@ export interface Gates {
    * gates (the plan gate is covered by either its plan-reviewer or executor
    * stage name), and a scoped waiver stays live until that stage's waiver
    * allowance is spent — metered separately from the ordinary dispatch caps.
-   * A new user prompt drops the waiver. Without `search` the gate-unverified
+   * The waiver holds for the whole task scope; a task-scope change drops it.
+   * Without `search` the gate-unverified
    * refusal renders byte-identical to the legacy message and journals no
    * `searched` field; with one, the refusal names the searched sessions and
    * the `blocked` entry gains `searched` (IDs only).
@@ -172,9 +174,9 @@ export interface Gates {
    * in the waiver text scopes it to those stages' gates — this gate is
    * covered by either its plan-reviewer or executor stage name — and a
    * scoped waiver stays live until that stage's waiver allowance is spent,
-   * metered separately from the ordinary dispatch caps; a new user prompt
-   * drops the waiver. A waiver covering this gate is never consumed (the
-   * plan gate is sticky).
+   * metered separately from the ordinary dispatch caps; the waiver holds for
+   * the whole task scope, a task-scope change drops it. A waiver covering
+   * this gate is never consumed (the plan gate is sticky).
    * @param sessionID The parent session ID.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read and mutate plan state from.
@@ -220,8 +222,10 @@ export interface Gates {
    * result implies the task's waiver does not cover this gate's stage group
    * (no live waiver, or a waiver scoped to other stages), `hasPlanVerdict`
    * is false, and at least one genuine blocker is pending, so the caller
-   * only tests `red`. "Pending" means the plan's bytes carry no durable,
-   * project-scoped approval in the ledger's approval store. The gate resolves
+   * only tests `red`. "Pending" means the plan's bytes carry no live durable,
+   * project-scoped approval in the ledger's approval store (a legacy
+   * whole-file record whose bytes are unchanged is live and transparently
+   * re-keyed). The gate resolves
    * the dispatch's relevant plans — the prompt-referenced existing plans, else
    * the session-bound plan, else (nothing resolvable) every pending plan —
    * and is red only when that resolution still holds a pending plan: a
@@ -232,20 +236,24 @@ export interface Gates {
    * prompt-referenced pending plans in prompt order, else the session-bound
    * pending plan, else (nothing resolvable) every pending plan in sorted
    * scan order; the preview names `blockers[0]`, so a stale bound
-   * approval's ask still names that plan.
+   * approval's ask still names that plan. The red `cause` classifies
+   * `blockers[0]`: `durable-key-stale` when a durable record matches neither
+   * key scheme (the plan changed after approval, or the record is from an
+   * obsolete scheme that cannot prove the spec region unchanged — one
+   * re-approval re-keys it), `never-approved` otherwise.
    * @param projectDir The current project directory.
    * @param ledger The gate ledger to read (and reconcile) state from.
    * @param sessionID The parent session whose plan-gate state is read.
    * @param prompt Optional dispatch prompt text for active-plan resolution.
-   * @returns `{ red: false }` when not red, or `{ red: true, summary,
-   *     blockers }` when red (summary is the first blocker's preview).
+   * @returns `{ red: false }` when not red, or the red shape (summary is the
+   *     first blocker's preview, `cause` its pending classification).
    */
   planGateStatus(
     projectDir: string,
     ledger: GateLedger,
     sessionID: string,
     prompt?: string,
-  ): { red: false } | { red: true; summary: { file: string; head: string }; blockers: string[] }
+  ): { red: false } | PlanGateRed
   /**
    * Extracts the plan file names a dispatch prompt mentions: the basenames of
    * every `*.md` token, last five (keeps a hostile or pathological prompt

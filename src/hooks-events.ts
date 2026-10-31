@@ -18,6 +18,7 @@ import {
   asSessionID,
   readRecordString,
   DIRECTORY_KEYS,
+  HANDSON_ASK_MESSAGE_PREFIX,
   LANDING_ASK_MESSAGE_PREFIX,
   PLAN_ASK_MESSAGE_PREFIX,
 } from "./delivery.ts"
@@ -38,6 +39,15 @@ type StreamExit = "aborted" | "clean"
 type StopReason = "aborted" | "budget"
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 type EventHandler = (properties: EventProperties) => void | Promise<void>
+
+/**
+ * Reply latency under which a human could not plausibly have read and
+ * answered the ask: a release reply arriving faster than this journals a
+ * provenance suspicion. Heuristic only — the release still applies and the
+ * row gates nothing; the journal keeps the audit trail honest about replies
+ * that look machine-generated (a non-interactive client auto-answering).
+ */
+const FAST_REPLY_MS = 1000
 
 /**
  * Starts the event stream for one setup: subscribes to the host stream
@@ -89,7 +99,7 @@ export function startEventStream(
     if (sid) {
       const agent = typeof properties.agent === "string" ? properties.agent : ""
       if (typeof properties.parentID === "string") {
-        ctx.ledger.setParent(sid, properties.parentID)
+        ctx.ledger.setParent(sid, properties.parentID, agent)
         // Back-fill: a background child's edge often lands after
         // its evidence and claim were recorded.
         ctx.promoteOnEvidence(properties.parentID)
@@ -185,6 +195,19 @@ export function startEventStream(
     ctx.boundLandingGateAsks()
   }
   /**
+   * Records a hands-on-gate ask under the host request id, keyed to the
+   * ask's parent session so replies apply per-session and concurrent
+   * sessions cannot cross-apply; bounds the ask table. Mirrors
+   * recordAskedLanding; the disjoint message prefixes keep a hands-on
+   * approval from ever releasing the plan or landing gate (and vice versa).
+   * @param id The host request id of the ask.
+   * @param parent The parent session the ask belongs to.
+   */
+  const recordAskedHandsOn = (id: string, parent: string): void => {
+    ctx.handsOnGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+    ctx.boundHandsOnGateAsks()
+  }
+  /**
    * Records a plan-gate ask: when the message carries the plan-ask prefix
    * (the evaluate echo) or when the session is live-latched and the ask
    * carries no message of its own (the escalated echo). A non-empty
@@ -250,11 +273,42 @@ export function startEventStream(
       // a plan ask (different prefix), so an approval of one never
       // releases the other.
       if (message.startsWith(LANDING_ASK_MESSAGE_PREFIX)) {
+        // Landing-gate ask: message carries the landing-ask prefix
+        // (the evaluate handler's echo). A landing ask is disjoint from
+        // a plan ask (different prefix), so an approval of one never
+        // releases the other.
         recordAskedLanding(id, ctx.ledger.parentOf(sid))
+      } else if (message.startsWith(HANDSON_ASK_MESSAGE_PREFIX)) {
+        // Hands-on-gate ask: same prefix-dispatch contract.
+        recordAskedHandsOn(id, ctx.ledger.parentOf(sid))
       } else {
         recordAskedPlan(id, sid, message)
       }
     }
+  }
+  /**
+   * Journals a fast-reply provenance suspicion when a recorded ask was
+   * answered faster than a human could plausibly read it (see
+   * {@link FAST_REPLY_MS}). Journal-only: the suspicion never gates, and the
+   * release the reply carries still applies — the row keeps the audit trail
+   * honest about machine-looking replies (a non-interactive client
+   * auto-answering) without inventing a host signal that does not exist.
+   * @param ctxRecordedAt The ask's `permission.asked` arrival time.
+   * @param parent The parent session the ask belongs to.
+   * @param decision The reply being applied (`"always"` / `"once"`).
+   */
+  const noteFastReply = (ctxRecordedAt: number, parent: string, decision: string): void => {
+    if (Date.now() - ctxRecordedAt >= FAST_REPLY_MS) return
+    ctx.journaler.journal({
+      type: "permission",
+      sessionID: parent,
+      event: "suspicion",
+      reason: "no-interactive-human",
+      // `reply`, deliberately NOT `decision`: the row must stay outside the
+      // decision family (status.mjs's PERM counts and any journal tail
+      // scanning on `decision` must not read a suspicion as a decision).
+      reply: decision,
+    })
   }
   /**
    * Applies a human reply to a RECORDED plan-gate ask (the dispatcher's
@@ -272,16 +326,20 @@ export function startEventStream(
     const s = ctx.ledger.state(parent)
     if (reply === "always") {
       // A standing human approval releases the plan gate for the
-      // rest of the task and records provenance.
+      // rest of the task and records provenance. The sticky row
+      // (scope/kind) is what the boot replay folds back into a
+      // restored standing release after a restart.
       s.humanApproval = true
       s.hasPlanVerdict = true
-      ctx.journaler.journal(decisionEntry(parent, "always"))
+      noteFastReply(planRecord.recordedAt, parent, "always")
+      ctx.journaler.journal(decisionEntry(parent, "always", { kind: "plan" }))
     } else if (reply === "once") {
       // A plan-gate single-dispatch grant: consumed by exactly one
       // executor dispatch in execute.before (the .plan
       // short-circuit), so a stale grant cannot outlive that
       // single dispatch.
       s.pendingOnceGrant.plan = rid
+      noteFastReply(planRecord.recordedAt, parent, "once")
       ctx.journaler.journal(decisionEntry(parent, "once"))
     } else {
       // reject (or any non-allow reply) leaves the gate red: the
@@ -312,25 +370,61 @@ export function startEventStream(
       // absent/false) rather than an earlier refused APPROVE.
       s.hasReviewApprove = true
       // Credit the bucket-free trace too: the flag above dies on the next
-      // prompt reset, but this human release is credit the journal already
+      // task-scope reset, but this human release is credit the journal already
       // records (the cleared refusal stamp), so the trace keeps live and
       // restart behavior identical and lets the landing gate escalate the
       // next turn's first push instead of throwing.
       ctx.ledger.markCreditedApproval(parent)
+      noteFastReply(landingRecord.recordedAt, parent, "always")
       ctx.journaler.journal(
         reviewerEnsembleEntry(parent, ctx.config.agents.reviewer, s.reviewerDispatches, false),
       )
-      ctx.journaler.journal(decisionEntry(parent, "always"))
+      ctx.journaler.journal(decisionEntry(parent, "always", { kind: "landing" }))
     } else if (reply === "once") {
       // A landing-gate single-dispatch push grant: consumed by
       // exactly one bash dispatch in execute.before (the
       // .landing short-circuit), so a stale grant cannot outlive
       // that single push.
       s.pendingOnceGrant.landing = rid
+      noteFastReply(landingRecord.recordedAt, parent, "once")
       ctx.journaler.journal(decisionEntry(parent, "once"))
     } else {
       // reject (or any non-allow reply) leaves the gate red: the
       // next execute.before push re-blocks and re-arms the ask.
+      ctx.journaler.journal(decisionEntry(parent, "reject"))
+    }
+  }
+  /**
+   * Applies a human reply to a RECORDED hands-on-gate ask (the dispatcher's
+   * falsy-record guard guarantees the record exists): "always" releases the
+   * hands-on gate for the rest of the task (task-scoped, dropped by the next
+   * prompt); "once" stamps a single-edit grant consumed by exactly one parent
+   * write/edit; any other reply leaves the gate red — the next parent edit
+   * re-blocks and re-arms. The record is consumed (deleted) on every path.
+   * @param rid The host request id matching the recorded ask.
+   * @param reply The human reply ("once" / "always" / "reject").
+   */
+  const applyHandsOnGrant = (rid: string, reply: unknown): void => {
+    const handsOnRecord = ctx.handsOnGateAsks.get(rid)!
+    ctx.handsOnGateAsks.delete(rid)
+    const parent = handsOnRecord.sessionID
+    const s = ctx.ledger.state(parent)
+    if (reply === "always") {
+      // A standing human approval releases the rest of this task's parent
+      // edits (the guard sees handsOnRelease and allows every write/edit).
+      s.handsOnRelease = true
+      noteFastReply(handsOnRecord.recordedAt, parent, "always")
+      ctx.journaler.journal(decisionEntry(parent, "always", { kind: "hands-on" }))
+    } else if (reply === "once") {
+      // A hands-on-gate single-edit grant: consumed by exactly one parent
+      // write/edit in execute.before (the .handsOn short-circuit), so a
+      // stale grant cannot outlive that single edit.
+      s.pendingOnceGrant.handsOn = rid
+      noteFastReply(handsOnRecord.recordedAt, parent, "once")
+      ctx.journaler.journal(decisionEntry(parent, "once"))
+    } else {
+      // reject (or any non-allow reply) leaves the gate red: the next
+      // parent edit re-blocks and re-arms the ask.
       ctx.journaler.journal(decisionEntry(parent, "reject"))
     }
   }
@@ -369,6 +463,8 @@ export function startEventStream(
       applyPlanGrant(rid, reply)
     } else if (ctx.landingGateAsks.get(rid)) {
       applyLandingGrant(rid, reply)
+    } else if (ctx.handsOnGateAsks.get(rid)) {
+      applyHandsOnGrant(rid, reply)
     } else if (rid !== "") {
       noteUnrecordedReply(rid, asSessionID(properties.sessionID))
     }

@@ -1,12 +1,13 @@
 /**
  * @fileoverview Session-surface hook bodies: prompt admission (counted on
  * every fire as the dead-channel telemetry key, deduped across the hook +
- * inbox transport paths), the pipeline-agent decoding clamps (reviewer and
- * plan-reviewer forced to temperature 0; executor, test-runner, and
- * debugger clamped to ≤ 0.2), and the compaction context (the
- * preserve-verbatim instruction plus the live gate snapshot). The bodies
- * are fail-open: their inner try/catch journal every failure, and the
- * registration guard in src/setup.ts catches registration errors.
+ * inbox transport paths), the pipeline-agent decoding clamps shared by the
+ * generate and context hooks, the primary-turn context body (one-per-boot
+ * draft telemetry plus the policy-head/intent-nudge injection into the
+ * draft's system array), and the compaction context (the preserve-verbatim
+ * instruction plus the live gate snapshot). The bodies are fail-open: their
+ * inner try/catch journal every failure, and the registration guard in
+ * src/setup.ts catches registration errors.
  */
 
 import { asSessionID } from "./delivery.ts"
@@ -15,16 +16,47 @@ import { formatGateSnapshot } from "./state.ts"
 import type { CompactionDraft, GenerateDraft, PromptHookProperties } from "./types.ts"
 
 /**
+ * Applies the pipeline-agent decoding clamps to a generation draft:
+ * reviewer and plan-reviewer run at temperature 0 — forced even when the
+ * host sent no options object at all, since an early return would otherwise
+ * skip the clamp in exactly that case. Executor, test-runner, and debugger
+ * clamp to ≤ 0.2 — the clamp also applies when the host sent no temperature,
+ * since an unset temperature is whatever the host defaults to, which is
+ * exactly what the ≤ 0.2 contract bounds. Shared by the generate and context
+ * bodies: on v2.2.x hosts the primary turns ride `session.context`, so the
+ * clamps must be registered on both hooks to cover every pipeline stage.
+ * @param ctx The shared per-setup context (config, journaler).
+ * @param draft The host draft (mutated in place).
+ */
+function applyClamps(ctx: TurnstileContext, draft: GenerateDraft): void {
+  if (!draft) return
+  const agent = typeof draft.agent === "string" ? draft.agent : ""
+  if (agent === ctx.config.agents.reviewer || agent === ctx.config.agents.planReviewer) {
+    if (!draft.options) draft.options = {}
+    draft.options.temperature = 0
+  } else if (
+    agent === ctx.config.agents.executor ||
+    agent === ctx.config.agents.testRunner ||
+    agent === ctx.config.agents.debugger
+  ) {
+    if (!draft.options) draft.options = {}
+    const t = draft.options.temperature
+    draft.options.temperature = typeof t === "number" ? Math.min(t, 0.2) : 0.2
+  }
+}
+
+/**
  * Session-surface hook bodies bound to one shared per-setup context. The
  * registration, tracking, and per-surface try/catch guards stay in
  * src/setup.ts; these bodies carry only the per-event behavior.
  * @param ctx The shared per-setup context (config, journaler, ledger,
  *     prompt counters, and admission state).
- * @returns The prompt, generate, and compaction hook bodies.
+ * @returns The prompt, generate, context, and compaction hook bodies.
  */
 export function createSessionHooks(ctx: TurnstileContext): {
   prompt(properties: PromptHookProperties): void
   generate(draft: GenerateDraft): void
+  context(draft: GenerateDraft): void
   compaction(draft: CompactionDraft): void
 } {
   /**
@@ -51,38 +83,36 @@ export function createSessionHooks(ctx: TurnstileContext): {
   }
 
   /**
-   * Generate-hook body: reviewer and plan-reviewer run at temperature 0 —
-   * forced even when the host sent no options object at all, since the
-   * early return would otherwise skip the clamp in exactly that case.
-   * Executor, test-runner, and debugger clamp to ≤ 0.2 — the clamp also
-   * applies when the host sent no temperature, since an unset temperature
-   * is whatever the host defaults to, which is exactly what the ≤ 0.2
-   * contract bounds.
+   * Generate-hook body: applies the decoding clamps (background
+   * `Session.generate` calls — goal judge, warming) and journals the
+   * one-per-boot draft telemetry. No policy or nudge text lands here:
+   * background generations stay clean of governance prose.
    * @param draft The host generate-hook draft (mutated in place).
    */
   function generate(draft: GenerateDraft): void {
     try {
-      if (!draft) return
-      const agent = typeof draft.agent === "string" ? draft.agent : ""
-      if (agent === ctx.config.agents.reviewer || agent === ctx.config.agents.planReviewer) {
-        // Force 0 even when the host sent no options object at all:
-        // today's early return skipped the clamp in exactly that case.
-        if (!draft.options) draft.options = {}
-        draft.options.temperature = 0
-      } else if (
-        agent === ctx.config.agents.executor ||
-        agent === ctx.config.agents.testRunner ||
-        agent === ctx.config.agents.debugger
-      ) {
-        // Clamp also applies when the host sent no temperature: an
-        // unset temperature is whatever the host defaults to, which
-        // is exactly what the ≤ 0.2 contract bounds.
-        if (!draft.options) draft.options = {}
-        const t = draft.options.temperature
-        draft.options.temperature = typeof t === "number" ? Math.min(t, 0.2) : 0.2
-      }
+      applyClamps(ctx, draft)
+      ctx.observeRequestDraft("generate", draft)
     } catch (e) {
       ctx.journaler.journal({ type: "error", error: `generate hook: ${e}` })
+    }
+  }
+
+  /**
+   * Context-hook body: the primary-turn surface (pre-first-model-call).
+   * Applies the decoding clamps (primary turns ride this hook, not
+   * generate — registering both repairs the clamp gap), observes the draft
+   * once per boot, then injects the policy head + pending nudge into the
+   * draft's system array (pure read of ledger state; no enforcement change).
+   * @param draft The host context-hook draft (mutated in place).
+   */
+  function context(draft: GenerateDraft): void {
+    try {
+      applyClamps(ctx, draft)
+      ctx.observeRequestDraft("context", draft)
+      ctx.injectContextPolicy(draft)
+    } catch (e) {
+      ctx.journaler.journal({ type: "error", error: `context hook: ${e}` })
     }
   }
 
@@ -119,5 +149,5 @@ export function createSessionHooks(ctx: TurnstileContext): {
     }
   }
 
-  return { prompt, generate, compaction }
+  return { prompt, generate, context, compaction }
 }

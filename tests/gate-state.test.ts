@@ -453,7 +453,7 @@ test("round cap with default 2: third reviewer dispatch blocked at the limit", a
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap).",
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new task resets the cap).",
   )
   dispose()
 })
@@ -538,7 +538,7 @@ test("round cap: waivers neither count nor reset; the Nth unwaived dispatch is b
       }),
     (e: Error) =>
       e.message ===
-      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new user prompt resets the cap)." +
+      "BLOCKED by turnstile: reviewer round limit (2) reached — the pipeline is looping. STOP: do not re-dispatch the reviewer. Escalate the open findings to the user and wait for new instructions (a new task resets the cap)." +
         CONSUMED_CLAUSE,
   )
   dispose()
@@ -1368,7 +1368,7 @@ test("trace file rotates with the same bound as the journal", async () => {
       input: { agent: "test-runner", prompt: `run tests ${i}` },
     }).catch(() => {})
   }
-  const tracePath = path.join(metricsDir, "gate-events.jsonl")
+  const tracePath = path.join(metricsDir, "gate-events.log")
   const gens = [1, 2].filter((g) => fs.existsSync(`${tracePath}.${g}`))
   assert.ok(gens.length >= 1, "expected at least one rotated trace generation")
   dispose()
@@ -1408,7 +1408,7 @@ test("setup journals one load heartbeat with version, digest, and hook count", a
   // strict semver regex so prerelease versions cannot fail this).
   assert.ok(entry.version === null || (typeof entry.version === "string" && entry.version !== ""))
   assert.match(entry.digest, /^[0-9a-f]{12}$/)
-  assert.equal(entry.hooks, 7)
+  assert.equal(entry.hooks, 8)
   // trace:true (boot default) carries the human-readable trace fields.
   assert.equal(entry.trace, true)
   assert.equal(typeof entry.agents, "object")
@@ -1442,8 +1442,8 @@ test("setup heartbeat redacts trace fields when trace is false", async () => {
   dispose()
 })
 
-/** A degraded host without event.subscribe registers 6 hooks (permission stays). */
-test("setup journals hooks === 6 when event.subscribe is absent", async () => {
+/** A degraded host without event.subscribe registers 7 hooks (permission stays). */
+test("setup journals hooks === 7 when event.subscribe is absent", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost()
   // A degraded host never exposes the event stream.
@@ -1452,21 +1452,21 @@ test("setup journals hooks === 6 when event.subscribe is absent", async () => {
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
-  assert.equal(setups[0]?.hooks, 6)
+  assert.equal(setups[0]?.hooks, 7)
   dispose()
 })
 
-/** A degraded host without the permission surface registers 6 hooks. */
-test("setup journals hooks === 6 when the permission surface is absent", async () => {
+/** A degraded host without the permission surface registers 7 hooks. */
+test("setup journals hooks === 7 when the permission surface is absent", async () => {
   const metricsDir = tmpDir()
   // A host without the permission surface (older host) still registers the
-  // event stream, so it lands one below the full host's 7.
+  // event stream, so it lands one below the full host's 8.
   const h = makeFakeHost({ permission: false })
   const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
-  assert.equal(setups[0]?.hooks, 6)
+  assert.equal(setups[0]?.hooks, 7)
   dispose()
 })
 
@@ -1946,7 +1946,7 @@ test("newState initializes userWaiver, humanApproval, and pendingOnceGrant defau
   assert.equal(s.userWaiverConsumed, false, "a fresh waiver is not consumed")
   assert.equal(s.reviewWaiverRounds, 0, "a fresh task has spent no waiver allowance")
   assert.equal(s.humanApproval, false)
-  assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "" })
+  assert.deepEqual(s.pendingOnceGrant, { plan: "", landing: "", handsOn: "" })
 })
 
 /** The landing-gate primitives start at their task-scoped defaults: no
@@ -1955,6 +1955,14 @@ test("newState initializes hasReviewApprove and landingBlocks defaults", () => {
   const s = newState()
   assert.equal(s.hasReviewApprove, false)
   assert.equal(s.landingBlocks, 0)
+})
+
+/** The hands-on-gate primitives start at their task-scoped defaults: a zero
+ *  parent hands-on block counter and no standing release. */
+test("newState initializes handsOnBlocks and handsOnRelease defaults", () => {
+  const s = newState()
+  assert.equal(s.handsOnBlocks, 0)
+  assert.equal(s.handsOnRelease, false)
 })
 
 /** The dispatch loop caps start fresh: every per-leg round counter and the
@@ -2077,6 +2085,7 @@ test("replay restores hasReviewApprove and the grace prompt carries it once, the
       type: "verdict",
       sessionID: "p1",
       raw: "c1",
+      agent: "reviewer",
       marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
       source: "task-result",
     })}\n`,
@@ -2105,6 +2114,7 @@ test("grace prompt carries hasReviewApprove with its paired ensemble count, then
         type: "verdict",
         sessionID: "p1",
         raw: "c1",
+        agent: "reviewer",
         marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
         source: "task-result",
       }),
@@ -2136,6 +2146,7 @@ test("a trailing GATE: FAIL does not clear a restored hasReviewApprove", () => {
         type: "verdict",
         sessionID: "p1",
         raw: "c1",
+        agent: "reviewer",
         marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
         source: "task-result",
       }),
@@ -2195,6 +2206,7 @@ test("replay restores no credit trace for a refusal-stamped verdict", () => {
         type: "verdict",
         sessionID: "p1",
         raw: "c1",
+        agent: "reviewer",
         marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
         source: "task-result",
       }),
@@ -2249,7 +2261,7 @@ test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => 
   s.userWaiverConsumed = true
   s.reviewWaiverRounds = 1
   s.humanApproval = true
-  s.pendingOnceGrant = { plan: "req-42", landing: "req-9" }
+  s.pendingOnceGrant = { plan: "req-42", landing: "req-9", handsOn: "" }
   ledger.resetState("p1")
   const cur = ledger.state("p1")
   assert.equal(cur.userWaiver, "", "userWaiver clears on reset")
@@ -2258,7 +2270,7 @@ test("resetState clears userWaiver, pendingOnceGrant, and humanApproval", () => 
   assert.equal(cur.reviewWaiverRounds, 0, "reviewWaiverRounds clears on reset")
   assert.deepEqual(
     cur.pendingOnceGrant,
-    { plan: "", landing: "" },
+    { plan: "", landing: "", handsOn: "" },
     "pendingOnceGrant clears on reset",
   )
   assert.equal(cur.humanApproval, false, "humanApproval resets on prompt")
@@ -2288,7 +2300,7 @@ test("grace prompt carries restored humanApproval and the waiver family forward,
   s.userWaiverScope = ["reviewer"]
   s.userWaiverConsumed = true
   s.reviewWaiverRounds = 1
-  s.pendingOnceGrant = { plan: "req-keep", landing: "" }
+  s.pendingOnceGrant = { plan: "req-keep", landing: "", handsOn: "" }
   // Grace prompt: mergeAfterReplay carries the restart-sticky flag and the
   // waiver family forward, never wipes them; the once-grants drop.
   ledger.resetState("p1")
@@ -2306,7 +2318,7 @@ test("grace prompt carries restored humanApproval and the waiver family forward,
   assert.equal(afterGrace.reviewWaiverRounds, 1, "reviewWaiverRounds carried by grace")
   assert.deepEqual(
     afterGrace.pendingOnceGrant,
-    { plan: "", landing: "" },
+    { plan: "", landing: "", handsOn: "" },
     "pendingOnceGrant never carried through merge",
   )
   // Second prompt: a full reset clears everything.
@@ -3564,6 +3576,7 @@ type MeteringCounterKey =
   | "testRunnerRounds"
   | "totalDispatches"
   | "landingBlocks"
+  | "handsOnBlocks"
   | "reads"
 
 /** A freshly-built bucket with every metering counter at its fresh value, for
@@ -3577,6 +3590,7 @@ function freshCounters(s: GateState): Record<MeteringCounterKey, number> {
     testRunnerRounds: s.testRunnerRounds,
     totalDispatches: s.totalDispatches,
     landingBlocks: s.landingBlocks,
+    handsOnBlocks: s.handsOnBlocks,
     reads: s.reads,
   }
 }
@@ -3596,6 +3610,7 @@ test("clearMeteringCounters returns true iff a metering counter was non-fresh", 
     "testRunnerRounds",
     "totalDispatches",
     "landingBlocks",
+    "handsOnBlocks",
     "reads",
   ]
   for (const key of counterKeys) {

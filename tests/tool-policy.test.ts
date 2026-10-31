@@ -1,6 +1,6 @@
 /**
  * @fileoverview Tool-policy tests: direct unit tests against `createToolPolicy`
- * with an injected capturing journaler, plus the fail-open / shadow-enforce
+ * with an injected capturing journaler, plus the fail-open and enforcement
  * matrix. The `execute.before` integration lives in the setup wiring;
  * these cover the decision boundary itself.
  */
@@ -131,7 +131,7 @@ test("configured git-protective bashDeny blocks each operation", async () => {
 })
 
 /** Each configured-rule block carries the required journal fields and a trace line. */
-test("configured block journals reason/tool/rule/mode and traces", async () => {
+test("configured block journals reason/tool/rule and traces", async () => {
   const { policy, entries, traces } = makePolicy({ toolPolicy: { bashDeny: GIT_DENY } })
   await blocks(() => policy.guardBash("bash", "git worktree add ../foo", "s1"))
   const blocked = blockEntry(entries)
@@ -139,7 +139,6 @@ test("configured block journals reason/tool/rule/mode and traces", async () => {
   assert.equal(blocked.type, "blocked")
   assert.equal(blocked.tool, "bash")
   assert.equal(blocked.reason, "tool-policy")
-  assert.equal(blocked.mode, "enforce")
   assert.equal(blocked.rule, 0)
   assert.match(blocked.sessionID, /s1/)
   assert.ok(traces.some((t) => t.startsWith("tool-policy | blocked | bash rule 0 | s1")))
@@ -253,9 +252,10 @@ test("empty or absent write/edit path fails open with a misconfiguration error",
   assert.match(errs[0].error, /filePath or path/)
 })
 
-/** Under `off` the policy is a silent no-op: no block, no misconfig journal. */
-test("off mode is a silent no-op", () => {
-  const { policy, entries } = makePolicy({ toolPolicy: { mode: "off" } })
+/** With no rules configured the policy never blocks; an empty command still
+ *  journals its misconfiguration telemetry. */
+test("an empty denylist never blocks", () => {
+  const { policy, entries } = makePolicy()
   allow(() => policy.guardBash("bash", "git merge main", "s1"))
   allow(() => policy.guardPath("write", "/.env", "s1"))
   allow(() => policy.guardBash("bash", "", "s1"))
@@ -263,42 +263,9 @@ test("off mode is a silent no-op", () => {
     entries.filter((e) => e.reason === "tool-policy"),
     [],
   )
-  assert.deepEqual(
-    entries.filter((e) => e.type === "error"),
-    [],
-  )
-})
-
-/** Under `shadow` the block journals with mode:"shadow" but does not throw. */
-test("shadow mode journals the block without throwing", async () => {
-  const { policy, entries, traces } = makePolicy({
-    toolPolicy: { mode: "shadow", bashDeny: GIT_DENY },
-  })
-  allow(() => policy.guardBash("bash", "git merge main", "s1"))
-  const blocked = blockEntry(entries)
-  assert.ok(blocked)
-  assert.equal(blocked.mode, "shadow")
-  assert.equal(blocked.rule, 2)
-  assert.ok(traces.some((t) => t.startsWith("tool-policy | blocked | bash rule 2")))
-})
-
-/** The same event under shadow vs enforce journals identically, only the mode
- *  field and the throw differ. */
-test("shadow and enforce journal identical entries modulo the mode field", async () => {
-  const en = makePolicy({ toolPolicy: { mode: "enforce", bashDeny: GIT_DENY } })
-  const sh = makePolicy({ toolPolicy: { mode: "shadow", bashDeny: GIT_DENY } })
-  await blocks(() => en.policy.guardBash("bash", "git merge main", "p1"))
-  allow(() => sh.policy.guardBash("bash", "git merge main", "p1"))
-  const enBlock = blockEntry(en.entries)
-  const shBlock = blockEntry(sh.entries)
-  assert.ok(enBlock && shBlock)
-  const stripMode = (e: any) => {
-    const { mode: _mode, ...rest } = e
-    return rest
-  }
-  assert.deepEqual(stripMode(enBlock), stripMode(shBlock))
-  // The trace lines are byte-identical across the two modes.
-  assert.deepEqual(en.traces, sh.traces)
+  const errs = entries.filter((e) => e.type === "error")
+  assert.equal(errs.length, 1)
+  assert.match(errs[0].error, /command or cmd/)
 })
 
 /** A misconfigured sessionID (child-style) still throws and journals it. */
@@ -427,6 +394,10 @@ async function boot(
     // back in explicitly per call.
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask ladder (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       ...configOverrides,
       gitGates: { emptyDiffExempt: false, ...configOverrides.gitGates },
     } as Partial<TurnstileConfig>,
@@ -453,7 +424,6 @@ test("integration: execute.before blocks a denied bash command", async () => {
     )
     assert.ok(blocked)
     assert.equal(blocked.type, "blocked")
-    assert.equal(blocked.mode, "enforce")
     assert.equal(blocked.rule, 0)
   } finally {
     dispose()
@@ -538,60 +508,6 @@ test("integration: execute.before journals a session_move without blocking", asy
   }
 })
 
-/** Under shadow, execute.before journals the block and does not throw. */
-test("integration: execute.before shadow mode journals without throwing", async () => {
-  const { h, metricsDir, dispose } = await boot({
-    toolPolicy: { mode: "shadow", bashDeny: GIT_DENY },
-  })
-  try {
-    await callTool(h, "execute.before", {
-      tool: "bash",
-      sessionID: "s1",
-      input: { command: "git merge main" },
-    })
-    const blocked = journalEntries(metricsDir).find(
-      (e) => e.reason === "tool-policy" && e.mode === "shadow",
-    )
-    assert.ok(blocked)
-  } finally {
-    dispose()
-  }
-})
-
-/** Same event under shadow vs enforce: journal identical modulo mode, only the
- *  throw differs — verified through the registered execute.before callback. */
-test("integration: shadow and enforce differ only in the throw and mode field", async () => {
-  const en = await boot({ toolPolicy: { mode: "enforce", bashDeny: GIT_DENY } })
-  const sh = await boot({ toolPolicy: { mode: "shadow", bashDeny: GIT_DENY } })
-  try {
-    await assert.rejects(
-      () =>
-        callTool(en.h, "execute.before", {
-          tool: "bash",
-          sessionID: "p1",
-          input: { command: "git merge main" },
-        }),
-      (e: unknown) => e instanceof BlockError,
-    )
-    await callTool(sh.h, "execute.before", {
-      tool: "bash",
-      sessionID: "p1",
-      input: { command: "git merge main" },
-    })
-    const enBlock = journalEntries(en.metricsDir).find((e) => e.reason === "tool-policy")
-    const shBlock = journalEntries(sh.metricsDir).find((e) => e.reason === "tool-policy")
-    assert.ok(enBlock && shBlock)
-    // Two independent boots write the entries at different moments, so the
-    // journaler's prepended `ts` differs; the assertion is about the policy
-    // content (identical modulo `mode`), not the write timestamp.
-    const stripMode = ({ mode: _mode, ts: _ts, ...rest }: any) => rest
-    assert.deepEqual(stripMode(enBlock), stripMode(shBlock))
-  } finally {
-    en.dispose()
-    sh.dispose()
-  }
-})
-
 /** `npm run ci` golden: execute.after bash telemetry is untouched. */
 test("integration: execute.after bash telemetry still records command+exit", async () => {
   const { h, metricsDir, dispose } = await boot()
@@ -638,13 +554,13 @@ test("integration: the historical block messages are unchanged", async () => {
 /**
  * The bash-side guard chain runs end-to-end through `execute.before`: a `git
  * push` passes `guardBash`/`guardCommitMessage`/`observeLanding` and is gated by
- * `guardLanding`. First block under `enforce` throws and records a landing
- * block (exercising the capability's `recordBlock`); the repeat attempt journals
+ * `guardLanding`. The first block throws and records a landing block
+ * (exercising the capability's `recordBlock`); the repeat attempt journals
  * a landing permission ask and escalates (the capability's `escalate`, a
  * documented no-op on the real capability), so `execute.before` allows through.
  */
 test("integration: execute.before gates a git push through the landing guard", async () => {
-  const { h, metricsDir, dispose } = await boot({ gitGates: { mode: "enforce" } })
+  const { h, metricsDir, dispose } = await boot()
   try {
     // First block: no reviewer approval, enforce → throws and records a block.
     await assert.rejects(
@@ -668,7 +584,6 @@ test("integration: execute.before gates a git push through the landing guard", a
     )
     assert.ok(perm, "a landing permission ask is journaled on the repeat attempt")
     assert.equal(perm.action, "ask")
-    assert.equal(perm.mode, "enforce")
     // The landing deny stays disjoint from bashDeny: no tool-policy block.
     assert.deepEqual(
       journalEntries(metricsDir).filter((e) => e.reason === "tool-policy"),
@@ -737,6 +652,10 @@ async function bootInGitProject(
     // assertions deterministic; the empty-diff tests opt in per call.
     config: {
       metricsDir,
+      // Ask mode: these suites exercise the interactive ask ladder (see
+      // permission-approval bootWithPlan); the block-mode default has
+      // dedicated guard-level tests.
+      escalation: "ask" as const,
       ...configOverrides,
       gitGates: { emptyDiffExempt: false, ...configOverrides.gitGates },
     } as Partial<TurnstileConfig>,
@@ -763,7 +682,7 @@ test(
   { skip: !hasGit },
   async () => {
     const { h, metricsDir, restore } = await bootInGitProject({
-      gitGates: { mode: "enforce", emptyDiffExempt: true },
+      gitGates: { emptyDiffExempt: true },
     })
     try {
       await callTool(h, "execute.before", {
@@ -789,7 +708,7 @@ test(
 
 /**
  * With the exemption on but the push non-empty (a new commit ahead of
- * upstream), the probe is false and the enforced landing gate blocks with
+ * upstream), the probe is false and the landing gate blocks with
  * `no-landing-approval`.
  */
 test(
@@ -797,7 +716,7 @@ test(
   { skip: !hasGit },
   async () => {
     const { h, metricsDir, project, restore } = await bootInGitProject({
-      gitGates: { mode: "enforce", emptyDiffExempt: true },
+      gitGates: { emptyDiffExempt: true },
     })
     try {
       const commit = spawnSync(

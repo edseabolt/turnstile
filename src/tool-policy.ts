@@ -21,106 +21,19 @@ import { DEFAULT_COMMIT_FORMAT } from "./config.ts"
 import { BlockError } from "./gates.ts"
 import type { Journaler } from "./journal.ts"
 import type { TurnstileConfig } from "./types.ts"
+import type { BashWriteVerdict } from "./bash-write.ts"
+
+// The shell-aware tokenizer lives in `src/bash-write.ts` (the write-shape
+// classifier owns it so the dependency stays acyclic); it is re-exported here
+// so `empty-diff.ts` and the tests keep importing from this boundary.
+export { splitCommands, tokenizeWords } from "./bash-write.ts"
+import { splitCommands, tokenizeWords } from "./bash-write.ts"
 
 /** One compiled denylist rule, paired with its source index for the journal. */
 interface CompiledRule {
   re: RegExp
   index: number
   source: string
-}
-
-// Splits a command into simple commands on top-level shell separators
-// (`;` `|` `&` `\r` `\n`), quote- and backslash-aware: a backslash escapes the
-// next character (`\;` inside quotes is not a separator, `\"` does not close a
-// quote early), so a quoted `echo "git commit"` stays on one side of a
-// separator (never parsed as an invocation). Shared with the commit-lint guard
-// below so landing detection and commit linting parse the same shape.
-export function splitCommands(command: string): string[] {
-  const out: string[] = []
-  let cur = ""
-  let quote = ""
-  let escaped = false
-  for (const ch of command) {
-    if (escaped) {
-      // The previous backslash consumed this character: append it verbatim.
-      cur += ch
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") {
-        escaped = true
-        cur += ch
-        continue
-      }
-      if (ch === quote) quote = ""
-      cur += ch
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      cur += ch
-      continue
-    }
-    if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
-      out.push(cur)
-      cur = ""
-      continue
-    }
-    cur += ch
-  }
-  out.push(cur)
-  return out
-}
-
-// Tokenizes one simple command into quoted-aware words, stripping the quotes so
-// a `-m "feat: x"` word yields the bare message `feat: x`. Honors the same
-// backslash escape so a `\"` inside a double-quoted word is a literal quote,
-// not a word break.
-export function tokenizeWords(input: string): string[] {
-  const words: string[] = []
-  let cur = ""
-  let quote = ""
-  let escaped = false
-  for (const ch of input) {
-    if (escaped) {
-      cur += ch
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") {
-        escaped = true
-        cur += ch
-        continue
-      }
-      if (ch === quote) quote = ""
-      else cur += ch
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    if (/\s/.test(ch)) {
-      if (cur) words.push(cur)
-      cur = ""
-      continue
-    }
-    cur += ch
-  }
-  if (cur) words.push(cur)
-  return words
 }
 
 /**
@@ -167,11 +80,29 @@ export function isPushLanding(command: string): boolean {
 /**
  * Core landing-gate text shared by the enforce-path throw and the human ask
  * message, so the two never drift. Stamped after `BLOCKED by turnstile:` (the
- * ask message is `turnstile: ${LANDING_REQUIREMENT}`, prefixed so the stream
- * consumer can recognize a landing ask by its `turnstile: push/PR …` prefix).
+ * ask message is `turnstile: ${LANDING_REQUIREMENT}`, prefixed with
+ * `LANDING_ASK_MESSAGE_PREFIX` in `src/delivery.ts` so the stream
+ * consumer can recognize a landing ask).
+ * Mode-true in both escalation modes: it instructs stop-and-report and names
+ * the release signals (user waiver / earned reviewer verdict), promising no
+ * permission ask — correct under `escalation: "block"`, and still the right
+ * instruction under `"ask"` (the ask happens, but the agent must stop and
+ * report until the reply lands).
  */
 export const LANDING_REQUIREMENT =
-  "push/PR requires a reviewer VERDICT: APPROVE before landing — wait for the reviewer or escalate to the user"
+  "pushing requires a reviewer VERDICT: APPROVE before landing — report this block to the user and stop; the gate releases only on the user's explicit approval (waiver) or an earned reviewer verdict"
+
+/**
+ * Core hands-on-gate text (enforce throw + ask message share it, so the two
+ * never drift). Stamped after `BLOCKED by turnstile:` (the ask message is
+ * `turnstile: ${HANDSON_REQUIREMENT}`, prefixed with
+ * `HANDSON_ASK_MESSAGE_PREFIX` in `src/delivery.ts` so the stream consumer
+ * can recognize a hands-on ask).
+ * Mode-true in both escalation modes (see LANDING_REQUIREMENT): it instructs
+ * stop-and-report and drops the ask promise.
+ */
+export const HANDSON_REQUIREMENT =
+  "parent-session write/edit requires the pipeline — dispatch the executor on the approved plan; report this block to the user and stop; the gate releases only on the user's explicit approval (waiver)"
 
 /**
  * Suffix added to the invalid-commit-block ask, describing the accepted shape.
@@ -261,7 +192,7 @@ export interface LandingGateCapability {
   hasApproval(): boolean
   /**
    * True when the session journaled a credited reviewer APPROVE — the
-   * bucket-free credit that a prompt reset drops the `hasReviewApprove` flag
+   * bucket-free credit that a task-scope reset drops the `hasReviewApprove` flag
    * for (refuses only a refusal-stamped verdict). Lets guardLanding escalate
    * a credited session's first push instead of throwing the first block.
    */
@@ -270,8 +201,12 @@ export interface LandingGateCapability {
   priorBlocks(): number
   /** Increment {@link LandingGateCapability.priorBlocks} (block path only). */
   recordBlock(): void
-  /** Signal the setup-side permission wiring to arm the human ask (repeat attempt). */
-  escalate(): void
+  /**
+   * Arms the ask latch; returns true when the caller must journal the ask
+   * row (dedupe collapses same-tick re-arms within the latch TTL into one
+   * journaled ask).
+   */
+  escalate(): boolean
   /**
    * True when `command` is a statically-provable empty-diff push (a total
    * probe: every refspec's branch resolves to the same commit as its
@@ -283,15 +218,50 @@ export interface LandingGateCapability {
 }
 
 /**
+ * The stateful hands-on-gate capability `setup.ts` hands to
+ * {@link ToolPolicy.guardHandsOn} (mirrors LandingGateCapability): the
+ * stateful side (`handsOnBlocks`, `handsOnRelease`, the waiver read, the
+ * pending-hands-on-ask latch) lives only in the hook layer; tool-policy
+ * mutates it exclusively through `recordBlock`/`escalate`.
+ */
+export interface HandsOnGateCapability {
+  /** True when a human `always` reply released this task's parent edits. */
+  hasRelease(): boolean
+  /** True when the live user waiver's scope covers the `executor` stage. */
+  hasWaiver(): boolean
+  /** Count of `parent-hands-on` blocks recorded this task. */
+  priorBlocks(): number
+  /** Increment {@link HandsOnGateCapability.priorBlocks} (block path only). */
+  recordBlock(): void
+  /**
+   * Arms the ask latch; returns true when the caller must journal the ask
+   * row (dedupe collapses same-tick re-arms within the latch TTL into one
+   * journaled ask).
+   */
+  escalate(): boolean
+}
+
+/**
+ * The stateful capability for the bash write gate
+ * ({@link ToolPolicy.guardBashWrite}): the hands-on capability plus the
+ * once-grant consume, which only the bash arm runs (the write/edit gate's
+ * grant is consumed in the hook layer). Extending without altering keeps
+ * existing {@link HandsOnGateCapability} fakes and tests untouched.
+ */
+export interface BashWriteGateCapability extends HandsOnGateCapability {
+  /** Consumes the pending `.handsOn` once-grant; true when one was pending. */
+  consumeGrant(): boolean
+}
+
+/**
  * The stateless tool-call policy bound to one resolved config + journaler.
  * Every guard fails open on an internal error; only a deliberate block throws.
  */
 export interface ToolPolicy {
   /**
-   * Yields on allow; journals and throws (`BlockError`) under `enforce`, or
-   * journals only under `shadow`, when `command` matches a `bashDeny` rule;
-   * journals `{type:"error"}` and allows on an empty/absent command; no-op
-   * under `off`.
+   * Yields on allow; journals and throws (`BlockError`) when `command` matches
+   * a `bashDeny` rule; journals `{type:"error"}` and allows on an empty/absent
+   * command.
    *
    * The `command` argument is the host payload value coerced by `setup.ts` via
    * `event.input?.command ?? event.input?.cmd` — those two keys are the
@@ -301,14 +271,13 @@ export interface ToolPolicy {
    * @param tool The tool name, recorded in the journal (`"bash"` or `"shell"`).
    * @param command The raw command value from the host payload (typed `unknown`).
    * @param sessionID The session ID, recorded in journal entries.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when a rule matches.
    */
   guardBash(tool: "bash" | "shell", command: unknown, sessionID: string): void
   /**
-   * Yields on allow; journals and throws (`BlockError`) under `enforce`, or
-   * journals only under `shadow`, when `filePath` matches a `pathDeny` rule;
-   * journals `{type:"error"}` and allows on an empty/absent path; no-op under
-   * `off`.
+   * Yields on allow; journals and throws (`BlockError`) when `filePath`
+   * matches a `pathDeny` rule; journals `{type:"error"}` and allows on an
+   * empty/absent path.
    *
    * The `filePath` argument is the host payload value coerced by `setup.ts` via
    * `event.input?.filePath ?? event.input?.path` — those two keys are the
@@ -317,7 +286,7 @@ export interface ToolPolicy {
    * @param tool The tool name, recorded in the journal (`"write"` or `"edit"`).
    * @param filePath The raw target-path value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when a rule matches.
    */
   guardPath(tool: "write" | "edit", filePath: unknown, sessionID: string): void
   /**
@@ -343,22 +312,22 @@ export interface ToolPolicy {
    * or `echo git commit`), validates each `-m` argument against the compiled
    * `commitFormat`, and for uninspectable forms (`-F`/`-t`/`--edit`/`-e` or a
    * bare interactive commit) fail-closes: journals `{type:"blocked",
-   * reason:"commit-message-uninspectable"}` and throws (`BlockError`) under
-   * `enforce`, journals only under `shadow`, no-op under `off`. A `-m` message
-   * that fails to match journals `{type:"blocked", reason:"invalid-commit-message"}`
-   * the same way. Every internal failure fails open.
+   * reason:"commit-message-uninspectable"}` and throws (`BlockError`). A `-m`
+   * message that fails to match journals
+   * `{type:"blocked", reason:"invalid-commit-message"}` the same way. Every
+   * internal failure fails open.
    * @param tool The tool name, recorded in the journal (`"bash"` or `"shell"`).
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the lint rejects.
    */
   guardCommitMessage(tool: "bash" | "shell", command: unknown, sessionID: string): void
   /**
    * Journals `{type:"tool", tool:"bash", landing:true}` telemetry for
-   * `git push` / `gh pr create|ready|merge` candidates — in every mode
-   * (non-blocking). Never touches `gitGates.mode`: a landing deny comes from
-   * `guardLanding`, and a `gh pr` deny from a configured `bashDeny` rule fires
-   * in `guardBash` before this runs (with the empty default that deny is
+   * `git push` / `gh pr create|ready|merge` candidates — always, and
+   * non-blocking. Never touches the landing gate itself: a landing deny comes
+   * from `guardLanding`, and a `gh pr` deny from a configured `bashDeny` rule
+   * fires in `guardBash` before this runs (with the empty default that deny is
    * configured-only, so `gh pr` normally reaches this telemetry; when the deny
    * is configured, the two journal reasons stay disjoint). Fail-open on an
    * internal error.
@@ -373,30 +342,117 @@ export interface ToolPolicy {
    * stateful capability from `setup.ts`. With approval: allow, no journal noise.
    * Without approval, first block this task: journal
    * `{type:"blocked", reason:"no-landing-approval"}`, call `gate.recordBlock()`,
-   * and throw (`BlockError`) under `enforce`, journal-only under `shadow`,
-   * no-op under `off`. A repeat attempt (`priorBlocks() >= 1`) without approval
-   * under `enforce` journals `{type:"permission", action:"ask", reason:"landing"}`
-   * and calls `gate.escalate()` (arming the pending-landing-ask latch);
-   * `execute.before` then passes so the setup-side evaluate handler forces the
-   * human ask naming the missing reviewer verdict. `shadow` journals only; `off`
-   * is a no-op. Fail-toward-strict: a host `reject` leaves approval absent, so
-   * the next attempt re-blocks and re-arms the ask. Fail-open on an internal
-   * error. With `gitGates.emptyDiffExempt` (default true; `false` is the strict
-   * opt-out), a push the capability proves statically empty against upstream is
-   * journaled `exempt:"empty-diff"` and allowed; every ambiguous shape (detached HEAD,
-   * unresolvable remote/upstream, explicit shas/ranges, `--mirror`/`--tags`,
-   * any non-empty refspec) falls through to the ladder — fail-toward-strict.
+   * and throw (`BlockError`). A repeat attempt (`priorBlocks() >= 1`) without
+   * approval is ask-first: it journals
+   * `{type:"permission", action:"ask", reason:"landing"}` and calls
+   * `gate.escalate()` (arming the pending-landing-ask latch; a within-window
+   * duplicate arm journals no second ask row), and `execute.before` then
+   * passes so the setup-side evaluate handler forces the human ask naming the
+   * missing reviewer verdict — in BOTH `escalation` modes. The deliberate
+   * block-throw is the fallback for a first attempt or a latch that cannot
+   * arm (within-TTL duplicate). Fail-toward-strict:
+   * a host `reject` leaves approval absent, so the next attempt re-blocks.
+   * Fail-open on an internal error. With `gitGates.emptyDiffExempt`
+   * (default true; `false` is the strict opt-out), a push the capability proves
+   * statically empty against upstream is journaled `exempt:"empty-diff"` and
+   * allowed; every ambiguous shape (detached HEAD, unresolvable remote/upstream,
+   * explicit shas/ranges, `--mirror`/`--tags`, any non-empty refspec) falls
+   * through to the ladder — fail-toward-strict.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
    * @param gate The landing-gate capability supplied by `setup.ts`.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
    */
   guardLanding(
     tool: "bash" | "shell",
     command: unknown,
     sessionID: string,
     gate: LandingGateCapability,
+  ): void
+  /**
+   * Gates a parent-session `write`/`edit` (always on). `gate` is the
+   * stateful capability from the hook layer (parent sessions only — the
+   * caller skips registered pipeline children, whose edits are the executor's
+   * own work). A live release (human `always`) or an executor-scoped
+   * `USER WAIVER:` allows silently. Otherwise the first attempt this task
+   * journals `{type:"blocked", reason:"parent-hands-on"}`, calls
+   * `gate.recordBlock()`, and throws (`BlockError` stamped `cause:"hands-on"`).
+   * A repeat attempt (`priorBlocks() >= 1`) is ask-first: it journals
+   * `{type:"permission", action:"ask", reason:"hands-on"}` and calls
+   * `gate.escalate()` (arming the pending-hands-on-ask latch; a within-window
+   * duplicate arm journals no second ask row); `execute.before` then passes
+   * so the evaluate handler forces the human ask naming the hands-on
+   * requirement — in BOTH `escalation` modes, the deliberate block-throw
+   * being the fallback for a first attempt or a latch that cannot arm
+   * (within-TTL duplicate). Reply-granted release paths (`handsOnRelease`,
+   * the hands-on once-grant) release replies to asks the plugin raised, in
+   * either mode. Plan approval never releases this gate.
+   * Fail-toward-strict: a host `reject` leaves the gate red, so the next
+   * attempt re-blocks. An empty/absent path journals
+   * `{type:"error"}` and allows (fail-open misconfiguration telemetry).
+   * Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal (`"write"` or `"edit"`).
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The hands-on-gate capability supplied by the hook layer.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
+   */
+  guardHandsOn(
+    tool: "write" | "edit",
+    filePath: unknown,
+    sessionID: string,
+    gate: HandsOnGateCapability,
+  ): void
+  /**
+   * Journals `{type:"tool", tool:"bash", handsOn:true}` telemetry for
+   * write-shaped bash commands — in every mode, for every session (children
+   * included, like landing telemetry), and never blocking. The write-shape
+   * verdict is classified once by the caller (via
+   * {@link classifyBashWrite}) and threaded here, so the command is never
+   * re-parsed. Fail-open on an internal error.
+   * @param sessionID The session ID, recorded in the journal entry.
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   */
+  observeBashWrite(sessionID: string, command: unknown, verdict: BashWriteVerdict): void
+  /**
+   * Journals `{type:"tool", tool:"write"|"edit", scratch:true, path}` telemetry
+   * for a scratch-target parent write/edit — the audit trail for the
+   * temp-dir exemption (every exempt write is journaled with its target
+   * path, so the exemption can only ever exempt, never gate, and stays
+   * observable). The path is recorded unconditionally (bounded), unlike the
+   * trace-gated `session_move` directory: the audit trail is the point of
+   * the row. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal (`"write"` or `"edit"`).
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in the journal entry.
+   */
+  observeScratchWrite(tool: "write" | "edit", filePath: unknown, sessionID: string): void
+  /**
+   * Gates confident file-writing bash commands through the hands-on ladder
+   * (mirroring {@link ToolPolicy.guardHandsOn}): a no-op unless
+   * `toolPolicy.bashWriteGate` is set and `verdict` is `"gate"`. A live
+   * release or an executor-scoped waiver allows silently; then a pending
+   * `.handsOn` once-grant is consumed and allows; otherwise the shared
+   * hands-on ladder tail runs (block / repeat-attempt escalation — see
+   * {@link ToolPolicy.guardHandsOn}). Ordering: the grant is consumed here,
+   * after the flag and verdict checks, so with the gate disabled or a
+   * non-gate shape a pending grant is never burned. Fail-open on an
+   * internal error.
+   * @param tool The tool name, recorded in the journal (`"bash"` or `"shell"`).
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The bash-write-gate capability supplied by the hook layer.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
+   */
+  guardBashWrite(
+    tool: "bash" | "shell",
+    command: unknown,
+    verdict: BashWriteVerdict,
+    sessionID: string,
+    gate: BashWriteGateCapability,
   ): void
 }
 
@@ -409,9 +465,6 @@ export interface ToolPolicy {
  * @returns The stateless tool-call policy.
  */
 export function createToolPolicy(config: TurnstileConfig, journaler: Journaler): ToolPolicy {
-  const mode = config.toolPolicy.mode
-  const gateMode = config.gitGates.mode
-
   /**
    * Compiles a denylist, dropping and journaling any non-compiling source.
    * A drop is journaled as a persistent `{type:"error"}` so a typed rule that
@@ -468,24 +521,22 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   const ghPrRe = new RegExp("\\bgh\\s+pr\\s+(create|ready|merge)\\b")
 
   /**
-   * Journals a block (identical under every mode save the stamped `mode`) and
-   * returns true when the caller must throw (`enforce`). Fail-open: an internal
-   * error is journaled and the guard returns without throwing.
+   * Journals a denylist block and hands control back to the caller, which
+   * throws. Fail-open: an internal error is journaled and the guard returns
+   * without throwing.
    * @param tool The tool name, recorded in the journal entry.
    * @param rule The matching rule.
    * @param sessionID The session ID, recorded in journal entries.
    */
-  function journalBlocked(tool: string, rule: CompiledRule, sessionID: string): boolean {
+  function journalBlocked(tool: string, rule: CompiledRule, sessionID: string): void {
     journaler.journal({
       type: "blocked",
       sessionID,
       tool,
       reason: "tool-policy",
       rule: rule.index,
-      mode,
     })
     journaler.traceEvent("tool-policy", "blocked", `${tool} rule ${rule.index}`, sessionID)
-    return mode === "enforce"
   }
 
   // Given one simple command's words, return its `git commit` analysis: the
@@ -501,40 +552,45 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   // --- Block-throw journal helpers -------------------------------------------
-  // Journals a commit-lint block and returns true when the caller must throw
-  // (`enforce`). The offending text rides the `BlockError` (host-facing); the
-  // journal records only the reason, mirroring the denylist's minimal journal.
-  function journalCommitBlock(tool: string, sessionID: string, reason: string): boolean {
-    journaler.journal({ type: "blocked", sessionID, tool, reason, mode: gateMode })
-    journaler.traceEvent("tool-policy", "blocked", `${tool} ${reason}`, sessionID)
-    return gateMode === "enforce"
+  // Journals a commit-lint block; the caller throws. The offending text rides
+  // the `BlockError` (host-facing); the journal records only the reason,
+  // mirroring the denylist's minimal journal.
+  function journalCommitBlock(tool: string, sessionID: string, reason: string): void {
+    journalGateBlock(tool, sessionID, reason)
   }
 
-  // Journals a landing `no-landing-approval` block and returns true when the
-  // caller must throw (`enforce`).
-  function journalLandingBlock(tool: string, sessionID: string): boolean {
-    journaler.journal({
-      type: "blocked",
-      sessionID,
-      tool,
-      reason: "no-landing-approval",
-      mode: gateMode,
-    })
-    journaler.traceEvent("tool-policy", "blocked", `${tool} no-landing-approval`, sessionID)
-    return gateMode === "enforce"
+  // Journals a landing `no-landing-approval` block; the caller throws.
+  function journalLandingBlock(tool: string, sessionID: string): void {
+    journalGateBlock(tool, sessionID, "no-landing-approval")
+  }
+
+  /**
+   * Journals a gate block — one source for the landing, commit-lint, and
+   * hands-on block entries, so the three ladders cannot drift in entry shape.
+   * @param tool The tool name, recorded in the journal entry.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param reason The gate-specific block reason string.
+   */
+  function journalGateBlock(tool: string, sessionID: string, reason: string): void {
+    journaler.journal({ type: "blocked", sessionID, tool, reason })
+    journaler.traceEvent("tool-policy", "blocked", `${tool} ${reason}`, sessionID)
+  }
+
+  // Journals a hands-on `parent-hands-on` block; the caller throws.
+  function journalHandsOnBlock(tool: string, sessionID: string): void {
+    journalGateBlock(tool, sessionID, "parent-hands-on")
   }
 
   /**
    * Guards a bash/shell command: fails open on an empty command (misconfiguration
-   * telemetry), yields on a non-match, and blocks a match per `mode`.
+   * telemetry), yields on a non-match, and journals + throws a match.
    * @param tool The tool name, recorded in the journal entry.
    * @param command The raw command value from the host payload.
    * @param sessionID The session ID, recorded in journal entries.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when a rule matches.
    */
   function guardBash(tool: "bash" | "shell", command: unknown, sessionID: string): void {
     try {
-      if (mode === "off") return
       const text = typeof command === "string" ? command : ""
       if (text.length === 0) {
         journaler.journal({
@@ -547,11 +603,10 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
       }
       const rule = bashDeny.find((r) => r.re.test(text))
       if (!rule) return
-      if (journalBlocked(tool, rule, sessionID)) {
-        throw new BlockError(
-          `BLOCKED by turnstile: ${tool} blocked by policy rule ${rule.index}: ${rule.source}`,
-        )
-      }
+      journalBlocked(tool, rule, sessionID)
+      throw new BlockError(
+        `BLOCKED by turnstile: ${tool} blocked by policy rule ${rule.index}: ${rule.source}`,
+      )
     } catch (e) {
       if (e instanceof BlockError) throw e
       journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
@@ -565,11 +620,10 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * @param tool The tool name, recorded in the journal entry.
    * @param filePath The raw target-path value from the host payload.
    * @param sessionID The session ID, recorded in journal entries.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when a rule matches.
    */
   function guardPath(tool: "write" | "edit", filePath: unknown, sessionID: string): void {
     try {
-      if (mode === "off") return
       const text = typeof filePath === "string" ? filePath : ""
       if (text.length === 0) {
         journaler.journal({
@@ -582,11 +636,10 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
       }
       const rule = pathDeny.find((r) => r.re.test(text))
       if (!rule) return
-      if (journalBlocked(tool, rule, sessionID)) {
-        throw new BlockError(
-          `BLOCKED by turnstile: ${tool} blocked by policy rule ${rule.index}: ${rule.source}`,
-        )
-      }
+      journalBlocked(tool, rule, sessionID)
+      throw new BlockError(
+        `BLOCKED by turnstile: ${tool} blocked by policy rule ${rule.index}: ${rule.source}`,
+      )
     } catch (e) {
       if (e instanceof BlockError) throw e
       journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
@@ -621,15 +674,14 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * `git commit-graph` are never matched), validates each `-m` argument against
    * the compiled `commitFormat`, and fail-closes on uninspectable forms
    * (`-F`/`-t`/`--edit`/`-e`, or a bare interactive commit with no `-m`).
-   * Journal-only under `shadow`, no-op under `off`.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the lint rejects.
    */
   function guardCommitMessage(tool: "bash" | "shell", command: unknown, sessionID: string): void {
     try {
-      if (gateMode === "off" || !config.gitGates.commitMessages) return
+      if (!config.gitGates.commitMessages) return
       const text = typeof command === "string" ? command : ""
       if (text.length === 0) {
         journaler.journal({
@@ -645,26 +697,22 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         if (analysis === null) continue
         // Uninspectable (an -F/-t/--edit/-e flag, or a bare interactive commit
         // with no -m): the operator cannot see the subject, so fail-closed —
-        // treat it as non-conventional under enforce.
+        // treat it as non-conventional.
         if (analysis.uninspectable || analysis.messages.length === 0) {
-          if (journalCommitBlock(tool, sessionID, "commit-message-uninspectable")) {
-            throw new BlockError(
-              `BLOCKED by turnstile: commit message could not be inspected — pass it with 'git commit -m <subject>' (-F/-t/--edit/-e are not inspectable)`,
-            )
-          }
-          // Shadow (audit) path: a `continue` keeps linting the later simple
-          // commands in this string; enforce still threw on the first above.
-          continue
+          journalCommitBlock(tool, sessionID, "commit-message-uninspectable")
+          throw new BlockError(
+            `BLOCKED by turnstile: commit message could not be inspected — pass it with 'git commit -m <subject>' (-F/-t/--edit/-e are not inspectable)`,
+          )
+          // The `throw` exits the guard; later simple commands in this string
+          // are not linted (the first failure is the one surfaced).
         }
         for (const message of analysis.messages) {
           if (!commitFormat.test(message)) {
             const subject = message.slice(0, 80)
-            if (journalCommitBlock(tool, sessionID, "invalid-commit-message")) {
-              throw new BlockError(
-                `BLOCKED by turnstile: commit message '${subject}' ${COMMIT_EXPECTED}`,
-              )
-            }
-            return
+            journalCommitBlock(tool, sessionID, "invalid-commit-message")
+            throw new BlockError(
+              `BLOCKED by turnstile: commit message '${subject}' ${COMMIT_EXPECTED}`,
+            )
           }
         }
       }
@@ -697,24 +745,211 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   }
 
   /**
+   * Inputs to the shared guard ladder tail (see {@link guardLadderTail}).
+   */
+  interface LadderTail {
+    /** True when this attempt escalates (repeat, or a credited first attempt). */
+    armed: boolean
+    /** Tool name, recorded in journal entries. */
+    tool: string
+    /** Session ID, recorded in journal entries. */
+    sessionID: string
+    /** Ask reason string (`"landing"` / `"hands-on"`). */
+    reason: string
+    /** Escalation + block-recording capability from the caller's gate. */
+    gate: { escalate(): boolean; recordBlock(): void }
+    /** The gate's block journaler (a journalGateBlock delegation). */
+    journalBlock: (tool: string, sessionID: string) => void
+    /** Requirement text the enforce throw names. */
+    requirement: string
+    /** Optional BlockError cause stamp (the hands-on gate stamps `"hands-on"`). */
+    blockCause?: string
+  }
+
+  /**
+   * Shared guard ladder tail, ask-first: an armed attempt arms the one-shot
+   * ask latch (`gate.escalate()`) and — when the arm is not a within-window
+   * duplicate — journals the permission ask row and allows (the evaluate
+   * handler forces the human ask off the latch). The deliberate block-throw
+   * is the FALLBACK, not the default: it fires when the escalation is not
+   * armed (first attempt) or the latch cannot be armed (within-TTL
+   * duplicate arm — the ask is already live for this gate). This holds in
+   * BOTH `escalation` modes since the Phase 2 ask-first change: the mode
+   * no longer selects block-vs-ask on armed attempts, because an
+   * interactive host can surface the ask in either and the throw only
+   * serves the no-human-attached fallback. Fail-toward-strict: a reject
+   * leaves the gate red and the next attempt re-blocks. One source for the
+   * landing and hands-on ladders so the two cannot drift.
+   * @param t The parameterized ladder inputs (see {@link LadderTail}).
+   */
+  function guardLadderTail(t: LadderTail): void {
+    if (t.armed && t.gate.escalate()) {
+      journaler.journal({
+        type: "permission",
+        sessionID: t.sessionID,
+        tool: t.tool,
+        action: "ask",
+        reason: t.reason,
+      })
+      return
+    }
+    t.journalBlock(t.tool, t.sessionID)
+    t.gate.recordBlock()
+    throw new BlockError(`BLOCKED by turnstile: ${t.requirement}.`, t.blockCause)
+  }
+
+  /**
+   * Shared hands-on ladder tail: both the write/edit guard and the bash
+   * write guard pass identical inputs to {@link guardLadderTail}, so the
+   * block/escalation decision has one source (DRY).
+   * @param tool The tool name, recorded in journal entries.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The hands-on capability from the caller's gate.
+   */
+  function handsOnTail(tool: string, sessionID: string, gate: HandsOnGateCapability): void {
+    guardLadderTail({
+      armed: gate.priorBlocks() >= 1,
+      tool,
+      sessionID,
+      reason: "hands-on",
+      gate,
+      journalBlock: journalHandsOnBlock,
+      requirement: HANDSON_REQUIREMENT,
+      blockCause: "hands-on",
+    })
+  }
+
+  /**
+   * Guards a parent-session `write`/`edit` target path. `gate` is the
+   * stateful capability from the hook layer (registered pipeline children
+   * never reach it — the caller's dispatch skip owns the parent-only
+   * contract). A live release or an executor-scoped waiver allows silently;
+   * otherwise the shared ladder tail runs (see {@link guardHandsOn}'s
+   * interface doc). An empty/absent path journals the misconfiguration and
+   * allows (fail-open telemetry).
+   * @param tool The tool name, recorded in the journal.
+   * @param filePath The raw target-path value from the host payload.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The hands-on-gate capability supplied by the hook layer.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
+   */
+  function guardHandsOn(
+    tool: "write" | "edit",
+    filePath: unknown,
+    sessionID: string,
+    gate: HandsOnGateCapability,
+  ): void {
+    try {
+      const text = typeof filePath === "string" ? filePath : ""
+      if (text.length === 0) {
+        journaler.journal({
+          type: "error",
+          sessionID,
+          error:
+            "execute.before: hands-on gate carried no target path; does the host input shape still use filePath or path?",
+        })
+        return
+      }
+      if (gate.hasRelease() || gate.hasWaiver()) return
+      handsOnTail(tool, sessionID, gate)
+    } catch (e) {
+      if (e instanceof BlockError) throw e
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
+   * Journals scratch-target write/edit telemetry (`{type:"tool",
+   * tool:"write"|"edit", scratch:true, path}`) — the audit trail for the
+   * temp-dir exemption. The target path is recorded unconditionally
+   * (bounded), unlike the trace-gated `session_move` directory: the audit
+   * trail is the point of the row. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal.
+   * @param filePath The raw target-path value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in the journal entry.
+   */
+  function observeScratchWrite(tool: "write" | "edit", filePath: unknown, sessionID: string): void {
+    try {
+      journaler.journal({
+        type: "tool",
+        sessionID,
+        tool,
+        scratch: true,
+        path: typeof filePath === "string" ? filePath.slice(0, 200) : "<redacted>",
+      })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
+   * Journals hands-on bash write telemetry (`{type:"tool", tool:"bash",
+   * handsOn:true}`) for write-shaped commands — always, in every mode, for
+   * every session (children included, like landing telemetry), and never
+   * blocking. No-op for a non-write-shaped command.
+   * @param sessionID The session ID, recorded in the journal entry.
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   */
+  function observeBashWrite(sessionID: string, command: unknown, verdict: BashWriteVerdict): void {
+    try {
+      if (verdict === "none") return
+      journaler.journal({ type: "tool", sessionID, tool: "bash", handsOn: true })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
+   * Gates confident file-writing bash commands through the hands-on ladder
+   * (see {@link ToolPolicy.guardBashWrite}). Ordering: the `bashWriteGate`
+   * flag and the `verdict === "gate"` check come first, then the release /
+   * waiver short-circuits, then the once-grant is consumed HERE (so a
+   * disabled gate or a non-gate shape never burns a pending grant), then
+   * the shared ladder tail.
+   * @param tool The tool name, recorded in the journal.
+   * @param command The raw command value from the host payload (`unknown`).
+   * @param verdict The caller's write-shape verdict for the command.
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param gate The bash-write-gate capability supplied by the hook layer.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
+   */
+  function guardBashWrite(
+    tool: "bash" | "shell",
+    command: unknown,
+    verdict: BashWriteVerdict,
+    sessionID: string,
+    gate: BashWriteGateCapability,
+  ): void {
+    try {
+      if (!config.toolPolicy.bashWriteGate || verdict !== "gate") return
+      if (gate.hasRelease() || gate.hasWaiver()) return
+      if (gate.consumeGrant()) return
+      handsOnTail(tool, sessionID, gate)
+    } catch (e) {
+      if (e instanceof BlockError) throw e
+      journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
+    }
+  }
+
+  /**
    * Gates a `git push` on a reviewer `VERDICT: APPROVE`. `gate` is the
    * stateful capability from `setup.ts`. With approval: allow, no journal noise
    * beyond telemetry. Without, the first block journals
-   * `no-landing-approval` — unless the session already carries a credited
-   * reviewer APPROVE that a prompt reset dropped, in which case even the first
-   * attempt is the human decision point: under `enforce` it journals a
-   * `permission` ask and signals escalation, allowing `execute.before` to pass
-   * so the evaluate handler forces the ask. A repeat attempt under `enforce`
-   * escalates the same way; `shadow` journals only, `off` is a no-op. With
-   * `gitGates.emptyDiffExempt` (default true; `false` is the strict opt-out),
-   * a push the capability proves statically empty against upstream is
+   * `no-landing-approval` and throws — unless the session already carries a
+   * credited reviewer APPROVE that a task-scope reset dropped, in which case even
+   * the first attempt is the human decision point: it journals a `permission`
+   * ask and signals escalation, allowing `execute.before` to pass so the
+   * evaluate handler forces the ask. A repeat attempt escalates the same way.
+   * With `gitGates.emptyDiffExempt` (default true; `false` is the strict
+   * opt-out), a push the capability proves statically empty against upstream is
    * journaled `exempt:"empty-diff"` and allowed; every ambiguous shape falls
    * through to the ladder — fail-toward-strict.
    * @param tool The tool name, recorded in the journal.
    * @param command The raw command value from the host payload (`unknown`).
    * @param sessionID The session ID, recorded in journal entries.
    * @param gate The landing-gate capability supplied by `setup.ts`.
-   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` only.
+   * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
    */
   function guardLanding(
     tool: "bash" | "shell",
@@ -723,7 +958,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     gate: LandingGateCapability,
   ): void {
     try {
-      if (gateMode === "off" || !config.gitGates.landingGate) return
+      if (!config.gitGates.landingGate) return
       const text = typeof command === "string" ? command : ""
       if (text.length === 0) {
         journaler.journal({
@@ -745,42 +980,19 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
         journaler.journal({ type: "tool", sessionID, tool, landing: true, exempt: "empty-diff" })
         return
       }
-      const prior = gate.priorBlocks()
-      // A journaled credit escalates the first attempt too: the prompt reset
+      // A journaled credit escalates the first attempt too: the task-scope reset
       // dropped the `hasReviewApprove` flag, but the session still carries a
       // non-refused reviewer APPROVE, so the human decides this first push
       // rather than one wasted `no-landing-approval` block earlier.
-      if (prior >= 1 || gate.hasCreditedApproval()) {
-        // Escalation to the human ask (repeat attempt, or a credited first
-        // attempt). Under enforce, arm the human ask:
-        // journal the landing ask and call gate.escalate() to set the
-        // pending-landing-ask latch, then allow execute.before to pass so the
-        // setup-side evaluate handler (which forces the ask off that latch,
-        // naming the missing reviewer verdict) fires it. Fail-toward-strict: a
-        // host reject leaves approval absent, so the next attempt re-blocks and
-        // re-arms. Under shadow, journal-only like the first block (never arms).
-        if (gateMode === "enforce") {
-          journaler.journal({
-            type: "permission",
-            sessionID,
-            tool,
-            action: "ask",
-            reason: "landing",
-            mode: gateMode,
-          })
-          gate.escalate()
-          return
-        }
-        journalLandingBlock(tool, sessionID)
-        gate.recordBlock()
-        return
-      }
-      // First block this task: journal + record, then throw under enforce.
-      const shouldThrow = journalLandingBlock(tool, sessionID)
-      gate.recordBlock()
-      if (shouldThrow) {
-        throw new BlockError(`BLOCKED by turnstile: ${LANDING_REQUIREMENT}.`)
-      }
+      guardLadderTail({
+        armed: gate.priorBlocks() >= 1 || gate.hasCreditedApproval(),
+        tool,
+        sessionID,
+        reason: "landing",
+        gate,
+        journalBlock: journalLandingBlock,
+        requirement: LANDING_REQUIREMENT,
+      })
     } catch (e) {
       if (e instanceof BlockError) throw e
       journaler.journal({ type: "error", error: `tool policy guard: ${e}` })
@@ -794,5 +1006,9 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     guardCommitMessage,
     observeLanding,
     guardLanding,
+    guardHandsOn,
+    observeBashWrite,
+    observeScratchWrite,
+    guardBashWrite,
   }
 }

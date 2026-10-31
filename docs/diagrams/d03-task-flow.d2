@@ -28,6 +28,7 @@ flow: {
   hooks -> journal: "plan entry — plansSignature stamped on APPROVE"
 
   orch -> hooks: "dispatch executor"
+  hooks -> hooks: "maintenance dispatch? prompt declares scope +\ndiff only non-src surfaces → skip plan gates,\njournal {type:maintenance}, cap 4/plan"
   hooks -> orch: "BLOCKED: no-plan-verdict (plan gate red, no waiver)" {
     style.stroke: "#c0392b"
   }

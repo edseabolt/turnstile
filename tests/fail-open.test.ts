@@ -14,7 +14,7 @@ import * as path from "node:path"
 import turnstileModule, { turnstile } from "../turnstile.ts"
 import { readPluginVersion } from "../src/setup.ts"
 import { validateResolved, defaultConfig } from "../src/config.ts"
-import { createGates } from "../src/gates.ts"
+import { createGates, BlockError } from "../src/gates.ts"
 import { createJournaler, appendLine } from "../src/journal.ts"
 import { parseGateMarkers, agentFromTaskInput } from "../src/markers.ts"
 import { newState } from "../src/state.ts"
@@ -121,7 +121,7 @@ test("traceEvent without a session ID omits the trailing segment", () => {
     rotateEveryEntries: 512,
   })
   j.traceEvent("agent", "event", "detail")
-  const line = fs.readFileSync(path.join(metricsDir, "gate-events.jsonl"), "utf8").trim()
+  const line = fs.readFileSync(path.join(metricsDir, "gate-events.log"), "utf8").trim()
   assert.equal(line.split("|").length, 4)
 })
 
@@ -368,10 +368,10 @@ test("tool-policy guards journal their internal failure when the sink throws", (
   } as unknown as Parameters<typeof createToolPolicy>[1]
   const config = defaultConfig()
   config.toolPolicy = {
-    mode: "enforce",
     bashDeny: ["git\\s+push"],
     pathDeny: ["\\.env$"],
     observeSessionMove: false,
+    bashWriteGate: false,
   }
   const policy = createToolPolicy(config, hostile)
   assert.doesNotThrow(() => policy.guardBash("bash", "git push origin main", "p1"))
@@ -406,14 +406,19 @@ test("git-side guards journal their internal failure when the sink throws", () =
     },
   } as unknown as Parameters<typeof createToolPolicy>[1]
   const config = defaultConfig()
-  config.toolPolicy = { mode: "enforce", bashDeny: [], pathDeny: [], observeSessionMove: false }
+  config.toolPolicy = {
+    bashDeny: [],
+    pathDeny: [],
+    observeSessionMove: false,
+    bashWriteGate: false,
+  }
   const policy = createToolPolicy(config, hostile)
   const stub = {
     hasApproval: (): boolean => false,
     hasCreditedApproval: (): boolean => false,
     priorBlocks: (): number => 0,
     recordBlock: (): void => {},
-    escalate: (): void => {},
+    escalate: (): boolean => true,
     isEmptyDiff: (): boolean => false,
   }
   assert.doesNotThrow(() => policy.guardCommitMessage("bash", 'git commit -m "garbage"', "p1"))
@@ -436,7 +441,12 @@ test("observeSessionMove is a no-op when disabled and redacts under trace:false"
   })
   const config = defaultConfig()
   config.trace = false
-  config.toolPolicy = { mode: "enforce", bashDeny: [], pathDeny: [], observeSessionMove: false }
+  config.toolPolicy = {
+    bashDeny: [],
+    pathDeny: [],
+    observeSessionMove: false,
+    bashWriteGate: false,
+  }
   const policy = createToolPolicy(config, j)
   policy.observeSessionMove("p1", "/tmp/somewhere")
   assert.equal(journalEntries(metricsDir).length, 0)
@@ -809,7 +819,7 @@ test("a subscribe that throws after dispose stays silent", async () => {
 
 /** Registration failures journal and leave the plugin functional. */
 test("hook registration failures journal per hook and do not crash setup", async () => {
-  for (const name of ["prompt", "generate", "compaction"]) {
+  for (const name of ["prompt", "generate", "context", "compaction"]) {
     const { host } = makeThrowingRegHost([name])
     const { dispose, metricsDir } = await boot(host)
     dispose()
@@ -1286,17 +1296,23 @@ test("bash/shell and write/edit payloads resolve through alternate keys", async 
   const h = makeFakeHost()
   const { dispose } = await boot(h.host)
   try {
-    // `cmd` and `path` are the alternate payload keys; both coerce.
+    // `cmd` and `path` are the alternate payload keys; both coerce. The parent
+    // edit reaches the always-on hands-on gate (not a misconfiguration error),
+    // so the coercion is proven by the hands-on block, not an allow.
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
       input: { cmd: "git status" },
     })
-    await callTool(h, "execute.before", {
-      tool: "edit",
-      sessionID: "p1",
-      input: { path: "/repo/README.md" },
-    })
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "edit",
+          sessionID: "p1",
+          input: { path: "/repo/README.md" },
+        }),
+      (e: unknown) => e instanceof BlockError && e.cause === "hands-on",
+    )
     // execute.after command recording falls back to cmd, then the title.
     await callTool(h, "execute.after", {
       tool: "bash",
@@ -1342,4 +1358,52 @@ test("evidence.has and evidence.observe handle empty and undefined inputs", () =
   const t = createEvidenceTracker(cfg(), identityParent)
   assert.equal(t.has(""), false)
   assert.equal(t.observe("c1", undefined, 0), false)
+})
+
+/** Write-shaped bash commands reach the hands-on gate through the bash hook
+ *  surface: a parent's gate-tier write blocks (fail-closed for an unresolved
+ *  agent), while output-capture and heredoc shapes pass, and telemetry
+ *  rows are journaled for every write-shaped command. */
+test("bash write gate: parent gate-tier write blocks, capture shapes pass", async () => {
+  const h = makeFakeHost()
+  const { dispose, metricsDir } = await boot(h.host)
+  try {
+    // Gate-tier shape from a parent with an unresolvable agent: fails closed.
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: { command: "cat > notes.md" },
+        }),
+      (e: unknown) => e instanceof BlockError && e.cause === "hands-on",
+    )
+    // Zero-false-positive shapes pass without any block.
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "npm test > log" },
+    })
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "grep x file > /dev/null" },
+    })
+    // A heredoc-bearing command is observed, never gated — even when the
+    // head itself carries a real redirect (`cat > f <<EOF`).
+    await callTool(h, "execute.before", {
+      tool: "bash",
+      sessionID: "p1",
+      input: { command: "cat > notes.md <<'EOF'\nhi\nEOF" },
+    })
+    // Telemetry rows: the blocked gate-tier write, the capture redirect
+    // (`npm test > log`), and the heredoc write journal one row each; the
+    // `/dev/null` target drops its redirect, so it journals nothing.
+    const toolRows = journalEntries(metricsDir).filter(
+      (e) => e.type === "tool" && e.handsOn === true,
+    )
+    assert.equal(toolRows.length, 3)
+  } finally {
+    dispose()
+  }
 })
