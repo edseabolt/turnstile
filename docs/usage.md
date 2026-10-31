@@ -114,6 +114,20 @@ including when a background child's edge resolves late. A `GATE: FAIL`
 latest-wins: it un-greens an earlier PASS and sends the orchestrator back to
 the executor.
 
+**Diagnosing a red gate.** A `no-gate-pass` block despite a real green test
+run usually means the marker was emitted by an agent turnstile does not
+contract for gate markers, so the marker was journaled as `suppressed`
+instead of flipping state. Check
+`~/.local/share/opencode/metrics/turnstile.jsonl` for entries with
+`type:"suppressed", kind:"gate"`: the `reason` field names the cause —
+`emitter agent unresolved` (the emitting session's agent could not be
+resolved) versus `agent not contracted for kind` (the agent is known but is
+not the configured emitter for gate markers, e.g. a test runner named
+`build` without `agents.testRunner` set). The fix is configuration, not
+marker retry: set `agents.testRunner` (and the other `agents.*` names if
+your pipeline uses custom names) as described in "Installing and
+maintaining", then re-run.
+
 **Prompt continues — reviewer, twice.** The **reviewer** is gated on the
 verified pass and capped at 2 dispatches per task. Under the default
 `reviewEnsemble:enforce`, a single reviewer APPROVE does not credit the
