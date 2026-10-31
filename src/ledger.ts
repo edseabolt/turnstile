@@ -7,7 +7,11 @@
  * session-level gate suspension map (prompt-marker suspend/resume, last-wins
  * replay) survives the same way, and a
  * bounded durable approved-plan sidecar so a bound plan approval survives
- * replay-aging, a process restart, and a new-task-scope reset. On a parent's
+ * replay-aging, a process restart, and a new-task-scope reset. Sidecar
+ * records carry a key-scheme tag: a legacy whole-file-keyed record whose
+ * bytes still match is honored and transparently re-keyed to the current
+ * spec-region scheme on first content-verified touch (journaled
+ * `plan-rekey`). On a parent's
  * task-scope reset, also releases that parent's registered children's metering
  * counters. Pure bookkeeping; no enforcement decisions here.
  */
@@ -203,19 +207,40 @@ export interface GateLedger {
    */
   evidencedChildren(): Array<{ child: string; verdict: ChildVerdict }>
   /**
-   * Whether a plan identity carries a durable approval recorded for this
-   * project: the store holds a record with the same project scope, plan name,
-   * and content key. A durable approval is a fact about a plan file's bytes
-   * (recorded when a bound plan approval was captured) that lives outside the
-   * journal replay window and the session bucket, so it survives replay-aging,
-   * a process restart, and a new-task-scope reset. Both arguments are sanitized
-   * before the lookup; an unbound (empty) name or key reports false.
+   * Whether — and why — a plan identity lacks a durable approval recorded for
+   * this project. The store holds records keyed by project scope, plan name,
+   * and content key under a key scheme: the current scheme hashes the plan's
+   * spec region (`"spec"` tag); the legacy scheme (pre-chunk-3.5, untagged)
+   * hashed the whole file. A record is `live` when its key equals the plan's
+   * spec-region key (the current scheme) or its whole-file key (the legacy
+   * scheme — a whole-file match proves the approved bytes are byte-identical,
+   * so honoring it widens nothing); the first such match transparently
+   * re-keys the record to the current scheme (in-memory, sidecar append, and
+   * one replay-inert `plan-rekey` journal row). A record matching neither key
+   * is `stale-key`: the plan was edited after approval, or the record cannot
+   * prove the spec region unchanged — one cheap re-approval re-keys it. A
+   * durable approval is a fact about a plan file's bytes (recorded when a
+   * bound plan approval was captured) that lives outside the journal replay
+   * window and the session bucket, so it survives replay-aging, a process
+   * restart, and a new-task-scope reset. All arguments are sanitized before
+   * the lookup; an unbound (empty) name or spec key reports `absent`, and a
+   * bad-shaped whole key skips the legacy arm.
    * @param name The plan file name (path-free).
-   * @param key The plan file's sha256 content key.
+   * @param key The plan file's spec-region sha256 content key (current scheme).
+   * @param wholeKey The plan file's whole-file sha256 key (legacy scheme).
    * @param projectDir The project directory the identity is checked under.
-   * @returns True when a durable approval matches the identity in this project.
+   * @param sessionID Optional journal-row provenance for the re-key row;
+   *     omitted or failing the replay ID shape, the row carries no sessionID.
+   * @returns `live` when a record covers the identity (after any re-key),
+   *     `stale-key` when a record matches neither key, `absent` otherwise.
    */
-  isPlanApprovalDurable(name: string, key: string, projectDir: string): boolean
+  planApprovalState(
+    name: string,
+    key: string,
+    wholeKey: string,
+    projectDir: string,
+    sessionID?: string,
+  ): DurablePlanApprovalState
   /**
    * Records a durable approval for a plan identity under a project: the bound
    * identity (name + content key) plus the project scope, persisted to the
@@ -483,7 +508,19 @@ interface ApprovalRecord {
   key: string
   /** The project scope token (16 hex chars; see `projectScope`). */
   project: string
+  /** Key scheme: "spec" = spec-region sha256 (current); absent = legacy
+   *  whole-file sha256 (pre-chunk-3.5) or an unknown-scheme record. */
+  scheme?: "spec"
 }
+
+/**
+ * Whether a plan identity is covered by a durable approval: `live` (a record
+ * matches the spec key or the legacy whole-file key — content-verified),
+ * `stale-key` (a record exists but matches neither key — the plan was edited
+ * after approval, or the record cannot prove the spec region unchanged), or
+ * `absent` (no usable record).
+ */
+export type DurablePlanApprovalState = "live" | "stale-key" | "absent"
 
 /**
  * Fresh empty replay maps (the last-wins stores the boot replay fills).
@@ -1383,8 +1420,12 @@ function projectScope(projectDir: string): string {
  * Parses one sidecar line into a durable approval record, or null when the
  * line is not a well-shaped record (bad JSON, a non-object, or a field that
  * fails its shape check: the path-free plan-name alphabet, the sha256-hex
- * key, the 16-hex-char project scope). The sidecar is untrusted input: a
- * torn or hostile line sanitizes away rather than throwing.
+ * key, the 16-hex-char project scope). A `scheme` field of exactly `"spec"`
+ * tags the record as spec-region-keyed; any other value (including unknown
+ * strings) degrades to absent — the legacy whole-file scheme — so the
+ * dual-key match still applies and nothing is dropped that could legitimately
+ * match. The sidecar is untrusted input: a torn or hostile line sanitizes
+ * away rather than throwing.
  * @param line The raw sidecar line.
  * @returns The parsed record, or null when malformed.
  */
@@ -1402,7 +1443,7 @@ function parseApprovalLine(line: string): ApprovalRecord | null {
   const project =
     typeof entry.project === "string" && PROJECT_SCOPE_RE.test(entry.project) ? entry.project : ""
   if (name === "" || key === "" || project === "") return null
-  return { name, key, project }
+  return entry.scheme === "spec" ? { name, key, project, scheme: "spec" } : { name, key, project }
 }
 
 /**
@@ -1829,6 +1870,53 @@ export function createLedger(
   }
 
   /**
+   * Re-keys a content-verified legacy (or untagged) approval record to the
+   * current spec scheme: replaces the in-memory entry (delete+set keeps the
+   * entry most-recent, like `recordPlanApprovalDurable`), appends the
+   * re-keyed record to the sidecar (the last-wins loader collapses the
+   * superseded line; the next eviction rewrite compacts), and journals one
+   * replay-inert `plan-rekey` row. A no-op when the record already carries
+   * the current scheme's key. Fail-open: a persist failure rolls the
+   * in-memory entry back to the legacy record — the content match was real,
+   * so the verdict stays live — and the next scan retries; the persist error
+   * itself is journaled by `persistApprovalStore`.
+   * @param record The matched record (legacy whole-file or untagged).
+   * @param key The plan's current spec-region sha256 key.
+   * @param sessionID The journal-row provenance; omitted (or failing the
+   *     replay ID shape) leaves the field off the row.
+   */
+  function rekeyApprovalRecord(record: ApprovalRecord, key: string, sessionID?: string): void {
+    if (record.key === key && record.scheme === "spec") return
+    const mapKey = `${record.project}:${record.name}`
+    const updated: ApprovalRecord = {
+      name: record.name,
+      key,
+      project: record.project,
+      scheme: "spec",
+    }
+    approvedPlans.delete(mapKey)
+    approvedPlans.set(mapKey, updated)
+    if (!persistApprovalStore(updated, false)) {
+      approvedPlans.set(mapKey, record)
+      return
+    }
+    const sid =
+      typeof sessionID === "string" && REPLAY_SESSION_RE.test(sessionID) ? sessionID : undefined
+    appendLine(
+      journalPath,
+      JSON.stringify({
+        ts: now(),
+        type: "plan-rekey",
+        ...(sid !== undefined ? { sessionID: sid } : {}),
+        plan: record.name,
+        reason: "durable-key-scheme",
+        from: record.key,
+        to: key,
+      }),
+    )
+  }
+
+  /**
    * Returns the observe-mode admission phase for a session, stamping it for
    * the first time this process sees it (see the interface doc for the
    * journaled-dedup-set invariant). With a configured period of 0, or for an
@@ -2079,17 +2167,28 @@ export function createLedger(
         if (v.marker !== "") out.push({ child, verdict: { ...v } })
       return out
     },
-    isPlanApprovalDurable(name: string, key: string, projectDir: string): boolean {
+    planApprovalState(
+      name: string,
+      key: string,
+      wholeKey: string,
+      projectDir: string,
+      sessionID?: string,
+    ): DurablePlanApprovalState {
       const n = sanitizePlanName(name)
       const k = sanitizePlanKey(key)
-      if (n === "" || k === "") return false
-      return approvedPlans.get(`${projectScope(projectDir)}:${n}`)?.key === k
+      if (n === "" || k === "") return "absent"
+      const record = approvedPlans.get(`${projectScope(projectDir)}:${n}`)
+      if (record === undefined) return "absent"
+      const whole = sanitizePlanKey(wholeKey)
+      if (record.key !== k && !(whole !== "" && record.key === whole)) return "stale-key"
+      rekeyApprovalRecord(record, k, sessionID)
+      return "live"
     },
     recordPlanApprovalDurable(name: string, key: string, projectDir: string): void {
       const n = sanitizePlanName(name)
       const k = sanitizePlanKey(key)
       if (n === "" || k === "") return
-      const record = { name: n, key: k, project: projectScope(projectDir) }
+      const record = { name: n, key: k, project: projectScope(projectDir), scheme: "spec" as const }
       const mapKey = `${record.project}:${record.name}`
       // delete+set keeps a re-record most-recent (a plain set would age the
       // entry out on its first-insertion slot).

@@ -217,6 +217,7 @@ test("planGateStatus / planSummary: the five red-gate outcomes", () => {
     red: true,
     summary: { file: "plan.md", head: "Body text." },
     blockers: ["plan.md"],
+    cause: "never-approved",
   })
   assert.deepEqual(gates.planSummary(project), { file: "plan.md", head: "Body text." })
 

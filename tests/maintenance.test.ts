@@ -303,9 +303,10 @@ test("maintenance flow: a diff touching src/ escalates to the ordinary gate", as
     assert.equal(rows.length, 0)
     // The escalation is the ordinary plan gate actually firing (not merely
     // the absence of a maintenance row): the blocked row carries the
-    // no-plan-verdict reason of enforcePlanApproval.
+    // durable-key-stale reason — the approval's durable record matches
+    // neither key scheme after the spec-region edit.
     const blocked = journalEntries(metricsDir).filter(
-      (r) => r.type === "blocked" && r.reason === "no-plan-verdict",
+      (r) => r.type === "blocked" && r.reason === "durable-key-stale",
     )
     assert.equal(blocked.length, 1)
     assert.equal(blocked[0]!.plan, "plan.md")

@@ -1,10 +1,12 @@
 /**
  * @fileoverview Durable approved-plan sidecar tests: the bounded store records
- * project-scoped plan identities, looks them up by name and content key,
- * rewrites the file compacted when it evicts past the cap, sanitizes hostile
- * lines at boot (last-wins per project and name), and fails open — journaling
- * one `approval ledger:` error and rolling back an unpersisted record — when
- * the sidecar is unreadable or unwritable.
+ * project-scoped, scheme-tagged plan identities, looks them up by name and
+ * content key under either key scheme (spec-region or legacy whole-file),
+ * transparently re-keys a content-verified legacy record to the current
+ * scheme (journaled `plan-rekey`), rewrites the file compacted when it evicts
+ * past the cap, sanitizes hostile lines at boot (last-wins per project and
+ * name), and fails open — journaling one `approval ledger:` error and rolling
+ * back an unpersisted record — when the sidecar is unreadable or unwritable.
  */
 
 import { test } from "node:test"
@@ -93,8 +95,8 @@ function approvalLedgerErrors(metricsDir: string): Array<Record<string, any>> {
   )
 }
 
-/** A recorded approval persists as a project-scoped sidecar record and
- *  matches back by name, key, and project. */
+/** A recorded approval persists as a project-scoped, scheme-tagged sidecar
+ *  record and matches back by name, key, and project. */
 test("a recorded approval persists as a project-scoped sidecar record", () => {
   const metricsDir = tmpDir()
   const project = tmpDir()
@@ -105,19 +107,29 @@ test("a recorded approval persists as a project-scoped sidecar record", () => {
   const name = "issue-plan.md"
   const key = keyOf("a")
   ledger.recordPlanApprovalDurable(name, key, project)
-  assert.equal(ledger.isPlanApprovalDurable(name, key, project), true, "the record matches back")
+  assert.equal(
+    ledger.planApprovalState(name, key, keyOf("b"), project),
+    "live",
+    "the record matches back",
+  )
   const lines = fs.readFileSync(sidecar, "utf8").split("\n").filter(Boolean)
   assert.equal(lines.length, 1, "one sidecar line per record")
-  const record = JSON.parse(lines[0]!) as { name: string; key: string; project: string }
+  const record = JSON.parse(lines[0]!) as {
+    name: string
+    key: string
+    project: string
+    scheme?: string
+  }
   assert.equal(record.name, name, "the record keeps the plan name")
   assert.equal(record.key, key, "the record keeps the content key")
   assert.match(record.project, /^[0-9a-f]{16}$/, "the record carries the 16-hex project scope")
+  assert.equal(record.scheme, "spec", "the record carries the current key-scheme tag")
   assert.equal(journalEntries(metricsDir).length, 0, "a successful record journals nothing")
 })
 
-/** Durable lookups miss on a different content key, an unrecorded name, and
- *  bad-shaped arguments. */
-test("durable lookups miss on a different key, an unrecorded name, or a bad shape", () => {
+/** Durable lookups classify on a different content key, an unrecorded name,
+ *  and bad-shaped arguments. */
+test("durable lookups classify a different key, an unrecorded name, or a bad shape", () => {
   const metricsDir = tmpDir()
   const project = tmpDir()
   const ledger = boot(metricsDir)
@@ -125,24 +137,24 @@ test("durable lookups miss on a different key, an unrecorded name, or a bad shap
   const key = keyOf("a")
   ledger.recordPlanApprovalDurable(name, key, project)
   assert.equal(
-    ledger.isPlanApprovalDurable(name, keyOf("b"), project),
-    false,
-    "a different content key does not match",
+    ledger.planApprovalState(name, keyOf("b"), keyOf("c"), project),
+    "stale-key",
+    "a different content key leaves the record stale",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("other.md", key, project),
-    false,
-    "an unrecorded name does not match",
+    ledger.planApprovalState("other.md", key, keyOf("b"), project),
+    "absent",
+    "an unrecorded name is absent",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("a/b.md", key, project),
-    false,
-    "a bad-shaped name does not match",
+    ledger.planApprovalState("a/b.md", key, keyOf("b"), project),
+    "absent",
+    "a bad-shaped name is absent",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable(name, "zz", project),
-    false,
-    "a bad-shaped key does not match",
+    ledger.planApprovalState(name, "zz", keyOf("b"), project),
+    "absent",
+    "a bad-shaped key is absent",
   )
 })
 
@@ -169,14 +181,14 @@ test("a durable approval is scoped to the project it was recorded under", () => 
   const key = keyOf("a")
   ledger.recordPlanApprovalDurable(name, key, projectA)
   assert.equal(
-    ledger.isPlanApprovalDurable(name, key, projectA),
-    true,
+    ledger.planApprovalState(name, key, keyOf("b"), projectA),
+    "live",
     "the recording project matches",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable(name, key, projectB),
-    false,
-    "the same bytes under another project do not match",
+    ledger.planApprovalState(name, key, keyOf("b"), projectB),
+    "absent",
+    "the same bytes under another project are absent",
   )
 })
 
@@ -193,18 +205,18 @@ test("a re-record refreshes recency and eviction rewrites the sidecar compacted"
   ledger.recordPlanApprovalDurable("n-0.md", key, project) // re-record: n-0 becomes most recent
   ledger.recordPlanApprovalDurable("n-256.md", key, project) // 257th record: evict + rewrite
   assert.equal(
-    ledger.isPlanApprovalDurable("n-0.md", key, project),
-    true,
+    ledger.planApprovalState("n-0.md", key, keyOf("b"), project),
+    "live",
     "the re-recorded entry stays most recent",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("n-1.md", key, project),
-    false,
+    ledger.planApprovalState("n-1.md", key, keyOf("b"), project),
+    "absent",
     "the true oldest entry is evicted",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("n-256.md", key, project),
-    true,
+    ledger.planApprovalState("n-256.md", key, keyOf("b"), project),
+    "live",
     "the new record matches",
   )
   const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
@@ -221,18 +233,18 @@ test("an evicted store reloads compacted after a restart", () => {
   recordMany(ledger, "p", 0, 257, project) // p-0..p-256: evicts p-0 and rewrites
   const restarted = boot(metricsDir)
   assert.equal(
-    restarted.isPlanApprovalDurable("p-0.md", key, project),
-    false,
+    restarted.planApprovalState("p-0.md", key, keyOf("b"), project),
+    "absent",
     "the evicted record does not reload",
   )
   assert.equal(
-    restarted.isPlanApprovalDurable("p-1.md", key, project),
-    true,
+    restarted.planApprovalState("p-1.md", key, keyOf("b"), project),
+    "live",
     "older survivors reload",
   )
   assert.equal(
-    restarted.isPlanApprovalDurable("p-256.md", key, project),
-    true,
+    restarted.planApprovalState("p-256.md", key, keyOf("b"), project),
+    "live",
     "the newest record reloads",
   )
   const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
@@ -246,23 +258,27 @@ test("the boot load is last-wins per project and plan name", () => {
   const project = tmpDir()
   const scope = scopeOf(metricsDir, project)
   const lines = [
-    JSON.stringify({ name: "a.md", key: keyOf("a"), project: scope }),
-    JSON.stringify({ name: "a.md", key: keyOf("b"), project: scope }),
-    JSON.stringify({ name: "b.md", key: keyOf("c"), project: scope }),
+    JSON.stringify({ name: "a.md", key: keyOf("a"), project: scope, scheme: "spec" }),
+    JSON.stringify({ name: "a.md", key: keyOf("b"), project: scope, scheme: "spec" }),
+    JSON.stringify({ name: "b.md", key: keyOf("c"), project: scope, scheme: "spec" }),
   ]
   fs.writeFileSync(sidecarPath(metricsDir), `${lines.join("\n")}\n`)
   const ledger = boot(metricsDir)
   assert.equal(
-    ledger.isPlanApprovalDurable("a.md", keyOf("a"), project),
-    false,
+    ledger.planApprovalState("a.md", keyOf("a"), keyOf("d"), project),
+    "stale-key",
     "the earlier line loses",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("a.md", keyOf("b"), project),
-    true,
+    ledger.planApprovalState("a.md", keyOf("b"), keyOf("d"), project),
+    "live",
     "the later line wins",
   )
-  assert.equal(ledger.isPlanApprovalDurable("b.md", keyOf("c"), project), true, "other names keep")
+  assert.equal(
+    ledger.planApprovalState("b.md", keyOf("c"), keyOf("d"), project),
+    "live",
+    "other names keep",
+  )
 })
 
 /** Every malformation the sidecar can hold (bad JSON, non-objects, bad
@@ -284,23 +300,23 @@ test("malformed sidecar lines sanitize away while well-shaped lines load", () =>
     JSON.stringify({ name: "ok.md", key, project: "zz" }), // a bad scope token
     JSON.stringify({ name: "ok.md", key }), // a missing scope field
     "", // an empty line
-    JSON.stringify({ name: "good.md", key, project: scope }), // the one good record
+    JSON.stringify({ name: "good.md", key, project: scope, scheme: "spec" }), // the one good record
   ]
   fs.writeFileSync(sidecarPath(metricsDir), `${lines.join("\n")}\n`)
   const ledger = boot(metricsDir)
   assert.equal(
-    ledger.isPlanApprovalDurable("good.md", key, project),
-    true,
+    ledger.planApprovalState("good.md", key, keyOf("b"), project),
+    "live",
     "a well-shaped line loads",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("ok.md", key, project),
-    false,
+    ledger.planApprovalState("ok.md", key, keyOf("b"), project),
+    "absent",
     "a bad field shape sanitizes away",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("a/b.md", key, project),
-    false,
+    ledger.planApprovalState("a/b.md", key, keyOf("b"), project),
+    "absent",
     "a bad name sanitizes away",
   )
   assert.equal(approvalLedgerErrors(metricsDir).length, 0, "line sanitization journals nothing")
@@ -313,8 +329,8 @@ test("a missing sidecar loads an empty store without journaling", () => {
   const project = tmpDir()
   const ledger = boot(metricsDir)
   assert.equal(
-    ledger.isPlanApprovalDurable("plan.md", keyOf("a"), project),
-    false,
+    ledger.planApprovalState("plan.md", keyOf("a"), keyOf("b"), project),
+    "absent",
     "nothing is durable on a fresh install",
   )
   assert.equal(
@@ -333,8 +349,8 @@ test("an unreadable sidecar fails open with one journaled error", () => {
   fs.mkdirSync(sidecarPath(metricsDir)) // a directory where the file belongs
   const ledger = boot(metricsDir)
   assert.equal(
-    ledger.isPlanApprovalDurable("plan.md", keyOf("a"), project),
-    false,
+    ledger.planApprovalState("plan.md", keyOf("a"), keyOf("b"), project),
+    "absent",
     "the store stays empty",
   )
   const errors = approvalLedgerErrors(metricsDir)
@@ -347,37 +363,40 @@ test("an unreadable sidecar fails open with one journaled error", () => {
 })
 
 /** An over-cap sidecar file (more valid lines than the cap) still bounds
- *  the in-memory store on boot: the oldest records do not load. */
+ *  the in-memory store on boot: the oldest records do not load, the boot
+ *  rewrites nothing (tagged records re-key nothing on probe). */
 test("an over-cap sidecar file bounds the in-memory store on boot", () => {
   const metricsDir = tmpDir()
   const project = tmpDir()
   const scope = scopeOf(metricsDir, project)
   const key = keyOf("a")
   const lines = Array.from({ length: 300 }, (_, i) =>
-    JSON.stringify({ name: `p-${i}.md`, key, project: scope }),
+    JSON.stringify({ name: `p-${i}.md`, key, project: scope, scheme: "spec" }),
   )
   fs.writeFileSync(sidecarPath(metricsDir), `${lines.join("\n")}\n`)
   const ledger = boot(metricsDir)
   assert.equal(
-    ledger.isPlanApprovalDurable("p-0.md", key, project),
-    false,
+    ledger.planApprovalState("p-0.md", key, keyOf("b"), project),
+    "absent",
     "the oldest records evict",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("p-43.md", key, project),
-    false,
+    ledger.planApprovalState("p-43.md", key, keyOf("b"), project),
+    "absent",
     "the 44th-oldest evicts",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("p-44.md", key, project),
-    true,
+    ledger.planApprovalState("p-44.md", key, keyOf("b"), project),
+    "live",
     "the newest 256 records load",
   )
   assert.equal(
-    ledger.isPlanApprovalDurable("p-299.md", key, project),
-    true,
+    ledger.planApprovalState("p-299.md", key, keyOf("b"), project),
+    "live",
     "the newest record loads",
   )
+  const after = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
+  assert.equal(after.length, 300, "the boot and the probes rewrite nothing")
 })
 
 /** An unwritable sidecar never throws: the failed persist journals one
@@ -391,8 +410,8 @@ test("an unwritable sidecar rolls the record back and journals one error", () =>
   assert.equal(approvalLedgerErrors(metricsDir).length, 1, "the boot journals one read error")
   ledger.recordPlanApprovalDurable("plan.md", keyOf("a"), project) // must not throw
   assert.equal(
-    ledger.isPlanApprovalDurable("plan.md", keyOf("a"), project),
-    false,
+    ledger.planApprovalState("plan.md", keyOf("a"), keyOf("b"), project),
+    "absent",
     "an unpersisted record rolls back",
   )
   const errors = approvalLedgerErrors(metricsDir)
@@ -402,4 +421,234 @@ test("an unwritable sidecar rolls the record back and journals one error", () =>
     /^approval ledger: persist failed: /,
     "the second entry names the persist failure",
   )
+})
+
+/**
+ * The `plan-rekey` journal rows a metrics dir's journal holds.
+ * @param metricsDir The metrics dir to read.
+ * @returns The journaled plan-rekey entries.
+ */
+function rekeyRows(metricsDir: string): Array<Record<string, any>> {
+  return journalEntries(metricsDir).filter((e) => e.type === "plan-rekey")
+}
+
+/**
+ * Seeds a raw sidecar line (untrusted-input shape, as a pre-3.5 or deployed
+ * writer would have left it) and boots a ledger over it.
+ * @param metricsDir The temp metrics dir (the sidecar sits at its default
+ *     path).
+ * @param entry The record object to serialize as the single sidecar line.
+ * @returns The booted ledger.
+ */
+function bootSeeded(metricsDir: string, entry: Record<string, unknown>): GateLedger {
+  fs.writeFileSync(sidecarPath(metricsDir), `${JSON.stringify(entry)}\n`)
+  return boot(metricsDir)
+}
+
+/** A legacy whole-file-keyed record (untagged) whose plan bytes are unchanged
+ *  is honored live and transparently re-keyed: the sidecar gains the tagged
+ *  spec record and the journal gains one plan-rekey row naming the plan, the
+ *  reason, and both keys. */
+test("a legacy whole-file record matching unchanged bytes is honored and re-keyed", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const specKey = keyOf("a")
+  const wholeKey = keyOf("b")
+  const ledger = bootSeeded(metricsDir, { name: "plan.md", key: wholeKey, project: scope })
+  assert.equal(
+    ledger.planApprovalState("plan.md", specKey, wholeKey, project, "p1"),
+    "live",
+    "the whole-file match proves the bytes unchanged",
+  )
+  const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
+  assert.equal(lines.length, 2, "the re-key appends the tagged record")
+  assert.deepEqual(
+    JSON.parse(lines[1]!),
+    { name: "plan.md", key: specKey, project: scope, scheme: "spec" },
+    "the appended record carries the spec key and scheme tag",
+  )
+  const rekeys = rekeyRows(metricsDir)
+  assert.equal(rekeys.length, 1, "one plan-rekey row")
+  assert.equal(rekeys[0]!.sessionID, "p1", "the row carries the probing session")
+  assert.equal(rekeys[0]!.plan, "plan.md")
+  assert.equal(rekeys[0]!.reason, "durable-key-scheme")
+  assert.equal(rekeys[0]!.from, wholeKey)
+  assert.equal(rekeys[0]!.to, specKey)
+})
+
+/** A post-3.5 untagged spec-key record (the deployed shape) is live via the
+ *  spec arm and normalized to the tagged shape on first touch. */
+test("an untagged spec-key record is live and re-keyed to the tagged shape", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const specKey = keyOf("a")
+  const ledger = bootSeeded(metricsDir, { name: "plan.md", key: specKey, project: scope })
+  assert.equal(
+    ledger.planApprovalState("plan.md", specKey, keyOf("b"), project, "p1"),
+    "live",
+    "the untagged spec key still matches",
+  )
+  const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
+  assert.equal(lines.length, 2, "the re-key appends the tagged record")
+  assert.deepEqual(JSON.parse(lines[1]!), {
+    name: "plan.md",
+    key: specKey,
+    project: scope,
+    scheme: "spec",
+  })
+  const rekeys = rekeyRows(metricsDir)
+  assert.equal(rekeys.length, 1, "one plan-rekey row")
+  assert.equal(rekeys[0]!.from, specKey, "the row records the unchanged key")
+  assert.equal(rekeys[0]!.to, specKey)
+})
+
+/** An already-tagged spec match is a no-op: the sidecar bytes are unchanged
+ *  and no journal row lands. */
+test("an already-tagged spec match re-keys nothing", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const specKey = keyOf("a")
+  const seeded = `${JSON.stringify({ name: "plan.md", key: specKey, project: scope, scheme: "spec" })}\n`
+  fs.writeFileSync(sidecarPath(metricsDir), seeded)
+  const ledger = boot(metricsDir)
+  assert.equal(ledger.planApprovalState("plan.md", specKey, keyOf("b"), project, "p1"), "live")
+  assert.equal(
+    fs.readFileSync(sidecarPath(metricsDir), "utf8"),
+    seeded,
+    "the sidecar bytes are unchanged",
+  )
+  assert.equal(rekeyRows(metricsDir).length, 0, "no plan-rekey row")
+  assert.equal(journalEntries(metricsDir).length, 0, "nothing journaled at all")
+})
+
+/** A legacy record whose plan was edited (neither key matches) is stale-key:
+ *  no sidecar write and no journal row. */
+test("a legacy record matching neither key is stale-key without writes", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const seeded = `${JSON.stringify({ name: "plan.md", key: keyOf("b"), project: scope })}\n`
+  fs.writeFileSync(sidecarPath(metricsDir), seeded)
+  const ledger = boot(metricsDir)
+  assert.equal(
+    ledger.planApprovalState("plan.md", keyOf("a"), keyOf("c"), project, "p1"),
+    "stale-key",
+    "neither scheme proves the spec region unchanged",
+  )
+  assert.equal(
+    fs.readFileSync(sidecarPath(metricsDir), "utf8"),
+    seeded,
+    "a stale probe writes nothing",
+  )
+  assert.equal(rekeyRows(metricsDir).length, 0, "no plan-rekey row")
+})
+
+/** A bad-shaped whole key skips the legacy arm: a legacy record is stale-key
+ *  even though its key would have matched a sanitized whole key. */
+test("a bad-shaped whole key skips the legacy arm", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const ledger = bootSeeded(metricsDir, { name: "plan.md", key: keyOf("b"), project: scope })
+  assert.equal(
+    ledger.planApprovalState("plan.md", keyOf("a"), "zz", project),
+    "stale-key",
+    "the legacy arm never sees the bad shape",
+  )
+})
+
+/** An unknown scheme value in a sidecar line degrades to the legacy shape:
+ *  the dual-key match still applies, so the record is honored and re-keyed. */
+test("an unknown scheme value is treated as legacy", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const specKey = keyOf("a")
+  const wholeKey = keyOf("b")
+  const ledger = bootSeeded(metricsDir, {
+    name: "plan.md",
+    key: wholeKey,
+    project: scope,
+    scheme: "whole",
+  })
+  assert.equal(
+    ledger.planApprovalState("plan.md", specKey, wholeKey, project, "p1"),
+    "live",
+    "the unknown scheme behaves as legacy",
+  )
+  const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
+  assert.deepEqual(JSON.parse(lines[lines.length - 1]!), {
+    name: "plan.md",
+    key: specKey,
+    project: scope,
+    scheme: "spec",
+  })
+})
+
+/** A re-key persist failure fails open: the verdict keeps the content match
+ *  (live), the in-memory record rolls back to the legacy shape (the next
+ *  probe retries), exactly one persist error is journaled per attempt, and no
+ *  plan-rekey row lands. */
+test("a re-key persist failure rolls back and stays live", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const specKey = keyOf("a")
+  const wholeKey = keyOf("b")
+  const legacyLine = JSON.stringify({ name: "plan.md", key: wholeKey, project: scope })
+  fs.writeFileSync(sidecarPath(metricsDir), `${legacyLine}\n`)
+  const ledger = boot(metricsDir)
+  // The sidecar becomes unwritable (a directory in its place) after boot.
+  fs.rmSync(sidecarPath(metricsDir))
+  fs.mkdirSync(sidecarPath(metricsDir))
+  assert.equal(
+    ledger.planApprovalState("plan.md", specKey, wholeKey, project, "p1"),
+    "live",
+    "the content match survives the failed persist",
+  )
+  assert.equal(rekeyRows(metricsDir).length, 0, "no plan-rekey row on failure")
+  assert.equal(
+    ledger.planApprovalState("plan.md", specKey, wholeKey, project, "p1"),
+    "live",
+    "the in-memory record rolled back to legacy (the re-key retries)",
+  )
+  const errors = approvalLedgerErrors(metricsDir)
+  assert.equal(errors.length, 2, "one persist error per attempt")
+  assert.match(errors[0]!.error, /^approval ledger: persist failed: /)
+  assert.match(errors[1]!.error, /^approval ledger: persist failed: /)
+  // Restore a readable sidecar holding the original legacy line: a fresh
+  // ledger's store still holds the legacy record (nothing was persisted).
+  fs.rmSync(sidecarPath(metricsDir), { recursive: true })
+  fs.writeFileSync(sidecarPath(metricsDir), `${legacyLine}\n`)
+  const fresh = boot(metricsDir)
+  assert.equal(
+    fresh.planApprovalState("plan.md", specKey, "", project),
+    "stale-key",
+    "the persisted record is still the legacy whole-file key",
+  )
+})
+
+/** A session-less (or replay-invalid) re-key row omits the sessionID field:
+ *  the row stays replay-inert either way. */
+test("a session-less re-key row omits the sessionID", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(metricsDir, project)
+  const specKey = keyOf("a")
+  const wholeKey = keyOf("b")
+  fs.writeFileSync(
+    sidecarPath(metricsDir),
+    `${JSON.stringify({ name: "a.md", key: wholeKey, project: scope })}\n` +
+      `${JSON.stringify({ name: "b.md", key: wholeKey, project: scope })}\n`,
+  )
+  const ledger = boot(metricsDir)
+  assert.equal(ledger.planApprovalState("a.md", specKey, wholeKey, project), "live")
+  assert.equal(ledger.planApprovalState("b.md", specKey, wholeKey, project, "bad sid!"), "live")
+  const rekeys = rekeyRows(metricsDir)
+  assert.equal(rekeys.length, 2, "one row per re-keyed record")
+  assert.ok(!("sessionID" in rekeys[0]!), "the session-less row omits sessionID")
+  assert.ok(!("sessionID" in rekeys[1]!), "the replay-invalid row omits sessionID")
 })

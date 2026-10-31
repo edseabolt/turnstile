@@ -717,12 +717,17 @@ Environment variables (override the file):
     suppressed entirely by `trace: false`
   - `approved-plans.jsonl`: durable, bounded, project-scoped store of
     bound plan-reviewer approvals (plan name + content key + project
-    scope), capped at 256 records and rewritten on eviction. A plan whose
+    scope + key-scheme tag (`scheme: "spec"`; untagged = legacy whole-file
+    key)), capped at 256 records and rewritten on eviction. A plan whose
     name and content key still match a record for the current project is
     not _pending_ — the plan gate stays green for it even after its
     journal APPROVE line has aged out of `replayTailLines` and across
     prompt resets; an edited or replaced plan (key mismatch) stays
-    pending. Fail-open: read/write errors are journaled and the gate
+    pending. A legacy record whose whole-file key still matches the
+    current file is honored and re-keyed to the spec scheme on first touch
+    (journaled `plan-rekey`); a record matching neither key blocks with
+    the `durable-key-stale` reason and a one-re-approval recovery message.
+    Fail-open: read/write errors are journaled and the gate
     degrades to journal-replay semantics
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
   ~30 MB per journal, worst case ~60 MB total, plus the approved-plan
