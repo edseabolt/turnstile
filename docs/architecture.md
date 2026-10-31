@@ -362,7 +362,15 @@ A typical enforced run:
 All state is keyed per parent session. `replayGrace` gives restart-restored
 flags a one-prompt survival window; continuation carry (default on) re-arms
 it when a continuing prompt has an unchanged worktree fingerprint and earned
-credit (a green test gate or a reviewer approval).
+credit (a green test gate or a reviewer approval). A retired task's credit
+also rides the same window when the review phase was interrupted mid-flight:
+a green test gate, at least one counted reviewer dispatch or waived reviewer
+round, and no credited reviewer approval (`isInterruptedReview`,
+`src/task-scope.ts`) — both the live abort path and the restart-replay path
+recover identically, and the journaled `continuation` row carries
+`recovery: true` in that case. The recovery re-opens the retired task's
+plan-bound scope, which then persists like any live plan-bound green task
+(bounded by the ensemble cap and the landing gate, not by prompt count).
 
 ![Gate state machine](images/d04-gate-state.svg)
 

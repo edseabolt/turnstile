@@ -171,6 +171,7 @@ test("golden: verdict entry shape with rounds", async () => {
       type: "verdict",
       sessionID: "p1",
       raw: "p1",
+      agent: "reviewer",
       marker: "VERDICT: APPROVE crit=0 high=0 med=1 low=2",
       rounds: 0,
       source: "task-result",

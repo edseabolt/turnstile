@@ -11,7 +11,7 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger } from "../src/ledger.ts"
+import { createLedger, sanitizeFingerprint } from "../src/ledger.ts"
 import { REVIEW_ENSEMBLE_SIZE } from "../src/state.ts"
 import { journalEntries, tmpDir } from "./helpers.ts"
 
@@ -31,10 +31,19 @@ function writeJournal(metricsDir: string, lines: string[]): string {
  * A well-shaped replay-typed gate entry line.
  * @param sessionID The session ID to journal.
  * @param result The gate result (default PASS).
+ * @param fp The optional task fingerprint to journal (omitted when
+ *     undefined, matching the legacy row shape).
  * @returns The raw JSONL line.
  */
-function gateLine(sessionID: string, result = "PASS"): string {
-  return JSON.stringify({ ts: "t", type: "gate", sessionID, raw: "c1", result })
+function gateLine(sessionID: string, result = "PASS", fp?: unknown): string {
+  return JSON.stringify({
+    ts: "t",
+    type: "gate",
+    sessionID,
+    raw: "c1",
+    result,
+    ...(fp === undefined ? {} : { fp }),
+  })
 }
 
 /**
@@ -51,9 +60,11 @@ function ensembleLine(sessionID: string, count: number): string {
  * A task-result verdict entry line for a session.
  * @param sessionID The session ID to journal.
  * @param marker The VERDICT marker (or non-string) to journal.
+ * @param agent The optional emitting agent to journal (omitted when not a
+ *     non-empty string, matching the legacy row shape).
  * @returns The raw JSONL line.
  */
-function verdictLine(sessionID: string, marker: unknown): string {
+function verdictLine(sessionID: string, marker: unknown, agent?: unknown): string {
   return JSON.stringify({
     ts: "t",
     type: "verdict",
@@ -61,6 +72,7 @@ function verdictLine(sessionID: string, marker: unknown): string {
     raw: "c1",
     marker,
     source: "task-result",
+    ...(typeof agent === "string" && agent !== "" ? { agent } : {}),
   })
 }
 
@@ -139,7 +151,7 @@ test("replay restores well-shaped replay-typed entries without telemetry", () =>
   const journalPath = writeJournal(metricsDir, [
     gateLine("p1"),
     gateLine("ses_x1"),
-    verdictLine("p1", "VERDICT: APPROVE crit=0 high=0 med=0 low=0"),
+    verdictLine("p1", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "reviewer"),
     JSON.stringify({ ts: "t", type: "error", error: "unrelated note" }),
   ])
   const ledger = createLedger(journalPath, 64, 2000)
@@ -251,10 +263,10 @@ test("replay drops a task-result verdict whose marker fails its shape", () => {
   const metricsDir = tmpDir()
   const boundary = "VERDICT: APPROVE" + "A".repeat(512 - "VERDICT: APPROVE".length)
   const journalPath = writeJournal(metricsDir, [
-    verdictLine("p1", "A".repeat(513)),
-    verdictLine("p2", 42),
-    verdictLine("p3", "VERDICT: APPROVE crit=0 high=0 med=0 low=0"),
-    verdictLine("p4", boundary),
+    verdictLine("p1", "A".repeat(513), "reviewer"),
+    verdictLine("p2", 42, "reviewer"),
+    verdictLine("p3", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "reviewer"),
+    verdictLine("p4", boundary, "reviewer"),
   ])
   const ledger = createLedger(journalPath, 64, 2000)
   assert.equal(ledger.peek("p1"), undefined, "an oversized marker never mints a bucket")
@@ -499,6 +511,91 @@ test("replay restores duplicate-keyed gate entries last-wins", () => {
   assert.equal(replayDrops(redDir).length, 0, "a trailing FAIL is a fold, not a drop")
 })
 
+/** The fingerprint sanitizer is total: a string of length 1..1024 passes
+ *  through (both bounds inclusive), and a non-string, an empty value, or an
+ *  over-length one degrades to the empty fingerprint — never a throw. */
+test("sanitizeFingerprint passes bounded strings and degrades everything else", () => {
+  assert.equal(
+    sanitizeFingerprint("wt\u0000dev"),
+    "wt\u0000dev",
+    "a valid fingerprint passes through",
+  )
+  assert.equal(
+    sanitizeFingerprint("a".repeat(1024)),
+    "a".repeat(1024),
+    "the length bound is inclusive",
+  )
+  assert.equal(sanitizeFingerprint("a".repeat(1025)), "", "an over-length fingerprint degrades")
+  assert.equal(sanitizeFingerprint(""), "", "an empty fingerprint degrades")
+  assert.equal(sanitizeFingerprint(42), "", "a non-string fingerprint degrades")
+  assert.equal(sanitizeFingerprint(undefined), "", "an absent fingerprint degrades")
+})
+
+/** A gate row's task fingerprint restores onto the PASS bucket: a stamped
+ *  PASS stamps the worktree identity the recovery carry matches against,
+ *  while a legacy row (no `fp`), an empty, an over-length, or a non-string
+ *  value degrades to the empty fingerprint — inert, never a drop. */
+test("replay restores a stamped gate fingerprint and degrades hostile ones", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    gateLine("p1", "PASS", "wt\u0000dev"),
+    gateLine("p2"), // legacy row: no fp field
+    gateLine("p3", "PASS", ""), // empty value
+    gateLine("p4", "PASS", "a".repeat(1025)), // over-length
+    gateLine("p5", "PASS", 42), // non-string
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(
+    ledger.peek("p1")?.taskFingerprint,
+    "wt\u0000dev",
+    "a stamped PASS restores its fingerprint",
+  )
+  for (const id of ["p2", "p3", "p4", "p5"]) {
+    assert.equal(
+      ledger.peek(id)?.taskFingerprint,
+      "",
+      `a degraded fingerprint (${id}) restores the empty stamp`,
+    )
+  }
+  assert.equal(replayDrops(metricsDir).length, 0, "a degraded fingerprint is inert, not a drop")
+})
+
+/** The gate fingerprint folds last-wins beside the result: a stamped FAIL's
+ *  fingerprint wins over an earlier stamped PASS and stamps the trailing
+ *  legacy PASS's restore (the legacy row leaves the standing fingerprint
+ *  untouched), while the gate itself restores green per the result map. */
+test("replay folds the gate fingerprint last-wins across PASS and FAIL rows", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    gateLine("p1", "PASS", "fp-a"),
+    gateLine("p1", "FAIL", "fp-b"),
+    gateLine("p1"), // legacy PASS: no fp, leaves the FAIL's fingerprint standing
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  const bucket = ledger.peek("p1")
+  assert.equal(bucket?.hasGatePass, true, "the trailing PASS restores green")
+  assert.equal(
+    bucket?.taskFingerprint,
+    "fp-b",
+    "the FAIL's fingerprint won last-wins and stamped the restore",
+  )
+  assert.equal(replayDrops(metricsDir).length, 0, "fingerprint folding journals no drop")
+})
+
+/** A trailing FAIL whose fingerprint was folded mints no bucket at all: the
+ *  FAIL keeps the gate red (the fingerprint is folded but unused by the
+ *  restore), and the fold is not a drop. */
+test("replay mints no bucket for a trailing FAIL with a folded fingerprint", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    gateLine("p1", "PASS", "fp-a"),
+    gateLine("p1", "FAIL", "fp-b"),
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(ledger.peek("p1"), undefined, "a trailing FAIL keeps the gate red (no bucket)")
+  assert.equal(replayDrops(metricsDir).length, 0, "a folding FAIL is not a drop")
+})
+
 /** A task-result verdict whose marker is full of regex metacharacters
  *  restores the flag per the existing fold (the derived APPROVE is credited)
  *  but stores no raw bytes: no bucket field echoes the marker, no drop is
@@ -506,7 +603,7 @@ test("replay restores duplicate-keyed gate entries last-wins", () => {
 test("replay stores no raw bytes for a regex-metacharacter verdict marker", () => {
   const hostile = "VERDICT: APPROVE (.*+)["
   const metricsDir = tmpDir()
-  const journalPath = writeJournal(metricsDir, [verdictLine("p1", hostile)])
+  const journalPath = writeJournal(metricsDir, [verdictLine("p1", hostile, "reviewer")])
   const ledger = createLedger(journalPath, 64, 2000)
   const bucket = ledger.peek("p1")
   assert.ok(bucket, "a within-bound marker restores a bucket")
@@ -517,6 +614,69 @@ test("replay stores no raw bytes for a regex-metacharacter verdict marker", () =
   assert.ok(!serialized.includes(".*+"), "no bucket field echoes the metacharacters")
   const secondBoot = createLedger(journalPath, 64, 2000)
   assert.deepEqual(secondBoot.peek("p1"), bucket, "a second boot re-folds identically")
+})
+
+/** Verdict replay is agent-attributed: only a verdict the configured reviewer
+ *  agent emitted credits the landing gate. A plan-reviewer verdict, a legacy
+ *  unattributed row, a hostile non-string agent, and an over-length agent all
+ *  fold (degrading to an inert attribution) without restoring the flag — and
+ *  none of them is a drop. */
+test("replay credits only reviewer-attributed verdict approvals", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    verdictLine("pReviewer", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "reviewer"),
+    verdictLine("pPlanReviewer", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "plan-reviewer"),
+    verdictLine("pLegacy", "VERDICT: APPROVE crit=0 high=0 med=0 low=0"),
+    verdictLine("pHostile", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", 42),
+    verdictLine("pOverLength", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "a".repeat(129)),
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  assert.equal(
+    ledger.peek("pReviewer")?.hasReviewApprove,
+    true,
+    "a reviewer-attributed APPROVE restores the flag",
+  )
+  for (const id of ["pPlanReviewer", "pLegacy", "pHostile", "pOverLength"]) {
+    assert.equal(
+      ledger.state(id).hasReviewApprove,
+      false,
+      `a non-reviewer-attributed APPROVE (${id}) never restores the flag`,
+    )
+  }
+  assert.equal(replayDrops(metricsDir).length, 0, "a degraded agent is inert, not a drop")
+})
+
+/** The configured reviewer name is honored: a ledger created with a renamed
+ *  reviewer credits only verdicts attributed to that name, and the canonical
+ *  default credits only the canonical one. */
+test("replay honors the configured reviewer agent name for verdict credit", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    verdictLine("pAuditor", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "auditor"),
+    verdictLine("pCanonical", "VERDICT: APPROVE crit=0 high=0 med=0 low=0", "reviewer"),
+  ])
+  const renamed = createLedger(journalPath, 64, 2000, undefined, 0, "auditor")
+  assert.equal(
+    renamed.peek("pAuditor")?.hasReviewApprove,
+    true,
+    "a verdict attributed to the configured name restores the flag",
+  )
+  assert.equal(
+    renamed.state("pCanonical").hasReviewApprove,
+    false,
+    "a verdict attributed to another agent never restores the flag",
+  )
+  const canonical = createLedger(journalPath, 64, 2000)
+  assert.equal(
+    canonical.peek("pCanonical")?.hasReviewApprove,
+    true,
+    "the default credits the canonical reviewer name",
+  )
+  assert.equal(
+    canonical.state("pAuditor").hasReviewApprove,
+    false,
+    "the default does not credit a renamed agent's verdict",
+  )
 })
 
 /** Well-shaped observe stamps and would-blocks fold last-wins into the period

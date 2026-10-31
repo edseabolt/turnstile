@@ -169,8 +169,17 @@ hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 
 State lifecycle: a new user prompt resets the session's gate state, except
 when continuation carry (default on) re-arms it for a prompt with an
-unchanged worktree/branch fingerprint and earned credit. Replayed gate state
-survives a restart and the next (resume) prompt, then reverts.
+unchanged worktree/branch fingerprint and earned credit. An interrupted
+review also carries: after a green test gate retired a plan-bound task, a
+prompt re-admitted in the same worktree/branch carries the green gate, the
+reviewer-dispatch count, and the plan approval — but only when a reviewer
+dispatch was already counted (or a reviewer round waived) and no reviewer
+approval was credited yet (an aborted post-PASS review); a genuinely new
+task still starts clean. The recovery re-opens the retired task's
+plan-bound scope, so it then persists like any live plan-bound green task —
+bounded by the ensemble cap and the landing gate, not by prompt count.
+Replayed gate state survives a restart and the next (resume) prompt, then
+reverts.
 
 **Maintenance dispatches.** A bookkeeping-only executor dispatch — the prompt
 names the live approved plan file plus the word "maintenance", and the current

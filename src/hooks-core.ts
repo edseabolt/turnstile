@@ -680,6 +680,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     config.replayTailLines,
     opts.approvalLedgerPath,
     config.observeSessions,
+    config.agents.reviewer,
   )
   // Re-arm the end-of-period summary at boot: the replayed tail may show a
   // completed period whose summary never surfaced (the process died between
@@ -1321,7 +1322,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * correlates an in-window exit-0 hit for it, flips the gate green, clears
    * the claim, and journals the promoted gate entry plus its trace event —
    * byte-identical to the evidence-arrival promotion this helper was
-   * extracted from. A parent with no admitted-prompt task-window stamp keeps
+   * extracted from. The promoted entry carries the parent's task fingerprint
+   * only when its bucket has stamped one (omitted when empty, like the live
+   * gate rows), so replay restores the carry identity. A parent with no
+   * admitted-prompt task-window stamp keeps
    * the unbounded join (`?? 0`), preserving today's correlation for hosts
    * that never admit a prompt (fail-open, documented). No-op otherwise;
    * never throws.
@@ -1339,6 +1343,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
         event: "promoted",
         verified: true,
         mode: config.gateEvidence,
+        ...(ps.taskFingerprint !== "" ? { fp: ps.taskFingerprint } : {}),
       })
       // The gate's green flip is the task's completion boundary (Phase 3):
       // the flip journals its task-complete companion row and stamps the
@@ -3107,10 +3112,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * Journals a first-sight `GATE:` observation: keyed by parent session so
    * journal replay restores state where the reviewer gate looks it up; raw
    * child ID kept for forensics. Spreads the evidence stamp (present only
-   * when the evidence mode is not "off") and the suppressed-match count
-   * (only when > 0), and carries the de-tokenized marker text for the
-   * compaction snapshot (the state boundary records it, this helper
-   * journals the event).
+   * when the evidence mode is not "off"), the task fingerprint (only when
+   * the parent's bucket has stamped one, so replay can restore the carry
+   * identity), and the suppressed-match count (only when > 0), and carries
+   * the de-tokenized marker text for the compaction snapshot (the state
+   * boundary records it, this helper journals the event).
    * @param event The gate marker observation (authority never "suppressed").
    * @param suppressedCount The suppressed-match count spread, empty when 0.
    * @param sid The parent session the `gate` entry is keyed on.
@@ -3128,6 +3134,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   ): void {
     const evidenceStamp =
       event.verified !== undefined ? { verified: event.verified, mode: event.mode } : {}
+    const fp = s.taskFingerprint !== "" ? { fp: s.taskFingerprint } : {}
     journaler.journal({
       type: "gate",
       sessionID: sid,
@@ -3136,6 +3143,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       source,
       marker: event.marker,
       ...evidenceStamp,
+      ...fp,
       ...suppressedCount,
     })
     // A green gate flip is the task's completion boundary: a flipping PASS
@@ -3152,13 +3160,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
 
   /**
    * Journals a first-sight `VERDICT:` observation: keyed by parent session
-   * with the raw child ID kept for forensics, spreading the
-   * suppressed-match count (only when > 0). Streaming verdict dedup is per
-   * (child, marker, source) via the store (a source change with an unchanged
-   * marker re-journals; identical re-delivery never emits an event here
-   * because the parent-bucket dedup on (scope, marker) suppresses it first).
-   * Gate-kind events are unaffected. Carries the de-tokenized marker text
-   * for the compaction snapshot.
+   * with the raw child ID kept for forensics, the emitting agent (the
+   * authority-checked emitter — the same resolution `markerKindAllowed` used
+   * to authorize this event one synchronous step earlier — so replay
+   * attributes the verdict and credits only reviewer-attributed ones),
+   * spreading the suppressed-match count (only when > 0). Streaming verdict
+   * dedup is per (child, marker, source) via the store (a source change with
+   * an unchanged marker re-journals; identical re-delivery never emits an
+   * event here because the parent-bucket dedup on (scope, marker) suppresses
+   * it first). Gate-kind events are unaffected. Carries the de-tokenized
+   * marker text for the compaction snapshot.
    * @param event The verdict marker observation (authority never "suppressed").
    * @param suppressedCount The suppressed-match count spread, empty when 0.
    * @param sid The parent session the `verdict` entry is keyed on.
@@ -3178,6 +3189,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       type: "verdict",
       sessionID: sid,
       raw: sessionID,
+      agent: emitterAgent(sessionID),
       marker: event.marker,
       rounds: event.rounds,
       source,
@@ -3428,18 +3440,24 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     const fingerprint = worktreeFingerprint(currentProjectDir(sessionID))
     // The carry decision is captured BEFORE mutating, not re-derived after.
     // The git probe is total (never throws), so this stays throw-free. A
-    // retired prior bucket journals no continuation row: the merge carries
-    // nothing out of a completed task, so the audit row must not claim a
-    // carry that did not happen.
+    // retired prior bucket journals a continuation row only when the
+    // recovery carry actually fired out of the retire (an interrupted
+    // review); those rows carry `recovery: true` so the audit trail
+    // distinguishes them from ordinary same-task continuations.
     if (config.continuationCarry) {
-      const carry = shouldCarryGate(prior, fingerprint, true) && prior!.taskComplete === false
+      const carry = shouldCarryGate(prior, fingerprint, true)
       // shouldCarryGate guarantees carry ⇒ prior is defined, so the
       // non-null assertion cannot fire; keep the predicate's contract
       // intact if it ever changes.
       if (carry) prior!.replayGrace = true
       resetTaskScope(sessionID)
       ledger.state(sessionID).taskFingerprint = fingerprint
-      if (carry) journaler.journal({ type: "continuation", sessionID })
+      if (carry)
+        journaler.journal({
+          type: "continuation",
+          sessionID,
+          ...(prior!.taskComplete ? { recovery: true } : {}),
+        })
     } else {
       resetTaskScope(sessionID)
     }
@@ -3543,11 +3561,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       const savedPlan = s.approvedPlan
       const savedKey = s.approvedPlanKey
       const savedSig = s.plansSignature
+      const savedFingerprint = s0.taskFingerprint
       resetTaskScope(sessionID, false)
       s = ledger.state(sessionID)
       s.approvedPlan = savedPlan
       s.approvedPlanKey = savedKey
       s.plansSignature = savedSig
+      // The worktree identity is not task scope: the clean rebuild must not
+      // wipe the stamp, or a later interrupted-review recovery carry would
+      // find no fingerprint to match against.
+      s.taskFingerprint = savedFingerprint
     }
     s.hasPlanVerdict = true
     if (human) s.humanApproval = true

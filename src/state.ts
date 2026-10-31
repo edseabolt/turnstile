@@ -7,6 +7,7 @@
  */
 
 import type { GateState } from "./types.ts"
+import { isInterruptedReview } from "./task-scope.ts"
 
 /**
  * Creates a fresh gate state bucket for one parent session.
@@ -309,9 +310,11 @@ export function formatPipelineStatus(
 export function mergeAfterReplay(prior: GateState): GateState {
   const s = newState()
   // A completed task carries NOTHING: the retire is the task boundary, so no
-  // flag, release, counter, or plan identity from it reaches the next task
-  // (the fresh bucket is returned as-is).
-  if (prior.taskComplete) return s
+  // flag, release, counter, or plan identity from it reaches the next task —
+  // except the interrupted-review recovery: a green gate with reviewer
+  // activity already counted and no credited approval was an aborted review,
+  // so the earned context rides the grace window for re-dispatch.
+  if (prior.taskComplete && !isInterruptedReview(prior)) return s
   s.hasGatePass = prior.hasGatePass
   s.hasPlanVerdict = prior.hasPlanVerdict
   // Restart-sticky like hasPlanVerdict: a restored human approval survives the
