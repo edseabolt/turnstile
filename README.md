@@ -293,6 +293,17 @@ When both markers appear in one prompt, the one occurring later wins. Config:
 diagnostic, and the ON marker is refused the same way). Inspect the live state with
 `node bin/cli.mjs status` (in-repo) or `npx opencode-turnstile status`.
 
+### `opencode-turnstile log`
+
+Prints a chronological, human-readable timeline of one session's turnstile
+journal — dispatches, gate results, blocks, waivers, verdicts, suppressions,
+and marker retries — ending with a summary line (blocks by reason, dispatch
+and waiver counts, final gate state). Read-only; never writes or blocks.
+
+    opencode-turnstile log                 # most recent session
+    opencode-turnstile log <sessionID>     # a specific session
+    opencode-turnstile log --json          # machine-readable output
+
 ## Markers
 
 Subagents must emit these as the first line of their output. These examples
