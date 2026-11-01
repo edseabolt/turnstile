@@ -424,14 +424,13 @@ test("describeCommitMismatch names the missing type, separator, subject, length,
   assert.match(describeCommitMismatch("feat(scope): "), /missing the subject after ': '/)
   assert.match(describeCommitMismatch("feat:"), /missing the ': ' or '!' separator/)
   assert.match(describeCommitMismatch("feat: "), /missing the subject after ': '/)
-  assert.match(describeCommitMismatch("feat!:"), /missing the subject after ': '/)
+  // `!`/`!:` without a trailing space fail the default regex (`(?:[!]:?|:) `),
+  // so they are diagnosed as a missing separator, never accepted.
+  assert.match(describeCommitMismatch("feat!:"), /missing the ': ' or '!' separator/)
   const long = describeCommitMismatch("feat: ".padEnd(80, "x"))
   assert.match(long, /exceeds 72/)
   assert.match(long, /first line is 80 chars/)
   assert.match(describeCommitMismatch("feat: x\nbody\nmore"), /more than one body line/)
-  // The `!` separator is accepted by the default regex, so it is never
-  // diagnosed as a missing separator.
-  assert.equal(describeCommitMismatch("feat!x"), "")
   // Fallback: every default-shape class passes (the failure can only come
   // from a custom commitFormat).
   assert.equal(describeCommitMismatch("feat: x"), "")
@@ -439,12 +438,16 @@ test("describeCommitMismatch names the missing type, separator, subject, length,
 
 /**
  * The classifier's separator clause accepts every separator shape the default
- * regex accepts (`!`, `!:`, `: `), so the prose never denies a message the
- * gate would pass.
+ * regex accepts (`'! '`, `'!: '`, `': '`, each with its trailing space), so
+ * the prose never denies a message the gate would pass — and never accepts a
+ * shape the gate rejects (no-space `!` variants are missing-separator cases).
  */
 test("describeCommitMismatch accepts the ! separator shapes the default regex accepts", () => {
-  for (const msg of ["feat!subject", "feat!:subject", "feat: subject"]) {
+  for (const msg of ["feat! x", "feat!: x", "feat: subject"]) {
     assert.equal(describeCommitMismatch(msg), "", msg)
+  }
+  for (const msg of ["feat!subject", "feat!:subject"]) {
+    assert.match(describeCommitMismatch(msg), /missing the ': ' or '!' separator/, msg)
   }
 })
 

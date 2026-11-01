@@ -114,13 +114,14 @@ const COMMIT_TYPE_LIST = "feat|fix|docs|style|refactor|perf|test|build|ci|chore|
 
 /**
  * Suffix added to the invalid-commit-block error, stating the accepted shape.
- * The `!` alternative mirrors the default regex's `(?:[!]:?|:) ` separator, so
- * a message the gate accepts is never denied by this text.
+ * The separator alternatives mirror the default regex's `(?:[!]:?|:) `
+ * separator — each requires a trailing space — so a message the gate accepts
+ * is never denied by this text.
  */
 const COMMIT_EXPECTED =
   `is not a conventional commit — must be '<type>(<scope>)?: <subject>' — type one of ` +
-  `${COMMIT_TYPE_LIST.split("|").join(", ")}, optional (scope), a ': ' or '!' separator, ` +
-  `subject of 1-72 chars, at most one body line`
+  `${COMMIT_TYPE_LIST.split("|").join(", ")}, optional (scope), a ': ', '! ', or '!: ' ` +
+  `separator, subject of 1-72 chars, at most one body line`
 
 /**
  * Canonical example appended to the block error once a session's blind-retry
@@ -132,8 +133,9 @@ const COMMIT_EXAMPLE =
 /**
  * Extracts the subject text following the type (and optional scope) of a
  * commit message's first line, or `null` when no accepted separator
- * (`!`, `!:`, or `: ` — mirroring the default regex's `(?:[!]:?|:) `) is
- * present. Helper for {@link describeCommitMismatch}.
+ * (`'! '`, `'!: '`, or `': '` — mirroring the default regex's
+ * `(?:[!]:?|:) `, each requiring a trailing space) is present. Helper for
+ * {@link describeCommitMismatch}.
  * @param rest The first line after the leading type word.
  * @returns The subject after the separator, or `null` when the separator is
  *     missing (including an unclosed scope).
@@ -144,8 +146,8 @@ function subjectAfterSeparator(rest: string): string | null {
     if (close === -1) return null
     rest = rest.slice(close + 1)
   }
-  if (rest.startsWith("!:")) return rest.slice(2)
-  if (rest.startsWith("!")) return rest.slice(1)
+  if (rest.startsWith("!: ")) return rest.slice(3)
+  if (rest.startsWith("! ")) return rest.slice(2)
   if (rest.startsWith(": ")) return rest.slice(2)
   return null
 }

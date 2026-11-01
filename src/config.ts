@@ -495,8 +495,8 @@ export function mergeConfig(
           }
         } else if (gk === "commitRetryThreshold" || gk === "commitRetryWindowMs") {
           // Burst-escalation knobs: threshold is a positive integer, the window
-          // a non-negative one (0 disables the window, so every retry counts
-          // from scratch only via the success reset).
+          // a non-negative one (0 means only same-millisecond retries
+          // accumulate; larger windows expire via the elapsed-time check).
           const positive = gk === "commitRetryThreshold"
           if (typeof gv === "number" && Number.isInteger(gv) && (positive ? gv > 0 : gv >= 0)) {
             if (positive) merged.commitRetryThreshold = gv

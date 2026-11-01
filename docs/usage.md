@@ -148,7 +148,8 @@ on the repeat. Commit subjects are linted as conventional
 commits (`gitGates.commitMessages: true`, the default): `git commit -m` must
 match `<type>(<scope>)?: <subject>` — type one of
 `feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`, an optional
-`(scope)`, a `: ` or `!` separator, a subject of 1–72 characters, and at most
+`(scope)`, a separator followed by a space (`: `, `! `, or `!: `), a subject of
+1–72 characters, and at most
 one body line. An invalid subject blocks the commit, and the block message
 names exactly what was wrong; after `gitGates.commitRetryThreshold` (default 3)
 failed attempts within `gitGates.commitRetryWindowMs` (default 60000 ms) in the
