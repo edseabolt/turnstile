@@ -174,7 +174,9 @@ test("plan gate: executor blocked until a plan-reviewer APPROVE verdict", async 
 
 /** A BLOCK verdict (or marker-less output) leaves the plan gate red. */
 test("plan gate: BLOCK verdict and marker-less output do not approve", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan()
+  const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
+    agentMarkerRetry: 0,
+  })
   try {
     await callTool(h, "execute.after", {
       tool: "task",
@@ -527,7 +529,9 @@ test("plan gate: child-text-delta verdict attributes through a marker-less deliv
 
 /** a task-result marker never enters the child store; a later marker-less delivery still blocks. */
 test("plan gate: task-result marker is not stored; later marker-less still blocks", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan()
+  const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
+    agentMarkerRetry: 0,
+  })
   try {
     // Deliver on the child: the edge makes the delivery attributable.
     await h.pushEvent({
@@ -705,7 +709,9 @@ test("plan gate: identical marker for a sibling child still attributes per child
 
 /** a stale verdict for one child does not attribute to an unrelated child. */
 test("plan gate: stale verdict for one child does not attribute to another child", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan()
+  const { h, metricsDir, restore } = await bootWithPlan("# P\n", "plan.md", {
+    agentMarkerRetry: 0,
+  })
   try {
     h.pushEvent({
       type: "session.created",

@@ -748,6 +748,12 @@ export interface TurnstileConfig {
   maxTotalDispatches: number
   /** Cap on tracked sessions (LRU); oldest state evicted beyond this. */
   maxSessions: number
+  /**
+   * Compliance re-prompts per child delivery that returned no GATE/VERDICT
+   * marker (bare-output). 0 disables the retry: the first marker-less
+   * delivery counts a violation immediately.
+   */
+  agentMarkerRetry: number
   /** Whole-file read count at which the horizon warning is injected. */
   readWarn: number
   /** Whole-file read count at which further reads are blocked. */
@@ -922,6 +928,8 @@ export type Host = {
   session?: {
     hook?: (name: string, cb: (input: any) => Promise<void> | void) => Promise<unknown>
     get?: (input: { sessionID: string }, options?: any) => Promise<SessionRecord | undefined>
+    /** Prompts an existing session (compliance re-prompt channel). */
+    prompt?: (input: { sessionID: string; text: string }, options?: any) => Promise<unknown>
   }
   event?: {
     subscribe?: (options?: { signal?: AbortSignal }) => AsyncIterable<StreamEvent>
