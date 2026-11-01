@@ -267,6 +267,36 @@ test("plan-impact: structural + strict falls through to the hands-on block", asy
 })
 
 /**
+ * An outside-project write target classifies `uninspectable` and falls
+ * through to the hands-on ladder, which blocks — and no plan-impact row is
+ * journaled (nothing was classified against the plan's scope).
+ */
+test("plan-impact: an outside-project write target falls through to the hands-on ladder", async () => {
+  const { h, metricsDir, project, restore } = await bootImpact({
+    bindPlan: true,
+    alwaysEnforce: true,
+  })
+  try {
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "write",
+          sessionID: "p1",
+          input: { filePath: path.join(project, "..", "elsewhere.ts") },
+        }),
+      (e: unknown) => e instanceof BlockError,
+    )
+    assert.equal(
+      impactRows(metricsDir).length,
+      0,
+      "an uninspectable target never journals a plan-impact row",
+    )
+  } finally {
+    restore()
+  }
+})
+
+/**
  * B5 + AC-7 (dormant): with the session unengaged the classifier never runs
  * — no plan-impact row, and the hands-on ladder stays asleep per #246.
  */
@@ -519,8 +549,8 @@ test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, an
  * The equality arm relativizes the host's absolute write/edit target against
  * the project dir before matching the repo-relative scope entries: an
  * absolute target under the project classifies, a target outside the
- * project dir classifies "none" (the hook layer fails toward the ladder for
- * uninspectable targets).
+ * project dir classifies `uninspectable` (the hook layer maps it to the
+ * hands-on ladder).
  */
 test("plan-impact: absolute targets relativize against the project dir", () => {
   const metricsDir = tmpDir()
@@ -544,8 +574,13 @@ test("plan-impact: absolute targets relativize against the project dir", () => {
   )
   assert.equal(
     ctx.gates.planImpact(project, "plan.md", path.join(project, "..", "elsewhere.ts"), false),
-    "none",
-    "a target outside the project dir classifies none",
+    "uninspectable",
+    "a target outside the project dir classifies uninspectable",
+  )
+  assert.equal(
+    ctx.gates.planImpact(project, "plan.md", "", false),
+    "uninspectable",
+    "an empty equality target classifies uninspectable",
   )
 })
 

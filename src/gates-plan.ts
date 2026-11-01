@@ -912,7 +912,8 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * `filePath` values while plan scope entries are repo-relative, so the
    * equality arm would never match without this. A target resolving outside
    * the project dir (or equal to it) yields the empty string — the caller
-   * treats it as uninspectable and fails toward the ladder.
+   * classifies it `uninspectable`, which the hook layer maps to the
+   * hands-on ladder.
    * @param projectDir The current project directory.
    * @param targetPath The raw write/edit target path.
    * @returns The repo-relative target, or "" when outside the project.
@@ -954,9 +955,9 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * error like the other plan-gate consumers). In equality mode (write/edit
    * targets) the target is first relativized against `projectDir` — hosts
    * report absolute paths while scope entries are repo-relative; a target
-   * outside the project dir relativizes to "" and classifies `none` (the
-   * hook layer fails toward the ladder for uninspectable targets before
-   * calling). The scope is cached per plan keyed by the scan's per-file
+   * outside the project dir relativizes to "" and classifies
+   * `uninspectable` — a verdict the hook layer maps to the hands-on ladder
+   * rather than an allow. The scope is cached per plan keyed by the scan's per-file
    * sha256 key, so an unchanged plan is never re-read or re-tokenized.
    * Classifies with `classifyPlanImpact` — the plan-file-self rule names the
    * bound plan, so an edit to the plan file itself classifies `structural`.
@@ -965,7 +966,8 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
    * @param targetPath The write/edit file path, or the bash command text.
    * @param matchInText True for containment matching (bash command text),
    *     false for equality matching (write/edit targets).
-   * @returns The impact classification (fail-open `"none"`).
+   * @returns The impact classification (`none` / `advisory` / `structural` /
+   *     `uninspectable`; fail-open `"none"`).
    */
   function planImpactFor(
     projectDir: string,
@@ -981,7 +983,7 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
       if (!scan.names.includes(activePlan)) return "none"
       const scope = planScopeFor(plansDir, scan, activePlan)
       const target = matchInText ? targetPath : relativizeTarget(projectDir, targetPath)
-      if (target === "") return "none"
+      if (target === "") return "uninspectable"
       // The self rule compares against the plans-dir-relative path (e.g.
       // `.opencode/plans/foo.md`), not the bare name — a bare-name match
       // would false-positive on any same-named file in the repo.
