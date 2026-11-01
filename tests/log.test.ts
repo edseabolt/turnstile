@@ -344,13 +344,28 @@ test("renders policy, tool, permission, and evidence rows with their real fields
         reads: 0,
       },
       {
+        ts: "2026-01-01T10:00:22Z",
+        type: "tool",
+        sessionID: "ses1",
+        tool: "session_move",
+        directory: "~/git/turnstile",
+        reason: "worktree",
+      },
+      {
+        ts: "2026-01-01T10:00:23Z",
+        type: "tool",
+        sessionID: "ses1",
+        tool: "edit",
+        landing: true,
+        exempt: "empty-diff",
+      },
+      {
         ts: "2026-01-01T10:00:25Z",
         type: "permission",
         sessionID: "ses1",
         decision: "waiver",
         scope: "task",
         kind: "waiver",
-        stages: [],
       },
       {
         ts: "2026-01-01T10:00:30Z",
@@ -381,6 +396,8 @@ test("renders policy, tool, permission, and evidence rows with their real fields
     assert.match(r.stdout, /tool {2}bash {2}command=npm run ci 2>&1 \| tail -40 {2}exit=0/)
     assert.match(r.stdout, /tool {2}write {2}path=\/tmp\/opencode\/pr-body\.md {2}scratch=true/)
     assert.match(r.stdout, /tool {2}read {2}reads=0/)
+    assert.match(r.stdout, /tool {2}session_move {2}directory=~\/git\/turnstile {2}reason=worktree/)
+    assert.match(r.stdout, /tool {2}edit {2}exempt=empty-diff {2}landing=true/)
     assert.match(r.stdout, /permission {2}decision=waiver {2}kind=waiver {2}scope=task/)
     assert.match(r.stdout, /permission {2}event=unrecorded-reply {2}requestID=per_/)
     assert.match(r.stdout, /permission {2}action=ask {2}tool=edit {2}reason=hands-on/)

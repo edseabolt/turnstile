@@ -514,7 +514,9 @@ function renderPolicy(e) {
 
 /**
  * Renders one `tool` row: the tool name plus its target (command or path),
- * read counter, exit code, and boolean bookkeeping flags.
+ * working directory, read counter, exit code, reason, and boolean
+ * bookkeeping flags. `directory` is trace-redacted at write time, so the
+ * journal stores the redacted form and it is rendered as-is.
  * @param {Record<string, unknown>} e The parsed entry.
  * @returns {string} The timeline line.
  */
@@ -524,8 +526,11 @@ function renderTool(e) {
   if (typeof e.command === "string" && e.command)
     parts.push(`command=${truncateField(e.command, 80)}`)
   if (typeof e.path === "string" && e.path) parts.push(`path=${e.path}`)
+  if (typeof e.directory === "string" && e.directory) parts.push(`directory=${e.directory}`)
   if (Number.isInteger(e.reads)) parts.push(`reads=${e.reads}`)
   if (Number.isInteger(e.exit)) parts.push(`exit=${e.exit}`)
+  if (typeof e.reason === "string" && e.reason) parts.push(`reason=${e.reason}`)
+  if (typeof e.exempt === "string" && e.exempt) parts.push(`exempt=${e.exempt}`)
   for (const flag of ["scratch", "handsOn", "landing"]) {
     if (e[flag] === true) parts.push(`${flag}=true`)
   }
