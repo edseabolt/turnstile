@@ -402,14 +402,20 @@ function renderBlocked(e) {
 
 /**
  * Renders one `plan` row: result, plan name, and source; a STALE row renders
- * its reason field.
+ * its reason field; a WAIVED row (the plan-gate waiver entry) renders the
+ * waiver channel and waiver text instead of a plan name.
  * @param {Record<string, unknown>} e The parsed entry.
  * @returns {string} The timeline line.
  */
 function renderPlan(e) {
   const result = typeof e.result === "string" ? e.result : "?"
-  const plan = typeof e.plan === "string" ? e.plan : ""
   const source = typeof e.source === "string" ? ` (source ${e.source})` : ""
+  if (result === "WAIVED") {
+    const channel = typeof e.channel === "string" ? e.channel : "?"
+    const waiver = typeof e.waiver === "string" ? e.waiver : ""
+    return `plan  WAIVED  ${channel}${waiver ? ` (${waiver})` : ""}${source}`
+  }
+  const plan = typeof e.plan === "string" ? e.plan : ""
   const reason = result === "STALE" && typeof e.reason === "string" ? ` reason=${e.reason}` : ""
   return `plan  ${result}  ${plan}${source}${reason}`
 }
@@ -423,7 +429,7 @@ function renderVerdict(e) {
   const marker = typeof e.marker === "string" ? e.marker : "?"
   const source = typeof e.source === "string" ? ` (source ${e.source}` : " (source ?"
   const agent = typeof e.agent === "string" ? `, agent ${e.agent})` : ")"
-  return `verdict  VERDICT: ${marker}${source}${agent}`
+  return `verdict  ${marker}${source}${agent}`
 }
 
 /**
@@ -463,10 +469,51 @@ function renderCompact(e) {
   return `${e.type}  ${parts.join("  ")}`.trimEnd()
 }
 
+/** The row types rendered by renderAudit (the small audit rows). */
+const AUDIT_TYPES = ["suppressed", "marker-retry", "intent", "continuation", "violation"]
+
+/** The row types rendered by renderCompact (the remaining known types). */
+const COMPACT_TYPES = [
+  "permission",
+  "maintenance",
+  "task-complete",
+  "child-edge",
+  "plan-rekey",
+  "observe",
+  "would-block",
+  "ensemble",
+  "error",
+  "child-reset",
+]
+
+/**
+ * Renders one known entry type to its timeline text, or null when the type
+ * is unrecognized (the caller renders `(unrecognized)` so future journal
+ * types never break the surface).
+ * @param {Record<string, unknown>} e The parsed entry.
+ * @param {Map<string, number>} rounds The running per-agent dispatch ordinals.
+ * @returns {string | null} The rendered text, or null for an unknown type.
+ */
+function renderKnown(e, rounds) {
+  const type = typeof e.type === "string" ? e.type : "?"
+  if (type === "dispatch") {
+    const agent = typeof e.agent === "string" ? e.agent : "?"
+    const round = (rounds.get(agent) ?? 0) + 1
+    rounds.set(agent, round)
+    return renderDispatch(e, round)
+  }
+  if (type === "gate") return renderGate(e)
+  if (type === "blocked") return renderBlocked(e)
+  if (type === "plan") return renderPlan(e)
+  if (type === "verdict") return renderVerdict(e)
+  if (AUDIT_TYPES.includes(type)) return renderAudit(e)
+  if (COMPACT_TYPES.includes(type)) return renderCompact(e)
+  return null
+}
+
 /**
  * Builds the timeline rows: one rendered line per entry, with dispatch
- * rounds as running per-agent ordinals. Unknown types render as
- * `(unrecognized)` so future journal types never break the surface.
+ * rounds as running per-agent ordinals.
  * @param {Record<string, unknown>[]} entries Parsed journal entries, oldest-first.
  * @returns {{ ts: string, text: string }[]} The rendered rows.
  */
@@ -475,36 +522,7 @@ function buildTimeline(entries) {
   return entries.map((e) => {
     const ts = clockOf(e.ts)
     const type = typeof e.type === "string" ? e.type : "?"
-    if (type === "dispatch") {
-      const agent = typeof e.agent === "string" ? e.agent : "?"
-      const round = (rounds.get(agent) ?? 0) + 1
-      rounds.set(agent, round)
-      return { ts, text: renderDispatch(e, round) }
-    }
-    if (type === "gate") return { ts, text: renderGate(e) }
-    if (type === "blocked") return { ts, text: renderBlocked(e) }
-    if (type === "plan") return { ts, text: renderPlan(e) }
-    if (type === "verdict") return { ts, text: renderVerdict(e) }
-    if (["suppressed", "marker-retry", "intent", "continuation", "violation"].includes(type)) {
-      return { ts, text: renderAudit(e) }
-    }
-    if (
-      [
-        "permission",
-        "maintenance",
-        "task-complete",
-        "child-edge",
-        "plan-rekey",
-        "observe",
-        "would-block",
-        "ensemble",
-        "error",
-        "child-reset",
-      ].includes(type)
-    ) {
-      return { ts, text: renderCompact(e) }
-    }
-    return { ts, text: `${type}  (unrecognized)` }
+    return { ts, text: renderKnown(e, rounds) ?? `${type}  (unrecognized)` }
   })
 }
 
@@ -526,21 +544,29 @@ function finalGateOf(entries) {
 }
 
 /**
- * Folds the credited-approval status the way replay suppression does: the
- * last `verdict` APPROVE counts as credited unless a later `ensemble` row
- * carries `refusedApprove:true`.
+ * Folds the credited-approval status exactly the way the replay fold does
+ * (src/ledger.ts foldVerdict/foldEnsemble): only `verdict` rows with
+ * `source === "task-result"` count, last task-result verdict wins (APPROVE
+ * sets the flag, anything else clears it), and `ensemble` rows carry the
+ * last-wins refusal stamp (`refusedApprove:true` stamps a refusal,
+ * `refusedApprove:false` clears it, an absent field leaves it unchanged).
+ * Credited means the last task-result verdict is APPROVE and the refusal
+ * stamp is not true.
  * @param {Record<string, unknown>[]} entries Parsed journal entries, oldest-first.
  * @returns {"yes" | "no"} Whether the approval stands credited.
  */
 function creditedApprovalOf(entries) {
-  let credited = false
+  let approved = false
+  let refused = false
   for (const e of entries) {
-    if (e.type === "verdict" && typeof e.marker === "string" && e.marker.includes("APPROVE")) {
-      credited = true
+    if (e.type === "ensemble") {
+      if (e.refusedApprove === true) refused = true
+      else if (e.refusedApprove === false) refused = false
+    } else if (e.type === "verdict" && e.source === "task-result") {
+      approved = typeof e.marker === "string" && e.marker.includes("APPROVE")
     }
-    if (e.type === "ensemble" && e.refusedApprove === true) credited = false
   }
-  return credited ? "yes" : "no"
+  return approved && !refused ? "yes" : "no"
 }
 
 /**
@@ -561,7 +587,10 @@ function summarize(entries) {
     } else if (e.type === "dispatch") {
       if (e.blocked === true) dispatchesBlocked++
       else dispatches++
-    } else if (e.type === "gate" && (e.result === "WAIVED" || e.result === "waived")) {
+    } else if (
+      (e.type === "gate" || e.type === "plan") &&
+      (e.result === "WAIVED" || e.result === "waived")
+    ) {
       waivers++
     }
   }
@@ -618,6 +647,51 @@ function jsonDocument(sessionID, files, entries) {
 }
 
 /**
+ * Emits the rendered output: the machine-readable `--json` document or the
+ * human-readable timeline.
+ * @param {string} sessionID The rendered session ID.
+ * @param {string[]} files The journal files read (basenames).
+ * @param {Record<string, unknown>[]} entries The parsed entries, oldest-first.
+ * @param {boolean} json Whether `--json` was requested.
+ * @returns {void}
+ */
+function emit(sessionID, files, entries, json) {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(jsonDocument(sessionID, files, entries), null, 2)}\n`)
+  } else {
+    const rows = buildTimeline(entries)
+    process.stdout.write(`${renderTimeline(rows, summarize(entries), sessionID, files)}\n`)
+  }
+}
+
+/**
+ * Resolves the session and reads its journal lines (the resolve-and-read
+ * step of `main`). A malformed explicit session ID writes the error to
+ * stderr; an unresolvable session writes the no-journal note to stdout.
+ * @param {{ sessionID: string, tail: number | null }} args The parsed args.
+ * @returns {{ sessionID: string, files: string[], entries: Record<string, unknown>[] } | number}
+ *     The resolved session with its journal lines, or the exit code to
+ *     return when nothing can be reported (2 for a malformed session ID,
+ *     0 for the no-journal note).
+ */
+function resolveAndRead(args) {
+  const { metricsDir, tailLines } = resolveConfig(process.env, args.tail)
+  let sessionID
+  try {
+    sessionID = resolveSessionID(args.sessionID, metricsDir, tailLines)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    process.stderr.write(`${msg}\n`)
+    return 2
+  }
+  if (sessionID === "") {
+    process.stdout.write(`No turnstile journal yet at ${metricsDir} — nothing to report.\n`)
+    return 0
+  }
+  return { sessionID, ...readSessionLines(metricsDir, sessionID, tailLines) }
+}
+
+/**
  * Entry point. Parses args, resolves the session, reads the journal, and
  * prints. Missing journal exits 0 with a note (status parity); usage errors
  * exit 2.
@@ -638,28 +712,9 @@ function main(argv) {
     process.stdout.write(`${USAGE}\n`)
     return 0
   }
-
-  const { metricsDir, tailLines } = resolveConfig(process.env, args.tail)
-  let sessionID
-  try {
-    sessionID = resolveSessionID(args.sessionID, metricsDir, tailLines)
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    process.stderr.write(`${msg}\n`)
-    return 2
-  }
-  if (sessionID === "") {
-    process.stdout.write(`No turnstile journal yet at ${metricsDir} — nothing to report.\n`)
-    return 0
-  }
-
-  const { files, entries } = readSessionLines(metricsDir, sessionID, tailLines)
-  if (args.json) {
-    process.stdout.write(`${JSON.stringify(jsonDocument(sessionID, files, entries), null, 2)}\n`)
-  } else {
-    const rows = buildTimeline(entries)
-    process.stdout.write(`${renderTimeline(rows, summarize(entries), sessionID, files)}\n`)
-  }
+  const read = resolveAndRead(args)
+  if (typeof read === "number") return read
+  emit(read.sessionID, read.files, read.entries, args.json)
   return 0
 }
 

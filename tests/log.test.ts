@@ -5,9 +5,10 @@
  *  - the rendered timeline rows (dispatch with round ordinal and blocked
  *    outcome, gate PASS/FAIL/WAIVED with tests/verified/mode, blocks with
  *    tool/agent/plan subjects, plan, verdict, and the audit rows);
- *  - the summary line (blocks grouped by reason, dispatch/waiver counts,
- *    credited approval with the ensemble refusedApprove suppression, final
- *    gate state with the replay flip rule);
+ *  - the summary line (blocks grouped by reason, dispatch/waiver counts
+ *    including plan-gate waivers, credited approval folded the way replay
+ *    does — task-result verdicts only, last-wins ensemble refusal stamp —
+ *    and the final gate state with the replay flip rule);
  *  - session resolution (explicit positional, newest per-session sink,
  *    shared-file fallback, no journal anywhere);
  *  - the shared-file sessionID filter (pre-segmentation rows and
@@ -285,7 +286,7 @@ test("renders plan, verdict, and audit rows each on their own line", () => {
     assert.match(r.stdout, /plan {2}STALE {2}feat\.md reason=spec-edited/)
     assert.match(
       r.stdout,
-      /verdict {2}VERDICT: VERDICT: APPROVE crit=0 \(source plan-reviewer, agent plan-reviewer\)/,
+      /verdict {2}VERDICT: APPROVE crit=0 \(source plan-reviewer, agent plan-reviewer\)/,
     )
     assert.match(r.stdout, /suppressed {2}kind=echo {2}marker=GATE: PASS/)
     assert.match(r.stdout, /marker-retry\s+attempt=2\s+outcome=exhausted\s+agent=executor/)
@@ -381,6 +382,7 @@ test("summary reports credited approval yes unless a later ensemble refused it",
         type: "verdict",
         sessionID: "ses1",
         marker: "VERDICT: APPROVE crit=0",
+        source: "task-result",
       },
     ])
     const yes = runLog(dir, ["ses1"])
@@ -392,6 +394,7 @@ test("summary reports credited approval yes unless a later ensemble refused it",
         type: "verdict",
         sessionID: "ses1",
         marker: "VERDICT: APPROVE crit=0",
+        source: "task-result",
       },
       {
         ts: "2026-01-01T10:00:05Z",
@@ -403,6 +406,118 @@ test("summary reports credited approval yes unless a later ensemble refused it",
     ])
     const no = runLog(dir, ["ses1"])
     assert.match(no.stdout, /credited approval: no/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("summary credits only task-result verdicts and honors the refusal stamp fold", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    // A verdict not attributed to a task result is never credited.
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: "VERDICT: APPROVE crit=0",
+        source: "child-text",
+      },
+    ])
+    const nonTask = runLog(dir, ["ses1"])
+    assert.match(nonTask.stdout, /credited approval: no/)
+
+    // A refusal cleared by a later human-grant ensemble entry is credited.
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: "VERDICT: APPROVE crit=0",
+        source: "task-result",
+      },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "ensemble",
+        sessionID: "ses1",
+        count: 1,
+        refusedApprove: true,
+      },
+      {
+        ts: "2026-01-01T10:00:10Z",
+        type: "ensemble",
+        sessionID: "ses1",
+        count: 2,
+        refusedApprove: false,
+      },
+    ])
+    const cleared = runLog(dir, ["ses1"])
+    assert.match(cleared.stdout, /credited approval: yes/)
+
+    // A verdict arriving after a refusal does not re-credit itself.
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "ensemble",
+        sessionID: "ses1",
+        count: 1,
+        refusedApprove: true,
+      },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: "VERDICT: APPROVE crit=0",
+        source: "task-result",
+      },
+    ])
+    const afterRefusal = runLog(dir, ["ses1"])
+    assert.match(afterRefusal.stdout, /credited approval: no/)
+
+    // A trailing task-result BLOCK clears an earlier APPROVE.
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: "VERDICT: APPROVE crit=0",
+        source: "task-result",
+      },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: "VERDICT: BLOCK gate-not-green",
+        source: "task-result",
+      },
+    ])
+    const blocked = runLog(dir, ["ses1"])
+    assert.match(blocked.stdout, /credited approval: no/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("counts plan-gate waiver rows and renders their channel and waiver text", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "plan",
+        sessionID: "ses1",
+        result: "WAIVED",
+        channel: "prompt",
+        waiver: "user said so",
+      },
+    ])
+    const r = runLog(dir, ["ses1"])
+    assert.match(r.stdout, /plan {2}WAIVED {2}prompt \(user said so\)/)
+    assert.match(r.stdout, /1 waivers/)
+    const j = runLog(dir, ["ses1", "--json"])
+    assert.equal(JSON.parse(j.stdout).summary.waivers, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
