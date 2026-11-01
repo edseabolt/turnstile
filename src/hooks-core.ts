@@ -52,7 +52,8 @@ import * as path from "node:path"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
-import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
+import { intentNudge, orchestratorPolicyFor, planImpactAdvisory } from "./policy.ts"
+import type { PlanImpact } from "./plan-scope.ts"
 import {
   appendSystemText,
   describeRequestDraft,
@@ -172,6 +173,8 @@ export interface TurnstileContext {
   intentNudgePending: Map<string, IntentKind>
   /** `${sessionID}:${kind}` keys already nudged (one-shot per intent). */
   intentNudgedKinds: Set<string>
+  /** Parent → pending plan-impact advisory text awaiting the next delivery. */
+  planImpactAdvisories: Map<string, string>
   /** Last-known project directory per session. */
   sessionDirs: Map<string, string>
   /** Child session ID → marker-retry attempts already used. */
@@ -925,6 +928,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // A task-scope drop releases any undelivered nudge (task-scoped delivery
   // state); bounded by boundIntentNudges alongside the dedupe set.
   const intentNudgePending = new Map<string, IntentKind>()
+  // Pending plan-impact advisories, keyed by parent session ID: the text
+  // stashed by the plan-impact classifier (hooks-core) for one classified
+  // parent write/edit/write-shaped bash call, consumed one-shot by the next
+  // parent-facing delivery (same channel as the intent nudge). Latest-wins
+  // when a second classification lands before delivery; a task-scope reset
+  // drops the undelivered advisory with the intent-nudge state. Bounded by
+  // boundIntentNudges alongside the pending-nudge map.
+  const planImpactAdvisories = new Map<string, string>()
   // Intent-nudge one-shot latch: `${sessionID}:${kind}` keys already nudged.
   // One nudge per detected intent signal, deduped across the task scope (a
   // repeated intent prompt journals but does not re-nudge); the
@@ -940,6 +951,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   function boundIntentNudges(): void {
     evictTo(intentNudgedKinds, maxTrackedIntentNudges)
     evictTo(intentNudgePending, config.maxSessions)
+    evictTo(planImpactAdvisories, config.maxSessions)
   }
 
   /**
@@ -1793,6 +1805,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Advisory intent nudge: independent of the policy head, delivered on the
     // first classified parent-facing delivery after admission.
     prependIntentNudge(event, parent, delivery)
+    prependPlanImpactAdvisory(event, parent, delivery)
     applyPolicyResult(parent, event, delivery, agent)
   }
 
@@ -1943,6 +1956,33 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       prependDeliveryText(event, delivery, intentNudge(kind))
     } catch (e) {
       journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
+    }
+  }
+
+  /**
+   * Delivers a pending plan-impact advisory on a classified task/subagent
+   * delivery: consumes the parent's stashed advisory (one-shot) and prepends
+   * the text ahead of the delivery text — the same channel and one-shot
+   * semantics as the intent nudge. Deliveries that cannot carry text keep
+   * the advisory pending for a later delivery. Fail-open: a throwing
+   * mutation journals `type:"error"` and never blocks.
+   * @param event The execute.after payload whose result is mutated.
+   * @param parent The resolved parent session for the delivery.
+   * @param delivery The classified delivery (see `classifyDelivery`).
+   */
+  function prependPlanImpactAdvisory(
+    event: ToolHookEvent,
+    parent: string,
+    delivery: Delivery,
+  ): void {
+    if (delivery.kind !== "string" && delivery.kind !== "structured") return
+    const text = planImpactAdvisories.get(parent)
+    if (text === undefined) return
+    planImpactAdvisories.delete(parent)
+    try {
+      prependDeliveryText(event, delivery, text)
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: parent, error: `plan-impact advisory: ${e}` })
     }
   }
 
@@ -3032,7 +3072,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // grant can never release a bash write, and a hands-on block throws
     // before the landing grant is burned.
     if (!armed) return
-    toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
+    // Plan-impact advisory for gate-tier write shapes: with a plan bound, a
+    // write-shaped bash command naming a scope path skips ONLY the bash-write
+    // block (strict mode falls through to it for structural overlap) — the
+    // landing gate below still runs, so a compound write+push command cannot
+    // ride the advisory past it. Non-gate verdicts (`telemetry`/`none`) never
+    // classify — the ladder below is a no-op for them.
+    if (gw !== "gate" || classifyParentPlanImpact(tool, text, true, parent, st) !== "allow")
+      toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
     if (consumeLandingGrant(st, text)) return
     toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent, sid))
     return
@@ -3055,6 +3102,60 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     if (st.pendingOnceGrant.handsOn === "") return false
     st.pendingOnceGrant.handsOn = ""
     return true
+  }
+
+  /**
+   * Classifies a parent tool call's target against the bound active plan's
+   * scope (the plan-impact advisory, issue #247's replacement for the
+   * parent-hands-on block while a plan is active). Runs only while the
+   * pipeline is engaged and a plan is bound; with no plan the hands-on
+   * ladder runs unchanged. `"none"` allows silently (no journal row, no
+   * advisory); `"advisory"`/`"structural"` journal one
+   * `{type:"plan-impact"}` row and stash the advisory text for the next
+   * parent-facing delivery — except structural overlap under
+   * `planImpactStrict`, which returns `"proceed-hands-on"` so the existing
+   * hands-on ladder restores the block (the row is already journaled, so
+   * the strict block stays auditable). Fail-open: a classification error
+   * journals and proceeds to the hands-on ladder.
+   * @param tool The narrowed tool name (for the journal row).
+   * @param target The write/edit file path, or the bash command text.
+   * @param matchInText True for containment matching (bash command text).
+   * @param parent The parent session (the advisory stash's key).
+   * @param st The parent's gate-state bucket (carries `activePlan`).
+   * @returns `"allow"` to skip the hands-on ladder, or
+   *     `"proceed-hands-on"` to fall through to it.
+   */
+  function classifyParentPlanImpact(
+    tool: string,
+    target: string,
+    matchInText: boolean,
+    parent: string,
+    st: GateState,
+  ): "proceed-hands-on" | "allow" {
+    if (st.activePlan === "") return "proceed-hands-on"
+    let impact: PlanImpact
+    try {
+      impact = gates.planImpact(currentProjectDir(parent), st.activePlan, target, matchInText)
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: parent, error: `plan-impact: ${e}` })
+      return "proceed-hands-on"
+    }
+    if (impact === "none") return "allow"
+    journaler.journal({
+      type: "plan-impact",
+      sessionID: parent,
+      tool,
+      plan: st.activePlan,
+      impact,
+      path: target.slice(0, 200),
+    })
+    if (impact === "structural" && config.planImpactStrict) return "proceed-hands-on"
+    planImpactAdvisories.set(
+      parent,
+      planImpactAdvisory(st.activePlan, impact === "structural" ? "structural" : "advisory"),
+    )
+    boundIntentNudges()
+    return "allow"
   }
 
   /**
@@ -3146,6 +3247,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // are earned inside engaged scopes — so skipping the consume is safe).
     if (!enforcementArmed(parent)) return
     if (consumeHandsOnGrant(st)) return // once-grant: released for this one edit
+    // Plan-impact advisory: with a plan bound, an overlapping write/edit is
+    // allowed with a journaled classification instead of the hands-on block
+    // (strict mode falls through to the ladder for structural overlap). A
+    // released edit above never burns the advisory's one-shot stash. An
+    // empty/uninspectable target fails toward the ladder (strict).
+    const target = typeof filePath === "string" ? filePath : ""
+    if (target !== "" && classifyParentPlanImpact(tool, target, false, parent, st) === "allow")
+      return
     toolPolicy.guardHandsOn(tool, filePath, sid, handsOnGateHandles(st, parent))
   }
 
@@ -3667,6 +3776,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // detected intent within the task; a plan approval or a task retire
     // clears them, and the drop itself only runs on a scope change).
     intentNudgePending.delete(sessionID)
+    // An undelivered plan-impact advisory belongs to the dropped task scope
+    // the same way: it must not attach to a later task's deliveries.
+    planImpactAdvisories.delete(sessionID)
   }
 
   /**
@@ -4251,6 +4363,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     lastHandsOnEscalateAt,
     intentNudgePending,
     intentNudgedKinds,
+    planImpactAdvisories,
     landingGateAsks,
     handsOnGateAsks,
     sessionDirs,

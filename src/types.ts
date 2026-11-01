@@ -883,6 +883,15 @@ export interface TurnstileConfig {
    * (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
    */
   alwaysEnforce: boolean
+  /**
+   * Plan-impact advisory: parent edit/write/write-shaped bash calls that
+   * overlap the bound active plan's scope are allowed with a journaled
+   * plan-impact classification instead of the parent-hands-on block.
+   * `planImpactStrict: true` restores blocking for structural overlap
+   * (files or the ## Decomposition section named by the plan). Default
+   * false.
+   */
+  planImpactStrict: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */

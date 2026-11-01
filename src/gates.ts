@@ -15,6 +15,7 @@ import { createDispatchGates } from "./gates-dispatch.ts"
 import type { EvidenceSearch } from "./gates-dispatch.ts"
 import { createPlanGates } from "./gates-plan.ts"
 import type { PlanGateRed } from "./gates-plan.ts"
+import type { PlanImpact } from "./plan-scope.ts"
 
 export { BlockError } from "./gates-common.ts"
 export type { EvidenceSearch } from "./gates-dispatch.ts"
@@ -279,6 +280,22 @@ export interface Gates {
     projectDir: string,
     candidates: string[],
   ): { name: string; key: string } | undefined
+  /**
+   * Classifies a parent tool call's target path against the bound active
+   * plan's scope. Fail-open: any resolution error classifies "none".
+   * @param projectDir The current project directory.
+   * @param activePlan The bound active plan name ("" means none bound).
+   * @param targetPath The write/edit file path, or the bash command text.
+   * @param matchInText True for containment matching (bash command text),
+   *     false for equality matching (write/edit targets).
+   * @returns The impact classification (`none` / `advisory` / `structural`).
+   */
+  planImpact(
+    projectDir: string,
+    activePlan: string,
+    targetPath: string,
+    matchInText: boolean,
+  ): PlanImpact
 }
 
 /**
@@ -292,5 +309,5 @@ export function createGates(config: TurnstileConfig, journaler: Journaler): Gate
   const dispatch = createDispatchGates(config, journaler)
   const plan = createPlanGates(config, journaler)
 
-  return { ...dispatch, ...plan }
+  return { ...dispatch, ...plan, planImpact: plan.planImpactFor }
 }

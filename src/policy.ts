@@ -182,6 +182,32 @@ export function intentNudge(kind: IntentKind): string {
 }
 
 /**
+ * Builds the plan-impact advisory for one classified parent tool call,
+ * prepended to the next delivery after the classification journaled. The
+ * prose deliberately quotes no marker syntax (no waiver/gate/approval
+ * literals): it is advisory guidance, keeping the marker-drift validated
+ * source set unchanged.
+ * @param plan The path-free active plan name.
+ * @param impact The classification ("advisory" or "structural").
+ * @returns The advisory text prepended ahead of the delivery text.
+ */
+export function planImpactAdvisory(plan: string, impact: "advisory" | "structural"): string {
+  if (impact === "advisory") {
+    return (
+      `[turnstile] plan-impact: this edit overlaps plan "${plan}" outside its ` +
+      `## Decomposition block. Plan steps may go stale — the reviewer will flag the ` +
+      `drift, or take a waiver now if you want it recorded as accepted.`
+    )
+  }
+  return (
+    `[turnstile] plan-impact: this edit touches files or the decomposition of plan ` +
+    `"${plan}". A replan is required for the pipeline to stay authoritative — ` +
+    `re-dispatch the planner scoped to this delta, or take a waiver now to proceed ` +
+    `without one.`
+  )
+}
+
+/**
  * Builds the orchestrator policy injected into the parent session per task.
  *
  * One line per concern: the injected block is prepended to the model-facing
