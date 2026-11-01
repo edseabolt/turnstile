@@ -612,6 +612,19 @@ export interface GateState {
    * fingerprint mismatch signals a reset.
    */
   taskFingerprint: string
+  /**
+   * Dormant-until-engaged pipeline switch: `false` (default) means the
+   * reactive gates (hands-on, bash-write, landing, commit lint, dispatch
+   * guards, read limit) sleep — only the user-configured denylists and the
+   * telemetry run. Set true by engagement capture (a `PLAN APPROVED:`
+   * prompt, a plan-ref/dispatch classified prompt, or an actual planner
+   * dispatch); cleared by task retire, the `TURNSTILE OFF:` abort, and a
+   * no-credit new prompt (the ordinary reset drops it — it is carried only
+   * through the restart-sticky carry in `mergeAfterReplay`, exactly like
+   * `hasPlanVerdict`). Every transition journals a `type:"engagement"` row
+   * that replay restores last-wins.
+   */
+  engaged: boolean
 }
 
 /** One first-sight marker observation returned by the marker parser. */
@@ -860,6 +873,16 @@ export interface TurnstileConfig {
    * no-op: nothing is journaled and nothing is injected.
    */
   intentNudge: boolean
+  /**
+   * `true` restores the legacy always-armed behavior (turnstile enforces
+   * from the first prompt). The default `false` is dormant-until-engaged:
+   * enforcement arms when the user provides a plan (a `PLAN APPROVED:`
+   * marker or a plan-file reference) or asks to run the planner/pipeline,
+   * and sleeps again on task completion, `TURNSTILE OFF:`, or a prompt with
+   * no continuation credit. The user-configured denylists
+   * (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
+   */
+  alwaysEnforce: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */

@@ -396,6 +396,7 @@ async function boot(
     // back in explicitly per call.
     config: {
       metricsDir,
+      alwaysEnforce: true,
       // Ask mode: these suites exercise the interactive ask ladder (see
       // permission-approval bootWithPlan); the block-mode default has
       // dedicated guard-level tests.
@@ -654,6 +655,7 @@ async function bootInGitProject(
     // assertions deterministic; the empty-diff tests opt in per call.
     config: {
       metricsDir,
+      alwaysEnforce: true,
       // Ask mode: these suites exercise the interactive ask ladder (see
       // permission-approval bootWithPlan); the block-mode default has
       // dedicated guard-level tests.

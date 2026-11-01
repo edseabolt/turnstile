@@ -26,6 +26,7 @@
   "taskDoneMarker": "TASK DONE:",
   "allowSuspend": true,
   "intentNudge": true,
+  "alwaysEnforce": false,
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",

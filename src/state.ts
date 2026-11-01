@@ -94,6 +94,10 @@ export function newState(): GateState {
     // No task stamped yet on a fresh bucket; prompt admission stamps the
     // worktree/branch identity this carry predicate keys off.
     taskFingerprint: "",
+    // Dormant-until-engaged: a fresh bucket never enforces until engagement
+    // capture (or a planner dispatch) arms it. Restart-sticky through
+    // mergeAfterReplay; every transition journals an `engagement` row.
+    engaged: false,
   }
 }
 
@@ -168,6 +172,7 @@ export function formatGateSnapshot(s: GateState): string {
   return [
     "turnstile gate snapshot (live ledger; authoritative; do not re-derive):",
     `- gate: ${s.hasGatePass ? "GREEN" : "RED"} last=${s.lastGateMarker || "none"}${gateUnverified}`,
+    `- engaged: ${s.engaged ? "yes" : "no"}`,
     `- plan: ${s.hasPlanVerdict ? "APPROVED" : "PENDING"}${s.approvedPlan !== "" ? ` plan=${s.approvedPlan}` : ""} stamp=${s.plansSignature ? "known" : "unknown"}`,
     `- reviewer: ${s.hasReviewApprove ? "APPROVED" : "PENDING"} dispatches=${s.reviewerDispatches} last=${s.lastVerdictMarker || "none"}`,
     `- waiver: ${waiverStatus} human: ${s.humanApproval ? "APPROVED" : "none"}`,
@@ -318,6 +323,11 @@ export function mergeAfterReplay(prior: GateState): GateState {
   // so the earned context rides the grace window for re-dispatch.
   if (prior.taskComplete && !isInterruptedReview(prior)) return s
   s.hasGatePass = prior.hasGatePass
+  // Engagement is restart-sticky like the gate flags: a restart mid-task
+  // keeps enforcement armed; the no-carry reset (a fresh bucket from the
+  // early return or a non-carried reset) drops it — the "no continuation
+  // credit" disengagement case.
+  s.engaged = prior.engaged
   s.hasPlanVerdict = prior.hasPlanVerdict
   // Restart-sticky like hasPlanVerdict: a restored human approval survives the
   // first post-restart prompt (restart-sticky provenance, never task-scoped).

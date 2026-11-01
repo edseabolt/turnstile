@@ -14,6 +14,11 @@ implement that plan in the existing codebase. Do not redesign the system
 unless the plan is demonstrably incompatible with the existing
 implementation.
 
+Note: turnstile's gates enforce once the pipeline is engaged (a plan
+approval, a plan/dispatch prompt, or a planner dispatch); a parent that
+started dormant may carry no prior gate state at your dispatch — the gates
+fire normally from then on.
+
 ## Execution sequence
 
 Work the plan chunk in this order, without deliberating about process:

@@ -227,7 +227,7 @@ async function bootWithPlan(config: Record<string, any> = {}): Promise<{
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
