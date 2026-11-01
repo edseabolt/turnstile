@@ -288,7 +288,7 @@ export interface Gates {
    * @param targetPath The write/edit file path, or the bash command text.
    * @param matchInText True for containment matching (bash command text),
    *     false for equality matching (write/edit targets).
-   * @returns The impact classification (`none` / `advisory` / `structural`).
+   * @returns The impact classification, per `PlanImpact`.
    */
   planImpact(
     projectDir: string,

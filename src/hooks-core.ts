@@ -3110,7 +3110,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * parent-hands-on block while a plan is active). Runs only while the
    * pipeline is engaged and a plan is bound; with no plan the hands-on
    * ladder runs unchanged. `"none"` allows silently (no journal row, no
-   * advisory); `"advisory"`/`"structural"` journal one
+   * advisory); `"uninspectable"` — a target the classifier cannot place
+   * inside the project dir — falls through to the hands-on ladder without a
+   * journal row; `"advisory"`/`"structural"` journal one
    * `{type:"plan-impact"}` row and stash the advisory text for the next
    * parent-facing delivery — except structural overlap under
    * `planImpactStrict`, which returns `"proceed-hands-on"` so the existing
@@ -3141,6 +3143,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       return "proceed-hands-on"
     }
     if (impact === "none") return "allow"
+    if (impact === "uninspectable") return "proceed-hands-on"
     journaler.journal({
       type: "plan-impact",
       sessionID: parent,
@@ -3251,7 +3254,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // allowed with a journaled classification instead of the hands-on block
     // (strict mode falls through to the ladder for structural overlap). A
     // released edit above never burns the advisory's one-shot stash. An
-    // empty/uninspectable target fails toward the ladder (strict).
+    // empty raw target or an `uninspectable` classification falls through
+    // to the ladder.
     const target = typeof filePath === "string" ? filePath : ""
     if (target !== "" && classifyParentPlanImpact(tool, target, false, parent, st) === "allow")
       return

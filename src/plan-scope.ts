@@ -16,11 +16,15 @@
 /**
  * The impact classification of one parent tool call against the active
  * plan's scope: `none` (no overlap — proceed silently), `advisory` (the
- * target is named in the plan's steps — the steps may go stale), or
+ * target is named in the plan's steps — the steps may go stale),
  * `structural` (the target is named in the plan's `## Decomposition` block,
- * or the target is the plan file itself — a replan is required).
+ * or the target is the plan file itself — a replan is required), or
+ * `uninspectable` (an equality-mode target the classifier cannot place
+ * inside the project dir — produced only by the plan-gate boundary's
+ * `planImpactFor`, never by `classifyPlanImpact`; the hook layer hands the
+ * decision to the hands-on ladder).
  */
-export type PlanImpact = "none" | "advisory" | "structural"
+export type PlanImpact = "none" | "advisory" | "structural" | "uninspectable"
 
 /** The two scope sets extracted from one plan's spec region. */
 export interface PlanScope {
