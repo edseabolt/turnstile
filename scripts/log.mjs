@@ -100,6 +100,23 @@ function resolveReplayTailLines(value) {
 }
 
 /**
+ * Reads the file-configured reviewer agent name (the `agents.reviewer` key),
+ * tolerating a missing or malformed `agents` block (fail-open).
+ * @param {Record<string, unknown> | null} config The parsed config file, or null.
+ * @returns {string} The configured reviewer name, or "" when unset.
+ */
+function fileReviewerOf(config) {
+  const agents =
+    config &&
+    typeof config.agents === "object" &&
+    config.agents !== null &&
+    !Array.isArray(config.agents)
+      ? config.agents
+      : {}
+  return typeof agents.reviewer === "string" && agents.reviewer ? agents.reviewer : ""
+}
+
+/**
  * Resolves the metrics directory, tail bound, and reviewer agent name
  * (precedence env → file → default, mirroring config.ts). Standalone copy of
  * status.mjs's resolver, extended with the `agents.reviewer` key the credited
@@ -117,19 +134,10 @@ function resolveConfig(env, tailFlag) {
       : ""
   const fileDir =
     config && typeof config.metricsDir === "string" && config.metricsDir ? config.metricsDir : ""
-  const fileReviewer =
-    config &&
-    typeof config.agents === "object" &&
-    config.agents !== null &&
-    !Array.isArray(config.agents) &&
-    typeof config.agents.reviewer === "string" &&
-    config.agents.reviewer
-      ? config.agents.reviewer
-      : ""
   return {
     metricsDir: envDir || fileDir || defaultMetricsDir(env),
     tailLines: tailFlag ?? resolveReplayTailLines(config?.replayTailLines),
-    reviewerAgent: fileReviewer || DEFAULT_REVIEWER_AGENT,
+    reviewerAgent: fileReviewerOf(config) || DEFAULT_REVIEWER_AGENT,
   }
 }
 
