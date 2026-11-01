@@ -300,6 +300,143 @@ test("renders plan, verdict, and audit rows each on their own line", () => {
   }
 })
 
+test("renders policy, tool, permission, and evidence rows with their real fields", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "policy",
+        sessionID: "ses1",
+        injected: true,
+        surface: "context",
+      },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "policy",
+        sessionID: "ses1",
+        injected: false,
+        skipped: true,
+        reason: "context-agent",
+      },
+      {
+        ts: "2026-01-01T10:00:10Z",
+        type: "tool",
+        sessionID: "ses1",
+        tool: "bash",
+        command: "npm run ci 2>&1 | tail -40",
+        exit: 0,
+      },
+      {
+        ts: "2026-01-01T10:00:15Z",
+        type: "tool",
+        sessionID: "ses1",
+        tool: "write",
+        scratch: true,
+        path: "/tmp/opencode/pr-body.md",
+      },
+      {
+        ts: "2026-01-01T10:00:20Z",
+        type: "tool",
+        sessionID: "ses1",
+        tool: "read",
+        reads: 0,
+      },
+      {
+        ts: "2026-01-01T10:00:25Z",
+        type: "permission",
+        sessionID: "ses1",
+        decision: "waiver",
+        scope: "task",
+        kind: "waiver",
+        stages: [],
+      },
+      {
+        ts: "2026-01-01T10:00:30Z",
+        type: "permission",
+        sessionID: "ses1",
+        event: "unrecorded-reply",
+        requestID: "per_18e9ae6bb001AZ4gImXZnTv8tL",
+      },
+      {
+        ts: "2026-01-01T10:00:35Z",
+        type: "permission",
+        sessionID: "ses1",
+        tool: "edit",
+        action: "ask",
+        reason: "hands-on",
+      },
+      {
+        ts: "2026-01-01T10:00:40Z",
+        type: "evidence",
+        sessionID: "ses1",
+        event: "observed",
+        exit: 0,
+      },
+    ])
+    const r = runLog(dir, ["ses1"])
+    assert.match(r.stdout, /policy {2}injected=true {2}surface=context/)
+    assert.match(r.stdout, /policy {2}injected=false {2}skipped=true {2}reason=context-agent/)
+    assert.match(r.stdout, /tool {2}bash {2}command=npm run ci 2>&1 \| tail -40 {2}exit=0/)
+    assert.match(r.stdout, /tool {2}write {2}path=\/tmp\/opencode\/pr-body\.md {2}scratch=true/)
+    assert.match(r.stdout, /tool {2}read {2}reads=0/)
+    assert.match(r.stdout, /permission {2}decision=waiver {2}kind=waiver {2}scope=task/)
+    assert.match(r.stdout, /permission {2}event=unrecorded-reply {2}requestID=per_/)
+    assert.match(r.stdout, /permission {2}action=ask {2}tool=edit {2}reason=hands-on/)
+    assert.match(r.stdout, /evidence {2}event=observed {2}exit=0/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("truncates an over-long tool command in the rendered row", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "tool",
+        sessionID: "ses1",
+        tool: "bash",
+        command: "y".repeat(200),
+      },
+    ])
+    const r = runLog(dir, ["ses1"])
+    assert.match(r.stdout, /tool {2}bash {2}command=y{80}…/)
+    assert.doesNotMatch(r.stdout, /y{100}/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("renders a verdict marker with leading newlines on one line", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: "\nVERDICT: APPROVE crit=0 high=0 med=0 low=2",
+        source: "task-result",
+        agent: "reviewer",
+      },
+    ])
+    const r = runLog(dir, ["ses1"])
+    assert.equal(code(r), 0)
+    assert.match(
+      r.stdout,
+      /10:00:00 {2}verdict {2}VERDICT: APPROVE crit=0 high=0 med=0 low=2 \(source task-result, agent reviewer\)/,
+    )
+    assert.doesNotMatch(r.stdout, /10:00:00 {2}verdict {2}\n/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("renders an unknown entry type as unrecognized without crashing", () => {
   const dir = metricsDir()
   try {

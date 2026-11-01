@@ -459,7 +459,10 @@ function renderPlan(e) {
  * @returns {string} The timeline line.
  */
 function renderVerdict(e) {
-  const marker = typeof e.marker === "string" ? e.marker : "?"
+  const raw = typeof e.marker === "string" ? e.marker : "?"
+  // Stored markers can carry leading newlines from multi-line child text;
+  // strip them so the row stays on one line.
+  const marker = raw.replace(/^\s+/, "")
   const source = typeof e.source === "string" ? ` (source ${e.source}` : " (source ?"
   const agent = typeof e.agent === "string" ? `, agent ${e.agent})` : ")"
   return `verdict  ${marker}${source}${agent}`
@@ -484,6 +487,52 @@ function renderAudit(e) {
 }
 
 /**
+ * Truncates one rendered field value to a bounded length so a long command
+ * or path cannot blow out the timeline row.
+ * @param {string} value The raw field value.
+ * @param {number} max The maximum rendered length.
+ * @returns {string} The value, ellipsized when over the bound.
+ */
+function truncateField(value, max) {
+  return value.length <= max ? value : `${value.slice(0, max)}…`
+}
+
+/**
+ * Renders one `policy` row: whether the orchestrator policy was injected, the
+ * surface it went out on, and the skip reason when it was not.
+ * @param {Record<string, unknown>} e The parsed entry.
+ * @returns {string} The timeline line.
+ */
+function renderPolicy(e) {
+  const parts = []
+  if (typeof e.injected === "boolean") parts.push(`injected=${e.injected}`)
+  if (typeof e.surface === "string" && e.surface) parts.push(`surface=${e.surface}`)
+  if (e.skipped === true) parts.push("skipped=true")
+  if (typeof e.reason === "string" && e.reason) parts.push(`reason=${e.reason}`)
+  return `policy  ${parts.join("  ")}`.trimEnd()
+}
+
+/**
+ * Renders one `tool` row: the tool name plus its target (command or path),
+ * read counter, exit code, and boolean bookkeeping flags.
+ * @param {Record<string, unknown>} e The parsed entry.
+ * @returns {string} The timeline line.
+ */
+function renderTool(e) {
+  const name = typeof e.tool === "string" ? e.tool : "?"
+  const parts = []
+  if (typeof e.command === "string" && e.command)
+    parts.push(`command=${truncateField(e.command, 80)}`)
+  if (typeof e.path === "string" && e.path) parts.push(`path=${e.path}`)
+  if (Number.isInteger(e.reads)) parts.push(`reads=${e.reads}`)
+  if (Number.isInteger(e.exit)) parts.push(`exit=${e.exit}`)
+  for (const flag of ["scratch", "handsOn", "landing"]) {
+    if (e[flag] === true) parts.push(`${flag}=true`)
+  }
+  return `tool  ${name}${parts.length > 0 ? `  ${parts.join("  ")}` : ""}`
+}
+
+/**
  * Renders one compact row for the remaining known types (permission,
  * maintenance, task-complete, child-edge, plan-rekey, observe, would-block,
  * ensemble, error, child-reset): the type plus its first distinguishing
@@ -493,10 +542,28 @@ function renderAudit(e) {
  */
 function renderCompact(e) {
   const parts = []
-  for (const key of ["action", "decision", "kind", "plan", "parent", "agent", "error", "result"]) {
+  const strings = [
+    "action",
+    "decision",
+    "kind",
+    "plan",
+    "parent",
+    "agent",
+    "error",
+    "result",
+    "event",
+    "tool",
+    "scope",
+    "requestID",
+    "reply",
+    "reason",
+  ]
+  for (const key of strings) {
     if (typeof e[key] === "string" && e[key]) parts.push(`${key}=${e[key]}`)
   }
-  if (Number.isInteger(e.count)) parts.push(`count=${e.count}`)
+  for (const key of ["count", "exit", "reads"]) {
+    if (Number.isInteger(e[key])) parts.push(`${key}=${e[key]}`)
+  }
   if (e.refusedApprove === true) parts.push("refusedApprove=true")
   if (e.capped === true) parts.push("capped=true")
   return `${e.type}  ${parts.join("  ")}`.trimEnd()
@@ -508,6 +575,7 @@ const AUDIT_TYPES = ["suppressed", "marker-retry", "intent", "continuation", "vi
 /** The row types rendered by renderCompact (the remaining known types). */
 const COMPACT_TYPES = [
   "permission",
+  "evidence",
   "maintenance",
   "task-complete",
   "child-edge",
@@ -539,6 +607,8 @@ function renderKnown(e, rounds) {
   if (type === "blocked") return renderBlocked(e)
   if (type === "plan") return renderPlan(e)
   if (type === "verdict") return renderVerdict(e)
+  if (type === "policy") return renderPolicy(e)
+  if (type === "tool") return renderTool(e)
   if (AUDIT_TYPES.includes(type)) return renderAudit(e)
   if (COMPACT_TYPES.includes(type)) return renderCompact(e)
   return null
