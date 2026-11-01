@@ -13,7 +13,8 @@ import * as path from "node:path"
 
 import { createJournaler, sessionJournalPath } from "../src/journal.ts"
 import { createLedger } from "../src/ledger.ts"
-import { tmpDir } from "./helpers.ts"
+import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
+import { turnstile } from "../turnstile.ts"
 
 /**
  * Builds a journaler bound to a temp metrics dir with per-session routing.
@@ -41,6 +42,46 @@ function segmentedJournaler(opts?: {
   return { j, metricsDir }
 }
 
+test("plugin boot routes session entries to the session sink", async () => {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, journalPerSession: true },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  try {
+    h.pushEvent({
+      type: "session.inbox.enqueued",
+      data: { sessionID: "p1", inboxID: "msg_1", item: { type: "user", payload: { text: "hi" } } },
+    })
+    const sessionFile = sessionJournalPath(metricsDir, "p1")
+    await waitUntil(() => fs.existsSync(sessionFile))
+    const entries = fs
+      .readFileSync(sessionFile, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    assert.equal(
+      entries.some((e) => e.sessionID === "p1"),
+      true,
+      "the admission entry landed in the session sink",
+    )
+  } finally {
+    dispose()
+  }
+})
+
+test("journalPathFor resolves the session sink path", () => {
+  const { j, metricsDir } = segmentedJournaler()
+  assert.equal(
+    j.journalPathFor("p1"),
+    sessionJournalPath(metricsDir, "p1"),
+    "the accessor derives the per-session file from sessionsDir",
+  )
+  assert.equal(j.sessionsDir, path.join(metricsDir, "sessions"), "sessionsDir is exposed")
+})
+
 test("journal lands in sessions/<parent>.jsonl for a known parent", () => {
   const { j, metricsDir } = segmentedJournaler()
   j.journal({ type: "gate", sessionID: "p1", result: "PASS" })
@@ -53,6 +94,21 @@ test("journal lands in sessions/<parent>.jsonl for a known parent", () => {
     false,
     "the shared file stays untouched",
   )
+})
+
+test("perSession on without a resolver falls back to shared sink", () => {
+  const metricsDir = tmpDir()
+  const j = createJournaler({
+    metricsDir,
+    trace: false,
+    maxBytes: 5 * 1024 * 1024,
+    maxGenerations: 5,
+    rotateEveryEntries: 512,
+    perSession: true,
+  })
+  j.journal({ type: "gate", sessionID: "p1", result: "PASS" })
+  const shared = JSON.parse(fs.readFileSync(path.join(metricsDir, "turnstile.jsonl"), "utf8").trim())
+  assert.equal(shared.sessionID, "p1", "a missing resolver routes to the shared sink")
 })
 
 test("entries without sessionID stay in turnstile.jsonl", () => {

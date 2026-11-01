@@ -320,7 +320,10 @@ export function tmpDir(prefix = "turnstile-test-"): string {
  */
 export function isolatedEnv(dir: string): Record<string, string> {
   const configPath = path.join(dir, "empty-config.json")
-  fs.writeFileSync(configPath, "{}")
+  // journalPerSession:false keeps the legacy single-file layout for the
+  // shared fixtures; the segmented layout is covered by
+  // tests/journal-segmentation.test.ts.
+  fs.writeFileSync(configPath, JSON.stringify({ journalPerSession: false }))
   return { TURNSTILE_CONFIG: configPath }
 }
 

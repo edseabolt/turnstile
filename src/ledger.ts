@@ -553,13 +553,12 @@ function newReplayMaps(): ReplayMaps {
  * the generation count, so the entries are bounded too) and the walk
  * continues with the next-older generation.
  * @param file Absolute path of the current journal file.
- * @param remaining The per-file tail bound in lines (non-positive reads
- *     nothing).
+ * @param remaining The per-file tail bound in lines (the caller guarantees a
+ *     positive bound).
  * @returns The file's tail-window lines, oldest-first (empty when nothing is
  *     read).
  */
 function readReplayFileLines(file: string, remaining: number): string[] {
-  if (remaining <= 0) return []
   const blocks: string[][] = []
   let generation = fs.existsSync(file) ? 0 : 1
   for (;;) {

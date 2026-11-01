@@ -29,6 +29,11 @@
       "minimum": 1,
       "description": "Size-check/rotation cadence in appends (default 512)."
     },
+    "journalPerSession": {
+      "type": "boolean",
+      "default": true,
+      "description": "Segment the journal per parent session under sessions/<parentID>.jsonl (default true)."
+    },
     "replayTailLines": {
       "type": "integer",
       "minimum": 1,
