@@ -159,6 +159,7 @@ async function bootMaint(opts: {
     // both modes, so the dispatch-flow assertions are mode-independent.
     config: {
       metricsDir,
+      alwaysEnforce: true,
       escalation: "ask",
       ...(opts.plansDir ? { plansDir: opts.plansDir } : {}),
     },
@@ -475,7 +476,10 @@ test("maintenance flow: a classification failure fails open to the ordinary path
   const h = makeFakeHost({ sessionRecords })
   const prev = process.cwd()
   process.chdir(project)
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   try {
     await approvePlan(h, "plan.md")

@@ -421,6 +421,8 @@ interface ReplayMaps {
   lastVerdictAgent: Map<string, string>
   lastEnsemble: Map<string, number>
   lastRefusedApprove: Map<string, boolean>
+  /** Last-wins engagement value per session (the `engagement` entry kind). */
+  lastEngagement: Map<string, boolean>
   /** Restored child→parent edges (last-wins per child), for the setup re-seed. */
   childEdges: Map<string, { parent: string; agent: string }>
   /** Ordered per-session task-scope fold (see {@link ScopeFold}). */
@@ -536,6 +538,7 @@ function newReplayMaps(): ReplayMaps {
     lastVerdictAgent: new Map(),
     lastEnsemble: new Map(),
     lastRefusedApprove: new Map(),
+    lastEngagement: new Map(),
     childEdges: new Map(),
     scopeFolds: new Map(),
   }
@@ -675,7 +678,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "suspended" &&
     entry.type !== "child-edge" &&
     entry.type !== "permission" &&
-    entry.type !== "task-complete"
+    entry.type !== "task-complete" &&
+    entry.type !== "engagement"
   ) {
     return null
   }
@@ -1138,6 +1142,11 @@ function foldReplayLine(
     foldTaskComplete(maps, sessionID)
     return null
   }
+  if (type === "engagement") {
+    const engaged = entry.engaged
+    if (typeof engaged === "boolean") maps.lastEngagement.set(sessionID, engaged)
+    return null
+  }
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
 
@@ -1372,8 +1381,26 @@ function restoreEnsembleCounts(
 }
 
 /**
+ * Restores the last-wins engagement value per session (the dormant-until-
+ * engaged pipeline switch). A hostile non-boolean field was already dropped
+ * at fold time, so the map holds booleans only; a session with no engagement
+ * row keeps its fresh dormant bucket.
+ * @param states The session→state map to populate.
+ * @param lastEngagement The replayed last-wins engagement values.
+ */
+function restoreEngagement(
+  states: Map<string, GateState>,
+  lastEngagement: Map<string, boolean>,
+): void {
+  for (const [sessionID, engaged] of lastEngagement) {
+    const s = graceBucket(states, sessionID)
+    s.engaged = engaged
+  }
+}
+
+/**
  * Runs the restore loops in order (gate, plan, verdict, human-grant,
- * scope fold, ensemble) over the replayed maps.
+ * scope fold, ensemble, engagement) over the replayed maps.
  * @param states The session→state map to populate.
  * @param maps The filled replay maps.
  * @param reviewerAgent The configured reviewer agent name a credited verdict
@@ -1400,6 +1427,7 @@ function restoreBuckets(
   restoreHumanGrants(states, maps.lastRefusedApprove, creditedApprovals)
   restoreScopeFolds(states, maps, creditedApprovals)
   restoreEnsembleCounts(states, maps.lastEnsemble)
+  restoreEngagement(states, maps.lastEngagement)
 }
 
 /**

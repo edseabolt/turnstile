@@ -57,7 +57,7 @@ async function bootWithPlans(
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -414,7 +414,7 @@ test("a restart-replayed interrupted review recovers through a real prompt", asy
     const h2 = makeFakeHost()
     const setup2 = turnstile(h2.host, {
       env: isolatedEnv(metricsDir),
-      config: { metricsDir, gateEvidence: "flag" },
+      config: { metricsDir, alwaysEnforce: true, gateEvidence: "flag" },
     })
     const dispose2 = (await setup2(h2.host)) as () => void
     await callSession(h2, "prompt", { sessionID: "p1", text: "re-dispatch the reviewer" })
@@ -449,7 +449,7 @@ test("a fully-live interrupted review recovers across a restart", async () => {
     const h1 = makeFakeHost()
     const setup1 = turnstile(h1.host, {
       env: isolatedEnv(metricsDir),
-      config: { metricsDir, gateEvidence: "flag" },
+      config: { metricsDir, alwaysEnforce: true, gateEvidence: "flag" },
     })
     const dispose1 = (await setup1(h1.host)) as () => void
     await callSession(h1, "prompt", { sessionID: "p1", text: "start the task" })

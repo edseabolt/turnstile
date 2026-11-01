@@ -373,6 +373,38 @@ recover identically, and the journaled `continuation` row carries
 plan-bound scope, which then persists like any live plan-bound green task
 (bounded by the ensemble cap and the landing gate, not by prompt count).
 
+### Dormant-until-engaged
+
+Enforcement is dormant by default (`alwaysEnforce: false`): a fresh session's
+reactive gates — the dispatch guards (plan, decomposition, budget, reviewer
+ensemble), the hands-on and bash-write ladders, the landing gate, the commit
+lint, and the read horizon — sleep until the pipeline engages. The
+user-configured denylists (`toolPolicy.bashDeny` / `toolPolicy.pathDeny`) and
+all telemetry (dispatch, landing, hands-on, scratch rows) keep running while
+dormant, so the audit trail stays complete. The `engaged` flag on the parent
+bucket arms enforcement:
+
+- **Arm** — a prompt carrying the `PLAN APPROVED:` marker (reason
+  `plan-approved`), a prompt classified `plan-ref` or `dispatch` by the
+  intent classifier (reasons `plan-reference` / `dispatch-request`), or an
+  actual planner dispatch (reason `dispatch-request`). Every transition
+  journals a `type:"engagement"` row.
+- **Sleep** — task retire (`markTaskComplete`, reason `task-complete`), the
+  `TURNSTILE OFF:` suspend clear (reason `abort`), and a scope-changing new
+  prompt with no continuation credit (reason `continuation-drop`; on a
+  carry, `mergeAfterReplay` preserves `engaged` like the other
+  restart-sticky flags, and replay restores it last-wins from the journal).
+- **Hint** — while dormant, a `work`/`issue`-intent prompt produces exactly
+  the existing one-time advisory nudge; a dispatch/plan-ref prompt journals
+  its `intent` row but never nudges (engagement replaced the reminder).
+  The orchestrator policy head is also gated: a dormant session's context
+  and deliveries stay clean of pipeline governance prose.
+
+`alwaysEnforce: true` restores the legacy always-armed behavior in one
+branch of the `enforcementArmed` predicate consulted at the four choke
+points (`guardedTaskDispatch`, `handleBashDispatch`, `handleWriteEditDispatch`,
+`handleReadBudget`); the guards themselves are unchanged.
+
 ![Gate state machine](images/d04-gate-state.svg)
 
 ### What each gate blocks
@@ -462,6 +494,7 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 | `replayGrace`                                                                                | journal replay; continuation-carry re-arm                                                                                                                                                                                          | consumed by first `resetState`                                                                                                                                                                              | one-prompt survival of restored flags                                                                                                           |
 | `taskFingerprint`                                                                            | stamped when continuation carry is enabled (default on)                                                                                                                                                                            | new stamp                                                                                                                                                                                                   | identity signal for carry                                                                                                                       |
 | `lastGateMarker`, `lastVerdictMarker`                                                        | stamped at first-sight `GATE:`/`VERDICT:` (de-tokenized, so they cannot re-parse)                                                                                                                                                  | prompt reset                                                                                                                                                                                                | rendered into the compaction snapshot; display only, never enforces                                                                             |
+| `engaged`                                                                                    | engagement capture (`PLAN APPROVED:` prompt, `plan-ref`/`dispatch` classified prompt); an actual planner dispatch; replay (last-wins `engagement` row)                                                                             | task retire (`markTaskComplete`); `TURNSTILE OFF:` clear; a no-credit scope-changing prompt reset (journaled `continuation-drop`); restart-sticky otherwise — carried through `mergeAfterReplay`            | arms the reactive gates (dormant-until-engaged, §5); display in the compaction snapshot (`- engaged: yes/no`)                                   |
 
 ---
 
@@ -471,7 +504,7 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (34 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (35 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
@@ -479,7 +512,8 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   `error`,
   `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
   `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
-  `task-complete`, `plan-rekey`, `marker-retry`). A `marker-retry` entry
+  `task-complete`, `engagement`, `plan-rekey`, `marker-retry`). A
+  `marker-retry` entry
   records a compliance re-prompt for a bare-output delivery (a marker-less
   delivery from an `agents.bareOutput` agent): `attempt` is the prior retry
   count for that child and `outcome` is `prompted` (the reminder was sent via
@@ -496,6 +530,15 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   a cap-exceeded attempt journals `capped:true` before its blocked dispatch
   entry, and `scripts/status.mjs` counts only the admitted rows (MNT column +
   JSON `maintenance`).
+  A `task-complete` entry records the task retire (§5); the `engagement`
+  entry is its dormant-until-engaged counterpart:
+  `{type:"engagement", sessionID, engaged, reason}` with `reason` one of
+  `plan-approved` / `dispatch-request` / `plan-reference` (arm) or
+  `task-complete` / `abort` / `continuation-drop` (sleep). Replay folds it
+  last-wins per session (a non-boolean `engaged` field is an
+  `entry-shape`-style drop — the value is sanitized and a hostile row
+  restores dormancy), so a restart mid-task keeps enforcement armed and a
+  journaled sleep restores it.
   A `suppressed` entry is the audit trail for a marker the pipeline
   deliberately did not honor, in two flavors discriminated by `kind`.
   `kind:"gate"` / `kind:"verdict"` is the first-observed-from-an-unauthoritative-emitter
@@ -791,17 +834,17 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                                                                                  | Defaults worth knowing                                                                                                                                                                                                                                                                                                                                         |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `journalPerSession`, `replayTailLines`                                                                                       | 5 MB / 5 / 512 / true / 2000                                                                                                                                                                                                                                                                                                                                   |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                                                          | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                                                                                                                                                                                                        |
-| Reads       | `readWarn`, `readBlock`                                                                                                                                                                               | 8 / 15 (clamped)                                                                                                                                                                                                                                                                                                                                               |
-| Observe     | `observeSessions`                                                                                                                                                                                     | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                                                                                                                                                                                                        |
-| Compliance  | `agentMarkerRetry`                                                                                                                                                                                    | `1` compliance re-prompt per bare-output child delivery before it counts a violation; `0` disables the retry (first marker-less delivery violates immediately)                                                                                                                                                                                                 |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `evidencePattern`                                                                                   | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`                                                                                                                                                                                                                 |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `escalation`, `plansDir`, `allowSuspend`, `intentNudge`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `block`, `.opencode/plans`, `true`, `true`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers; `intentNudge:false` disables the advisory intent nudge entirely)                                                                                                   |
-| Tool policy | `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`, `toolPolicy.bashWriteGate`                                                                                             | both denylists default empty — the empty lists are the off switch; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking; `bashWriteGate` (default `true`) gates confident file-writing bash commands through the hands-on ladder (`false` opts out; write-shaped commands always journal `handsOn` telemetry) |
-| Git gates   | `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                                                                                                | `commitMessages` and `landingGate` default `true` (enforced); `false` is the per-feature opt-out                                                                                                                                                                                                                                                               |
+| Group       | Keys                                                                                                                                                                                                                   | Defaults worth knowing                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `journalPerSession`, `replayTailLines`                                                                                                        | 5 MB / 5 / 512 / true / 2000                                                                                                                                                                                                                                                                                                                                                             |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                                                                           | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                                                                                                                                                                                                                                  |
+| Reads       | `readWarn`, `readBlock`                                                                                                                                                                                                | 8 / 15 (clamped)                                                                                                                                                                                                                                                                                                                                                                         |
+| Observe     | `observeSessions`                                                                                                                                                                                                      | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                                                                                                                                                                                                                                  |
+| Compliance  | `agentMarkerRetry`                                                                                                                                                                                                     | `1` compliance re-prompt per bare-output child delivery before it counts a violation; `0` disables the retry (first marker-less delivery violates immediately)                                                                                                                                                                                                                           |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `evidencePattern`                                                                                                    | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`                                                                                                                                                                                                                                           |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `escalation`, `plansDir`, `allowSuspend`, `intentNudge`, `alwaysEnforce`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `block`, `.opencode/plans`, `true`, `true`, `false`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers; `intentNudge:false` disables the advisory intent nudge entirely; `alwaysEnforce:true` restores the legacy always-armed behavior — the default `false` is dormant-until-engaged, §5) |
+| Tool policy | `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`, `toolPolicy.bashWriteGate`                                                                                                              | both denylists default empty — the empty lists are the off switch; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking; `bashWriteGate` (default `true`) gates confident file-writing bash commands through the hands-on ladder (`false` opts out; write-shaped commands always journal `handsOn` telemetry)                           |
+| Git gates   | `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`                                                                                                                 | `commitMessages` and `landingGate` default `true` (enforced); `false` is the per-feature opt-out                                                                                                                                                                                                                                                                                         |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically

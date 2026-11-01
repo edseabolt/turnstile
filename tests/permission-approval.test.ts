@@ -86,6 +86,7 @@ async function bootWithPlan(
       // (repeat attempts journal the permission ask and arm the latch);
       // the block-mode default has dedicated guard-level tests.
       escalation: "ask" as const,
+      alwaysEnforce: true,
       ...config,
       metricsDir,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
@@ -125,6 +126,7 @@ async function bootLanding(
       // (see bootWithPlan); the block-mode default has dedicated
       // guard-level tests.
       escalation: "ask" as const,
+      alwaysEnforce: true,
       ...config,
       metricsDir,
       gitGates: { emptyDiffExempt: false, ...config.gitGates },
@@ -188,7 +190,10 @@ test("evaluate: a nullish event payload escalates nothing and never throws", asy
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# Plan\n\nbody\n")
   const metricsDir = tmpDir()
   const h = makeFakeHost()
-  await turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })(h.host)
+  await turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })(h.host)
   for (const bad of [null, undefined] as const) {
     await callPermission(h, "evaluate", bad)
   }
@@ -395,7 +400,10 @@ test("setup: a throwing permission.hook journals the failure (fail-open)", async
   }
   let threw = false
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     await setup(h.host)
   } catch {
     threw = true
@@ -412,7 +420,10 @@ test("setup: a throwing permission.hook journals the failure (fail-open)", async
 test("setup: a host without the permission surface degrades without registering", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost({ permission: false })
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   await setup(h.host)
   assert.equal(h.permissionHooks.evaluate, undefined)
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
@@ -1057,7 +1068,10 @@ test("replay: a session-prompt PLAN APPROVE restores across restart with grace",
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     // The first post-restart prompt is the grace prompt: the restored approval
     // survives it (mergeAfterReplay), exactly like a VERDICT: APPROVE verdict.

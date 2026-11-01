@@ -48,7 +48,7 @@ async function boot(config: Record<string, any> = {}): Promise<{
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -106,12 +106,13 @@ function snapshotOf(system: Array<{ type: string; text?: string }>): string {
 test("formatGateSnapshot renders a fresh bucket", () => {
   const lines = formatGateSnapshot(newState()).split("\n")
   assert.match(lines[1]!, /^- gate: RED last=none$/)
-  assert.match(lines[2]!, /^- plan: PENDING stamp=unknown$/)
-  assert.match(lines[3]!, /^- reviewer: PENDING dispatches=0 last=none$/)
-  assert.match(lines[4]!, /^- waiver: none human: none$/)
-  assert.match(lines[5]!, /^- rounds: planner=0 plan-reviewer=0 test-runner=0 reviewer=0 total=0$/)
-  assert.match(lines[6]!, /^- landing: blocks=0 reads=0 hands-on blocks=0$/)
-  assert.match(lines[7]!, /^- task: unstamped$/)
+  assert.match(lines[2]!, /^- engaged: no$/)
+  assert.match(lines[3]!, /^- plan: PENDING stamp=unknown$/)
+  assert.match(lines[4]!, /^- reviewer: PENDING dispatches=0 last=none$/)
+  assert.match(lines[5]!, /^- waiver: none human: none$/)
+  assert.match(lines[6]!, /^- rounds: planner=0 plan-reviewer=0 test-runner=0 reviewer=0 total=0$/)
+  assert.match(lines[7]!, /^- landing: blocks=0 reads=0 hands-on blocks=0$/)
+  assert.match(lines[8]!, /^- task: unstamped$/)
 })
 
 /** `formatGateSnapshot` on a populated bucket renders every value (true side). */
@@ -145,15 +146,15 @@ test("formatGateSnapshot renders a populated bucket", () => {
     /^- gate: GREEN last=gate: PASS tests=2 passed=2 failed=0 unverified=GATE: PASS tests=1 passed=1 failed=0$/,
   )
   // The bound plan identity renders a plan=<name> suffix on the plan line.
-  assert.match(lines[2]!, /^- plan: APPROVED plan=z-work\.md stamp=known$/)
+  assert.match(lines[3]!, /^- plan: APPROVED plan=z-work\.md stamp=known$/)
   assert.match(
-    lines[3]!,
+    lines[4]!,
     /^- reviewer: APPROVED dispatches=3 last=verdict: APPROVE crit=0 high=0 med=1 low=0$/,
   )
-  assert.match(lines[4]!, /^- waiver: ACTIVE human: APPROVED$/)
-  assert.match(lines[5]!, /^- rounds: planner=1 plan-reviewer=2 test-runner=4 reviewer=5 total=12$/)
-  assert.match(lines[6]!, /^- landing: blocks=2 reads=7 hands-on blocks=3$/)
-  assert.match(lines[7]!, /^- task: wt:main$/)
+  assert.match(lines[5]!, /^- waiver: ACTIVE human: APPROVED$/)
+  assert.match(lines[6]!, /^- rounds: planner=1 plan-reviewer=2 test-runner=4 reviewer=5 total=12$/)
+  assert.match(lines[7]!, /^- landing: blocks=2 reads=7 hands-on blocks=3$/)
+  assert.match(lines[8]!, /^- task: wt:main$/)
 })
 
 /** A live scoped waiver renders ACTIVE with its parsed scope, comma-joined. */
@@ -163,7 +164,7 @@ test("formatGateSnapshot renders a live scoped waiver as ACTIVE(scope)", () => {
     userWaiver: "USER WAIVER: I approve the reviewer",
     userWaiverScope: ["reviewer"],
   }).split("\n")
-  assert.match(lines[4]!, /^- waiver: ACTIVE\(reviewer\) human: none$/)
+  assert.match(lines[5]!, /^- waiver: ACTIVE\(reviewer\) human: none$/)
 })
 
 /** A consumed unscoped waiver renders none(consumed), not a bare none. */
@@ -172,7 +173,7 @@ test("formatGateSnapshot renders a consumed waiver as none(consumed)", () => {
     ...newState(),
     userWaiverConsumed: true,
   }).split("\n")
-  assert.match(lines[4]!, /^- waiver: none\(consumed\) human: none$/)
+  assert.match(lines[5]!, /^- waiver: none\(consumed\) human: none$/)
 })
 
 /**
@@ -192,8 +193,8 @@ test("formatGateSnapshot renders a restart-restored bucket with last=none", () =
     taskFingerprint: "wt:main",
   }).split("\n")
   assert.match(lines[1]!, /^- gate: GREEN last=none$/)
-  assert.match(lines[2]!, /^- plan: APPROVED stamp=known$/)
-  assert.match(lines[3]!, /^- reviewer: APPROVED dispatches=2 last=none$/)
+  assert.match(lines[3]!, /^- plan: APPROVED stamp=known$/)
+  assert.match(lines[4]!, /^- reviewer: APPROVED dispatches=2 last=none$/)
 })
 
 /** `deTokenizeMarker` lowercases only the leading `GATE:`/`VERDICT:` token. */

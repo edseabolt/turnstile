@@ -71,7 +71,7 @@ async function bootWithPlan(
   const { approvalLedgerPath, ...configExtra } = extra
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...configExtra },
+    config: { metricsDir, alwaysEnforce: true, ...configExtra },
     approvalLedgerPath,
   })
   const dispose = (await setup(h.host)) as () => void
@@ -117,7 +117,7 @@ async function bootWithMove(
   process.chdir(projectA)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -302,7 +302,10 @@ test("plan gate: no plans dir or empty dir leaves executor free", async () => {
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await callTool(h, "execute.before", {
       tool: "task",
@@ -357,7 +360,10 @@ test("plan gate: journal replay restores plan approval", async () => {
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await callTool(h, "execute.before", {
       tool: "task",
@@ -903,7 +909,10 @@ test("plan gate: replayed approval stamps then invalidates on edit", async () =>
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     // Replay-restored approval survives the first dispatch (stamps the key).
     await callTool(h, "execute.before", {
@@ -960,7 +969,10 @@ test("plan gate: absent plans dir at APPROVE stamps empty; accept-once then stam
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     // Approve while the plans dir is absent → stamp "" (unknown, fail-open).
     // Delivered on the child so the plan entry is keyed raw=c1.
@@ -1080,7 +1092,10 @@ test("plan gate: an offline plan edit invalidates the replayed approval", async 
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await assert.rejects(
       () => execDispatch(h, "p1", "do the work"),
@@ -1124,7 +1139,10 @@ test("plan gate: a matching replayed signature passes and re-stamps idempotently
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await execDispatch(h, "p1", "do the work")
     await execDispatch(h, "p1", "do the work")
@@ -1171,7 +1189,10 @@ test("plan gate: a replayed stamp mismatches when the dir changes shape", async 
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await assert.rejects(
       () => execDispatch(h, "p1", "do the work"),
@@ -1205,7 +1226,7 @@ test("plan gate: a replayed stamp mismatches when the dir changes shape", async 
   try {
     const setup2 = turnstile(h2.host, {
       env: isolatedEnv(metricsDir2),
-      config: { metricsDir: metricsDir2 },
+      config: { metricsDir: metricsDir2, alwaysEnforce: true },
     })
     const dispose2 = (await setup2(h2.host)) as () => void
     await assert.rejects(() => execDispatch(h2, "p1", "do the work"), /no plan approval for/)
@@ -1268,7 +1289,10 @@ test("plan gate: an offline plan edit invalidates the replayed prompt approval",
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h2.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h2.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h2.host)) as () => void
     await assert.rejects(
       () => execDispatch(h2, "p1", "do the work"),
@@ -1313,7 +1337,10 @@ test("plan gate: a field-less replayed prompt approval stays accept-once after a
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await execDispatch(h, "p1", "do the work")
     await execDispatch(h, "p1", "do the work")
@@ -1340,7 +1367,10 @@ test("plan gate: a prompt approval with no plans dir journals the field-less sha
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await callSession(h, "prompt", { sessionID: "p1", text: "PLAN APPROVED: looks good" })
     const entry = journalEntries(metricsDir).find(
@@ -2269,7 +2299,7 @@ async function bootWithPlans(
   const { approvalLedgerPath, ...configOverrides } = config
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...configOverrides },
+    config: { metricsDir, alwaysEnforce: true, ...configOverrides },
     approvalLedgerPath,
   })
   const dispose = (await setup(h.host)) as () => void
@@ -2518,7 +2548,10 @@ test("multi-plan: journal replay restores the bound identity; a legacy line rest
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await assert.rejects(
       () => execDispatch(h, "p1", `implement ${workPath}`),
@@ -2543,7 +2576,7 @@ test("multi-plan: journal replay restores the bound identity; a legacy line rest
   try {
     const setup2 = turnstile(h2.host, {
       env: isolatedEnv(metricsDir2),
-      config: { metricsDir: metricsDir2 },
+      config: { metricsDir: metricsDir2, alwaysEnforce: true },
     })
     const dispose2 = (await setup2(h2.host)) as () => void
     // The replayed unbound approval is accepted once and stamped…
@@ -2690,7 +2723,7 @@ async function restartOver(
   try {
     const setup = turnstile(h.host, {
       env: isolatedEnv(metricsDir),
-      config: { metricsDir },
+      config: { metricsDir, alwaysEnforce: true },
       approvalLedgerPath: sidecar,
     })
     const dispose = (await setup(h.host)) as () => void

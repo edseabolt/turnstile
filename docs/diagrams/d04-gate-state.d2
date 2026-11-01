@@ -26,6 +26,21 @@ start: "user prompt admitted\n(resetState + carry)" {
   shape: circle
 }
 
+dormant: "Dormant (engaged: no)\nreactive gates sleep;\ndenylists + telemetry run" {
+  shape: oval
+  style.stroke: "#c33"
+}
+engaged: "Engaged (engaged: yes)\nfull gate chain armed" {
+  shape: oval
+}
+
+start -> dormant: "fresh bucket (default)"
+dormant -> engaged: "PLAN APPROVED: | plan-ref /\ndispatch prompt | planner dispatch\n(journaled engagement row)"
+engaged -> dormant: "task retire | TURNSTILE OFF: |\nno-credit new prompt\n(journaled engagement row)"
+engaged -> engaged: "continuation carry keeps it\n(replay restores last-wins)" {
+  style.stroke-dash: 4
+}
+
 start -> fresh
 fresh -> planning: "planner dispatch\ncap 3, budget 16 total"
 planning -> planok: "plan-reviewer APPROVE | PLAN APPROVED: | permission 'always'"

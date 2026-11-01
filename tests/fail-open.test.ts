@@ -54,7 +54,10 @@ async function boot(
   host: Host = makeFakeHost().host,
 ): Promise<{ dispose: () => void; metricsDir: string }> {
   const metricsDir = tmpDir()
-  const setup = turnstile(host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(host)) as () => void
   return { dispose, metricsDir }
 }
@@ -95,7 +98,7 @@ test("module shim: id, server(), and setup() all work", async () => {
   const metricsDir = tmpDir()
   const dispose = (await turnstileModule.setup(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })) as () => void
   assert.ok(typeof dispose === "function")
   dispose()

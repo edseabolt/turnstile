@@ -158,6 +158,14 @@ export function defaultConfig(
     // delivery. `intentNudge: false` disables detection entirely (no journal
     // row, no nudge).
     intentNudge: true,
+    // Dormant-until-engaged: `true` restores the legacy always-armed
+    // behavior (enforcement from the first prompt). The default `false`
+    // arms enforcement when the user provides a plan (a `PLAN APPROVED:`
+    // marker or a plan-file reference) or asks to run the planner/pipeline,
+    // and sleeps again on task completion, `TURNSTILE OFF:`, or a prompt
+    // with no continuation credit. The user-configured denylists
+    // (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
+    alwaysEnforce: false,
     agents: {
       planner: "planner",
       reviewer: CANONICAL_REVIEWER_AGENT,
@@ -228,7 +236,8 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
     key === "journalPerSession" ||
     key === "continuationCarry" ||
     key === "allowSuspend" ||
-    key === "intentNudge"
+    key === "intentNudge" ||
+    key === "alwaysEnforce"
   )
     return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
@@ -314,6 +323,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "taskDoneMarker") config.taskDoneMarker = value as string
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "intentNudge") config.intentNudge = value as boolean
+  else if (key === "alwaysEnforce") config.alwaysEnforce = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
   else if (key === "agentMarkerRetry") config.agentMarkerRetry = value as number
   else config[key as NumericConfigKey] = value as number
