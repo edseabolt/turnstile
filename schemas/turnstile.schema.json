@@ -133,6 +133,10 @@
       "type": "boolean",
       "description": "true restores the legacy always-armed behavior (enforcement from the first prompt). The default false is dormant-until-engaged: enforcement arms when the user provides a plan (a PLAN APPROVED: marker or a plan-file reference) or asks to run the planner/pipeline, and sleeps again on task completion, TURNSTILE OFF:, or a prompt with no continuation credit (default false)."
     },
+    "planImpactStrict": {
+      "type": "boolean",
+      "description": "Plan-impact advisory: parent edit/write/write-shaped bash calls that overlap the bound active plan's scope are allowed with a journaled plan-impact classification instead of the parent-hands-on block. true restores blocking for structural overlap (files or the ## Decomposition section named by the plan) (default false)."
+    },
     "escalation": {
       "type": "string",
       "enum": ["block", "ask"],

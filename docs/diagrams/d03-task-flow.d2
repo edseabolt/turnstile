@@ -47,6 +47,13 @@ flow: {
   agents -> hooks: "VERDICT: APPROVE crit=…"
   hooks -> journal: "reviewEnsemble=enforce: approve credits only at ≥2 reviewer dispatches"
 
+  orch -> hooks: "parent write/edit or write-shaped bash\n(while a plan is bound)"
+  hooks -> hooks: "plan-impact advisory: classify the target\nagainst the plan's scope (plan-scope.ts)\nnone → allow silently; advisory/structural →\njournal {type:plan-impact} + one-shot advisory\non the next delivery; structural + planImpactStrict\n→ falls through to the hands-on ladder"
+  hooks -> journal: "plan-impact row (replay-inert)"
+  hooks -> orch: "allowed (advisory replaces the block)" {
+    style.stroke-dash: 4
+  }
+
   orch -> hooks: "git push (non-empty, no credited APPROVE)"
   hooks -> orch: "BLOCKED: no-landing-approval" {
     style.stroke: "#c0392b"

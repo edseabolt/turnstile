@@ -17,6 +17,8 @@ import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
 import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
 import { planSpecRegion } from "./plan-region.ts"
+import { classifyPlanImpact, planScopeFiles } from "./plan-scope.ts"
+import type { PlanImpact } from "./plan-scope.ts"
 
 /**
  * The red plan-gate status: the first blocker's preview, the blocker list,
@@ -62,6 +64,12 @@ interface PlanGates {
     projectDir: string,
     candidates: string[],
   ): { name: string; key: string } | undefined
+  planImpactFor(
+    projectDir: string,
+    activePlan: string,
+    targetPath: string,
+    matchInText: boolean,
+  ): PlanImpact
 }
 
 /**
@@ -890,6 +898,44 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     if (status.red) blockPlanGate(sessionID, s, status)
   }
 
+  /**
+   * Classifies a parent tool call's target against the bound active plan's
+   * scope. Returns `"none"` when no plan is bound, the plan is absent from
+   * the dir, or the plans dir is unreadable (fail-open, journaling the fs
+   * error like the other plan-gate consumers). Reads only the bound plan
+   * file, builds its scope from the spec region (`planSpecRegion` +
+   * `planScopeFiles`), and classifies with `classifyPlanImpact` — the
+   * plan-file-self rule names the bound plan, so an edit to the plan file
+   * itself classifies `structural`.
+   * @param projectDir The current project directory.
+   * @param activePlan The bound active plan name ("" means none bound).
+   * @param targetPath The write/edit file path, or the bash command text.
+   * @param matchInText True for containment matching (bash command text),
+   *     false for equality matching (write/edit targets).
+   * @returns The impact classification (fail-open `"none"`).
+   */
+  function planImpactFor(
+    projectDir: string,
+    activePlan: string,
+    targetPath: string,
+    matchInText: boolean,
+  ): PlanImpact {
+    if (activePlan === "") return "none"
+    const plansDir = resolvePlansDir(projectDir)
+    try {
+      if (!fs.existsSync(plansDir)) return "none"
+      const scan = scanPlans(plansDir)
+      if (!scan.names.includes(activePlan)) return "none"
+      const bytes = fs.readFileSync(path.join(plansDir, activePlan))
+      const scope = planScopeFiles(planSpecRegion(bytes))
+      return classifyPlanImpact(targetPath, scope, activePlan, matchInText)
+    } catch (e) {
+      // Journal the fail-open so an unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
+      return "none"
+    }
+  }
+
   return {
     enforceDecomposition,
     enforcePlanApproval,
@@ -898,5 +944,6 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     planGateStatus,
     promptPlanNames,
     planApprovalBinding,
+    planImpactFor,
   }
 }

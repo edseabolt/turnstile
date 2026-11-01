@@ -679,7 +679,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "child-edge" &&
     entry.type !== "permission" &&
     entry.type !== "task-complete" &&
-    entry.type !== "engagement"
+    entry.type !== "engagement" &&
+    entry.type !== "plan-impact"
   ) {
     return null
   }
@@ -1147,6 +1148,7 @@ function foldReplayLine(
     if (typeof engaged === "boolean") maps.lastEngagement.set(sessionID, engaged)
     return null
   }
+  if (type === "plan-impact") return null
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
 

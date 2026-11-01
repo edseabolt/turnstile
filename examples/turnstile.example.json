@@ -27,6 +27,7 @@
   "allowSuspend": true,
   "intentNudge": true,
   "alwaysEnforce": false,
+  "planImpactStrict": false,
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",

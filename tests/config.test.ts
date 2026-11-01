@@ -1116,6 +1116,25 @@ test("loadConfig journals config errors at an absolute metrics dir env", () => {
   )
 })
 
+/** planImpactStrict runs the shared boolean scalar path: a boolean merges,
+ *  a non-boolean is rejected with one generic keeping-default warning. */
+test("mergeConfig validates planImpactStrict like trace", () => {
+  const base = defaultConfig({})
+  assert.equal(base.planImpactStrict, false)
+  const ok = mergeConfig(base, { planImpactStrict: true })
+  assert.equal(ok.config.planImpactStrict, true)
+  assert.equal(ok.warnings.length, 0)
+  const bad = mergeConfig(base, { planImpactStrict: "yes" as unknown })
+  assert.equal(bad.config.planImpactStrict, false)
+  assert.deepEqual(bad.warnings, ['config: invalid value for "planImpactStrict"; keeping default'])
+})
+
+/** A boolean planImpactStrict override flips the config digest. */
+test("configDigest flips on a planImpactStrict override", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, planImpactStrict: true }))
+})
+
 /** (1) A string $schema is accepted silently and never lands in the resolved
  *  config; a non-string $schema warns once naming the key. */
 test("mergeConfig accepts a string $schema silently and warns on a non-string one", () => {

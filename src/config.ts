@@ -166,6 +166,12 @@ export function defaultConfig(
     // with no continuation credit. The user-configured denylists
     // (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
     alwaysEnforce: false,
+    // Plan-impact advisory: parent edit/write/write-shaped bash calls that
+    // overlap the bound active plan's scope are allowed with a journaled
+    // plan-impact classification instead of the parent-hands-on block.
+    // `planImpactStrict: true` restores blocking for structural overlap
+    // (files or the ## Decomposition section named by the plan).
+    planImpactStrict: false,
     agents: {
       planner: "planner",
       reviewer: CANONICAL_REVIEWER_AGENT,
@@ -237,7 +243,8 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
     key === "continuationCarry" ||
     key === "allowSuspend" ||
     key === "intentNudge" ||
-    key === "alwaysEnforce"
+    key === "alwaysEnforce" ||
+    key === "planImpactStrict"
   )
     return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
@@ -324,6 +331,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "intentNudge") config.intentNudge = value as boolean
   else if (key === "alwaysEnforce") config.alwaysEnforce = value as boolean
+  else if (key === "planImpactStrict") config.planImpactStrict = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
   else if (key === "agentMarkerRetry") config.agentMarkerRetry = value as number
   else config[key as NumericConfigKey] = value as number
