@@ -7,8 +7,10 @@
  *    tool/agent/plan subjects, plan, verdict, and the audit rows);
  *  - the summary line (blocks grouped by reason, dispatch/waiver counts
  *    including plan-gate waivers, credited approval folded the way replay
- *    does — task-result verdicts only, last-wins ensemble refusal stamp —
- *    and the final gate state with the replay flip rule);
+ *    does — task-result verdicts only (reviewer-agent attributed, shape-valid
+ *    markers), last-wins ensemble refusal stamp with absent-field un-stamp
+ *    and human-grant credit — and the final gate state with the replay flip
+ *    rule);
  *  - session resolution (explicit positional, newest per-session sink,
  *    shared-file fallback, no journal anywhere);
  *  - the shared-file sessionID filter (pre-segmentation rows and
@@ -494,6 +496,77 @@ test("summary credits only task-result verdicts and honors the refusal stamp fol
     ])
     const blocked = runLog(dir, ["ses1"])
     assert.match(blocked.stdout, /credited approval: no/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("summary credit matches the replay refusal, grant, agent, and marker-shape fold", () => {
+  const dir = metricsDir()
+  const approve = {
+    ts: "2026-01-01T10:00:00Z",
+    type: "verdict",
+    sessionID: "ses1",
+    marker: "VERDICT: APPROVE crit=0",
+    source: "task-result",
+  }
+  try {
+    mkdirSync(join(dir, "sessions"))
+
+    // A refusal followed by an ordinary ensemble row (no refusedApprove
+    // field) un-stamps the refusal, so the earlier approval is credited.
+    writeSessionJournal(dir, "ses1", [
+      { ...approve },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "ensemble",
+        sessionID: "ses1",
+        count: 1,
+        refusedApprove: true,
+      },
+      { ts: "2026-01-01T10:00:10Z", type: "ensemble", sessionID: "ses1", count: 2 },
+    ])
+    const unstamped = runLog(dir, ["ses1"])
+    assert.match(unstamped.stdout, /credited approval: yes/)
+
+    // A task-result APPROVE from an agent other than the configured reviewer
+    // never credits; the same verdict from the reviewer does.
+    writeSessionJournal(dir, "ses1", [{ ...approve, agent: "plan-reviewer" }])
+    const otherAgent = runLog(dir, ["ses1"])
+    assert.match(otherAgent.stdout, /credited approval: no/)
+
+    writeSessionJournal(dir, "ses1", [{ ...approve, agent: "reviewer" }])
+    const reviewerAgent = runLog(dir, ["ses1"])
+    assert.match(reviewerAgent.stdout, /credited approval: yes/)
+
+    // A human-grant clear (refusedApprove:false) credits on its own, with no
+    // verdict at all.
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "ensemble",
+        sessionID: "ses1",
+        count: 1,
+        refusedApprove: false,
+      },
+    ])
+    const humanGrant = runLog(dir, ["ses1"])
+    assert.match(humanGrant.stdout, /credited approval: yes/)
+
+    // A shape-invalid marker (non-string) is dropped, not folded: the earlier
+    // APPROVE stays credited.
+    writeSessionJournal(dir, "ses1", [
+      { ...approve },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "verdict",
+        sessionID: "ses1",
+        marker: 42,
+        source: "task-result",
+      },
+    ])
+    const shapeDrop = runLog(dir, ["ses1"])
+    assert.match(shapeDrop.stdout, /credited approval: yes/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -47,6 +47,18 @@ const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
 const DEFAULT_REPLAY_TAIL_LINES = 2000
 
 /**
+ * Marker length bound for credited verdicts; mirrors the replay fold's
+ * MAX_REPLAY_MARKER_LEN in src/ledger.ts (a longer marker is a shape drop).
+ */
+const MAX_REPLAY_MARKER_LEN = 512
+
+/**
+ * Canonical default reviewer agent name; mirrors CANONICAL_REVIEWER_AGENT in
+ * src/config.ts (the `agents.reviewer` default).
+ */
+const DEFAULT_REVIEWER_AGENT = "reviewer"
+
+/**
  * Resolves the default metrics directory (standalone copy of the journaler
  * default; honors an absolute XDG_DATA_HOME or HOME).
  * @param {Record<string, string | undefined>} env Environment to consult.
@@ -88,11 +100,14 @@ function resolveReplayTailLines(value) {
 }
 
 /**
- * Resolves the metrics directory and tail bound (precedence env → file →
- * default, mirroring config.ts). Standalone copy of status.mjs's resolver.
+ * Resolves the metrics directory, tail bound, and reviewer agent name
+ * (precedence env → file → default, mirroring config.ts). Standalone copy of
+ * status.mjs's resolver, extended with the `agents.reviewer` key the credited
+ * approval fold needs.
  * @param {NodeJS.ProcessEnv} env The process environment.
  * @param {number | null} tailFlag The `--tail` override, or null.
- * @returns {{ metricsDir: string, tailLines: number }} The resolved values.
+ * @returns {{ metricsDir: string, tailLines: number, reviewerAgent: string }}
+ *     The resolved values.
  */
 function resolveConfig(env, tailFlag) {
   const config = loadConfigFile(env)
@@ -102,9 +117,19 @@ function resolveConfig(env, tailFlag) {
       : ""
   const fileDir =
     config && typeof config.metricsDir === "string" && config.metricsDir ? config.metricsDir : ""
+  const fileReviewer =
+    config &&
+    typeof config.agents === "object" &&
+    config.agents !== null &&
+    !Array.isArray(config.agents) &&
+    typeof config.agents.reviewer === "string" &&
+    config.agents.reviewer
+      ? config.agents.reviewer
+      : ""
   return {
     metricsDir: envDir || fileDir || defaultMetricsDir(env),
     tailLines: tailFlag ?? resolveReplayTailLines(config?.replayTailLines),
+    reviewerAgent: fileReviewer || DEFAULT_REVIEWER_AGENT,
   }
 }
 
@@ -544,38 +569,51 @@ function finalGateOf(entries) {
 }
 
 /**
- * Folds the credited-approval status exactly the way the replay fold does
- * (src/ledger.ts foldVerdict/foldEnsemble): only `verdict` rows with
- * `source === "task-result"` count, last task-result verdict wins (APPROVE
- * sets the flag, anything else clears it), and `ensemble` rows carry the
- * last-wins refusal stamp (`refusedApprove:true` stamps a refusal,
- * `refusedApprove:false` clears it, an absent field leaves it unchanged).
- * Credited means the last task-result verdict is APPROVE and the refusal
- * stamp is not true.
+ * Folds the credited-approval status the way the replay fold does
+ * (src/ledger.ts foldVerdict/foldEnsemble/restoreReviewApprovals/
+ * restoreHumanGrants): only `verdict` rows with `source === "task-result"`
+ * count, last task-result verdict wins, and a shape-invalid marker (non-string
+ * or over the marker bound) is dropped — the previous verdict stays intact.
+ * `ensemble` rows carry the last-wins refusal stamp: `refusedApprove:true`
+ * stamps a refusal, `refusedApprove:false` is a human-grant clear, and an
+ * absent field un-stamps a prior refusal (foldEnsemble parity).
+ * Credited when either the final stamp is an explicit human-grant clear
+ * (independent of any verdict, like restoreHumanGrants) or the last
+ * task-result verdict is APPROVE, unrefused, and attributed to the configured
+ * reviewer agent. Deliberate simplification: a verdict row with an absent or
+ * non-string `agent` falls back to crediting, where the replay fold requires
+ * the exact reviewer name (legacy unattributed rows stay visible as credited
+ * in the log rather than silently "no").
  * @param {Record<string, unknown>[]} entries Parsed journal entries, oldest-first.
+ * @param {string} reviewerAgent The configured reviewer agent name.
  * @returns {"yes" | "no"} Whether the approval stands credited.
  */
-function creditedApprovalOf(entries) {
+function creditedApprovalOf(entries, reviewerAgent) {
   let approved = false
-  let refused = false
+  let lastAgent = null
+  let refused = null
   for (const e of entries) {
     if (e.type === "ensemble") {
-      if (e.refusedApprove === true) refused = true
-      else if (e.refusedApprove === false) refused = false
+      refused = e.refusedApprove === true ? true : e.refusedApprove === false ? false : null
     } else if (e.type === "verdict" && e.source === "task-result") {
-      approved = typeof e.marker === "string" && e.marker.includes("APPROVE")
+      if (typeof e.marker !== "string" || e.marker.length > MAX_REPLAY_MARKER_LEN) continue
+      approved = e.marker.includes("APPROVE")
+      lastAgent = typeof e.agent === "string" ? e.agent : null
     }
   }
-  return approved && !refused ? "yes" : "no"
+  if (refused === false) return "yes"
+  const agentOk = lastAgent === null || lastAgent === reviewerAgent
+  return approved && agentOk && refused !== true ? "yes" : "no"
 }
 
 /**
  * Builds the summary fields: blocks grouped by reason, dispatch and waiver
  * counts, credited approval, and the final gate state.
  * @param {Record<string, unknown>[]} entries Parsed journal entries, oldest-first.
+ * @param {string} reviewerAgent The configured reviewer agent name.
  * @returns {{ blocks: Record<string, number>, dispatches: number, dispatchesBlocked: number, waivers: number, finalGate: string, creditedApproval: string }} The summary.
  */
-function summarize(entries) {
+function summarize(entries, reviewerAgent) {
   const blocks = {}
   let dispatches = 0
   let dispatchesBlocked = 0
@@ -600,7 +638,7 @@ function summarize(entries) {
     dispatchesBlocked,
     waivers,
     finalGate: finalGateOf(entries),
-    creditedApproval: creditedApprovalOf(entries),
+    creditedApproval: creditedApprovalOf(entries, reviewerAgent),
   }
 }
 
@@ -640,10 +678,11 @@ function renderTimeline(rows, summary, sessionID, files) {
  * @param {string} sessionID The rendered session ID.
  * @param {string[]} files The journal files read (basenames).
  * @param {Record<string, unknown>[]} entries The parsed entries, oldest-first.
+ * @param {string} reviewerAgent The configured reviewer agent name.
  * @returns {Record<string, unknown>} The JSON document.
  */
-function jsonDocument(sessionID, files, entries) {
-  return { session: sessionID, files, entries, summary: summarize(entries) }
+function jsonDocument(sessionID, files, entries, reviewerAgent) {
+  return { session: sessionID, files, entries, summary: summarize(entries, reviewerAgent) }
 }
 
 /**
@@ -653,14 +692,19 @@ function jsonDocument(sessionID, files, entries) {
  * @param {string[]} files The journal files read (basenames).
  * @param {Record<string, unknown>[]} entries The parsed entries, oldest-first.
  * @param {boolean} json Whether `--json` was requested.
+ * @param {string} reviewerAgent The configured reviewer agent name.
  * @returns {void}
  */
-function emit(sessionID, files, entries, json) {
+function emit(sessionID, files, entries, json, reviewerAgent) {
   if (json) {
-    process.stdout.write(`${JSON.stringify(jsonDocument(sessionID, files, entries), null, 2)}\n`)
+    process.stdout.write(
+      `${JSON.stringify(jsonDocument(sessionID, files, entries, reviewerAgent), null, 2)}\n`,
+    )
   } else {
     const rows = buildTimeline(entries)
-    process.stdout.write(`${renderTimeline(rows, summarize(entries), sessionID, files)}\n`)
+    process.stdout.write(
+      `${renderTimeline(rows, summarize(entries, reviewerAgent), sessionID, files)}\n`,
+    )
   }
 }
 
@@ -669,13 +713,13 @@ function emit(sessionID, files, entries, json) {
  * step of `main`). A malformed explicit session ID writes the error to
  * stderr; an unresolvable session writes the no-journal note to stdout.
  * @param {{ sessionID: string, tail: number | null }} args The parsed args.
- * @returns {{ sessionID: string, files: string[], entries: Record<string, unknown>[] } | number}
+ * @returns {{ sessionID: string, files: string[], entries: Record<string, unknown>[], reviewerAgent: string } | number}
  *     The resolved session with its journal lines, or the exit code to
  *     return when nothing can be reported (2 for a malformed session ID,
  *     0 for the no-journal note).
  */
 function resolveAndRead(args) {
-  const { metricsDir, tailLines } = resolveConfig(process.env, args.tail)
+  const { metricsDir, tailLines, reviewerAgent } = resolveConfig(process.env, args.tail)
   let sessionID
   try {
     sessionID = resolveSessionID(args.sessionID, metricsDir, tailLines)
@@ -688,7 +732,7 @@ function resolveAndRead(args) {
     process.stdout.write(`No turnstile journal yet at ${metricsDir} — nothing to report.\n`)
     return 0
   }
-  return { sessionID, ...readSessionLines(metricsDir, sessionID, tailLines) }
+  return { sessionID, ...readSessionLines(metricsDir, sessionID, tailLines), reviewerAgent }
 }
 
 /**
@@ -714,7 +758,7 @@ function main(argv) {
   }
   const read = resolveAndRead(args)
   if (typeof read === "number") return read
-  emit(read.sessionID, read.files, read.entries, args.json)
+  emit(read.sessionID, read.files, read.entries, args.json, read.reviewerAgent)
   return 0
 }
 
