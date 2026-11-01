@@ -103,6 +103,7 @@ export function defaultConfig(
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
     journalRotateEveryEntries: 512,
+    journalPerSession: true,
     replayTailLines: 2000,
     maxReviewerRounds: 2,
     // Per-leg loop caps: a healthy task is ≤1 planner + ≤3
@@ -224,6 +225,7 @@ export function defaultConfig(
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (
     key === "trace" ||
+    key === "journalPerSession" ||
     key === "continuationCarry" ||
     key === "allowSuspend" ||
     key === "intentNudge"
@@ -295,6 +297,7 @@ type NumericConfigKey = Extract<
  */
 function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value: unknown): void {
   if (key === "trace") config.trace = value as boolean
+  else if (key === "journalPerSession") config.journalPerSession = value as boolean
   else if (key === "sessionSummary") config.sessionSummary = value as "on" | "quiet" | "off"
   else if (key === "metricsDir") config.metricsDir = value as string
   else if (key === "waiverMarker") config.waiverMarker = value as string

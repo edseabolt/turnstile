@@ -432,12 +432,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // the injected prose (caps, markers, journal paths) matches the mechanical
   // enforcement; it is constant for the load's lifetime.
   const policyText = orchestratorPolicyFor(config)
+  // Per-session sink routing resolves through the ledger's parent map. The
+  // resolver closure reads `ledger` before its declaration line, but it only
+  // fires once hooks run — after `createHooksCore` finished constructing both
+  // the journaler and the ledger. `parentOf` returns the session itself for
+  // unregistered parents (a parent's own entries → its own file) and falls
+  // back to the session when a child's edge is not yet resolved; both files
+  // are read by replay, so nothing is lost.
   const journaler: Journaler = createJournaler({
     metricsDir: config.metricsDir,
     trace: config.trace,
     maxBytes: config.journalMaxBytes,
     maxGenerations: config.journalMaxGenerations,
     rotateEveryEntries: config.journalRotateEveryEntries,
+    perSession: config.journalPerSession,
+    sinkFor: (sessionID) => ledger.parentOf(sessionID),
   })
   // Config warnings are journaled exactly once, by config.ts (the pre-journaler
   // sink); they are now also *surfaced* once into the model context by the

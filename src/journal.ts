@@ -33,6 +33,15 @@ export const DEFAULT_METRICS_DIR: string = defaultMetricsDir()
 /** Default JSONL journal path inside {@link DEFAULT_METRICS_DIR}. */
 export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turnstile.jsonl")
 
+/**
+ * Host session-ID alphabet, length-capped: the only shapes that may name a
+ * per-session journal file (and the only shapes replay accepts as bucket
+ * keys). Anything else is hostile bytes, not a session. Canonical export:
+ * both the journal sink routing and the ledger replay validate against this
+ * one rule.
+ */
+export const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
+
 /** Rotation bound (rotation-race fix): the append hot path never stats or
  * renames the file — `journal()` only appends and advances a per-file
  * counter. The rotate-then-rename sequence runs once per `rotateEveryEntries`
@@ -165,10 +174,19 @@ export function readJournalEntries(journalPath: string): JournalEntry[] {
 
 /** Telemetry writer injected into the state, gate, and wiring layers. */
 export interface Journaler {
-  /** Absolute path of the JSONL journal file. */
+  /** Absolute path of the shared (legacy fallback) JSONL journal file. */
   journalPath: string
+  /** Absolute path of the per-session journal directory. */
+  sessionsDir: string
   /** Absolute path of the human-readable trace file. */
   tracePath: string
+  /**
+   * Resolves the journal file that owns a parent session's entries.
+   * @param parentID The parent session ID (already sanitized by the caller
+   *     when used as a file name).
+   * @returns The absolute path `<sessionsDir>/<parentID>.jsonl`.
+   */
+  journalPathFor(parentID: string): string
   /**
    * Appends one structured entry to the JSONL journal, timestamped.
    * @param entry The journal entry; a `ts` field is prepended.
@@ -189,6 +207,16 @@ export interface Journaler {
 }
 
 /**
+ * Resolves the per-session journal file for a parent session ID.
+ * @param metricsDir The metrics directory.
+ * @param parentID The parent session ID.
+ * @returns The absolute path `<metricsDir>/sessions/<parentID>.jsonl`.
+ */
+export function sessionJournalPath(metricsDir: string, parentID: string): string {
+  return path.join(metricsDir, "sessions", `${parentID}.jsonl`)
+}
+
+/**
  * Creates a telemetry writer bound to the given metrics directory.
  * @param options.metricsDir Directory that receives both telemetry files.
  * @param options.trace Whether trace lines are written (journal always is).
@@ -198,8 +226,16 @@ export interface Journaler {
  *     and rotation run once per this many appends (documented in the
  *     rotation-bound comment above). Entries between the check and the
  *     rename are the bounded overshoot.
- * @returns A Journaler writing `turnstile.jsonl` and `gate-events.log`
- *     under `options.metricsDir`.
+ * @param options.perSession When true, entries carrying a resolvable parent
+ *     sessionID route to `sessions/<parentID>.jsonl`; everything else stays
+ *     on the shared `turnstile.jsonl`. Default false (single-file layout).
+ * @param options.sinkFor Resolves the parent sessionID whose file owns an
+ *     entry, or `""` for the shared sink. Consulted only when `perSession`
+ *     is on and the entry carries a string `sessionID`. Bound late by the
+ *     wiring (the ledger is built after the journaler).
+ * @returns A Journaler writing `turnstile.jsonl` (and, when `perSession` is
+ *     on, `sessions/<parentID>.jsonl`) plus `gate-events.log` under
+ *     `options.metricsDir`.
  */
 export function createJournaler(options: {
   metricsDir: string
@@ -207,19 +243,41 @@ export function createJournaler(options: {
   maxBytes: number
   maxGenerations: number
   rotateEveryEntries: number
+  perSession?: boolean
+  sinkFor?: (sessionID: string) => string
 }): Journaler {
   const journalPath = path.join(options.metricsDir, "turnstile.jsonl")
+  const sessionsDir = path.join(options.metricsDir, "sessions")
   const tracePath = path.join(options.metricsDir, "gate-events.log")
-  // Counter per file, never shared: the journal and the trace file each rotate
-  // on their own schedule (a trace-off journal still counts its own ticks).
-  const journalTick = { n: 0 }
+  // Counters per file, never shared: the journal, each session sink, and the
+  // trace file each rotate on their own schedule (a trace-off journal still
+  // counts its own ticks). Keyed by resolved file path; bounded by the live
+  // session count plus the two fixed sinks.
+  const journalTicks = new Map<string, { n: number }>()
   const traceTick = { n: 0 }
+  /**
+   * Resolves the sink file that owns one journal entry: the parent session's
+   * file when per-session segmentation is on, the entry carries a string
+   * `sessionID`, the resolver yields a parent, and that parent passes the
+   * session-ID shape rule; the shared file otherwise.
+   * @param entry The journal entry about to be appended.
+   * @returns The absolute path of the owning journal file.
+   */
+  function sinkFor(entry: Record<string, unknown>): string {
+    const sessionID = entry.sessionID
+    if (!options.perSession || typeof sessionID !== "string") return journalPath
+    const parent = options.sinkFor?.(sessionID) ?? ""
+    if (parent === "" || !REPLAY_SESSION_RE.test(parent)) return journalPath
+    return sessionJournalPath(options.metricsDir, parent)
+  }
   /**
    * Acquires the `<file>.lock` mutex for the tick. A stale lock (mtime past
    * the staleness bound — its creator crashed) is stolen and journaled as a
    * `rotation-lock-stale:` error entry before the mkdir is retried once; a
    * fresh contention returns false without journaling. Non-EEXIST mkdir
-   * errors and steal-path throws propagate to the caller's catch.
+   * errors and steal-path throws propagate to the caller's catch. The error
+   * row always lands on the shared journal file, even when the contended
+   * file is a session sink (one fixed audit location for rotation errors).
    * @param file Path of the file whose lock is acquired.
    * @returns True when the lock is held by the caller on return.
    */
@@ -271,10 +329,20 @@ export function createJournaler(options: {
   }
   return {
     journalPath,
+    sessionsDir,
     tracePath,
+    journalPathFor(parentID: string): string {
+      return sessionJournalPath(options.metricsDir, parentID)
+    },
     journal(entry: Record<string, unknown>): void {
-      appendLine(journalPath, JSON.stringify({ ts: now(), ...entry }))
-      tickRotate(journalPath, journalTick)
+      const file = sinkFor(entry)
+      appendLine(file, JSON.stringify({ ts: now(), ...entry }))
+      let tick = journalTicks.get(file)
+      if (!tick) {
+        tick = { n: 0 }
+        journalTicks.set(file, tick)
+      }
+      tickRotate(file, tick)
     },
     traceEvent(agent: string, event: string, detail: string, sessionID?: string): void {
       if (!options.trace) return

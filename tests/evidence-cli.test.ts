@@ -213,30 +213,31 @@ test("evidence: an unknown --task id exits 2 with an unknown-task message", () =
   }
 })
 
-test("evidence: --task latest picks the session owning the last line, not the later marker", () => {
-  // docstring: "most recent" is one rule — the last journaled line's owner —
-  // so a session with a later marker still loses to the last-line owner.
+test("evidence: --task latest picks the session owning the greatest-ts line, not the append-last line", () => {
+  // docstring: "most recent" is one rule — the greatest-`ts` journaled line's
+  // owner (the replay-parity order) — so a line appended last with an older
+  // ts still loses to the greatest-ts owner.
   const dir = metricsDir()
   try {
     writeJournal(dir, "turnstile.jsonl", [
-      line(1, {
-        type: "gate",
-        sessionID: "sp-late",
-        result: "PASS",
-        marker: "GATE: PASS tests=1 passed=1 failed=0",
-      }),
       line(100, {
         type: "gate",
-        sessionID: "sp-latermarker",
+        sessionID: "sp-latest",
         result: "PASS",
         marker: "GATE: PASS tests=2 passed=2 failed=0",
       }),
-      line(2, { type: "dispatch", sessionID: "sp-last", agent: "executor" }),
+      line(1, {
+        type: "gate",
+        sessionID: "sp-early",
+        result: "PASS",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+      line(2, { type: "dispatch", sessionID: "sp-appendedlast", agent: "executor" }),
     ])
     const res = runEvidence(dir, ["--format", "json"])
     assert.equal(code(res), 0)
     const obj = JSON.parse(res.stdout) as EvidenceDoc
-    assert.equal(obj.task, taskHandle("sp-last"), "the last line's session wins")
+    assert.equal(obj.task, taskHandle("sp-latest"), "the greatest-ts line's session wins")
     assert.match(obj.task ?? "", /^t-[0-9a-f]{8}$/)
   } finally {
     rmSync(dir, { recursive: true, force: true })

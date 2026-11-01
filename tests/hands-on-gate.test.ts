@@ -30,6 +30,8 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
   const traces: string[] = []
   const journaler: Journaler = {
     journalPath: "",
+    sessionsDir: "",
+    journalPathFor: () => "",
     tracePath: "",
     journal(entry) {
       entries.push({ ...entry })
@@ -426,6 +428,8 @@ test("observeBashWrite: a journal failure fails open", () => {
   const entries: any[] = []
   const journaler: Journaler = {
     journalPath: "",
+    sessionsDir: "",
+    journalPathFor: () => "",
     tracePath: "",
     journal(entry) {
       entries.push({ ...entry })

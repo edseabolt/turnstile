@@ -105,7 +105,7 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/fingerprint.ts`        | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                                                                                                                                          |
 | `src/task-scope.ts`         | The interrupted-review predicate (`isInterruptedReview`): a retired task whose review was interrupted mid-flight (green gate, ≥1 counted reviewer dispatch or a waived reviewer round, no credited approval) carries its earned context through `mergeAfterReplay` — consumed by `state.ts` and `fingerprint.ts`                       |
 | `src/bounded.ts`            | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                                                                                                                                             |
-| `src/journal.ts`            | Persistence: `turnstile.jsonl` audit trail + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends, the fail-open journal reader (`readJournalEntries`)                                                                                                                                          |
+| `src/journal.ts`            | Persistence: `turnstile.jsonl` audit trail (plus per-parent `sessions/<parentID>.jsonl` sinks) + optional trace, append-only hot path with a periodic lock-guarded rename, fail-open appends, the fail-open journal reader (`readJournalEntries`)                                                                                      |
 | `src/intent.ts`             | Stateless prompt-intent classifier (`classifyIntent`): implementation-intent signals (work verbs at code, gh issue refs, `*.md` plan refs, plan-dispatch phrasing) vs. deliberate non-intent framings (questions, explanations, status, chat) — total on any string, never throws, consumed by prompt admission for the advisory nudge |
 | `src/policy.ts`             | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers), plus the advisory intent-nudge text (`intentNudge`, marker-syntax-free)                                                  |
 | `src/summary.ts`            | Session-end summary counting + one-line formatting over parsed journal entries (`countSessionActivity`, `formatSessionSummary`, `formatAllGreenLine`) — pure and host-free, shared with the observe-period summary                                                                                                                     |
@@ -518,7 +518,8 @@ event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   and the status aggregate treats it as inert.
   A `replay` entry is the file-level audit of an unreadable journal
   generation during the boot replay: `{ts, type:"replay", error:true}` with
-  no message — one per unreadable generation file, so the entries are
+  no message — one per unreadable generation file, always appended to the
+  shared `turnstile.jsonl` (never the file being read), so the entries are
   bounded by the generation count. It is replay-inert and status-inert, like
   the drop entries above.
   A `generate-draft` entry is the one-per-boot request-draft telemetry row
@@ -637,6 +638,20 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   generations, so such an entry simply joins the tail window when it is
   read back (the window is small and clock-free).
   Rotates at 5 MB, 5 generations.
+- **`sessions/<parentID>.jsonl`** — the per-parent-session segment of the
+  audit trail (when `journalPerSession` is on, the default): every entry
+  carrying a resolvable parent sessionID (via the ledger's `parentOf` map)
+  appends here instead of the shared file, so one session's dispatches,
+  verdicts, gates, blocks, and waivers read top-to-bottom in one file.
+  Entries without a sessionID (or with an ID failing the session-ID shape
+  rule) land in the shared `turnstile.jsonl`. Each session file carries the
+  same rotation bounds as the shared file (5 MB, 5 generations, same lock
+  cadence and stale-lock steal — the steal's `rotation-lock-stale:` error
+  row always appends to the shared `turnstile.jsonl`, even when the
+  contended file is a session sink). Aggregate retention and boot read cost
+  scale with the live session count: per-file bounds are equivalent, but the
+  file count grows with sessions (accepted; the shared-file bound alone is
+  unchanged).
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
@@ -677,13 +692,24 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   pending, and read or write failures are fail-open (journaled, never
   blocking).
 
-On restart, `replayGatePasses` (`src/ledger.ts`) walks the journal
+On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file
-exists) and collects the last `replayTailLines` lines (default 2000) from all
-retained generations, with an early stop: the walk ends inside the newest
+exists) and then every `sessions/` file family's generations the same way
+(a guarded directory read: any failure replays the shared file only; every
+directory entry maps to its family root — `p1.jsonl.2` roots at `p1.jsonl` —
+and the deduplicated root set is walked, so each generation is read exactly
+once, including a fully rotated family whose current file is absent),
+merges the collected lines ordered by their `ts` field (missing/unparseable
+sorts oldest) and keeps the last `replayTailLines` lines (default 2000)
+globally. Last-wins folds are per-sessionID and each sessionID's rows live
+in exactly one file, so cross-file ordering cannot change any per-session
+fold; the global `ts` sort only preserves the observe-mode global totals'
+last-wins behavior. Per-file reads stay tail-capped with an early stop: the
+walk ends inside the newest
 generation that alone satisfies the tail bound, so boot I/O stays bounded by
 the retained-generation sizes, never the full
-`journalMaxGenerations × journalMaxBytes` envelope. The journal is treated as
+`journalMaxGenerations × journalMaxBytes` envelope (the file count grows
+with live sessions — see the retention note above). The journal is treated as
 untrusted data on the read side: a line folds into the last-wins maps only if
 its `sessionID` passes the replay ID-shape check (alphanumeric plus `.`, `_`,
 `-`, length 1–64) and its kind fields pass their shape guards — verdict
@@ -692,7 +718,8 @@ marker ≤ 512 chars, ensemble count an integer in
 dropped line journals one replay-drop `suppressed` entry (above). An
 unreadable generation file (a directory in its place, a permission failure)
 folds nothing from its lines: it journals one message-free
-`{ts, type:"replay", error:true}` entry (bounded by the generation count) and
+`{ts, type:"replay", error:true}` entry on the shared `turnstile.jsonl`
+(bounded by the generation count) and
 the walk continues with the next-older generation. It then
 restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
@@ -766,7 +793,7 @@ warned. Highlights:
 
 | Group       | Keys                                                                                                                                                                                                  | Defaults worth knowing                                                                                                                                                                                                                                                                                                                                         |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `replayTailLines`                                                                                                            | 5 MB / 5 / 512 / 2000                                                                                                                                                                                                                                                                                                                                          |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `journalPerSession`, `replayTailLines`                                                                                       | 5 MB / 5 / 512 / true / 2000                                                                                                                                                                                                                                                                                                                                   |
 | Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                                                          | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                                                                                                                                                                                                        |
 | Reads       | `readWarn`, `readBlock`                                                                                                                                                                               | 8 / 15 (clamped)                                                                                                                                                                                                                                                                                                                                               |
 | Observe     | `observeSessions`                                                                                                                                                                                     | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                                                                                                                                                                                                        |
