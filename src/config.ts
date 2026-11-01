@@ -103,6 +103,7 @@ export function defaultConfig(
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
     journalRotateEveryEntries: 512,
+    journalPerSession: true,
     replayTailLines: 2000,
     maxReviewerRounds: 2,
     // Per-leg loop caps: a healthy task is ≤1 planner + ≤3
@@ -114,6 +115,10 @@ export function defaultConfig(
     maxTestRunnerRounds: 4,
     maxTotalDispatches: 16,
     maxSessions: 64,
+    // Compliance retry: a marker-less bare-output delivery is re-prompted
+    // once before it counts a violation — agent-compliance failure, not
+    // work-quality. 0 disables the retry (first bare delivery violates).
+    agentMarkerRetry: 1,
     readWarn: 8,
     readBlock: 15,
     observeSessions: 0,
@@ -153,6 +158,20 @@ export function defaultConfig(
     // delivery. `intentNudge: false` disables detection entirely (no journal
     // row, no nudge).
     intentNudge: true,
+    // Dormant-until-engaged: `true` restores the legacy always-armed
+    // behavior (enforcement from the first prompt). The default `false`
+    // arms enforcement when the user provides a plan (a `PLAN APPROVED:`
+    // marker or a plan-file reference) or asks to run the planner/pipeline,
+    // and sleeps again on task completion, `TURNSTILE OFF:`, or a prompt
+    // with no continuation credit. The user-configured denylists
+    // (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
+    alwaysEnforce: false,
+    // Plan-impact advisory: parent edit/write/write-shaped bash calls that
+    // overlap the bound active plan's scope are allowed with a journaled
+    // plan-impact classification instead of the parent-hands-on block.
+    // `planImpactStrict: true` restores blocking for structural overlap
+    // (files or the ## Decomposition section named by the plan).
+    planImpactStrict: false,
     agents: {
       planner: "planner",
       reviewer: CANONICAL_REVIEWER_AGENT,
@@ -202,6 +221,11 @@ export function defaultConfig(
       // push blocks pass this key explicitly (false) so they stay
       // deterministic against the live repo's git state.
       emptyDiffExempt: true,
+      // Blind-retry escalation for the commit lint: after this many failed
+      // attempts for the same session within the window, the block message
+      // appends a full canonical example (see src/tool-policy.ts).
+      commitRetryThreshold: 3,
+      commitRetryWindowMs: 60_000,
     },
   }
 }
@@ -213,15 +237,19 @@ export function defaultConfig(
  * @returns true when the value has the right type for the key: numeric keys
  *     accept positive integers only (Number.isInteger subsumes the finite
  *     check, so NaN/Infinity are rejected as non-integers); the one exception
- *     is `observeSessions`, which accepts integers >= 0 so 0 can be set
- *     explicitly to end an observe period.
+ *     is `observeSessions` and `agentMarkerRetry`, which accept integers >= 0
+ *     so 0 can be set explicitly to end an observe period / disable the
+ *     marker retry.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (
     key === "trace" ||
+    key === "journalPerSession" ||
     key === "continuationCarry" ||
     key === "allowSuspend" ||
-    key === "intentNudge"
+    key === "intentNudge" ||
+    key === "alwaysEnforce" ||
+    key === "planImpactStrict"
   )
     return typeof value === "boolean"
   if (key === "sessionSummary") return value === "on" || value === "quiet" || value === "off"
@@ -253,15 +281,16 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
       return false
     }
   }
-  // 0 must be settable explicitly to arm/end the observe period mid-count;
-  // every other numeric key keeps the positive-integer rule.
-  if (key === "observeSessions")
+  // 0 must be settable explicitly to arm/end the observe period mid-count,
+  // and to disable the marker retry; every other numeric key keeps the
+  // positive-integer rule.
+  if (key === "observeSessions" || key === "agentMarkerRetry")
     return typeof value === "number" && Number.isInteger(value) && value >= 0
   return typeof value === "number" && Number.isInteger(value) && value > 0
 }
 
 /** Scalar config keys whose valid values are integers (positive, or
- *  non-negative for `observeSessions`). */
+ *  non-negative for `observeSessions` and `agentMarkerRetry`). */
 type NumericConfigKey = Extract<
   keyof TurnstileConfig,
   | "journalMaxBytes"
@@ -274,6 +303,7 @@ type NumericConfigKey = Extract<
   | "maxTestRunnerRounds"
   | "maxTotalDispatches"
   | "maxSessions"
+  | "agentMarkerRetry"
   | "readWarn"
   | "readBlock"
   | "observeSessions"
@@ -288,6 +318,7 @@ type NumericConfigKey = Extract<
  */
 function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value: unknown): void {
   if (key === "trace") config.trace = value as boolean
+  else if (key === "journalPerSession") config.journalPerSession = value as boolean
   else if (key === "sessionSummary") config.sessionSummary = value as "on" | "quiet" | "off"
   else if (key === "metricsDir") config.metricsDir = value as string
   else if (key === "waiverMarker") config.waiverMarker = value as string
@@ -304,7 +335,10 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "taskDoneMarker") config.taskDoneMarker = value as string
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "intentNudge") config.intentNudge = value as boolean
+  else if (key === "alwaysEnforce") config.alwaysEnforce = value as boolean
+  else if (key === "planImpactStrict") config.planImpactStrict = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
+  else if (key === "agentMarkerRetry") config.agentMarkerRetry = value as number
   else config[key as NumericConfigKey] = value as number
 }
 
@@ -458,6 +492,21 @@ export function mergeConfig(
             else merged.emptyDiffExempt = gv
           } else {
             warnings.push(`config: gitGates.${gk} must be a boolean; keeping default`)
+          }
+        } else if (gk === "commitRetryThreshold" || gk === "commitRetryWindowMs") {
+          // Burst-escalation knobs: threshold is a positive integer, the window
+          // a non-negative one (0 means only same-millisecond retries
+          // accumulate; larger windows expire via the elapsed-time check).
+          const positive = gk === "commitRetryThreshold"
+          if (typeof gv === "number" && Number.isInteger(gv) && (positive ? gv > 0 : gv >= 0)) {
+            if (positive) merged.commitRetryThreshold = gv
+            else merged.commitRetryWindowMs = gv
+          } else {
+            warnings.push(
+              positive
+                ? "config: gitGates.commitRetryThreshold must be a positive number; keeping default"
+                : "config: gitGates.commitRetryWindowMs must be a non-negative number; keeping default",
+            )
           }
         } else if (gk === "commitFormat") {
           if (typeof gv !== "string") {

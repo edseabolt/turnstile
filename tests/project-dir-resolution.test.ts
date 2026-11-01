@@ -94,7 +94,12 @@ async function boot(opts?: {
     // Ask mode: the evaluate-arm test asserts the plan-gate ask, which only
     // fires under `escalation: "ask"`; the guard blocks identically in both
     // modes, so the block-message assertions are mode-independent.
-    config: { metricsDir, escalation: "ask", ...toolPolicy } as Partial<TurnstileConfig>,
+    config: {
+      metricsDir,
+      alwaysEnforce: true,
+      escalation: "ask",
+      ...toolPolicy,
+    } as Partial<TurnstileConfig>,
   })
   const dispose = (await setup(h.host)) as () => void
   return {

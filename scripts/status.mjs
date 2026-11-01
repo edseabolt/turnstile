@@ -283,35 +283,91 @@ function resolveConfig(env) {
 }
 
 /**
- * Reads the journal's retained generations as a single oldest-first line
- * stream: a newest-first walk over `turnstile.jsonl`, then `.1`, `.2`, …
- * (stopping at the first missing generation — a missing current file is the
- * post-rotation state, so the walk starts at `.1`), stopping as soon as the
- * collected lines satisfy the `replayTailLines` tail bound (default 2000) the
- * runtime replay uses, so the status flags stay replay-parity. Silently
+ * Reads one journal file family (the current file plus its rotated
+ * generations) as oldest-first blocks: a newest-first walk over `file`, then
+ * `.1`, `.2`, … (stopping at the first missing generation — a missing
+ * current file is the post-rotation state, so the walk starts at `.1`),
+ * stopping once the collected lines satisfy the tail bound. Silently
  * tolerates missing generations.
- * @param {string} journalPath Absolute path of `turnstile.jsonl`.
- * @param {number} tailLines The replay tail bound in lines to keep.
- * @returns {{ files: string[], lines: string[] }} The files read (oldest-first
- *     basenames) and their tail-bounded lines, oldest-first.
+ * @param {string} file Absolute path of the current journal file.
+ * @param {number} tailLines The per-file tail bound in lines to keep.
+ * @returns {{ name: string, lines: string[] }[]} The blocks, oldest-first.
  */
-function readJournal(journalPath, tailLines) {
-  if (tailLines <= 0) return { files: [], lines: [] }
+function readFileGenerations(file, tailLines) {
   const blocks = []
-  let generation = fs.existsSync(journalPath) ? 0 : 1
+  let generation = fs.existsSync(file) ? 0 : 1
   for (;;) {
-    const file = generation === 0 ? journalPath : `${journalPath}.${generation}`
-    if (!fs.existsSync(file)) break
+    const gen = generation === 0 ? file : `${file}.${generation}`
+    if (!fs.existsSync(gen)) break
     blocks.unshift({
-      name: path.basename(file),
-      lines: fs.readFileSync(file, "utf8").split("\n").filter(Boolean),
+      name: path.basename(gen),
+      lines: fs.readFileSync(gen, "utf8").split("\n").filter(Boolean),
     })
     if (blocks.reduce((total, b) => total + b.lines.length, 0) >= tailLines) break
     generation++
   }
+  return blocks
+}
+
+/**
+ * Reads the journal's retained generations as a single oldest-first line
+ * stream: a newest-first generation walk over `turnstile.jsonl`, then the
+ * same walk over every `sessions/` file family (every directory entry maps
+ * to its family root — `p1.jsonl.2` roots at `p1.jsonl` — and the set of
+ * roots is deduplicated, so each generation is visited exactly once by its
+ * own family's walk, including a fully rotated family whose current file is
+ * absent). The merged lines are ordered by their `ts` field
+ * (missing/unparseable sorts oldest) and the global tail is kept, so the
+ * stream satisfies the `replayTailLines` tail bound the runtime replay uses
+ * and the status flags stay replay-parity. Silently tolerates missing
+ * generations and an unreadable sessions dir.
+ * @param {string} journalPath Absolute path of `turnstile.jsonl`.
+ * @param {string} sessionsDir Absolute path of the per-session journal dir.
+ * @param {number} tailLines The replay tail bound in lines to keep.
+ * @returns {{ files: string[], lines: string[] }} The files read (oldest-first
+ *     basenames) and their tail-bounded lines, oldest-first.
+ */
+function readJournal(journalPath, sessionsDir, tailLines) {
+  if (tailLines <= 0) return { files: [], lines: [] }
+  const blocks = readFileGenerations(journalPath, tailLines)
+  let sessionFiles = []
+  try {
+    sessionFiles = [
+      ...new Set(
+        fs
+          .readdirSync(sessionsDir)
+          .filter((name) => /\.jsonl(\.\d+)?$/.test(name))
+          .map((name) => path.join(sessionsDir, name.replace(/(\.\d+)+$/, ""))),
+      ),
+    ]
+  } catch {
+    // No sessions dir (legacy layout) or unreadable: read the shared file only.
+  }
+  for (const file of sessionFiles) blocks.push(...readFileGenerations(file, tailLines))
+  const lines = blocks.flatMap((b) => b.lines)
+  lines.sort((a, b) => {
+    const ka = tsKey(a)
+    const kb = tsKey(b)
+    return ka === kb ? 0 : ka < kb ? -1 : 1
+  })
   return {
     files: blocks.map((b) => b.name),
-    lines: blocks.flatMap((b) => b.lines).slice(-tailLines),
+    lines: lines.slice(-tailLines),
+  }
+}
+
+/**
+ * Extracts a lexicographic sort key from a journal line's `ts` field. A
+ * missing or unparseable `ts` sorts oldest (empty string).
+ * @param {string} line A raw JSONL journal line.
+ * @returns {string} The sort key.
+ */
+function tsKey(line) {
+  try {
+    const ts = JSON.parse(line).ts
+    return typeof ts === "string" && !Number.isNaN(Date.parse(ts)) ? ts : ""
+  } catch {
+    return ""
   }
 }
 
@@ -790,7 +846,11 @@ async function main(argv) {
 
   const { metricsDir, replayTailLines, observeSessions } = resolveConfig(process.env)
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
-  const { files, lines } = readJournal(journalPath, replayTailLines)
+  const { files, lines } = readJournal(
+    journalPath,
+    path.join(metricsDir, "sessions"),
+    replayTailLines,
+  )
 
   const base = {
     journal: journalPath,

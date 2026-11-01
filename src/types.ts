@@ -302,6 +302,14 @@ export interface TurnstileGitGates {
   landingGate: boolean
   /** Whether a statically-provable empty-diff `git push` (ref-equal to upstream) skips the landing gate (default true; `false` is the strict opt-out). */
   emptyDiffExempt: boolean
+  /**
+   * Blind-retry escalation: failed `invalid-commit-message` attempts for the
+   * same session within `commitRetryWindowMs` before the block message appends
+   * a full canonical example (default 3).
+   */
+  commitRetryThreshold: number
+  /** Window in milliseconds for `commitRetryThreshold` burst counting (default 60000). */
+  commitRetryWindowMs: number
 }
 
 /** Gate state for one parent session. */
@@ -612,6 +620,19 @@ export interface GateState {
    * fingerprint mismatch signals a reset.
    */
   taskFingerprint: string
+  /**
+   * Dormant-until-engaged pipeline switch: `false` (default) means the
+   * reactive gates (hands-on, bash-write, landing, commit lint, dispatch
+   * guards, read limit) sleep — only the user-configured denylists and the
+   * telemetry run. Set true by engagement capture (a `PLAN APPROVED:`
+   * prompt, a plan-ref/dispatch classified prompt, or an actual planner
+   * dispatch); cleared by task retire, the `TURNSTILE OFF:` abort, and a
+   * no-credit new prompt (the ordinary reset drops it — it is carried only
+   * through the restart-sticky carry in `mergeAfterReplay`, exactly like
+   * `hasPlanVerdict`). Every transition journals a `type:"engagement"` row
+   * that replay restores last-wins.
+   */
+  engaged: boolean
 }
 
 /** One first-sight marker observation returned by the marker parser. */
@@ -716,6 +737,14 @@ export interface TurnstileConfig {
    */
   journalRotateEveryEntries: number
   /**
+   * Segment the JSONL journal per parent session: entries carrying a
+   * resolvable parent sessionID append to `sessions/<parentID>.jsonl` under
+   * the metrics dir (same rotation bounds per file); entries without a
+   * sessionID land in the shared `turnstile.jsonl`. False restores the
+   * single-file layout.
+   */
+  journalPerSession: boolean
+  /**
    * Replay tail window in lines: the most recent this-many journal lines,
    * walked newest-first across all retained generations (current file plus
    * rotated generations), are replayed at boot; older lines are dropped.
@@ -748,6 +777,12 @@ export interface TurnstileConfig {
   maxTotalDispatches: number
   /** Cap on tracked sessions (LRU); oldest state evicted beyond this. */
   maxSessions: number
+  /**
+   * Compliance re-prompts per child delivery that returned no GATE/VERDICT
+   * marker (bare-output). 0 disables the retry: the first marker-less
+   * delivery counts a violation immediately.
+   */
+  agentMarkerRetry: number
   /** Whole-file read count at which the horizon warning is injected. */
   readWarn: number
   /** Whole-file read count at which further reads are blocked. */
@@ -846,6 +881,25 @@ export interface TurnstileConfig {
    * no-op: nothing is journaled and nothing is injected.
    */
   intentNudge: boolean
+  /**
+   * `true` restores the legacy always-armed behavior (turnstile enforces
+   * from the first prompt). The default `false` is dormant-until-engaged:
+   * enforcement arms when the user provides a plan (a `PLAN APPROVED:`
+   * marker or a plan-file reference) or asks to run the planner/pipeline,
+   * and sleeps again on task completion, `TURNSTILE OFF:`, or a prompt with
+   * no continuation credit. The user-configured denylists
+   * (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
+   */
+  alwaysEnforce: boolean
+  /**
+   * Plan-impact advisory: parent edit/write/write-shaped bash calls that
+   * overlap the bound active plan's scope are allowed with a journaled
+   * plan-impact classification instead of the parent-hands-on block.
+   * `planImpactStrict: true` restores blocking for structural overlap
+   * (files or the ## Decomposition section named by the plan). Default
+   * false.
+   */
+  planImpactStrict: boolean
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */
@@ -922,6 +976,8 @@ export type Host = {
   session?: {
     hook?: (name: string, cb: (input: any) => Promise<void> | void) => Promise<unknown>
     get?: (input: { sessionID: string }, options?: any) => Promise<SessionRecord | undefined>
+    /** Prompts an existing session (compliance re-prompt channel). */
+    prompt?: (input: { sessionID: string; text: string }, options?: any) => Promise<unknown>
   }
   event?: {
     subscribe?: (options?: { signal?: AbortSignal }) => AsyncIterable<StreamEvent>

@@ -49,6 +49,7 @@ async function boot(
     env: isolatedEnv(metricsDir),
     config: {
       metricsDir,
+      alwaysEnforce: true,
       // Ask mode: these suites exercise the interactive ask latches (see
       // permission-approval bootWithPlan); the block-mode default has
       // dedicated guard-level tests.

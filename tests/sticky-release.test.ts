@@ -209,7 +209,10 @@ test("mergeAfterReplay carries the standing releases restart-sticky", () => {
 async function boot(): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string }> {
   const h = makeFakeHost()
   const metricsDir = tmpDir()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }
 }

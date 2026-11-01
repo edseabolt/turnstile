@@ -105,10 +105,79 @@ export const HANDSON_REQUIREMENT =
   "parent-session write/edit requires the pipeline — dispatch the executor on the approved plan; report this block to the user and stop; the gate releases only on the user's explicit approval (waiver)"
 
 /**
- * Suffix added to the invalid-commit-block ask, describing the accepted shape.
- * @returns The "expected …" suffix.
+ * The conventional commit types the default `commitFormat` accepts, as one
+ * alternation source. Single source for the compiled default (via
+ * `DEFAULT_COMMIT_FORMAT` consumers), the block text, and the mismatch
+ * classifier, so the three cannot drift.
  */
-const COMMIT_EXPECTED = "is not a conventional commit — expected type(scope)!: subject"
+const COMMIT_TYPE_LIST = "feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
+
+/**
+ * Suffix added to the invalid-commit-block error, stating the accepted shape.
+ * The separator alternatives mirror the default regex's `(?:[!]:?|:) `
+ * separator — each requires a trailing space — so a message the gate accepts
+ * is never denied by this text.
+ */
+const COMMIT_EXPECTED =
+  `is not a conventional commit — must be '<type>(<scope>)?: <subject>' — type one of ` +
+  `${COMMIT_TYPE_LIST.split("|").join(", ")}, optional (scope), a ': ', '! ', or '!: ' ` +
+  `separator, subject of 1-72 chars, at most one body line`
+
+/**
+ * Canonical example appended to the block error once a session's blind-retry
+ * burst crosses `gitGates.commitRetryThreshold` within the window.
+ */
+const COMMIT_EXAMPLE =
+  "Example of an accepted message: 'feat(gates): block uninspectable commit forms'"
+
+/**
+ * Extracts the subject text following the type (and optional scope) of a
+ * commit message's first line, or `null` when no accepted separator
+ * (`'! '`, `'!: '`, or `': '` — mirroring the default regex's
+ * `(?:[!]:?|:) `, each requiring a trailing space) is present. Helper for
+ * {@link describeCommitMismatch}.
+ * @param rest The first line after the leading type word.
+ * @returns The subject after the separator, or `null` when the separator is
+ *     missing (including an unclosed scope).
+ */
+function subjectAfterSeparator(rest: string): string | null {
+  if (rest.startsWith("(")) {
+    const close = rest.indexOf(")")
+    if (close === -1) return null
+    rest = rest.slice(close + 1)
+  }
+  if (rest.startsWith("!: ")) return rest.slice(3)
+  if (rest.startsWith("! ")) return rest.slice(2)
+  if (rest.startsWith(": ")) return rest.slice(2)
+  return null
+}
+
+/**
+ * Classifies why `message` failed the compiled commit format, returning a
+ * concrete clause for the block error (empty string when no specific class
+ * matches — e.g. a custom `gitGates.commitFormat` rejecting a message the
+ * default-shape classes all pass). Pure: no config, no I/O. First match wins.
+ * The clauses describe the DEFAULT format; when an operator overrides
+ * `gitGates.commitFormat` the block error carries an additional note (see the
+ * block-throw site), so a custom format is never silently mis-described.
+ * @param message The attempted commit message.
+ * @returns The mismatch clause, or `""` when no specific class matches.
+ */
+export function describeCommitMismatch(message: string): string {
+  // `split` with limit 1 always yields a first element, so the assertion is safe.
+  const firstLine = message.split(/\r?\n/, 1)[0]!
+  const type = /^([a-z]+)/.exec(firstLine)?.[1]
+  if (type === undefined || !COMMIT_TYPE_LIST.split("|").includes(type))
+    return `missing a known type prefix (${COMMIT_TYPE_LIST})`
+  const subject = subjectAfterSeparator(firstLine.slice(type.length))
+  if (subject === null) return "missing the ': ' or '!' separator after the type/scope"
+  if (subject === "") return "missing the subject after ': '"
+  if (subject.length > 72)
+    return `subject exceeds 72 characters (first line is ${firstLine.length} chars)`
+  const body = message.slice(firstLine.length)
+  if (body !== "" && !/^(\r?\n){1,2}[^\r\n]*$/.test(body)) return "more than one body line"
+  return ""
+}
 
 /**
  * Reads a bundled short-flag cluster (e.g. `-am`) and returns the embedded
@@ -520,6 +589,56 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   // default that deny is configured-only).
   const ghPrRe = new RegExp("\\bgh\\s+pr\\s+(create|ready|merge)\\b")
 
+  // Blind-retry escalation state for the commit lint: per-session burst
+  // counters (presentation-tier ergonomics, not gate state — deliberately
+  // closure-local and not journaled/replayed; a restart resetting the count
+  // only degrades the escalation hint, never enforcement). Insertion order
+  // gives oldest-first eviction at the cap.
+  const commitRetries = new Map<string, { count: number; lastMs: number }>()
+  const COMMIT_RETRY_MAP_CAP = 1000
+
+  /**
+   * Journals and throws the invalid-commit-message block, with a concrete
+   * mismatch diagnosis and the blind-retry escalation: the session's counter
+   * is reset when the last failure is older than `commitRetryWindowMs`,
+   * incremented otherwise, and once it reaches `commitRetryThreshold` the
+   * canonical example rides the error. When the active `commitFormat` differs
+   * from the default, a note says the diagnosis describes the default the
+   * custom format overrides. One guard call counts as ONE attempt: the first
+   * invalid `-m` message throws, so later messages of the same command are
+   * never counted.
+   * @param tool The tool name, recorded in the journal entry.
+   * @param sessionID The committing session (the burst counter's key).
+   * @param message The invalid commit message.
+   * @throws BlockError — the deliberate block (rethrown by the guard's
+   *     fail-open wrapper, never swallowed).
+   */
+  function blockInvalidCommit(tool: string, sessionID: string, message: string): never {
+    const now = Date.now()
+    const prev = commitRetries.get(sessionID)
+    const withinWindow =
+      prev !== undefined && now - prev.lastMs <= config.gitGates.commitRetryWindowMs
+    const count = (withinWindow ? prev!.count : 0) + 1
+    if (commitRetries.size >= COMMIT_RETRY_MAP_CAP && !commitRetries.has(sessionID)) {
+      const oldest = commitRetries.keys().next().value
+      if (oldest !== undefined) commitRetries.delete(oldest)
+    }
+    commitRetries.set(sessionID, { count, lastMs: now })
+    const why = describeCommitMismatch(message)
+    const customNote =
+      config.gitGates.commitFormat !== DEFAULT_COMMIT_FORMAT
+        ? " (the diagnosis describes the default format; a custom gitGates.commitFormat overrides it)"
+        : ""
+    const escalated = count >= config.gitGates.commitRetryThreshold
+    // `retries` rides only the escalated entry: the burst count is escalation
+    // metadata, not noise for every sub-threshold block.
+    journalCommitBlock(tool, sessionID, "invalid-commit-message", escalated ? count : undefined)
+    throw new BlockError(
+      `BLOCKED by turnstile: commit message '${message.slice(0, 80)}' ${COMMIT_EXPECTED}` +
+        `${customNote}${why ? ` — ${why}` : ""}${escalated ? ` ${COMMIT_EXAMPLE}` : ""}`,
+    )
+  }
+
   /**
    * Journals a denylist block and hands control back to the caller, which
    * throws. Fail-open: an internal error is journaled and the guard returns
@@ -554,9 +673,16 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
   // --- Block-throw journal helpers -------------------------------------------
   // Journals a commit-lint block; the caller throws. The offending text rides
   // the `BlockError` (host-facing); the journal records only the reason,
-  // mirroring the denylist's minimal journal.
-  function journalCommitBlock(tool: string, sessionID: string, reason: string): void {
-    journalGateBlock(tool, sessionID, reason)
+  // mirroring the denylist's minimal journal. `retries` rides only on an
+  // `invalid-commit-message` entry (the burst counter at the moment of the
+  // block); it is omitted for every other reason and writer.
+  function journalCommitBlock(
+    tool: string,
+    sessionID: string,
+    reason: string,
+    retries?: number,
+  ): void {
+    journalGateBlock(tool, sessionID, reason, retries)
   }
 
   // Journals a landing `no-landing-approval` block; the caller throws.
@@ -570,9 +696,22 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
    * @param tool The tool name, recorded in the journal entry.
    * @param sessionID The session ID, recorded in journal entries.
    * @param reason The gate-specific block reason string.
+   * @param retries Optional burst-retry count (commit-lint invalid-message
+   *     blocks only); omitted from the entry when absent.
    */
-  function journalGateBlock(tool: string, sessionID: string, reason: string): void {
-    journaler.journal({ type: "blocked", sessionID, tool, reason })
+  function journalGateBlock(
+    tool: string,
+    sessionID: string,
+    reason: string,
+    retries?: number,
+  ): void {
+    journaler.journal({
+      type: "blocked",
+      sessionID,
+      tool,
+      reason,
+      ...(retries === undefined ? {} : { retries }),
+    })
     journaler.traceEvent("tool-policy", "blocked", `${tool} ${reason}`, sessionID)
   }
 
@@ -707,13 +846,10 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
           // are not linted (the first failure is the one surfaced).
         }
         for (const message of analysis.messages) {
-          if (!commitFormat.test(message)) {
-            const subject = message.slice(0, 80)
-            journalCommitBlock(tool, sessionID, "invalid-commit-message")
-            throw new BlockError(
-              `BLOCKED by turnstile: commit message '${subject}' ${COMMIT_EXPECTED}`,
-            )
-          }
+          if (!commitFormat.test(message)) blockInvalidCommit(tool, sessionID, message)
+          // A passing message ends the burst: the session's counter is
+          // dropped, so the next failure counts as the first attempt.
+          commitRetries.delete(sessionID)
         }
       }
     } catch (e) {

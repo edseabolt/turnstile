@@ -193,6 +193,24 @@ test("mergeConfig validates observeSessions as a non-negative integer", () => {
   }
 })
 
+/** agentMarkerRetry runs the non-negative numeric scalar path: 0 (explicitly
+ *  disabling the retry) and a positive integer merge, while a negative and a
+ *  non-integer float are each rejected with a keeping-default warning. */
+test("mergeConfig validates agentMarkerRetry as a non-negative integer", () => {
+  const base = defaultConfig({})
+  const zero = mergeConfig(base, { agentMarkerRetry: 0 })
+  assert.equal(zero.config.agentMarkerRetry, 0)
+  assert.deepEqual(zero.warnings, [])
+  const ok = mergeConfig(base, { agentMarkerRetry: 2 })
+  assert.equal(ok.config.agentMarkerRetry, 2)
+  assert.equal(ok.warnings.length, 0)
+  for (const value of [-1, 1.5, "x" as unknown, NaN]) {
+    const { config, warnings } = mergeConfig(base, { agentMarkerRetry: value })
+    assert.equal(config.agentMarkerRetry, 1)
+    assert.deepEqual(warnings, ['config: invalid value for "agentMarkerRetry"; keeping default'])
+  }
+})
+
 /** approvalMarker is a valid string key: a non-empty string merges, an
  *  invalid value is rejected with a warning (mirroring waiverMarker). */
 test("mergeConfig validates approvalMarker like waiverMarker", () => {
@@ -632,6 +650,50 @@ test("mergeConfig keeps a valid gitGates.commitFormat override", () => {
   const base = defaultConfig({})
   const { config } = mergeConfig(base, { gitGates: { commitFormat: "\\bcowsay\\b" } })
   assert.equal(config.gitGates.commitFormat, "\\bcowsay\\b")
+})
+
+/** commitRetryThreshold defaults 3; a non-positive or non-number keeps the default and warns. */
+test("mergeConfig validates gitGates.commitRetryThreshold", () => {
+  assert.equal(defaultConfig({}).gitGates.commitRetryThreshold, 3)
+  const bad = mergeConfig(defaultConfig({}), { gitGates: { commitRetryThreshold: 0 } })
+  assert.equal(bad.config.gitGates.commitRetryThreshold, 3)
+  const nonNumber = mergeConfig(defaultConfig({}), { gitGates: { commitRetryThreshold: "3" } })
+  assert.equal(nonNumber.config.gitGates.commitRetryThreshold, 3)
+  assert.ok(
+    bad.warnings.includes(
+      "config: gitGates.commitRetryThreshold must be a positive number; keeping default",
+    ),
+  )
+  assert.ok(
+    nonNumber.warnings.includes(
+      "config: gitGates.commitRetryThreshold must be a positive number; keeping default",
+    ),
+  )
+  const good = mergeConfig(defaultConfig({}), { gitGates: { commitRetryThreshold: 5 } })
+  assert.equal(good.config.gitGates.commitRetryThreshold, 5)
+  assert.deepEqual(good.warnings, [])
+})
+
+/** commitRetryWindowMs defaults 60000; a negative or non-number keeps the default and warns. */
+test("mergeConfig validates gitGates.commitRetryWindowMs", () => {
+  assert.equal(defaultConfig({}).gitGates.commitRetryWindowMs, 60_000)
+  const negative = mergeConfig(defaultConfig({}), { gitGates: { commitRetryWindowMs: -1 } })
+  assert.equal(negative.config.gitGates.commitRetryWindowMs, 60_000)
+  const nonNumber = mergeConfig(defaultConfig({}), { gitGates: { commitRetryWindowMs: null } })
+  assert.equal(nonNumber.config.gitGates.commitRetryWindowMs, 60_000)
+  assert.ok(
+    negative.warnings.includes(
+      "config: gitGates.commitRetryWindowMs must be a non-negative number; keeping default",
+    ),
+  )
+  assert.ok(
+    nonNumber.warnings.includes(
+      "config: gitGates.commitRetryWindowMs must be a non-negative number; keeping default",
+    ),
+  )
+  const good = mergeConfig(defaultConfig({}), { gitGates: { commitRetryWindowMs: 1000 } })
+  assert.equal(good.config.gitGates.commitRetryWindowMs, 1000)
+  assert.deepEqual(good.warnings, [])
 })
 
 /** Unknown gitGates sub-keys are ignored with a warning. */
@@ -1096,6 +1158,25 @@ test("loadConfig journals config errors at an absolute metrics dir env", () => {
     !journal.some((l) => String(l.error ?? "").includes("abs-metrics-broken.json")),
     "the absolute env directory wins over the default",
   )
+})
+
+/** planImpactStrict runs the shared boolean scalar path: a boolean merges,
+ *  a non-boolean is rejected with one generic keeping-default warning. */
+test("mergeConfig validates planImpactStrict like trace", () => {
+  const base = defaultConfig({})
+  assert.equal(base.planImpactStrict, false)
+  const ok = mergeConfig(base, { planImpactStrict: true })
+  assert.equal(ok.config.planImpactStrict, true)
+  assert.equal(ok.warnings.length, 0)
+  const bad = mergeConfig(base, { planImpactStrict: "yes" as unknown })
+  assert.equal(bad.config.planImpactStrict, false)
+  assert.deepEqual(bad.warnings, ['config: invalid value for "planImpactStrict"; keeping default'])
+})
+
+/** A boolean planImpactStrict override flips the config digest. */
+test("configDigest flips on a planImpactStrict override", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, planImpactStrict: true }))
 })
 
 /** (1) A string $schema is accepted silently and never lands in the resolved

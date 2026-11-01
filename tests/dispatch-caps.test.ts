@@ -63,7 +63,7 @@ async function boot(
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }

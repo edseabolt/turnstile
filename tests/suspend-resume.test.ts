@@ -63,7 +63,7 @@ function coreWith(config: Partial<TurnstileConfig>): { ctx: TurnstileContext; me
   const metricsDir = tmpDir()
   const ctx = createHooksCore({
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   return { ctx, metricsDir }
 }
@@ -88,7 +88,7 @@ async function bootWithPlan(
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return {
@@ -316,7 +316,7 @@ test("suspend: TURNSTILE ON resumes with fresh state (no stale credit)", async (
   try {
     const ctx = createHooksCore({
       env: isolatedEnv(metricsDir),
-      config: { metricsDir },
+      config: { metricsDir, alwaysEnforce: true },
     })
     ctx.admitPrompt("p1", { text: `${OFF} iterate` }, "")
     await ctx.guardedTaskDispatch("p1", "executor", "do the work", "go")
@@ -619,7 +619,7 @@ test("suspend: a failing suspension read journals and fails toward enforce", asy
   try {
     const ctx = createHooksCore({
       env: isolatedEnv(metricsDir),
-      config: { metricsDir },
+      config: { metricsDir, alwaysEnforce: true },
     })
     const ledger = ctx.ledger as unknown as Record<string, unknown>
     ledger.isSuspended = (): boolean => {

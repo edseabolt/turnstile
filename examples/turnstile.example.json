@@ -2,6 +2,7 @@
   "journalMaxBytes": 5242880,
   "journalMaxGenerations": 5,
   "journalRotateEveryEntries": 512,
+  "journalPerSession": true,
   "replayTailLines": 2000,
   "maxReviewerRounds": 2,
   "maxPlannerRounds": 3,
@@ -9,6 +10,7 @@
   "maxTestRunnerRounds": 4,
   "maxTotalDispatches": 16,
   "maxSessions": 64,
+  "agentMarkerRetry": 1,
   "readWarn": 8,
   "readBlock": 15,
   "observeSessions": 0,
@@ -24,6 +26,8 @@
   "taskDoneMarker": "TASK DONE:",
   "allowSuspend": true,
   "intentNudge": true,
+  "alwaysEnforce": false,
+  "planImpactStrict": false,
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",
@@ -48,6 +52,8 @@
     "commitMessages": true,
     "commitFormat": "(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\\([^)]*\\))?(?:[!]:?|:) [^\\r\\n]{1,72}(?:(?:\\r?\\n){1,2}[^\\r\\n]*)?",
     "landingGate": true,
-    "emptyDiffExempt": true
+    "emptyDiffExempt": true,
+    "commitRetryThreshold": 3,
+    "commitRetryWindowMs": 60000
   }
 }

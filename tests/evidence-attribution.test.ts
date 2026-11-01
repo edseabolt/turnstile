@@ -35,7 +35,11 @@ async function boot(opts?: {
   const h = makeFakeHost({ sessionRecords: opts?.sessionRecords })
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...(opts?.gateEvidence ? { gateEvidence: opts.gateEvidence } : {}) },
+    config: {
+      metricsDir,
+      alwaysEnforce: true,
+      ...(opts?.gateEvidence ? { gateEvidence: opts.gateEvidence } : {}),
+    },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }

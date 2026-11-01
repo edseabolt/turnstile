@@ -17,6 +17,8 @@ import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
 import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
 import { planSpecRegion } from "./plan-region.ts"
+import { classifyPlanImpact, planScopeFiles } from "./plan-scope.ts"
+import type { PlanImpact, PlanScope } from "./plan-scope.ts"
 
 /**
  * The red plan-gate status: the first blocker's preview, the blocker list,
@@ -62,6 +64,12 @@ interface PlanGates {
     projectDir: string,
     candidates: string[],
   ): { name: string; key: string } | undefined
+  planImpactFor(
+    projectDir: string,
+    activePlan: string,
+    targetPath: string,
+    matchInText: boolean,
+  ): PlanImpact
 }
 
 /**
@@ -890,6 +898,104 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     if (status.red) blockPlanGate(sessionID, s, status)
   }
 
+  /**
+   * The plan-impact scope cache: one entry per plan name, holding the
+   * per-file sha256 key the entry was built from and the extracted scope.
+   * A key hit reuses the scope without re-reading or re-tokenizing the plan
+   * file; a key miss (the plan's spec region changed) or a name miss
+   * rebuilds it. Bounded by the plans dir's plan count (one entry per name).
+   */
+  let impactScopeCache: { planName: string; key: string; scope: PlanScope } | null = null
+
+  /**
+   * Relativizes a tool target against the project dir: hosts report absolute
+   * `filePath` values while plan scope entries are repo-relative, so the
+   * equality arm would never match without this. A target resolving outside
+   * the project dir (or equal to it) yields the empty string — the caller
+   * classifies it `uninspectable`, which the hook layer maps to the
+   * hands-on ladder.
+   * @param projectDir The current project directory.
+   * @param targetPath The raw write/edit target path.
+   * @returns The repo-relative target, or "" when outside the project.
+   */
+  function relativizeTarget(projectDir: string, targetPath: string): string {
+    const rel = path.relative(path.resolve(projectDir), path.resolve(targetPath))
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return ""
+    return rel
+  }
+
+  /**
+   * Builds (or cache-hits) the scope of the bound plan: the cache key is the
+   * scan's per-file sha256 key, so a spec-region edit rebuilds and an
+   * unchanged plan reuses the extracted scope without re-reading the file.
+   * @param plansDir The resolved plans directory.
+   * @param scan The current plans-dir scan.
+   * @param activePlan The bound plan name (a scan member).
+   * @returns The plan's extracted scope.
+   */
+  function planScopeFor(plansDir: string, scan: PlansScan, activePlan: string): PlanScope {
+    const key = scan.fileKeys.get(activePlan)!
+    if (
+      impactScopeCache !== null &&
+      impactScopeCache.planName === activePlan &&
+      impactScopeCache.key === key
+    ) {
+      return impactScopeCache.scope
+    }
+    const bytes = fs.readFileSync(path.join(plansDir, activePlan))
+    const scope = planScopeFiles(planSpecRegion(bytes))
+    impactScopeCache = { planName: activePlan, key, scope }
+    return scope
+  }
+
+  /**
+   * Classifies a parent tool call's target against the bound active plan's
+   * scope. Returns `"none"` when no plan is bound, the plan is absent from
+   * the dir, or the plans dir is unreadable (fail-open, journaling the fs
+   * error like the other plan-gate consumers). In equality mode (write/edit
+   * targets) the target is first relativized against `projectDir` — hosts
+   * report absolute paths while scope entries are repo-relative; a target
+   * outside the project dir relativizes to "" and classifies
+   * `uninspectable` — a verdict the hook layer maps to the hands-on ladder
+   * rather than an allow. The scope is cached per plan keyed by the scan's per-file
+   * sha256 key, so an unchanged plan is never re-read or re-tokenized.
+   * Classifies with `classifyPlanImpact` — the plan-file-self rule names the
+   * bound plan, so an edit to the plan file itself classifies `structural`.
+   * @param projectDir The current project directory.
+   * @param activePlan The bound active plan name ("" means none bound).
+   * @param targetPath The write/edit file path, or the bash command text.
+   * @param matchInText True for containment matching (bash command text),
+   *     false for equality matching (write/edit targets).
+   * @returns The impact classification (`none` / `advisory` / `structural` /
+   *     `uninspectable`; fail-open `"none"`).
+   */
+  function planImpactFor(
+    projectDir: string,
+    activePlan: string,
+    targetPath: string,
+    matchInText: boolean,
+  ): PlanImpact {
+    if (activePlan === "") return "none"
+    const plansDir = resolvePlansDir(projectDir)
+    try {
+      if (!fs.existsSync(plansDir)) return "none"
+      const scan = scanPlans(plansDir)
+      if (!scan.names.includes(activePlan)) return "none"
+      const scope = planScopeFor(plansDir, scan, activePlan)
+      const target = matchInText ? targetPath : relativizeTarget(projectDir, targetPath)
+      if (target === "") return "uninspectable"
+      // The self rule compares against the plans-dir-relative path (e.g.
+      // `.opencode/plans/foo.md`), not the bare name — a bare-name match
+      // would false-positive on any same-named file in the repo.
+      const planRel = path.relative(path.resolve(projectDir), path.join(plansDir, activePlan))
+      return classifyPlanImpact(target, scope, planRel, matchInText)
+    } catch (e) {
+      // Journal the fail-open so an unreadable plans dir stays observable.
+      journaler.journal({ type: "error", error: `plans dir unreadable: ${e}` })
+      return "none"
+    }
+  }
+
   return {
     enforceDecomposition,
     enforcePlanApproval,
@@ -898,5 +1004,6 @@ export function createPlanGates(config: TurnstileConfig, journaler: Journaler): 
     planGateStatus,
     promptPlanNames,
     planApprovalBinding,
+    planImpactFor,
   }
 }

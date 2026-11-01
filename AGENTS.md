@@ -194,8 +194,10 @@ stated feature; devDependencies are tooling only.)
   journaled, never block tool calls. Only deliberate `BLOCKED by turnstile:`
   errors throw. Keep that distinction when editing hooks.
 - Journal replay: `GATE: PASS` entries from `~/.local/share/opencode/metrics/turnstile.jsonl`
-  restore gate state on restart (the newest `replayTailLines` lines, default
-  2000, walked across journal generations newest-first), and plan-reviewer
+  and the per-session `sessions/<parentID>.jsonl` sinks restore gate state on
+  restart (the newest `replayTailLines` lines, default
+  2000, walked across journal generations newest-first and merged
+  ts-ordered across sinks), and plan-reviewer
   `VERDICT: APPROVE` entries restore the plan-approval gate the same way.
   A new user prompt resets the session's gate state, unless
   `continuationCarry` re-arms the one-prompt grace for a same-worktree/branch
@@ -227,9 +229,11 @@ stated feature; devDependencies are tooling only.)
 ## Operational notes
 
 - Journals live outside the repo at `~/.local/share/opencode/metrics/`
-  (`turnstile.jsonl` rotates at 5 MB, 5 generations). Retention is bounded:
+  (`turnstile.jsonl` and each `sessions/<parentID>.jsonl` rotate at 5 MB,
+  5 generations per file). Retention is bounded:
   2 files × (1 current + 5 generations) × 5 MB ≈ ~30 MB per journal, worst
-  case ~60 MB total. With `trace: false` the trace file is never written,
+  case ~60 MB total, plus one bounded sink per live parent session. With
+  `trace: false` the trace file is never written,
   roughly halving that; the JSONL journal is the audit trail and always
   writes.
 - Executor dispatch blocking scans `.opencode/plans/*.md` in the project dir

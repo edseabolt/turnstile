@@ -35,6 +35,8 @@ export interface FakeHost {
   pushEvent: (event: { type: string; data?: unknown; properties?: unknown }) => Promise<void>
   /** Recorded toast calls (`tui.toast.show`), in delivery order. */
   toasts: Array<{ message: string; variant?: string }>
+  /** Recorded `session.prompt` calls, in delivery order. */
+  sessionPrompts: Array<{ sessionID: string; text: string }>
 }
 
 /** A promise with externally held settlement controls. */
@@ -198,6 +200,15 @@ export function makeFakeHost(opts?: {
   /** When set (with `tui`), every toast `show` rejects with an Error. */
   toastReject?: boolean
   /**
+   * Whether the fake host exposes `session.prompt` (default true when the
+   * session surface exists). Recorded calls land in the returned
+   * `sessionPrompts`; `sessionPromptReject` makes each prompt reject so the
+   * failure path is testable.
+   */
+  sessionPrompt?: boolean
+  /** When set, every `session.prompt` rejects with an Error. */
+  sessionPromptReject?: boolean
+  /**
    * When set, the fake host exposes `app` (v2 Context.app identity block)
    * carrying this version string; feeds the host-compat guard at setup.
    */
@@ -212,6 +223,8 @@ export function makeFakeHost(opts?: {
   const sessionRecords = opts?.sessionRecords
   const { push, subscribe } = makeEventBus()
   const toasts: Array<{ message: string; variant?: string }> = []
+  const sessionPrompts: Array<{ sessionID: string; text: string }> = []
+  const withSessionPrompt = opts?.sessionPrompt ?? true
   const host: Host = {
     ...(withTool
       ? {
@@ -244,6 +257,15 @@ export function makeFakeHost(opts?: {
                         sessionRecords.get(sessionID),
                     }
                   : {}),
+            ...(withSessionPrompt
+              ? {
+                  prompt: async (input: { sessionID: string; text: string }): Promise<unknown> => {
+                    if (opts?.sessionPromptReject) throw new Error("prompt failed")
+                    sessionPrompts.push(input)
+                    return undefined
+                  },
+                }
+              : {}),
           },
         }
       : {}),
@@ -275,7 +297,7 @@ export function makeFakeHost(opts?: {
         }
       : {}),
   }
-  return { host, toolHooks, sessionHooks, permissionHooks, pushEvent: push, toasts }
+  return { host, toolHooks, sessionHooks, permissionHooks, pushEvent: push, toasts, sessionPrompts }
 }
 
 /**
@@ -298,7 +320,10 @@ export function tmpDir(prefix = "turnstile-test-"): string {
  */
 export function isolatedEnv(dir: string): Record<string, string> {
   const configPath = path.join(dir, "empty-config.json")
-  fs.writeFileSync(configPath, "{}")
+  // journalPerSession:false keeps the legacy single-file layout for the
+  // shared fixtures; the segmented layout is covered by
+  // tests/journal-segmentation.test.ts.
+  fs.writeFileSync(configPath, JSON.stringify({ journalPerSession: false }))
   return { TURNSTILE_CONFIG: configPath }
 }
 

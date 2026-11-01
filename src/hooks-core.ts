@@ -51,7 +51,9 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
-import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
+import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
+import { intentNudge, orchestratorPolicyFor, planImpactAdvisory } from "./policy.ts"
+import type { PlanImpact } from "./plan-scope.ts"
 import {
   appendSystemText,
   describeRequestDraft,
@@ -101,6 +103,16 @@ type ToastShow = NonNullable<NonNullable<Host["tui"]>["toast"]>["show"]
  * expiry is never a user-visible behavior worth tuning.
  */
 const askLatchTtlMs = 5_000
+
+/** Cap on tracked per-child marker-retry counters (maxSessions scale). */
+const MAX_TRACKED_MARKER_RETRIES = 64
+
+/** Compliance reminder sent to a child whose delivery carried no marker. */
+const MARKER_RETRY_PROMPT =
+  "[turnstile] Your output was received but contained no `GATE:`/`VERDICT:` " +
+  "marker. Restate your verdict using the required marker (GATE: PASS|FAIL " +
+  "tests=<n> passed=<n> failed=<n> for the test-runner, VERDICT: APPROVE|BLOCK " +
+  "crit=<n> high=<n> med=<n> low=<n> for the reviewer and plan-reviewer)."
 
 /** Shared per-setup context consumed by turnstile's per-surface hook modules. */
 export interface TurnstileContext {
@@ -161,8 +173,12 @@ export interface TurnstileContext {
   intentNudgePending: Map<string, IntentKind>
   /** `${sessionID}:${kind}` keys already nudged (one-shot per intent). */
   intentNudgedKinds: Set<string>
+  /** Parent → pending plan-impact advisory text awaiting the next delivery. */
+  planImpactAdvisories: Map<string, string>
   /** Last-known project directory per session. */
   sessionDirs: Map<string, string>
+  /** Child session ID → marker-retry attempts already used. */
+  markerRetries: Map<string, number>
   /** Per-session sliding window of streamed child text. */
   deltaWindows: Map<string, string>
   /** Child session ID → resolved agent name (emitter authority). */
@@ -387,6 +403,11 @@ export interface TurnstileContext {
   parseMarkers(text: string, sessionID: string, source: string, dedupScope?: string): MarkerEvent[]
   /** Admits one user-authored prompt. */
   admitPrompt(sessionID: string, properties: PromptHookProperties, admissionID: string): void
+  /**
+   * Attempts one bounded compliance re-prompt for a bare-output child
+   * delivery. Returns true only when the reminder was actually sent.
+   */
+  retryMarker(child: string, agent: string): Promise<boolean>
   // ── methods ───────────────────────────────────────────────────────────────
   /** Binds the host session API for resolveParent. */
   bindHost(session: Host["session"]): void
@@ -415,12 +436,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // the injected prose (caps, markers, journal paths) matches the mechanical
   // enforcement; it is constant for the load's lifetime.
   const policyText = orchestratorPolicyFor(config)
+  // Per-session sink routing resolves through the ledger's parent map. The
+  // resolver closure reads `ledger` before its declaration line, but it only
+  // fires once hooks run — after `createHooksCore` finished constructing both
+  // the journaler and the ledger. `parentOf` returns the session itself for
+  // unregistered parents (a parent's own entries → its own file) and falls
+  // back to the session when a child's edge is not yet resolved; both files
+  // are read by replay, so nothing is lost.
   const journaler: Journaler = createJournaler({
     metricsDir: config.metricsDir,
     trace: config.trace,
     maxBytes: config.journalMaxBytes,
     maxGenerations: config.journalMaxGenerations,
     rotateEveryEntries: config.journalRotateEveryEntries,
+    perSession: config.journalPerSession,
+    sinkFor: (sessionID) => ledger.parentOf(sessionID),
   })
   // Config warnings are journaled exactly once, by config.ts (the pre-journaler
   // sink); they are now also *surfaced* once into the model context by the
@@ -593,6 +623,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       journalPolicy(sid, false, { skipped: true, reason: skip })
       return
     }
+    // Dormant-until-engaged: a dormant session's context stays clean — the
+    // intent nudge remains the only turnstile prose. The `policyInjected`
+    // latch semantics are unchanged for engaged sessions.
+    if (!enforcementArmed(sid)) return
     const st = ledger.state(sid)
     if (!st.policyInjected) {
       try {
@@ -894,6 +928,14 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // A task-scope drop releases any undelivered nudge (task-scoped delivery
   // state); bounded by boundIntentNudges alongside the dedupe set.
   const intentNudgePending = new Map<string, IntentKind>()
+  // Pending plan-impact advisories, keyed by parent session ID: the text
+  // stashed by the plan-impact classifier (hooks-core) for one classified
+  // parent write/edit/write-shaped bash call, consumed one-shot by the next
+  // parent-facing delivery (same channel as the intent nudge). Latest-wins
+  // when a second classification lands before delivery; a task-scope reset
+  // drops the undelivered advisory with the intent-nudge state. Bounded by
+  // boundIntentNudges alongside the pending-nudge map.
+  const planImpactAdvisories = new Map<string, string>()
   // Intent-nudge one-shot latch: `${sessionID}:${kind}` keys already nudged.
   // One nudge per detected intent signal, deduped across the task scope (a
   // repeated intent prompt journals but does not re-nudge); the
@@ -909,6 +951,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   function boundIntentNudges(): void {
     evictTo(intentNudgedKinds, maxTrackedIntentNudges)
     evictTo(intentNudgePending, config.maxSessions)
+    evictTo(planImpactAdvisories, config.maxSessions)
   }
 
   /**
@@ -941,6 +984,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // the sync consumers fall back to a cached value, then process.cwd().
   // Bounded by boundSessionDirs.
   const sessionDirs = new Map<string, string>()
+
+  /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
+  const markerRetries = new Map<string, number>()
 
   /**
    * Bounds the failed-lookup map by evicting its oldest entries.
@@ -1459,6 +1505,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    *     suppressed.
    */
   function handleReadBudget(key: string): void {
+    // Dormant-until-engaged: the whole-file read horizon sleeps until the
+    // parent engages.
+    if (!enforcementArmed(key)) return
     try {
       gates.guardReadLimit(key, ledger)
     } catch (e) {
@@ -1756,6 +1805,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Advisory intent nudge: independent of the policy head, delivered on the
     // first classified parent-facing delivery after admission.
     prependIntentNudge(event, parent, delivery)
+    prependPlanImpactAdvisory(event, parent, delivery)
     applyPolicyResult(parent, event, delivery, agent)
   }
 
@@ -1803,6 +1853,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     event: ToolHookEvent,
     delivery: Extract<Delivery, { kind: "string" | "structured" }>,
   ): void {
+    // Dormant-until-engaged: a dormant session's deliveries stay clean — the
+    // policy head lands only once enforcement is armed.
+    if (!enforcementArmed(parent)) return
     const policyState = ledger.state(parent)
     if (policyState.policyInjected) return
     try {
@@ -1863,6 +1916,15 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     try {
       const kind = classifyIntent(promptTextOf(properties))
       if (kind === null) return
+      // Engagement replaced the nudge for the engaging kinds: a dispatch or
+      // plan-reference prompt journals its intent row but never nudges (the
+      // pipeline is armed instead) — consistently, regardless of
+      // `alwaysEnforce`. Issue/work intents keep the one-shot advisory
+      // nudge: that is dormant mode's one-time hint.
+      if (shouldEngage(kind)) {
+        journaler.journal({ type: "intent", sessionID, kind })
+        return
+      }
       if (ledger.state(sessionID).hasPlanVerdict) return
       journaler.journal({ type: "intent", sessionID, kind })
       const key = `${sessionID}:${kind}`
@@ -1894,6 +1956,33 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       prependDeliveryText(event, delivery, intentNudge(kind))
     } catch (e) {
       journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
+    }
+  }
+
+  /**
+   * Delivers a pending plan-impact advisory on a classified task/subagent
+   * delivery: consumes the parent's stashed advisory (one-shot) and prepends
+   * the text ahead of the delivery text — the same channel and one-shot
+   * semantics as the intent nudge. Deliveries that cannot carry text keep
+   * the advisory pending for a later delivery. Fail-open: a throwing
+   * mutation journals `type:"error"` and never blocks.
+   * @param event The execute.after payload whose result is mutated.
+   * @param parent The resolved parent session for the delivery.
+   * @param delivery The classified delivery (see `classifyDelivery`).
+   */
+  function prependPlanImpactAdvisory(
+    event: ToolHookEvent,
+    parent: string,
+    delivery: Delivery,
+  ): void {
+    if (delivery.kind !== "string" && delivery.kind !== "structured") return
+    const text = planImpactAdvisories.get(parent)
+    if (text === undefined) return
+    planImpactAdvisories.delete(parent)
+    try {
+      prependDeliveryText(event, delivery, text)
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: parent, error: `plan-impact advisory: ${e}` })
     }
   }
 
@@ -2574,6 +2663,70 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Whether reactive gate enforcement is armed for the session's parent:
+   * the configured `alwaysEnforce` short-circuits to always-armed; otherwise
+   * the parent bucket's `engaged` flag decides (dormant-until-engaged).
+   * Children draw on the parent's engagement via `ledger.parentOf`, matching
+   * the per-parent state rule. Fail toward the configured mode: any ledger
+   * throw journals and returns `config.alwaysEnforce` — a broken engagement
+   * read must not silently arm or disarm beyond the configured default.
+   * @param sessionID The session whose enforcement decision is being made.
+   * @returns True when reactive enforcement is armed for the session's parent.
+   */
+  function enforcementArmed(sessionID: string): boolean {
+    if (config.alwaysEnforce) return true
+    try {
+      return ledger.state(ledger.parentOf(sessionID)).engaged
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `engagement read: ${e}` })
+      return false
+    }
+  }
+
+  /**
+   * Journals one `type:"engagement"` row for a transition that already
+   * mutated the bucket's `engaged` flag. Fail-open: a journaling failure
+   * propagates to the caller's guard (the journaler itself never throws
+   * through the hook bodies).
+   * @param sessionID The parent session whose engagement changed.
+   * @param engaged The new engagement value.
+   * @param reason Why the value changed.
+   */
+  function journalEngagement(sessionID: string, engaged: boolean, reason: EngagementReason): void {
+    journaler.journal(engagementEntry(sessionID, engaged, reason))
+  }
+
+  /**
+   * Captures pipeline engagement from an admitted prompt: a prompt carrying
+   * the approval marker, classified as a plan reference, or classified as a
+   * dispatch request arms the parent's `engaged` flag (once — an already-
+   * engaged bucket journals nothing). Runs after `captureApproval` in the
+   * admission sequence. Fail-open: any throw journals an `error` row and
+   * never propagates from the prompt path.
+   * @param sessionID The admitted parent session.
+   * @param properties The prompt payload to classify.
+   */
+  function captureEngagement(sessionID: string, properties: PromptHookProperties): void {
+    try {
+      const text = promptTextOf(properties)
+      const kind = classifyIntent(text)
+      const approved = text.indexOf(config.approvalMarker) !== -1
+      if (!approved && !shouldEngage(kind)) return
+      const s = ledger.state(sessionID)
+      if (s.engaged) return
+      s.engaged = true
+      const reason: EngagementReason = approved
+        ? "plan-approved"
+        : kind === "dispatch"
+          ? "dispatch-request"
+          : "plan-reference"
+      journalEngagement(sessionID, true, reason)
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID, error: `engagement capture: ${e}` })
+    }
+  }
+
+  /**
    * Whether gate enforcement is suspended for the session's parent: the
    * session-level `TURNSTILE OFF:` state (decisions keep computing and
    * journaling, but deliberate blocks are suppressed). Children draw on the
@@ -2732,6 +2885,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   ): Promise<void> {
     let waived = false
     try {
+      // Dormant-until-engaged: a dormant session's dispatch is allowed
+      // without touching the plan gates — except an actual planner
+      // dispatch, which engages the pipeline first (R2's dispatch trigger).
+      if (!enforcementArmed(sessionID)) {
+        const st = ledger.state(sessionID)
+        if (agent === config.agents.planner && !st.engaged) {
+          st.engaged = true
+          journalEngagement(sessionID, true, "dispatch-request")
+          // Fall through to the full guard chain: the planner dispatch that
+          // armed enforcement is itself governed.
+        } else {
+          allowDispatch(sessionID, agent, description, false)
+          return
+        }
+      }
       waived = dispatchBudget(sessionID, agent)
       if (agent === config.agents.reviewer) reviewerDecisionRecheck(sessionID)
       if (agent === config.agents.executor) {
@@ -2873,8 +3041,12 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // (under the empty default there is no such deny, so `gh pr` flows to
     // the landing telemetry below).
     toolPolicy.guardBash(tool, command, sid)
+    // Dormant-until-engaged: the denylist above and all telemetry below run
+    // unconditionally; the pipeline gates (commit lint, bash-write hands-on
+    // ladder, landing gate) sleep until the parent engages.
+    const armed = enforcementArmed(sid)
     // Conventional-commit lint (fail-closed for uninspectable forms).
-    toolPolicy.guardCommitMessage(tool, command, sid)
+    if (armed) toolPolicy.guardCommitMessage(tool, command, sid)
     // Landing telemetry (always) then the reviewer-gated landing gate.
     const text = String(command ?? "")
     toolPolicy.observeLanding(sid, text)
@@ -2899,7 +3071,15 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // once-grant is consumed inside `guardBashWrite` itself — so a landing
     // grant can never release a bash write, and a hands-on block throws
     // before the landing grant is burned.
-    toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
+    if (!armed) return
+    // Plan-impact advisory for gate-tier write shapes: with a plan bound, a
+    // write-shaped bash command naming a scope path skips ONLY the bash-write
+    // block (strict mode falls through to it for structural overlap) — the
+    // landing gate below still runs, so a compound write+push command cannot
+    // ride the advisory past it. Non-gate verdicts (`telemetry`/`none`) never
+    // classify — the ladder below is a no-op for them.
+    if (gw !== "gate" || classifyParentPlanImpact(tool, text, true, parent, st) !== "allow")
+      toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
     if (consumeLandingGrant(st, text)) return
     toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent, sid))
     return
@@ -2922,6 +3102,63 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     if (st.pendingOnceGrant.handsOn === "") return false
     st.pendingOnceGrant.handsOn = ""
     return true
+  }
+
+  /**
+   * Classifies a parent tool call's target against the bound active plan's
+   * scope (the plan-impact advisory, issue #247's replacement for the
+   * parent-hands-on block while a plan is active). Runs only while the
+   * pipeline is engaged and a plan is bound; with no plan the hands-on
+   * ladder runs unchanged. `"none"` allows silently (no journal row, no
+   * advisory); `"uninspectable"` — a target the classifier cannot place
+   * inside the project dir — falls through to the hands-on ladder without a
+   * journal row; `"advisory"`/`"structural"` journal one
+   * `{type:"plan-impact"}` row and stash the advisory text for the next
+   * parent-facing delivery — except structural overlap under
+   * `planImpactStrict`, which returns `"proceed-hands-on"` so the existing
+   * hands-on ladder restores the block (the row is already journaled, so
+   * the strict block stays auditable). Fail-open: a classification error
+   * journals and proceeds to the hands-on ladder.
+   * @param tool The narrowed tool name (for the journal row).
+   * @param target The write/edit file path, or the bash command text.
+   * @param matchInText True for containment matching (bash command text).
+   * @param parent The parent session (the advisory stash's key).
+   * @param st The parent's gate-state bucket (carries `activePlan`).
+   * @returns `"allow"` to skip the hands-on ladder, or
+   *     `"proceed-hands-on"` to fall through to it.
+   */
+  function classifyParentPlanImpact(
+    tool: string,
+    target: string,
+    matchInText: boolean,
+    parent: string,
+    st: GateState,
+  ): "proceed-hands-on" | "allow" {
+    if (st.activePlan === "") return "proceed-hands-on"
+    let impact: PlanImpact
+    try {
+      impact = gates.planImpact(currentProjectDir(parent), st.activePlan, target, matchInText)
+    } catch (e) {
+      journaler.journal({ type: "error", sessionID: parent, error: `plan-impact: ${e}` })
+      return "proceed-hands-on"
+    }
+    if (impact === "none") return "allow"
+    if (impact === "uninspectable") return "proceed-hands-on"
+    journaler.journal({
+      type: "plan-impact",
+      sessionID: parent,
+      tool,
+      plan: st.activePlan,
+      impact,
+      path: target.slice(0, 200),
+    })
+    if (impact === "structural" && config.planImpactStrict) return "proceed-hands-on"
+    planImpactAdvisories.set(
+      parent,
+      planImpactAdvisory(st.activePlan, impact === "structural" ? "structural" : "advisory"),
+    )
+    boundIntentNudges()
+    return "allow"
   }
 
   /**
@@ -3007,7 +3244,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     }
     const parent = ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
     const st = ledger.state(parent)
+    // Dormant-until-engaged: the denylist above and the scratch exemption
+    // ran unconditionally; the hands-on ladder sleeps until the parent
+    // engages (a dormant session cannot hold a pending once-grant — grants
+    // are earned inside engaged scopes — so skipping the consume is safe).
+    if (!enforcementArmed(parent)) return
     if (consumeHandsOnGrant(st)) return // once-grant: released for this one edit
+    // Plan-impact advisory: with a plan bound, an overlapping write/edit is
+    // allowed with a journaled classification instead of the hands-on block
+    // (strict mode falls through to the ladder for structural overlap). A
+    // released edit above never burns the advisory's one-shot stash. An
+    // empty raw target or an `uninspectable` classification falls through
+    // to the ladder.
+    const target = typeof filePath === "string" ? filePath : ""
+    if (target !== "" && classifyParentPlanImpact(tool, target, false, parent, st) === "allow")
+      return
     toolPolicy.guardHandsOn(tool, filePath, sid, handsOnGateHandles(st, parent))
   }
 
@@ -3089,7 +3340,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * on the emitter (not the parent) because nothing replays against a denied
    * observation; this runs for every non-empty sessionID, including
    * unresolved-edge ones (self-keyed).
-   * @param event The denied marker observation.
+   * @param event The denied marker observation. The `reason` field names the
+   *   denial cause (unresolved emitter vs. kind not in the emitter's contract)
+   *   so journal forensics do not require source reading.
    * @param sessionID The emitter (raw child) session ID.
    * @param source Provenance label for the text.
    */
@@ -3098,14 +3351,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     sessionID: string,
     source: string,
   ): void {
+    const agent = emitterAgent(sessionID)
     journaler.journal({
       type: "suppressed",
       sessionID,
       raw: sessionID,
-      agent: emitterAgent(sessionID),
+      agent,
       kind: event.kind,
       marker: event.marker,
       source,
+      reason: agent === "" ? "emitter agent unresolved" : "agent not contracted for kind",
     })
   }
 
@@ -3438,6 +3693,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       keepTaskScope(sessionID, worktreeFingerprint(currentProjectDir(sessionID)))
       return
     }
+    // Dormant-until-engaged: a scope-changing reset that drops an engaged
+    // bucket without continuation credit sleeps the pipeline again. On a
+    // carry, mergeAfterReplay preserves `engaged` — no row.
+    const droppedEngagement = prior?.engaged === true
     const fingerprint = worktreeFingerprint(currentProjectDir(sessionID))
     // The carry decision is captured BEFORE mutating, not re-derived after.
     // The git probe is total (never throws), so this stays throw-free. A
@@ -3459,8 +3718,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
           sessionID,
           ...(prior!.taskComplete ? { recovery: true } : {}),
         })
+      else if (droppedEngagement) journalEngagement(sessionID, false, "continuation-drop")
     } else {
       resetTaskScope(sessionID)
+      if (droppedEngagement) journalEngagement(sessionID, false, "continuation-drop")
     }
   }
 
@@ -3519,6 +3780,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // detected intent within the task; a plan approval or a task retire
     // clears them, and the drop itself only runs on a scope change).
     intentNudgePending.delete(sessionID)
+    // An undelivered plan-impact advisory belongs to the dropped task scope
+    // the same way: it must not attach to a later task's deliveries.
+    planImpactAdvisories.delete(sessionID)
   }
 
   /**
@@ -3683,6 +3947,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   function markTaskComplete(sessionID: string, s: GateState): void {
     if (s.taskComplete || s.activePlan === "") return
     s.taskComplete = true
+    // Dormant-until-engaged: a retired task sleeps the pipeline again.
+    if (s.engaged) {
+      s.engaged = false
+      journalEngagement(sessionID, false, "task-complete")
+    }
     // The successor task must be able to nudge again: a retire clears the
     // per-kind dedupe latch exactly like a plan approval does (both retire
     // paths — the explicit marker and the gate flip — route here).
@@ -3824,6 +4093,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // children, so this clear only wipes the bucket credit).
     ledger.clearState(sessionID)
     ledger.setSuspended(sessionID, true)
+    // The fresh bucket is dormant by construction; journal the abort
+    // transition so replay restores dormancy last-wins.
+    journalEngagement(sessionID, false, "abort")
   }
 
   /**
@@ -3986,6 +4258,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Approval capture runs BEFORE the waiver capture so a waiver sharing the
     // prompt lands in the (possibly reset) new scope.
     captureApproval(sessionID, properties)
+    captureEngagement(sessionID, properties)
     captureWaiver(sessionID, properties)
     captureTaskDone(sessionID, properties)
     captureSuspend(sessionID, properties)
@@ -3999,6 +4272,59 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    */
   function bindHost(session: Host["session"]): void {
     hostSession = session
+  }
+
+  /**
+   * Journals a terminal marker-retry outcome (exhausted or skipped) and
+   * reports the retry as not sent.
+   * @param child The bare-output child session ID.
+   * @param agent The dispatch-input agent name.
+   * @param used Retry attempts already consumed for this child.
+   * @param outcome Why the retry did not send a prompt.
+   * @returns Always false: no reminder was delivered.
+   */
+  function noteRetrySkipped(
+    child: string,
+    agent: string,
+    used: number,
+    outcome: "exhausted" | "skipped-no-api",
+  ): false {
+    journaler.journal({ type: "marker-retry", sessionID: child, agent, attempt: used, outcome })
+    return false
+  }
+
+  /**
+   * Attempts one bounded compliance re-prompt for a bare-output child
+   * delivery: journals the attempt, sends the marker reminder via the
+   * host's session.prompt when available, and reports whether the
+   * reminder was actually sent. Fail-open: a prompt failure journals a
+   * type:"error" row and never throws.
+   * @param child The bare-output child session ID.
+   * @param agent The dispatch-input agent name.
+   * @returns True only when the reminder prompt was sent.
+   */
+  async function retryMarker(child: string, agent: string): Promise<boolean> {
+    if (config.agentMarkerRetry === 0) return false
+    const used = markerRetries.get(child) ?? 0
+    if (used >= config.agentMarkerRetry) return noteRetrySkipped(child, agent, used, "exhausted")
+    if (typeof hostSession?.prompt !== "function")
+      return noteRetrySkipped(child, agent, used, "skipped-no-api")
+    journaler.journal({
+      type: "marker-retry",
+      sessionID: child,
+      agent,
+      attempt: used,
+      outcome: "prompted",
+    })
+    markerRetries.set(child, used + 1)
+    evictTo(markerRetries, MAX_TRACKED_MARKER_RETRIES)
+    try {
+      await hostSession.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
+      return false
+    }
+    return true
   }
 
   /**
@@ -4041,9 +4367,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     lastHandsOnEscalateAt,
     intentNudgePending,
     intentNudgedKinds,
+    planImpactAdvisories,
     landingGateAsks,
     handsOnGateAsks,
     sessionDirs,
+    markerRetries,
     deltaWindows,
     sessionAgents,
     admittedIds,
@@ -4134,6 +4462,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     suspendBlock,
     parseMarkers,
     admitPrompt,
+    retryMarker,
     // methods
     bindHost,
     bindToast,

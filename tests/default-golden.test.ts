@@ -30,7 +30,10 @@ async function bootDefault(): Promise<{ h: FakeHost; dispose: () => void; metric
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    // alwaysEnforce: the goldens pin the enforcement-time entry shapes and
+    // block messages (the legacy always-armed behavior); the dormant default
+    // lifecycle is covered by tests/engagement.test.ts.
+    config: { metricsDir, alwaysEnforce: true },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }
@@ -326,7 +329,7 @@ async function bootDefaultPlan(): Promise<{
     // Ask mode: the plan-gate ask golden exercises the evaluate ask entry,
     // which only fires under `escalation: "ask"`; the prompt-channel goldens
     // are mode-independent.
-    config: { metricsDir, escalation: "ask" },
+    config: { metricsDir, alwaysEnforce: true, escalation: "ask" },
   })
   const dispose = (await setup(h.host)) as () => void
   return {

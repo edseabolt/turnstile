@@ -352,7 +352,7 @@ function coreWith(
   const metricsDir = existingMetricsDir ?? tmpDir()
   const ctx = createHooksCore({
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   return { ctx, metricsDir }
 }
@@ -378,7 +378,7 @@ async function bootObserve(config: Partial<TurnstileConfig>): Promise<{
   process.chdir(project)
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return {

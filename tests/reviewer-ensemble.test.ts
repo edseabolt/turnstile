@@ -56,6 +56,7 @@ async function boot(
     // empty-diff tests opt back in explicitly.
     config: {
       metricsDir,
+      alwaysEnforce: true,
       // Ask mode: these suites exercise the interactive ask ladder (see
       // permission-approval bootWithPlan); the block-mode default has
       // dedicated guard-level tests.

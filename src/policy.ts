@@ -137,7 +137,7 @@ function worktreeCommitSection(): string {
  * @returns The trace line.
  */
 function traceSection(c: PolicyConfig): string {
-  return `Trace (works with the plugin off): append every dispatch/verdict to ${c.metricsDir}/gate-events.log as \`YYYY-MM-DD HH:MM | agent | event | detail\` (session-bound lines carry an optional trailing \` | <sessionID>\` segment). The plugin also writes ${c.metricsDir}/turnstile.jsonl ({ts,sessionID,type,...}); read: grep/glob/rg first, whole-file reads last.`
+  return `Trace (works with the plugin off): append every dispatch/verdict to ${c.metricsDir}/gate-events.log as \`YYYY-MM-DD HH:MM | agent | event | detail\` (session-bound lines carry an optional trailing \` | <sessionID>\` segment). The plugin also writes ${c.metricsDir}/turnstile.jsonl ({ts,sessionID,type,...}; per-session copies live under ${c.metricsDir}/sessions/<parentID>.jsonl); read: grep/glob/rg first, whole-file reads last.`
 }
 
 /**
@@ -178,6 +178,32 @@ export function intentNudge(kind: IntentKind): string {
     `enter the pipeline — create or choose a plan file in the plans directory and ` +
     `dispatch the planner subagent to begin it, then follow the pipeline order through ` +
     `reviewer approval. If this is not implementation work, ignore this reminder.`
+  )
+}
+
+/**
+ * Builds the plan-impact advisory for one classified parent tool call,
+ * prepended to the next delivery after the classification journaled. The
+ * prose deliberately quotes no marker syntax (no waiver/gate/approval
+ * literals): it is advisory guidance, keeping the marker-drift validated
+ * source set unchanged.
+ * @param plan The path-free active plan name.
+ * @param impact The classification ("advisory" or "structural").
+ * @returns The advisory text prepended ahead of the delivery text.
+ */
+export function planImpactAdvisory(plan: string, impact: "advisory" | "structural"): string {
+  if (impact === "advisory") {
+    return (
+      `[turnstile] plan-impact: this edit overlaps plan "${plan}" outside its ` +
+      `## Decomposition block. Plan steps may go stale — the reviewer will flag the ` +
+      `drift, or take a waiver now if you want it recorded as accepted.`
+    )
+  }
+  return (
+    `[turnstile] plan-impact: this edit touches files or the decomposition of plan ` +
+    `"${plan}". A replan is required for the pipeline to stay authoritative — ` +
+    `re-dispatch the planner scoped to this delta, or take a waiver now to proceed ` +
+    `without one.`
   )
 }
 

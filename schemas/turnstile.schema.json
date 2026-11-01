@@ -29,6 +29,11 @@
       "minimum": 1,
       "description": "Size-check/rotation cadence in appends (default 512)."
     },
+    "journalPerSession": {
+      "type": "boolean",
+      "default": true,
+      "description": "Segment the journal per parent session under sessions/<parentID>.jsonl (default true)."
+    },
     "replayTailLines": {
       "type": "integer",
       "minimum": 1,
@@ -63,6 +68,11 @@
       "type": "integer",
       "minimum": 1,
       "description": "LRU cap on tracked sessions (default 64)."
+    },
+    "agentMarkerRetry": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Compliance re-prompts per bare-output child delivery (no GATE/VERDICT marker) before it counts a violation; 0 disables the retry (default 1)."
     },
     "readWarn": {
       "type": "integer",
@@ -118,6 +128,14 @@
     "intentNudge": {
       "type": "boolean",
       "description": "Advisory intent nudge: a user prompt classified as implementation intent (work verb at code, issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals {type:\"intent\"} and prepends one advisory pipeline-entry nudge to the next tool delivery; false is a full no-op (default true)."
+    },
+    "alwaysEnforce": {
+      "type": "boolean",
+      "description": "true restores the legacy always-armed behavior (enforcement from the first prompt). The default false is dormant-until-engaged: enforcement arms when the user provides a plan (a PLAN APPROVED: marker or a plan-file reference) or asks to run the planner/pipeline, and sleeps again on task completion, TURNSTILE OFF:, or a prompt with no continuation credit (default false)."
+    },
+    "planImpactStrict": {
+      "type": "boolean",
+      "description": "Plan-impact advisory: parent edit/write/write-shaped bash calls that overlap the bound active plan's scope are allowed with a journaled plan-impact classification instead of the parent-hands-on block. true restores blocking for structural overlap (files or the ## Decomposition section named by the plan) (default false)."
     },
     "escalation": {
       "type": "string",
@@ -220,6 +238,14 @@
         "emptyDiffExempt": {
           "type": "boolean",
           "description": "Whether a statically-provable empty-diff git push (every refspec ref-equal to its upstream; no force flags) skips the landing gate (default true; false is the strict opt-out)."
+        },
+        "commitRetryThreshold": {
+          "type": "number",
+          "description": "Failed commit-message attempts within commitRetryWindowMs before the block message appends a canonical example (default 3)."
+        },
+        "commitRetryWindowMs": {
+          "type": "number",
+          "description": "Window in milliseconds for commitRetryThreshold burst counting (default 60000)."
         }
       }
     }

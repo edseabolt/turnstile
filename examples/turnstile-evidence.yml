@@ -59,7 +59,7 @@ jobs:
             echo "No .turnstile/evidence.json committed; nothing to validate."
             exit 0
           fi
-          npx --yes opencode-turnstile@0.9.0 evidence --validate .turnstile/evidence.json
+          npx --yes opencode-turnstile@0.10.0 evidence --validate .turnstile/evidence.json
 
   publish:
     # on: pull_request_target; permissions: contents:read +

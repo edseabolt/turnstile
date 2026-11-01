@@ -67,7 +67,7 @@ async function boot(
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir }
@@ -552,7 +552,10 @@ test("journal replay restores a parent-keyed GATE: PASS across restarts", async 
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -572,7 +575,10 @@ test("journal replay keeps a trailing GATE: FAIL red after an earlier PASS", asy
       `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c2", result: "FAIL" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await assert.rejects(
     () =>
@@ -594,7 +600,10 @@ test("legacy raw-keyed replay entries do not gate the parent session", async () 
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "c-old", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await assert.rejects(
     () =>
@@ -643,7 +652,7 @@ test("read horizon: an unresolved child's first read keys the parent's budget", 
   const h = makeFakeHost({ sessionRecords: new Map([["c1", { parentID: "p1" }]]) })
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { readWarn: 2, readBlock: 3, metricsDir },
+    config: { readWarn: 2, readBlock: 3, alwaysEnforce: true, metricsDir },
   })
   const dispose = (await setup(h.host)) as () => void
   // Three before/after read pairs on the parent p1 (self-keyed, no edge yet)
@@ -679,7 +688,10 @@ test("read horizon: an unresolved child's first read keys the parent's budget", 
 test("read horizon: an unresolvable child self-keys and journals a bounded signal", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost({ throwingGet: true })
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   // Four+ unresolved before-reads: each resolves, self-keys, and fires the
   // bounded signal — but never rejects (fail-open).
@@ -702,7 +714,10 @@ test("read horizon: an unresolvable child self-keys and journals a bounded signa
 test("read horizon: a parent-less root read self-keys without journaling", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost({ sessionRecords: new Map([["p1", {}]]) })
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   for (let i = 0; i < 5; i++) {
     await callTool(h, "execute.before", { tool: "read", sessionID: "p1" })
@@ -820,7 +835,7 @@ test("read horizon: the warn fires on the first string output at or past the thr
   dispose()
 })
 
-/** Bare-output violations fire only for agents in bareOutput (test-runner here, not planner). */
+/** Bare-output violations fire only for agents in bareOutput (test-runner here, not planner). The test-runner delivery is sent twice: the first marker-less delivery consumes the default single retry (a marker-retry row, no violation), the second hits the exhausted budget and journals the violation. */
 test("bare-output violation fires only for marker-contracted agents", async () => {
   const { h, dispose, metricsDir } = await boot()
   await callTool(h, "execute.after", {
@@ -829,12 +844,14 @@ test("bare-output violation fires only for marker-contracted agents", async () =
     input: { agent: "planner" },
     result: { output: "a plan with no marker" },
   })
-  await callTool(h, "execute.after", {
-    tool: "task",
-    sessionID: "p1",
-    input: { agent: "test-runner" },
-    result: { output: "ran tests, no marker" },
-  })
+  for (let i = 0; i < 2; i++) {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "ran tests, no marker" },
+    })
+  }
   const blocked = journalEntries(metricsDir).filter(
     (l) => l.reason === "task output contained no GATE/VERDICT marker",
   )
@@ -966,7 +983,10 @@ test("replayed GATE: PASS survives the first post-restart prompt", async () => {
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   // The resume prompt fires resetState before the first enforcing dispatch.
   await callSession(h, "prompt", { sessionID: "p1" })
@@ -994,7 +1014,7 @@ test("replayed PASS survives exactly one prompt", async () => {
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, continuationCarry: false },
+    config: { metricsDir, alwaysEnforce: true, continuationCarry: false },
   })
   const dispose = (await setup(h.host)) as () => void
   // Two prompts after replay: the grace covers only the first, so the gate is
@@ -1022,7 +1042,10 @@ test("live GATE: FAIL after replay is not resurrected by the grace prompt", asyn
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   // A live FAIL (latest-wins) un-greens the replayed gate before the prompt.
   await callTool(h, "execute.after", {
@@ -1067,7 +1090,10 @@ test("replayed APPROVE survives the grace prompt and stamps", async () => {
   const prev = process.cwd()
   process.chdir(project)
   try {
-    const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+    const setup = turnstile(h.host, {
+      env: isolatedEnv(metricsDir),
+      config: { metricsDir, alwaysEnforce: true },
+    })
     const dispose = (await setup(h.host)) as () => void
     await callSession(h, "prompt", { sessionID: "p1" })
     // Accept-once stamp path: the replay-restored "" is validated + stamped.
@@ -1154,7 +1180,10 @@ test("event loop: message.part.updated markers resolve the parent via session.ge
   const h = makeFakeHost({
     sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
   })
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   h.pushEvent({
     type: "message.part.updated",
@@ -1273,7 +1302,7 @@ test("journal replay is LRU-capped: sessions beyond maxSessions are evicted", as
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, maxSessions: 2 },
+    config: { metricsDir, alwaysEnforce: true, maxSessions: 2 },
   })
   const dispose = (await setup(h.host)) as () => void
   // s3 survived the cap (most recent) and gates its dispatch.
@@ -1299,7 +1328,10 @@ test("journal replay is LRU-capped: sessions beyond maxSessions are evicted", as
 test("event loop: failed parent lookups are negatively cached", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   let calls = 0
   const session = h.host.session
@@ -1322,7 +1354,10 @@ test("event loop: failed parent lookups are negatively cached", async () => {
 test("event loop: thrown parent lookups retry and resolve once the record appears", async () => {
   const metricsDir = tmpDir()
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   let calls = 0
   const session = h.host.session
@@ -1448,7 +1483,10 @@ test("setup journals hooks === 7 when event.subscribe is absent", async () => {
   const h = makeFakeHost()
   // A degraded host never exposes the event stream.
   delete (h.host as { event?: unknown }).event
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
@@ -1462,7 +1500,10 @@ test("setup journals hooks === 7 when the permission surface is absent", async (
   // A host without the permission surface (older host) still registers the
   // event stream, so it lands one below the full host's 8.
   const h = makeFakeHost({ permission: false })
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
   assert.equal(setups.length, 1)
@@ -1482,7 +1523,10 @@ test("setup degrades cleanly when the session and tool surfaces are absent", asy
   const h = makeFakeHost({ session: false, tool: false })
   assert.equal(h.host.session, undefined)
   assert.equal(h.host.tool, undefined)
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   // Registration must not throw despite the missing surfaces.
   const dispose = (await setup(h.host)) as () => void
   const setups = journalEntries(metricsDir).filter((l) => l.type === "setup")
@@ -1766,7 +1810,10 @@ test("consume journals a stream-ended error when the stream completes without ab
     },
   })
   ;(h.host as { event?: unknown }).event = { subscribe }
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await waitUntil(() => journalEntries(metricsDir).some((l) => l.error === "event stream ended"))
   dispose()
@@ -1826,7 +1873,10 @@ test("replay ignores non-gate entries and restores gate state from a mixed journ
     ].join("\n") + "\n",
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   // Gate restored: the reviewer dispatches (no BlockError); the setup/error
   // replay entries were ignored, so they do not gate on anything.
@@ -2487,7 +2537,7 @@ test("snapshot renders the bound plan suffix only when bound", () => {
     hasPlanVerdict: true,
     plansSignature: "abc",
   }).split("\n")
-  assert.match(unbound[2]!, /^- plan: APPROVED stamp=known$/)
+  assert.match(unbound[3]!, /^- plan: APPROVED stamp=known$/)
   const bound = formatGateSnapshot({
     ...newState(),
     hasPlanVerdict: true,
@@ -2495,7 +2545,7 @@ test("snapshot renders the bound plan suffix only when bound", () => {
     approvedPlan: "z-work.md",
     approvedPlanKey: "abc123",
   }).split("\n")
-  assert.match(bound[2]!, /^- plan: APPROVED plan=z-work\.md stamp=known$/)
+  assert.match(bound[3]!, /^- plan: APPROVED plan=z-work\.md stamp=known$/)
 })
 
 /** An invalid `gateMarker` config falls back to the canonical regex and journals
@@ -2603,7 +2653,10 @@ test("trace lines carry a trailing ` | <sessionID>` for a child verdict", async 
   const h = makeFakeHost({
     sessionRecords: new Map([["c1", { parentID: "p1", agent: "reviewer" }]]),
   })
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   h.pushEvent({
     type: "message.part.updated",
@@ -2697,7 +2750,10 @@ test("journal replay restores a GATE: PASS from the previous generation alone", 
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -2721,7 +2777,10 @@ test("journal replay: current-file entry wins over the previous generation for t
     `${JSON.stringify({ ts: "t2", type: "gate", sessionID: "p1", raw: "c2", result: "FAIL" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await assert.rejects(
     () =>
@@ -2748,7 +2807,10 @@ test("journal replay skips malformed lines in both generations and restores the 
     `${JSON.stringify({ ts: "t", type: "gate", sessionID: "p1", raw: "c2", result: "PASS" })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -2787,7 +2849,10 @@ test("journal replay tail is bounded at 2000 lines across both generations", asy
     .join("\n")
   fs.writeFileSync(path.join(metricsDir, "turnstile.jsonl"), `${current}\n`)
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   // pDropped's only entry (line 1 of `.1`) is beyond the last 2000 combined
   // lines, so it is not restored and the reviewer dispatch is blocked.
@@ -2842,7 +2907,7 @@ test("replayTailLines from config truncates the boot replay", async () => {
   const h = makeFakeHost()
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, replayTailLines: 1 },
+    config: { metricsDir, alwaysEnforce: true, replayTailLines: 1 },
   })
   const dispose = (await setup(h.host)) as () => void
   // pOld's only entry is truncated by the one-line tail, so its reviewer
@@ -3123,7 +3188,10 @@ test("replay: FAIL wins over a later unverified enforce PASS", async () => {
       })}\n`,
   )
   const h = makeFakeHost()
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
   const dispose = (await setup(h.host)) as () => void
   await assert.rejects(
     () =>
@@ -3377,7 +3445,7 @@ test("replay restores a verified:true PASS", async () => {
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -3397,7 +3465,7 @@ test("replay skips an enforce-mode verified:false PASS", async () => {
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await assert.rejects(
     () =>
@@ -3421,7 +3489,7 @@ test("replay skips a verified:false PASS with no mode field", async () => {
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await assert.rejects(
     () =>
@@ -3445,7 +3513,7 @@ test("replay restores a flag-mode verified:false PASS green", async () => {
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -3462,7 +3530,7 @@ test("replay restores a field-less legacy PASS (fail-open)", async () => {
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -3483,7 +3551,7 @@ test("replay keeps the gate green when a verified:true PASS trails past an unver
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await callTool(h, "execute.before", {
     tool: "task",
@@ -3503,7 +3571,7 @@ test("replay does not restore unverifiedPass", async () => {
   const h = makeFakeHost()
   const dispose = (await turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir },
+    config: { metricsDir, alwaysEnforce: true },
   })(h.host)) as () => void
   await assert.rejects(
     () =>

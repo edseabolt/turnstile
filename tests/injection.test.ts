@@ -79,7 +79,7 @@ async function boot(
   const h = makeFakeHost({ sessionRecords })
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
-    config: { metricsDir, ...config },
+    config: { metricsDir, alwaysEnforce: true, ...config },
   })
   const dispose = (await setup(h.host)) as () => void
   return { h, dispose, metricsDir, policy: expectedPolicy({ metricsDir, ...config }) }
@@ -693,7 +693,7 @@ test("injection: a streamed verdict suppresses the bare check on a marker-less s
  *  structured delivery with no verdict anywhere journals exactly one
  *  violation keyed on the real child — never on the parent ID. */
 test("injection: a marker-less structured delivery journals a violation keyed on the real child", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir } = await boot({ agentMarkerRetry: 0 })
   try {
     await resolveEdgeViaCreated(h, "c1", "p1", metricsDir)
     const ev = structured("c1", "summarized, marker-less", "plan-reviewer")
@@ -843,7 +843,7 @@ test("injection: the name guard is inert on a structured delivery with an unreso
  *  thus its real parent) from the structured output object; the bare
  *  check evaluates the child's actual text and keys the violation there. */
 test("injection: a structured delivery without metadata resolves the child from the output object", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir } = await boot({ agentMarkerRetry: 0 })
   try {
     // The edge deliberately points at p9, not the event's sessionID p1, so
     // the assertions prove the child came from the result, not the event.
@@ -901,7 +901,7 @@ test("injection: a frozen structured result fails open with injected:false and n
  *  a bareOutput agent exactly as the v1 ack string would — one violation,
  *  keyed on the real child. */
 test("injection: a structured background ack fires the bare check like the v1 ack string", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir } = await boot({ agentMarkerRetry: 0 })
   try {
     await resolveEdgeViaCreated(h, "cR", "p1", metricsDir)
     const ev = structured("cR", "task started in background", "test-runner")
@@ -921,7 +921,7 @@ test("injection: a structured background ack fires the bare check like the v1 ac
  *  violation to that child and keys the policy on the edge-resolved
  *  parent, not the event's session ID. */
 test("injection: a string delivery with a metadata child keys the violation on the real child", async () => {
-  const { h, dispose, metricsDir } = await boot()
+  const { h, dispose, metricsDir } = await boot({ agentMarkerRetry: 0 })
   try {
     await resolveEdgeViaCreated(h, "c5", "p1", metricsDir)
     const event = {
