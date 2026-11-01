@@ -89,8 +89,14 @@ test("classifyPlanImpact: command text without a scope path classifies none", ()
 test("classifyPlanImpact: the plan file's own path classifies structural", () => {
   const scope = planScopeFiles(SPEC)
   assert.equal(
-    classifyPlanImpact(".opencode/plans/plan-x.md", scope, "plan-x.md", false),
+    classifyPlanImpact(".opencode/plans/plan-x.md", scope, ".opencode/plans/plan-x.md", false),
     "structural",
+  )
+  // A same-named file elsewhere in the repo is NOT the plan file: the
+  // comparison is exact against the plans-dir-relative path.
+  assert.equal(
+    classifyPlanImpact("docs/plan-x.md", scope, ".opencode/plans/plan-x.md", false),
+    "none",
   )
   assert.equal(classifyPlanImpact("plan-x.md", scope, "", false), "none")
 })

@@ -105,11 +105,11 @@ export function classifyPlanImpact(
 ): PlanImpact {
   const normalized = normalizePathToken(target)
   const planPath = normalizePathToken(planFilePath)
-  // The self rule matches the plan file by full path or by trailing segment:
-  // the caller knows the plan's name (and its dir-relative path), while the
-  // tool target may be repo-relative or absolute.
-  if (planPath !== "" && (normalized === planPath || normalized.endsWith("/" + planPath)))
-    return "structural"
+  // The self rule matches the plan file by its plans-dir-relative path (e.g.
+  // `.opencode/plans/foo.md`): a bare-name trailing-segment match would
+  // false-positive on any same-named file elsewhere in the repo, so the
+  // caller passes the plans-dir-relative path and the comparison is exact.
+  if (planPath !== "" && normalized === planPath) return "structural"
   const inSet = (set: Set<string>): boolean =>
     matchInText ? [...set].some((p) => normalized.includes(p)) : set.has(normalized)
   if (inSet(scope.structuralFiles)) return "structural"

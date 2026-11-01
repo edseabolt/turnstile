@@ -3073,15 +3073,13 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // before the landing grant is burned.
     if (!armed) return
     // Plan-impact advisory for gate-tier write shapes: with a plan bound, a
-    // write-shaped bash command naming a scope path is allowed with a
-    // journaled classification instead of the bash-write block (strict mode
-    // falls through to the ladder for structural overlap). Non-gate verdicts
-    // (`telemetry`/`none`) never classify — the ladder below is a no-op for
-    // them.
-    if (gw === "gate") {
-      if (classifyParentPlanImpact(tool, text, true, parent, st) === "allow") return
-    }
-    toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
+    // write-shaped bash command naming a scope path skips ONLY the bash-write
+    // block (strict mode falls through to it for structural overlap) — the
+    // landing gate below still runs, so a compound write+push command cannot
+    // ride the advisory past it. Non-gate verdicts (`telemetry`/`none`) never
+    // classify — the ladder below is a no-op for them.
+    if (gw !== "gate" || classifyParentPlanImpact(tool, text, true, parent, st) !== "allow")
+      toolPolicy.guardBashWrite(tool, text, gw, sid, bashWriteGateHandles(st, parent))
     if (consumeLandingGrant(st, text)) return
     toolPolicy.guardLanding(tool, text, sid, landingGateHandles(st, parent, sid))
     return
@@ -3252,8 +3250,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // Plan-impact advisory: with a plan bound, an overlapping write/edit is
     // allowed with a journaled classification instead of the hands-on block
     // (strict mode falls through to the ladder for structural overlap). A
-    // released edit above never burns the advisory's one-shot stash.
-    if (classifyParentPlanImpact(tool, String(filePath ?? ""), false, parent, st) === "allow")
+    // released edit above never burns the advisory's one-shot stash. An
+    // empty/uninspectable target fails toward the ladder (strict).
+    const target = typeof filePath === "string" ? filePath : ""
+    if (target !== "" && classifyParentPlanImpact(tool, target, false, parent, st) === "allow")
       return
     toolPolicy.guardHandsOn(tool, filePath, sid, handsOnGateHandles(st, parent))
   }

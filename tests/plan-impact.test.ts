@@ -11,6 +11,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
@@ -34,12 +35,24 @@ const PLAN_BODY = [
   "",
   "# Objective",
   "",
-  "Update `/repo/README.md` to describe the feature.",
+  "Update `README.md` to describe the feature.",
   "",
   "## Decomposition",
   "",
-  "- chunk-1: rewrite `/repo/src/ledger.ts`",
+  "- chunk-1: rewrite `src/ledger.ts`",
 ].join("\n")
+
+/**
+ * A temp project directory OUTSIDE `os.tmpdir()`: the scratch exemption
+ * resolves any target under the platform temp dir to zero-governance scratch
+ * before the plan-impact classifier runs, so a tmpdir-based project would
+ * mask the advisory. The host reports absolute write/edit targets, and the
+ * classifier relativizes them against this project dir.
+ * @returns The absolute path of the created project directory.
+ */
+function projectDir(): string {
+  return fs.mkdtempSync(path.join(os.homedir(), "turnstile-proj-"))
+}
 
 /**
  * Boots a temp project with one plan file and the plugin over a fake host.
@@ -64,7 +77,7 @@ async function bootImpact(
   project: string
   restore: () => void
 }> {
-  const project = tmpDir()
+  const project = projectDir()
   if (opts.planBody !== "") {
     fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
     fs.writeFileSync(
@@ -126,12 +139,12 @@ function handsOnBlocks(metricsDir: string): Array<Record<string, any>> {
  * block (the advisory arms only on overlap).
  */
 test("plan-impact: non-overlapping write allows with no row and no block", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true })
+  const { h, metricsDir, project, restore } = await bootImpact({ bindPlan: true })
   try {
     await callTool(h, "execute.before", {
       tool: "write",
       sessionID: "p1",
-      input: { filePath: "/repo/src/unrelated.ts" },
+      input: { filePath: path.join(project, "src/unrelated.ts") },
     })
     assert.equal(impactRows(metricsDir).length, 0, "no plan-impact row for a non-overlap")
     assert.equal(handsOnBlocks(metricsDir).length, 0, "no hands-on block either")
@@ -146,12 +159,12 @@ test("plan-impact: non-overlapping write allows with no row and no block", async
  * task delivery prepends the stale-steps advisory text.
  */
 test("plan-impact: overlapping write allows, journals, and prepends the advisory", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true })
+  const { h, metricsDir, project, restore } = await bootImpact({ bindPlan: true })
   try {
     await callTool(h, "execute.before", {
       tool: "write",
       sessionID: "p1",
-      input: { filePath: "/repo/README.md" },
+      input: { filePath: path.join(project, "README.md") },
     })
     const rows = impactRows(metricsDir)
     assert.equal(rows.length, 1, "one plan-impact row")
@@ -200,12 +213,12 @@ test("plan-impact: overlapping write allows, journals, and prepends the advisory
  * is allowed with a `structural` row and the replan advisory text.
  */
 test("plan-impact: structural overlap allows with the structural row and text", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true })
+  const { h, metricsDir, project, restore } = await bootImpact({ bindPlan: true })
   try {
     await callTool(h, "execute.before", {
       tool: "edit",
       sessionID: "p1",
-      input: { filePath: "/repo/src/ledger.ts" },
+      input: { filePath: path.join(project, "src/ledger.ts") },
     })
     const rows = impactRows(metricsDir)
     assert.equal(rows.length, 1)
@@ -233,14 +246,14 @@ test("plan-impact: structural overlap allows with the structural row and text", 
  * structural overlap, with the plan-impact row journaled before the throw.
  */
 test("plan-impact: structural + strict falls through to the hands-on block", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true, strict: true })
+  const { h, metricsDir, project, restore } = await bootImpact({ bindPlan: true, strict: true })
   try {
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {
           tool: "edit",
           sessionID: "p1",
-          input: { filePath: "/repo/src/ledger.ts" },
+          input: { filePath: path.join(project, "src/ledger.ts") },
         }),
       (e: unknown) => e instanceof BlockError,
     )
@@ -258,12 +271,15 @@ test("plan-impact: structural + strict falls through to the hands-on block", asy
  * — no plan-impact row, and the hands-on ladder stays asleep per #246.
  */
 test("plan-impact: unengaged session never classifies", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true, alwaysEnforce: false })
+  const { h, metricsDir, project, restore } = await bootImpact({
+    bindPlan: true,
+    alwaysEnforce: false,
+  })
   try {
     await callTool(h, "execute.before", {
       tool: "write",
       sessionID: "p1",
-      input: { filePath: "/repo/src/ledger.ts" },
+      input: { filePath: path.join(project, "src/ledger.ts") },
     })
     assert.equal(impactRows(metricsDir).length, 0)
     assert.equal(handsOnBlocks(metricsDir).length, 0)
@@ -278,14 +294,14 @@ test("plan-impact: unengaged session never classifies", async () => {
  * plan-impact row appears.
  */
 test("plan-impact: no plan bound keeps the hands-on block unchanged", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ planBody: "" })
+  const { h, metricsDir, project, restore } = await bootImpact({ planBody: "" })
   try {
     await assert.rejects(
       () =>
         callTool(h, "execute.before", {
           tool: "write",
           sessionID: "p1",
-          input: { filePath: "/repo/src/ledger.ts" },
+          input: { filePath: path.join(project, "src/ledger.ts") },
         }),
       (e: unknown) => e instanceof BlockError,
     )
@@ -308,7 +324,7 @@ test("plan-impact: a missing bound plan file fails open to none", async () => {
     await callTool(h, "execute.before", {
       tool: "write",
       sessionID: "p1",
-      input: { filePath: "/repo/src/ledger.ts" },
+      input: { filePath: path.join(project, "src/ledger.ts") },
     })
     assert.equal(impactRows(metricsDir).length, 0)
     assert.equal(handsOnBlocks(metricsDir).length, 0)
@@ -323,13 +339,13 @@ test("plan-impact: a missing bound plan file fails open to none", async () => {
  * command never classifies.
  */
 test("plan-impact: gate-tier bash classifies by command text, telemetry tier does not", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true })
+  const { h, metricsDir, project, restore } = await bootImpact({ bindPlan: true })
   try {
     // Gate-tier writer shape (`cp`) naming a Decomposition file: allowed.
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
-      input: { command: "cp /repo/src/ledger.ts /tmp/backup.ts" },
+      input: { command: `cp ${path.join(project, "src/ledger.ts")} /tmp/backup.ts` },
     })
     const rows = impactRows(metricsDir)
     assert.equal(rows.length, 1)
@@ -340,7 +356,7 @@ test("plan-impact: gate-tier bash classifies by command text, telemetry tier doe
     await callTool(h, "execute.before", {
       tool: "bash",
       sessionID: "p1",
-      input: { command: "npm test > /repo/src/ledger.ts.log" },
+      input: { command: `npm test > ${path.join(project, "src/ledger.ts.log")}` },
     })
     assert.equal(impactRows(metricsDir).length, 1, "the telemetry-tier command added no row")
   } finally {
@@ -382,7 +398,7 @@ test("plan-impact: replay folds the row inertly", () => {
  */
 test("plan-impact: a throwing classification journals and proceeds to the hands-on ladder", () => {
   const metricsDir = tmpDir()
-  const project = tmpDir()
+  const project = projectDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), PLAN_BODY)
   fs.writeFileSync(
@@ -404,7 +420,7 @@ test("plan-impact: a throwing classification journals and proceeds to the hands-
     let blocked: unknown
     try {
       ctx.handleWriteEditDispatch(
-        { sessionID: "p1", input: { filePath: "/repo/README.md" } } as never,
+        { sessionID: "p1", input: { filePath: path.join(project, "README.md") } } as never,
         "write",
       )
     } catch (e) {
@@ -427,12 +443,12 @@ test("plan-impact: a throwing classification journals and proceeds to the hands-
  * assignment) journals the error row and the delivery proceeds.
  */
 test("plan-impact: a throwing advisory prepend journals and never throws", async () => {
-  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true })
+  const { h, metricsDir, project, restore } = await bootImpact({ bindPlan: true })
   try {
     await callTool(h, "execute.before", {
       tool: "write",
       sessionID: "p1",
-      input: { filePath: "/repo/README.md" },
+      input: { filePath: path.join(project, "README.md") },
     })
     assert.equal(impactRows(metricsDir).length, 1, "the classification row is journaled")
     // Register the child edge so the delivery resolves to the parent the
@@ -468,7 +484,7 @@ test("plan-impact: a throwing advisory prepend journals and never throws", async
  */
 test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, and an unreadable plan", () => {
   const metricsDir = tmpDir()
-  const project = tmpDir()
+  const project = projectDir()
   const plansDir = path.join(project, ".opencode", "plans")
   fs.mkdirSync(plansDir, { recursive: true })
   fs.writeFileSync(path.join(plansDir, "plan.md"), PLAN_BODY)
@@ -476,9 +492,10 @@ test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, an
     env: isolatedEnv(metricsDir),
     config: { metricsDir, alwaysEnforce: true },
   })
-  assert.equal(ctx.gates.planImpact(project, "", "/repo/a.ts", false), "none", "no plan bound")
+  const target = path.join(project, "a.ts")
+  assert.equal(ctx.gates.planImpact(project, "", target, false), "none", "no plan bound")
   assert.equal(
-    ctx.gates.planImpact(project, "other.md", "/repo/a.ts", false),
+    ctx.gates.planImpact(project, "other.md", target, false),
     "none",
     "the bound plan is absent from the dir",
   )
@@ -486,7 +503,7 @@ test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, an
   fs.rmSync(path.join(plansDir, "plan.md"))
   fs.mkdirSync(path.join(plansDir, "plan.md"))
   assert.equal(
-    ctx.gates.planImpact(project, "plan.md", "/repo/a.ts", false),
+    ctx.gates.planImpact(project, "plan.md", target, false),
     "none",
     "an unreadable plan file fails open",
   )
@@ -496,4 +513,168 @@ test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, an
   // Only the unreadable read fails loudly (the absent-name case returns
   // before any fs error).
   assert.equal(errors.length, 1, "the unreadable-plan fs error is journaled")
+})
+
+/**
+ * The equality arm relativizes the host's absolute write/edit target against
+ * the project dir before matching the repo-relative scope entries: an
+ * absolute target under the project classifies, a target outside the
+ * project dir classifies "none" (the hook layer fails toward the ladder for
+ * uninspectable targets).
+ */
+test("plan-impact: absolute targets relativize against the project dir", () => {
+  const metricsDir = tmpDir()
+  const project = projectDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  fs.writeFileSync(path.join(plansDir, "plan.md"), PLAN_BODY)
+  const ctx = createHooksCore({
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
+  assert.equal(
+    ctx.gates.planImpact(project, "plan.md", path.join(project, "README.md"), false),
+    "advisory",
+    "an absolute target under the project relativizes to the scope entry",
+  )
+  assert.equal(
+    ctx.gates.planImpact(project, "plan.md", path.join(project, "src", "ledger.ts"), false),
+    "structural",
+    "a Decomposition-section absolute target classifies structural",
+  )
+  assert.equal(
+    ctx.gates.planImpact(project, "plan.md", path.join(project, "..", "elsewhere.ts"), false),
+    "none",
+    "a target outside the project dir classifies none",
+  )
+})
+
+/**
+ * The plan-file-self rule compares the plans-dir-relative path exactly: an
+ * edit to the plan file itself classifies structural, while a same-named
+ * file elsewhere in the repo does not (no bare-name trailing-segment
+ * false positive).
+ */
+test("plan-impact: the plan-file-self rule matches the plans-dir-relative path only", () => {
+  const metricsDir = tmpDir()
+  const project = projectDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  fs.writeFileSync(path.join(plansDir, "plan.md"), PLAN_BODY)
+  const ctx = createHooksCore({
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
+  assert.equal(
+    ctx.gates.planImpact(
+      project,
+      "plan.md",
+      path.join(project, ".opencode", "plans", "plan.md"),
+      false,
+    ),
+    "structural",
+    "an edit to the plan file itself classifies structural",
+  )
+  assert.equal(
+    ctx.gates.planImpact(project, "plan.md", path.join(project, "docs", "plan.md"), false),
+    "none",
+    "a same-named file elsewhere in the repo does not",
+  )
+})
+
+/**
+ * The scope cache: an unchanged plan is classified from the cached scope
+ * (the second call hits the per-file sha256 key), and a plan edit rebuilds
+ * it — the reclassification reflects the new scope.
+ */
+test("plan-impact: the scope cache reuses an unchanged plan and rebuilds on edit", () => {
+  const metricsDir = tmpDir()
+  const project = projectDir()
+  const plansDir = path.join(project, ".opencode", "plans")
+  fs.mkdirSync(plansDir, { recursive: true })
+  const planPath = path.join(plansDir, "plan.md")
+  fs.writeFileSync(planPath, PLAN_BODY)
+  const ctx = createHooksCore({
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
+  const target = path.join(project, "README.md")
+  assert.equal(ctx.gates.planImpact(project, "plan.md", target, false), "advisory")
+  // Second call: cache hit, same verdict.
+  assert.equal(ctx.gates.planImpact(project, "plan.md", target, false), "advisory")
+  // Edit the plan: the key changes, the scope rebuilds, README is gone.
+  fs.writeFileSync(
+    planPath,
+    PLAN_BODY.replace("Update `README.md` to describe the feature.", "Nothing named here."),
+  )
+  assert.equal(
+    ctx.gates.planImpact(project, "plan.md", target, false),
+    "none",
+    "an edited plan rebuilds the cached scope",
+  )
+})
+
+/**
+ * Fail-toward-strict: an empty/uninspectable write target never classifies —
+ * the hands-on ladder runs and blocks, and no plan-impact row appears.
+ */
+test("plan-impact: an empty write target falls through to the hands-on ladder", async () => {
+  const { h, metricsDir, restore } = await bootImpact({ bindPlan: true })
+  try {
+    // The ladder itself fails open on a targetless write (a journaled
+    // error, no block) — the advisory's contract is only that it never
+    // classifies an uninspectable target, so no plan-impact row appears
+    // and the decision belongs to the ladder, not the classifier.
+    await callTool(h, "execute.before", {
+      tool: "write",
+      sessionID: "p1",
+      input: { filePath: "" },
+    })
+    assert.equal(impactRows(metricsDir).length, 0, "an uninspectable target never classifies")
+    const ladderErrors = journalEntries(metricsDir).filter(
+      (e) =>
+        e.type === "error" &&
+        String(e.error).startsWith("execute.before: hands-on gate carried no target path"),
+    )
+    assert.equal(ladderErrors.length, 1, "the ladder ran and journaled its targetless error")
+  } finally {
+    restore()
+  }
+})
+
+/**
+ * The landing gate is never bypassed by the advisory: a compound
+ * write+push command naming a scope path is classified (plan-impact row)
+ * and allowed past the bash-write block, but still BLOCKED by the landing
+ * gate (no-landing-approval) — the advisory skips only the bash-write arm.
+ */
+test("plan-impact: a compound write+push command still hits the landing gate", async () => {
+  const { h, metricsDir, project, restore } = await bootImpact({
+    bindPlan: true,
+    alwaysEnforce: true,
+  })
+  try {
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "bash",
+          sessionID: "p1",
+          input: {
+            command: `cp ${path.join(project, "src/ledger.ts")} /tmp/b.ts && git push origin main`,
+          },
+        }),
+      (e: unknown) => e instanceof BlockError,
+      "the landing gate blocks the push",
+    )
+    const landing = journalEntries(metricsDir).filter(
+      (e) => e.type === "blocked" && e.reason === "no-landing-approval",
+    )
+    assert.equal(landing.length, 1, "the block reason is no-landing-approval")
+    const rows = impactRows(metricsDir)
+    assert.equal(rows.length, 1, "the scope-overlapping command journaled its classification")
+    assert.equal(rows[0]!.impact, "structural")
+    assert.equal(handsOnBlocks(metricsDir).length, 0, "the bash-write block was skipped")
+  } finally {
+    restore()
+  }
 })
