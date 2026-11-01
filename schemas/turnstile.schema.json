@@ -238,6 +238,14 @@
         "emptyDiffExempt": {
           "type": "boolean",
           "description": "Whether a statically-provable empty-diff git push (every refspec ref-equal to its upstream; no force flags) skips the landing gate (default true; false is the strict opt-out)."
+        },
+        "commitRetryThreshold": {
+          "type": "number",
+          "description": "Failed commit-message attempts within commitRetryWindowMs before the block message appends a canonical example (default 3)."
+        },
+        "commitRetryWindowMs": {
+          "type": "number",
+          "description": "Window in milliseconds for commitRetryThreshold burst counting (default 60000)."
         }
       }
     }

@@ -145,8 +145,15 @@ agent is instructed to stop and report, and the gate releases only on your
 explicit `PLAN APPROVED:` prompt marker or an earned reviewer
 verdict); `escalation: "ask"` restores the interactive human permission ask
 on the repeat. Commit subjects are linted as conventional
-commits (`gitGates.commitMessages: true`, the default) and an invalid
-subject blocks the commit outright. Gates are always enforced — there is
+commits (`gitGates.commitMessages: true`, the default): `git commit -m` must
+match `<type>(<scope>)?: <subject>` — type one of
+`feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`, an optional
+`(scope)`, a `: ` or `!` separator, a subject of 1–72 characters, and at most
+one body line. An invalid subject blocks the commit, and the block message
+names exactly what was wrong; after `gitGates.commitRetryThreshold` (default 3)
+failed attempts within `gitGates.commitRetryWindowMs` (default 60000 ms) in the
+same session, the block also carries a full canonical example. Gates are always
+enforced — there is
 no audit-only mode. The opt-outs are per-feature: `gitGates.landingGate:
 false` disables the landing gate, `gitGates.commitMessages: false`
 disables commit lint, and `TURNSTILE OFF:` suspends everything for the
