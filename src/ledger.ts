@@ -23,7 +23,7 @@ import * as path from "node:path"
 import { evictTo } from "./bounded.ts"
 import { CANONICAL_REVIEWER_AGENT } from "./config.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
-import { appendLine, now } from "./journal.ts"
+import { appendLine, now, REPLAY_SESSION_RE } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE, clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
 import type { StickyReleaseKind } from "./gates-common.ts"
 
@@ -354,11 +354,7 @@ export interface GateLedger {
 }
 
 /**
- * Host session-ID alphabet, length-capped: the only shapes replay accepts
- * as bucket keys. Anything else is hostile bytes, not a session.
- */
-const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
-/** Upper bound on a replayed VERDICT marker string (a real marker fits
+ * Upper bound on a replayed VERDICT marker string (a real marker fits
  *  well under this; anything longer is hostile padding). */
 const MAX_REPLAY_MARKER_LEN = 512
 /** Upper bound on a replayed plan file name (a path-free file name). */
@@ -546,41 +542,94 @@ function newReplayMaps(): ReplayMaps {
 }
 
 /**
- * Reads the retained journal lines covering the replay window, oldest-first.
- * Walks generations newest-first (`journalPath`, then `${journalPath}.1`,
- * `.2`, …, stopping at the first missing generation — a missing current file
- * is the post-rotation state, so the walk starts at `.1`) and stops as soon
- * as the collected lines alone satisfy the tail bound. An unreadable
- * generation (a directory in its place, a permission failure) folds nothing
- * from its file: one message-free `replay` error entry is journaled (the
- * walk is bounded by the generation count, so the entries are bounded too)
- * and the walk continues with the next-older generation. Generations are
- * time-ordered, so latest-wins still falls out of the oldest-first result.
- * @param journalPath Absolute path of the current journal file.
- * @param tailLines The tail bound in lines (non-positive reads nothing).
- * @returns The tail-window lines, oldest-first (empty when nothing is read).
+ * Reads the retained journal lines of one file family (the current file plus
+ * its rotated generations), oldest-first, up to `remaining` lines.
+ * Walks generations newest-first (`file`, then `${file}.1`, `.2`, …, stopping
+ * at the first missing generation — a missing current file is the
+ * post-rotation state, so the walk starts at `.1`) and stops as soon as the
+ * collected lines alone satisfy the bound. An unreadable generation (a
+ * directory in its place, a permission failure) folds nothing from its file:
+ * one message-free `replay` error entry is journaled (the walk is bounded by
+ * the generation count, so the entries are bounded too) and the walk
+ * continues with the next-older generation.
+ * @param file Absolute path of the current journal file.
+ * @param remaining The per-file tail bound in lines (non-positive reads
+ *     nothing).
+ * @returns The file's tail-window lines, oldest-first (empty when nothing is
+ *     read).
  */
-function readReplayLines(journalPath: string, tailLines: number): string[] {
-  if (tailLines <= 0) return []
+function readReplayFileLines(file: string, remaining: number): string[] {
+  if (remaining <= 0) return []
   const blocks: string[][] = []
-  let generation = fs.existsSync(journalPath) ? 0 : 1
+  let generation = fs.existsSync(file) ? 0 : 1
   for (;;) {
-    const file = generation === 0 ? journalPath : `${journalPath}.${generation}`
-    if (!fs.existsSync(file)) break
+    const gen = generation === 0 ? file : `${file}.${generation}`
+    if (!fs.existsSync(gen)) break
     let block: string[]
     try {
-      block = fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+      block = fs.readFileSync(gen, "utf8").split("\n").filter(Boolean)
     } catch {
       // One unreadable generation must not sink the replay of the rest:
       // journal a message-free error entry, fold nothing, keep walking.
-      appendLine(journalPath, JSON.stringify({ ts: now(), type: "replay", error: true }))
+      appendLine(file, JSON.stringify({ ts: now(), type: "replay", error: true }))
       block = []
     }
     blocks.unshift(block)
-    if (blocks.reduce((total, chunk) => total + chunk.length, 0) >= tailLines) break
+    if (blocks.reduce((total, chunk) => total + chunk.length, 0) >= remaining) break
     generation++
   }
-  return blocks.flat().slice(-tailLines)
+  return blocks.flat().slice(-remaining)
+}
+
+/**
+ * Sorts one replay line by its `ts` field for the cross-sink merge. An
+ * ISO-8601 `ts` is lexicographically sortable; a missing or unparseable `ts`
+ * sorts oldest (it never wins a last-wins fold against a parseable row).
+ * @param line The raw journal line.
+ * @returns The sort key (empty string sorts first).
+ */
+function replayTsKey(line: string): string {
+  try {
+    const ts = (JSON.parse(line) as { ts?: unknown }).ts
+    return typeof ts === "string" && !Number.isNaN(Date.parse(ts)) ? ts : ""
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Reads the retained journal lines covering the replay window across all
+ * sinks, oldest-first by timestamp. Walks the shared file's generations,
+ * then every `sessions/*.jsonl` file's generations the same way (a guarded
+ * directory read: any failure yields no session sinks), merges all
+ * collected lines, orders them by the `ts` field (missing/unparseable sorts
+ * oldest), and slices the global tail. Last-wins folds are per-sessionID
+ * and each sessionID's rows live in exactly one file, so cross-file
+ * ordering cannot change any per-session fold; the global `ts` sort only
+ * preserves the observe-mode global totals' last-wins behavior.
+ * @param journalPath Absolute path of the current shared journal file.
+ * @param sessionsDir Absolute path of the per-session journal directory.
+ * @param tailLines The tail bound in lines (non-positive reads nothing).
+ * @returns The tail-window lines, oldest-first (empty when nothing is read).
+ */
+function readReplayLines(journalPath: string, sessionsDir: string, tailLines: number): string[] {
+  if (tailLines <= 0) return []
+  const lines = readReplayFileLines(journalPath, tailLines)
+  let sessionFiles: string[] = []
+  try {
+    sessionFiles = fs
+      .readdirSync(sessionsDir)
+      .filter((name) => /\.jsonl(\.\d+)?$/.test(name))
+      .map((name) => path.join(sessionsDir, name))
+  } catch {
+    // No sessions dir (legacy layout) or unreadable: replay the shared file only.
+  }
+  for (const file of sessionFiles) lines.push(...readReplayFileLines(file, tailLines))
+  return lines
+    .map((line, i) => ({ line, key: replayTsKey(line), i }))
+    .sort((a, b) => (a.key === b.key ? a.i - b.i : a.key < b.key ? -1 : 1))
+    .map(({ line }) => line)
+    .slice(-tailLines)
 }
 
 /**
@@ -1600,6 +1649,7 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
 function replayGatePasses(
   states: Map<string, GateState>,
   journalPath: string,
+  sessionsDir: string,
   tailLines: number,
   creditedApprovals: Map<string, number>,
   reviewerAgent: string,
@@ -1609,7 +1659,7 @@ function replayGatePasses(
 ): void {
   const maps = newReplayMaps()
   const drops: ReplayDrop[] = []
-  for (const line of readReplayLines(journalPath, tailLines)) {
+  for (const line of readReplayLines(journalPath, sessionsDir, tailLines)) {
     const entry = parseReplayLine(line)
     if (entry === null) continue
     if (entry === "malformed") {
@@ -1655,6 +1705,10 @@ function replayGatePasses(
  *     reviewer-approval credit must be attributed to (defaults to the
  *     canonical reviewer name; the wiring passes `config.agents.reviewer` so
  *     a renamed reviewer works).
+ * @param sessionsDir Optional absolute path of the per-session journal
+ *     directory replayed alongside the shared file; defaults to `sessions`
+ *     beside the journal (the metrics dir). Injected to redirect the sinks
+ *     (tests).
  * @returns A ledger bound to a fresh in-memory session map.
  */
 export function createLedger(
@@ -1664,6 +1718,7 @@ export function createLedger(
   approvalLedgerPath?: string,
   observeSessions = 0,
   reviewerAgent: string = CANONICAL_REVIEWER_AGENT,
+  sessionsDir: string = path.join(path.dirname(journalPath), "sessions"),
 ): GateLedger {
   const states = new Map<string, GateState>()
   const childToParent = new Map<string, string>()
@@ -2045,6 +2100,7 @@ export function createLedger(
   replayGatePasses(
     states,
     journalPath,
+    sessionsDir,
     replayTailLines,
     creditedApprovals,
     reviewerAgent,

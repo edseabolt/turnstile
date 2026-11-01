@@ -131,7 +131,7 @@ test("replay reads both sinks across generations", () => {
   fs.renameSync(sessionJournalPath(metricsDir, "p1"), `${sessionJournalPath(metricsDir, "p1")}.1`)
   fs.writeFileSync(
     path.join(metricsDir, "turnstile.jsonl"),
-    `${JSON.stringify({ ts: "t", type: "verdict", sessionID: "p1", agent: "reviewer", raw: "VERDICT: APPROVE" })}\n`,
+    `${JSON.stringify({ ts: "t", type: "verdict", sessionID: "p1", raw: "c1", marker: "VERDICT: APPROVE", source: "task-result", agent: "reviewer" })}\n`,
   )
   const ledger = createLedger(
     path.join(metricsDir, "turnstile.jsonl"),
