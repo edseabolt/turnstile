@@ -9,6 +9,7 @@
 //   opencode-turnstile check      Verify artifacts against the manifest
 //   opencode-turnstile uninstall  Remove installed artifacts (manifest artifacts)
 //   opencode-turnstile status     Report gate/plan state from the JSONL journal
+//   opencode-turnstile log        Render a session's turnstile timeline from the JSONL journal
 //   opencode-turnstile evidence   Emit a shareable evidence summary for one task
 //   opencode-turnstile version    Print the installed package version
 //
@@ -28,6 +29,7 @@ const repoRoot = resolve(here, "..")
 const installScript = join(repoRoot, "scripts/install.mjs")
 const statusScript = join(repoRoot, "scripts/status.mjs")
 const evidenceScript = join(repoRoot, "scripts/evidence.mjs")
+const logScript = join(repoRoot, "scripts/log.mjs")
 
 const USAGE = `Usage: opencode-turnstile <command>
 
@@ -46,6 +48,9 @@ Commands:
              nothing to the journal — --out writes the artifact files)
              (evidence --task <session|latest> --format json|markdown [--out <path>]
               evidence --validate <path>   re-check a committed artifact, write nothing)
+  log       Print a chronological timeline of one session's journaled events
+            (read-only; log [sessionID] defaults to the most recent session;
+             --json prints machine-readable output)
   version   Print the installed package version
 
 init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
@@ -124,6 +129,13 @@ async function main() {
       // leading-"--" strip as the status case).
       const evidencePassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
       return process.exit(await spawnInstaller(evidenceScript, evidencePassthrough))
+    }
+    case "log": {
+      // Read-only timeline surface over the JSONL journal (writes nothing):
+      // spawn scripts/log.mjs with passthrough args (same leading-"--" strip
+      // as the status case).
+      const logPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      return process.exit(await spawnInstaller(logScript, logPassthrough))
     }
     default:
       console.log(USAGE)
