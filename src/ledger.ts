@@ -555,10 +555,13 @@ function newReplayMaps(): ReplayMaps {
  * @param file Absolute path of the current journal file.
  * @param remaining The per-file tail bound in lines (the caller guarantees a
  *     positive bound).
+ * @param errorSink Absolute path of the file that receives the `replay`
+ *     error telemetry row when a generation is unreadable (the shared
+ *     journal, never the file being read).
  * @returns The file's tail-window lines, oldest-first (empty when nothing is
  *     read).
  */
-function readReplayFileLines(file: string, remaining: number): string[] {
+function readReplayFileLines(file: string, remaining: number, errorSink: string): string[] {
   const blocks: string[][] = []
   let generation = fs.existsSync(file) ? 0 : 1
   for (;;) {
@@ -569,8 +572,9 @@ function readReplayFileLines(file: string, remaining: number): string[] {
       block = fs.readFileSync(gen, "utf8").split("\n").filter(Boolean)
     } catch {
       // One unreadable generation must not sink the replay of the rest:
-      // journal a message-free error entry, fold nothing, keep walking.
-      appendLine(file, JSON.stringify({ ts: now(), type: "replay", error: true }))
+      // journal a message-free error entry on the shared sink, fold
+      // nothing, keep walking.
+      appendLine(errorSink, JSON.stringify({ ts: now(), type: "replay", error: true }))
       block = []
     }
     blocks.unshift(block)
@@ -599,13 +603,17 @@ function replayTsKey(line: string): string {
 /**
  * Reads the retained journal lines covering the replay window across all
  * sinks, oldest-first by timestamp. Walks the shared file's generations,
- * then every `sessions/*.jsonl` file's generations the same way (a guarded
- * directory read: any failure yields no session sinks), merges all
- * collected lines, orders them by the `ts` field (missing/unparseable sorts
- * oldest), and slices the global tail. Last-wins folds are per-sessionID
- * and each sessionID's rows live in exactly one file, so cross-file
- * ordering cannot change any per-session fold; the global `ts` sort only
- * preserves the observe-mode global totals' last-wins behavior.
+ * then every `sessions/` file family's generations the same way (a guarded
+ * directory read: any failure yields no session sinks; every entry maps to
+ * its family root — `p1.jsonl.2` roots at `p1.jsonl` — and the set of roots
+ * is deduplicated, so each generation is visited exactly once by its own
+ * family's walk, including a fully rotated family whose current file is
+ * absent), merges all collected lines, orders them by the `ts` field
+ * (missing/unparseable sorts oldest), and slices the global tail. Last-wins
+ * folds are per-sessionID and each sessionID's rows live in exactly one
+ * file, so cross-file ordering cannot change any per-session fold; the
+ * global `ts` sort only preserves the observe-mode global totals' last-wins
+ * behavior.
  * @param journalPath Absolute path of the current shared journal file.
  * @param sessionsDir Absolute path of the per-session journal directory.
  * @param tailLines The tail bound in lines (non-positive reads nothing).
@@ -613,17 +621,21 @@ function replayTsKey(line: string): string {
  */
 function readReplayLines(journalPath: string, sessionsDir: string, tailLines: number): string[] {
   if (tailLines <= 0) return []
-  const lines = readReplayFileLines(journalPath, tailLines)
+  const lines = readReplayFileLines(journalPath, tailLines, journalPath)
   let sessionFiles: string[] = []
   try {
-    sessionFiles = fs
-      .readdirSync(sessionsDir)
-      .filter((name) => /\.jsonl(\.\d+)?$/.test(name))
-      .map((name) => path.join(sessionsDir, name))
+    sessionFiles = [
+      ...new Set(
+        fs
+          .readdirSync(sessionsDir)
+          .filter((name) => /\.jsonl(\.\d+)?$/.test(name))
+          .map((name) => path.join(sessionsDir, name.replace(/(\.\d+)+$/, ""))),
+      ),
+    ]
   } catch {
     // No sessions dir (legacy layout) or unreadable: replay the shared file only.
   }
-  for (const file of sessionFiles) lines.push(...readReplayFileLines(file, tailLines))
+  for (const file of sessionFiles) lines.push(...readReplayFileLines(file, tailLines, journalPath))
   return lines
     .map((line, i) => ({ line, key: replayTsKey(line), i }))
     .sort((a, b) => (a.key === b.key ? a.i - b.i : a.key < b.key ? -1 : 1))

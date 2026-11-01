@@ -303,3 +303,105 @@ test("replay tolerates an unparseable ts in the merge sort", () => {
     "an unparseable ts sorts oldest and never wins the fold",
   )
 })
+
+test("replay reads a rotated session generation exactly once", () => {
+  const metricsDir = tmpDir()
+  const sessionsDir = path.join(metricsDir, "sessions")
+  fs.mkdirSync(sessionsDir)
+  // The rotated generation's rows must enter the merged window once: a
+  // second copy would inflate the window and evict the shared-file PASS
+  // that sits just inside the tail bound.
+  fs.writeFileSync(
+    `${sessionJournalPath(metricsDir, "p1")}.1`,
+    `${JSON.stringify({ ts: "2026-01-02T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n` +
+      `${JSON.stringify({ ts: "2026-01-03T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n`,
+  )
+  fs.writeFileSync(
+    sessionJournalPath(metricsDir, "p1"),
+    `${JSON.stringify({ ts: "2026-01-04T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n` +
+      `${JSON.stringify({ ts: "2026-01-05T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n`,
+  )
+  fs.writeFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    `${JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  const ledger = createLedger(
+    path.join(metricsDir, "turnstile.jsonl"),
+    64,
+    5,
+    undefined,
+    0,
+    "reviewer",
+    sessionsDir,
+  )
+  assert.equal(
+    ledger.peek("p1")?.hasGatePass,
+    true,
+    "the PASS survives the tail bound only when the generation is read once",
+  )
+})
+
+test("replay restores a PASS from a fully rotated session generation", () => {
+  const metricsDir = tmpDir()
+  const sessionsDir = path.join(metricsDir, "sessions")
+  fs.mkdirSync(sessionsDir)
+  // The current session file is absent (post-rotation state) and the whole
+  // tail window lives in the rotated generation: the generation walk must
+  // visit it exactly once so every unique row fits the tail bound.
+  fs.writeFileSync(
+    `${sessionJournalPath(metricsDir, "p1")}.1`,
+    `${JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n` +
+      `${JSON.stringify({ ts: "2026-01-02T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n` +
+      `${JSON.stringify({ ts: "2026-01-03T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n` +
+      `${JSON.stringify({ ts: "2026-01-04T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n` +
+      `${JSON.stringify({ ts: "2026-01-05T00:00:00.000Z", type: "tool", sessionID: "p1" })}\n`,
+  )
+  const ledger = createLedger(
+    path.join(metricsDir, "turnstile.jsonl"),
+    64,
+    5,
+    undefined,
+    0,
+    "reviewer",
+    sessionsDir,
+  )
+  assert.equal(
+    ledger.peek("p1")?.hasGatePass,
+    true,
+    "the rotated-generation PASS restores within the tail bound",
+  )
+})
+
+test("replay error rows land on the shared journal", () => {
+  const metricsDir = tmpDir()
+  const sessionsDir = path.join(metricsDir, "sessions")
+  fs.mkdirSync(sessionsDir)
+  // An unreadable session generation (a directory in its place) journals
+  // the replay error row on the shared file — never on the session sink
+  // being read, where the append would target the broken family itself.
+  fs.mkdirSync(`${sessionJournalPath(metricsDir, "p1")}.1`)
+  fs.writeFileSync(
+    sessionJournalPath(metricsDir, "p1"),
+    `${JSON.stringify({ ts: "2026-01-02T00:00:00.000Z", type: "gate", sessionID: "p1", raw: "c1", result: "PASS" })}\n`,
+  )
+  const ledger = createLedger(
+    path.join(metricsDir, "turnstile.jsonl"),
+    64,
+    2000,
+    undefined,
+    0,
+    "reviewer",
+    sessionsDir,
+  )
+  assert.equal(ledger.peek("p1")?.hasGatePass, true, "the readable generation still restores")
+  const shared = fs.readFileSync(path.join(metricsDir, "turnstile.jsonl"), "utf8")
+  const sharedRows = shared
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+  assert.equal(
+    sharedRows.some((r) => r.type === "replay" && r.error === true),
+    true,
+    "the replay error row landed on the shared journal",
+  )
+})

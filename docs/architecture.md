@@ -518,7 +518,8 @@ event:"summary", dropped:<total>}` in place of the overflow. Every flavor
   and the status aggregate treats it as inert.
   A `replay` entry is the file-level audit of an unreadable journal
   generation during the boot replay: `{ts, type:"replay", error:true}` with
-  no message — one per unreadable generation file, so the entries are
+  no message — one per unreadable generation file, always appended to the
+  shared `turnstile.jsonl` (never the file being read), so the entries are
   bounded by the generation count. It is replay-inert and status-inert, like
   the drop entries above.
   A `generate-draft` entry is the one-per-boot request-draft telemetry row
@@ -693,8 +694,11 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
 
 On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file
-exists) and then every `sessions/*.jsonl` sink's generations the same way
-(a guarded directory read: any failure replays the shared file only),
+exists) and then every `sessions/` file family's generations the same way
+(a guarded directory read: any failure replays the shared file only; every
+directory entry maps to its family root — `p1.jsonl.2` roots at `p1.jsonl` —
+and the deduplicated root set is walked, so each generation is read exactly
+once, including a fully rotated family whose current file is absent),
 merges the collected lines ordered by their `ts` field (missing/unparseable
 sorts oldest) and keeps the last `replayTailLines` lines (default 2000)
 globally. Last-wins folds are per-sessionID and each sessionID's rows live
@@ -714,7 +718,8 @@ marker ≤ 512 chars, ensemble count an integer in
 dropped line journals one replay-drop `suppressed` entry (above). An
 unreadable generation file (a directory in its place, a permission failure)
 folds nothing from its lines: it journals one message-free
-`{ts, type:"replay", error:true}` entry (bounded by the generation count) and
+`{ts, type:"replay", error:true}` entry on the shared `turnstile.jsonl`
+(bounded by the generation count) and
 the walk continues with the next-older generation. It then
 restores per session, last-wins:
 `hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
