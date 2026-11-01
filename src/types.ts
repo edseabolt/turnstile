@@ -716,6 +716,14 @@ export interface TurnstileConfig {
    */
   journalRotateEveryEntries: number
   /**
+   * Segment the JSONL journal per parent session: entries carrying a
+   * resolvable parent sessionID append to `sessions/<parentID>.jsonl` under
+   * the metrics dir (same rotation bounds per file); entries without a
+   * sessionID land in the shared `turnstile.jsonl`. False restores the
+   * single-file layout.
+   */
+  journalPerSession: boolean
+  /**
    * Replay tail window in lines: the most recent this-many journal lines,
    * walked newest-first across all retained generations (current file plus
    * rotated generations), are replayed at boot; older lines are dropped.

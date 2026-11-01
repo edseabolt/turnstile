@@ -34,6 +34,8 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
   const traces: string[] = []
   const journaler: Journaler = {
     journalPath: "",
+    sessionsDir: "",
+    journalPathFor: () => "",
     tracePath: "",
     journal(entry) {
       entries.push({ ...entry })
