@@ -4,7 +4,10 @@ writers: "Writers" {
   hooks: "hooks & gates"
 }
 
-jsonl: "turnstile.jsonl\n5 MB × 5 generations" {
+jsonl: "turnstile.jsonl\nshared fallback\n5 MB × 5 generations" {
+  shape: cylinder
+}
+sessions: "sessions/<parentID>.jsonl\nper parent session\nsame bounds per file" {
   shape: cylinder
 }
 trace: "gate-events.log" {
@@ -19,11 +22,13 @@ ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
 
-writers.hooks -> jsonl: "every decision,\n34 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry)"
+writers.hooks -> jsonl: "every decision,\n34 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry)\nno/unknown sessionID → shared"
+writers.hooks -> sessions: "entry with a resolvable\nparent sessionID\n(parentOf → own file)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
 approval -> ledger: "at ledger creation:\nload, last-wins per (project, plan),\nevict to cap"
 jsonl -> replay: "at ledger creation:\nreplayTailLines (2000) newest,\nwalking all retained\ngenerations, early stop\nonce the bound is met"
+sessions -> replay: "same walk per file,\nmerged ts-ordered"
 replay -> ledger
 ledger -> enforce
 jsonl -> cli

@@ -679,6 +679,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `journalMaxBytes`                                                                                                          | 5242880                                                                                                                                                                      | rotate a journal file past this size                                                                                                                                                                                                                                                                                |
 | `journalMaxGenerations`                                                                                                    | 5                                                                                                                                                                            | rotated generations kept per journal                                                                                                                                                                                                                                                                                |
 | `journalRotateEveryEntries`                                                                                                | 512                                                                                                                                                                          | rotation cadence in appends; the rotate-then-rename runs once this many appends apart                                                                                                                                                                                                                               |
+| `journalPerSession`                                                                                                        | true                                                                                                                                                                         | segment the journal per parent session: entries with a resolvable parent sessionID append to `sessions/<parentID>.jsonl` (same rotation bounds per file); entries without one stay in the shared `turnstile.jsonl`. `false` restores the single-file layout                                                         |
 | `replayTailLines`                                                                                                          | 2000                                                                                                                                                                         | newest journal lines replayed per boot to restore gate/plan state — the walk covers all retained generations and stops early once the bound is met; bound plan approvals older than the window persist through the `approved-plans.jsonl` sidecar (§5)                                                              |
 | `maxReviewerRounds`                                                                                                        | 2                                                                                                                                                                            | reviewer dispatches per task, regardless of gate state (waived dispatches exempt)                                                                                                                                                                                                                                   |
 | `maxPlannerRounds`                                                                                                         | 3                                                                                                                                                                            | planner dispatches per task (waived dispatches exempt)                                                                                                                                                                                                                                                              |
@@ -727,13 +728,19 @@ Environment variables (override the file):
 ## 5. Files and journals
 
 - Journals live outside the repo in `~/.local/share/opencode/metrics/`:
-  - `turnstile.jsonl`: full JSONL trace; hot path is append-only and rotates
+  - `turnstile.jsonl`: shared JSONL audit trail (the fallback sink for
+    entries without a sessionID); hot path is append-only and rotates
     once per `journalRotateEveryEntries` (default 512) writes under a
     lock-guarded rename, keeps `journalMaxGenerations` (default 5)
     generations; a lock left behind by a crash between create and remove of
     `<file>.lock` is stolen once its age passes a staleness bound
     (`ROTATION_LOCK_STALE_MS`, 60s) and the rotation proceeds, and journaling
     keeps appending through fresh contention
+  - `sessions/<parentID>.jsonl`: per-parent-session segments (when
+    `journalPerSession` is on, the default) — every entry with a resolvable
+    parent sessionID appends here, so one session's story reads
+    top-to-bottom; same rotation bounds per file. Grep one session's
+    history with `rg … ~/.local/share/opencode/metrics/sessions/<parentID>.jsonl`
   - `gate-events.log`: human-readable
     `YYYY-MM-DD HH:MM | agent | event | detail` lines, with an optional
     trailing ` | <sessionID>` segment when the trace line is wired to a
@@ -760,7 +767,10 @@ Environment variables (override the file):
     degrades to journal-replay semantics
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
   ~30 MB per journal, worst case ~60 MB total, plus the approved-plan
-  sidecar (≤ 256 short records). Rotate overshoot is another
+  sidecar (≤ 256 short records). With `journalPerSession` on, each live
+  session adds its own `sessions/<parentID>.jsonl` with the same per-file
+  bounds, so aggregate retention and boot replay read cost scale with the
+  live session count. Rotate overshoot is another
   `journalRotateEveryEntries` (default 512) entries × ~2 KB per journal,
   taken between the size check and the rename on the lock tick.
 - `.opencode/plans/*.md` containing `## Decomposition` are load-bearing:

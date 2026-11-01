@@ -13,7 +13,7 @@ import * as path from "node:path"
 
 import { createJournaler, sessionJournalPath } from "../src/journal.ts"
 import { createLedger } from "../src/ledger.ts"
-import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
+import { isolatedEnv, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
 import { turnstile } from "../turnstile.ts"
 
 /**
@@ -107,7 +107,9 @@ test("perSession on without a resolver falls back to shared sink", () => {
     perSession: true,
   })
   j.journal({ type: "gate", sessionID: "p1", result: "PASS" })
-  const shared = JSON.parse(fs.readFileSync(path.join(metricsDir, "turnstile.jsonl"), "utf8").trim())
+  const shared = JSON.parse(
+    fs.readFileSync(path.join(metricsDir, "turnstile.jsonl"), "utf8").trim(),
+  )
   assert.equal(shared.sessionID, "p1", "a missing resolver routes to the shared sink")
 })
 

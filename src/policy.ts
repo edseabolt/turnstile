@@ -137,7 +137,7 @@ function worktreeCommitSection(): string {
  * @returns The trace line.
  */
 function traceSection(c: PolicyConfig): string {
-  return `Trace (works with the plugin off): append every dispatch/verdict to ${c.metricsDir}/gate-events.log as \`YYYY-MM-DD HH:MM | agent | event | detail\` (session-bound lines carry an optional trailing \` | <sessionID>\` segment). The plugin also writes ${c.metricsDir}/turnstile.jsonl ({ts,sessionID,type,...}); read: grep/glob/rg first, whole-file reads last.`
+  return `Trace (works with the plugin off): append every dispatch/verdict to ${c.metricsDir}/gate-events.log as \`YYYY-MM-DD HH:MM | agent | event | detail\` (session-bound lines carry an optional trailing \` | <sessionID>\` segment). The plugin also writes ${c.metricsDir}/turnstile.jsonl ({ts,sessionID,type,...}; per-session copies live under ${c.metricsDir}/sessions/<parentID>.jsonl); read: grep/glob/rg first, whole-file reads last.`
 }
 
 /**

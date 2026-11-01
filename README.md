@@ -26,7 +26,9 @@ open.
   when turnstile finds a journaled exit-0 test execution behind it; a bare
   claim stays unverified and the gate holds.
 - **Plan approval journaled** — every verdict, waiver, block, and gate flip
-  is appended to `turnstile.jsonl`; the evidence trail outlives the session
+  is appended to the JSONL journal (per parent session under
+  `sessions/<parentID>.jsonl`, shared fallback `turnstile.jsonl`); the
+  evidence trail outlives the session
   and the replay window.
 - **Restart-safe replay** — restart OpenCode mid-task and earned gate state
   comes back from the journal; the pipeline resumes where the evidence
