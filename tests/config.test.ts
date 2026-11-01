@@ -193,6 +193,24 @@ test("mergeConfig validates observeSessions as a non-negative integer", () => {
   }
 })
 
+/** agentMarkerRetry runs the non-negative numeric scalar path: 0 (explicitly
+ *  disabling the retry) and a positive integer merge, while a negative and a
+ *  non-integer float are each rejected with a keeping-default warning. */
+test("mergeConfig validates agentMarkerRetry as a non-negative integer", () => {
+  const base = defaultConfig({})
+  const zero = mergeConfig(base, { agentMarkerRetry: 0 })
+  assert.equal(zero.config.agentMarkerRetry, 0)
+  assert.deepEqual(zero.warnings, [])
+  const ok = mergeConfig(base, { agentMarkerRetry: 2 })
+  assert.equal(ok.config.agentMarkerRetry, 2)
+  assert.equal(ok.warnings.length, 0)
+  for (const value of [-1, 1.5, "x" as unknown, NaN]) {
+    const { config, warnings } = mergeConfig(base, { agentMarkerRetry: value })
+    assert.equal(config.agentMarkerRetry, 1)
+    assert.deepEqual(warnings, ['config: invalid value for "agentMarkerRetry"; keeping default'])
+  }
+})
+
 /** approvalMarker is a valid string key: a non-empty string merges, an
  *  invalid value is rejected with a warning (mirroring waiverMarker). */
 test("mergeConfig validates approvalMarker like waiverMarker", () => {

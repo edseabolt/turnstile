@@ -9,6 +9,7 @@
   "maxTestRunnerRounds": 4,
   "maxTotalDispatches": 16,
   "maxSessions": 64,
+  "agentMarkerRetry": 1,
   "readWarn": 8,
   "readBlock": 15,
   "observeSessions": 0,

@@ -102,6 +102,16 @@ type ToastShow = NonNullable<NonNullable<Host["tui"]>["toast"]>["show"]
  */
 const askLatchTtlMs = 5_000
 
+/** Cap on tracked per-child marker-retry counters (maxSessions scale). */
+const MAX_TRACKED_MARKER_RETRIES = 64
+
+/** Compliance reminder sent to a child whose delivery carried no marker. */
+const MARKER_RETRY_PROMPT =
+  "[turnstile] Your output was received but contained no `GATE:`/`VERDICT:` " +
+  "marker. Restate your verdict using the required marker (GATE: PASS|FAIL " +
+  "tests=<n> passed=<n> failed=<n> for the test-runner, VERDICT: APPROVE|BLOCK " +
+  "crit=<n> high=<n> med=<n> low=<n> for the reviewer and plan-reviewer)."
+
 /** Shared per-setup context consumed by turnstile's per-surface hook modules. */
 export interface TurnstileContext {
   // ── deps ──────────────────────────────────────────────────────────────────
@@ -163,6 +173,8 @@ export interface TurnstileContext {
   intentNudgedKinds: Set<string>
   /** Last-known project directory per session. */
   sessionDirs: Map<string, string>
+  /** Child session ID → marker-retry attempts already used. */
+  markerRetries: Map<string, number>
   /** Per-session sliding window of streamed child text. */
   deltaWindows: Map<string, string>
   /** Child session ID → resolved agent name (emitter authority). */
@@ -387,6 +399,11 @@ export interface TurnstileContext {
   parseMarkers(text: string, sessionID: string, source: string, dedupScope?: string): MarkerEvent[]
   /** Admits one user-authored prompt. */
   admitPrompt(sessionID: string, properties: PromptHookProperties, admissionID: string): void
+  /**
+   * Attempts one bounded compliance re-prompt for a bare-output child
+   * delivery. Returns true only when the reminder was actually sent.
+   */
+  retryMarker(child: string, agent: string): Promise<boolean>
   // ── methods ───────────────────────────────────────────────────────────────
   /** Binds the host session API for resolveParent. */
   bindHost(session: Host["session"]): void
@@ -941,6 +958,9 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // the sync consumers fall back to a cached value, then process.cwd().
   // Bounded by boundSessionDirs.
   const sessionDirs = new Map<string, string>()
+
+  /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
+  const markerRetries = new Map<string, number>()
 
   /**
    * Bounds the failed-lookup map by evicting its oldest entries.
@@ -4006,6 +4026,59 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   }
 
   /**
+   * Journals a terminal marker-retry outcome (exhausted or skipped) and
+   * reports the retry as not sent.
+   * @param child The bare-output child session ID.
+   * @param agent The dispatch-input agent name.
+   * @param used Retry attempts already consumed for this child.
+   * @param outcome Why the retry did not send a prompt.
+   * @returns Always false: no reminder was delivered.
+   */
+  function noteRetrySkipped(
+    child: string,
+    agent: string,
+    used: number,
+    outcome: "exhausted" | "skipped-no-api",
+  ): false {
+    journaler.journal({ type: "marker-retry", sessionID: child, agent, attempt: used, outcome })
+    return false
+  }
+
+  /**
+   * Attempts one bounded compliance re-prompt for a bare-output child
+   * delivery: journals the attempt, sends the marker reminder via the
+   * host's session.prompt when available, and reports whether the
+   * reminder was actually sent. Fail-open: a prompt failure journals a
+   * type:"error" row and never throws.
+   * @param child The bare-output child session ID.
+   * @param agent The dispatch-input agent name.
+   * @returns True only when the reminder prompt was sent.
+   */
+  async function retryMarker(child: string, agent: string): Promise<boolean> {
+    if (config.agentMarkerRetry === 0) return false
+    const used = markerRetries.get(child) ?? 0
+    if (used >= config.agentMarkerRetry) return noteRetrySkipped(child, agent, used, "exhausted")
+    if (typeof hostSession?.prompt !== "function")
+      return noteRetrySkipped(child, agent, used, "skipped-no-api")
+    journaler.journal({
+      type: "marker-retry",
+      sessionID: child,
+      agent,
+      attempt: used,
+      outcome: "prompted",
+    })
+    markerRetries.set(child, used + 1)
+    evictTo(markerRetries, MAX_TRACKED_MARKER_RETRIES)
+    try {
+      await hostSession.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
+    } catch (e) {
+      journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
+      return false
+    }
+    return true
+  }
+
+  /**
    * Increments the prompt-hook fire counter.
    */
   function bumpPromptFires(): void {
@@ -4048,6 +4121,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     landingGateAsks,
     handsOnGateAsks,
     sessionDirs,
+    markerRetries,
     deltaWindows,
     sessionAgents,
     admittedIds,
@@ -4138,6 +4212,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     suspendBlock,
     parseMarkers,
     admitPrompt,
+    retryMarker,
     // methods
     bindHost,
     bindToast,

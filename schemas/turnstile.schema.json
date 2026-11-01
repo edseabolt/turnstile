@@ -64,6 +64,11 @@
       "minimum": 1,
       "description": "LRU cap on tracked sessions (default 64)."
     },
+    "agentMarkerRetry": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Compliance re-prompts per bare-output child delivery (no GATE/VERDICT marker) before it counts a violation; 0 disables the retry (default 1)."
+    },
     "readWarn": {
       "type": "integer",
       "minimum": 1,

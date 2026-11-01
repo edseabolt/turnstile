@@ -820,7 +820,7 @@ test("read horizon: the warn fires on the first string output at or past the thr
   dispose()
 })
 
-/** Bare-output violations fire only for agents in bareOutput (test-runner here, not planner). */
+/** Bare-output violations fire only for agents in bareOutput (test-runner here, not planner). The test-runner delivery is sent twice: the first marker-less delivery consumes the default single retry (a marker-retry row, no violation), the second hits the exhausted budget and journals the violation. */
 test("bare-output violation fires only for marker-contracted agents", async () => {
   const { h, dispose, metricsDir } = await boot()
   await callTool(h, "execute.after", {
@@ -829,12 +829,14 @@ test("bare-output violation fires only for marker-contracted agents", async () =
     input: { agent: "planner" },
     result: { output: "a plan with no marker" },
   })
-  await callTool(h, "execute.after", {
-    tool: "task",
-    sessionID: "p1",
-    input: { agent: "test-runner" },
-    result: { output: "ran tests, no marker" },
-  })
+  for (let i = 0; i < 2; i++) {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: { output: "ran tests, no marker" },
+    })
+  }
   const blocked = journalEntries(metricsDir).filter(
     (l) => l.reason === "task output contained no GATE/VERDICT marker",
   )

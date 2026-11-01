@@ -114,6 +114,10 @@ export function defaultConfig(
     maxTestRunnerRounds: 4,
     maxTotalDispatches: 16,
     maxSessions: 64,
+    // Compliance retry: a marker-less bare-output delivery is re-prompted
+    // once before it counts a violation — agent-compliance failure, not
+    // work-quality. 0 disables the retry (first bare delivery violates).
+    agentMarkerRetry: 1,
     readWarn: 8,
     readBlock: 15,
     observeSessions: 0,
@@ -213,8 +217,9 @@ export function defaultConfig(
  * @returns true when the value has the right type for the key: numeric keys
  *     accept positive integers only (Number.isInteger subsumes the finite
  *     check, so NaN/Infinity are rejected as non-integers); the one exception
- *     is `observeSessions`, which accepts integers >= 0 so 0 can be set
- *     explicitly to end an observe period.
+ *     is `observeSessions` and `agentMarkerRetry`, which accept integers >= 0
+ *     so 0 can be set explicitly to end an observe period / disable the
+ *     marker retry.
  */
 function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
   if (
@@ -253,15 +258,16 @@ function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
       return false
     }
   }
-  // 0 must be settable explicitly to arm/end the observe period mid-count;
-  // every other numeric key keeps the positive-integer rule.
-  if (key === "observeSessions")
+  // 0 must be settable explicitly to arm/end the observe period mid-count,
+  // and to disable the marker retry; every other numeric key keeps the
+  // positive-integer rule.
+  if (key === "observeSessions" || key === "agentMarkerRetry")
     return typeof value === "number" && Number.isInteger(value) && value >= 0
   return typeof value === "number" && Number.isInteger(value) && value > 0
 }
 
 /** Scalar config keys whose valid values are integers (positive, or
- *  non-negative for `observeSessions`). */
+ *  non-negative for `observeSessions` and `agentMarkerRetry`). */
 type NumericConfigKey = Extract<
   keyof TurnstileConfig,
   | "journalMaxBytes"
@@ -274,6 +280,7 @@ type NumericConfigKey = Extract<
   | "maxTestRunnerRounds"
   | "maxTotalDispatches"
   | "maxSessions"
+  | "agentMarkerRetry"
   | "readWarn"
   | "readBlock"
   | "observeSessions"
@@ -305,6 +312,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "allowSuspend") config.allowSuspend = value as boolean
   else if (key === "intentNudge") config.intentNudge = value as boolean
   else if (key === "observeSessions") config.observeSessions = value as number
+  else if (key === "agentMarkerRetry") config.agentMarkerRetry = value as number
   else config[key as NumericConfigKey] = value as number
 }
 

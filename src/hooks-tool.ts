@@ -108,31 +108,34 @@ export function createToolHooks(ctx: TurnstileContext): {
     }
   }
   /**
-   * Journals the bare-output violation: a marker-less, non-empty delivery
+   * Handles a bare-output delivery: a marker-less, non-empty delivery
    * from an agent in the bare-output list. The suppression — a streamed
    * verdict in the child's own text hiding a summarized, marker-less
    * delivery — is scoped to the plan-reviewer only. reviewer/test-runner
    * keep their pre-suppression behavior: a marker-less delivery violates
-   * even when the child's streamed text quoted a VERDICT. Not
-   * gate-moving: nothing releases because of it.
+   * even when the child's streamed text quoted a VERDICT. Before the
+   * violation fires, one bounded compliance re-prompt is attempted; the
+   * violation is journaled only when the retry is unavailable or
+   * exhausted. Not gate-moving: nothing releases because of it.
    * @param agent The dispatch-input agent name.
    * @param child The delivery's child session ID.
    * @param output The classified delivery text ("" when unclassifiable).
    */
-  const flagBareOutput = (agent: string, child: string, output: string): void => {
+  const handleBareOutput = async (agent: string, child: string, output: string): Promise<void> => {
     const bare =
       ctx.config.agents.bareOutput.includes(agent) &&
       output !== "" &&
       !ctx.hasMarker(output) &&
       (agent !== ctx.config.agents.planReviewer || ctx.ledger.childVerdict(child).marker === "")
-    if (bare) {
-      ctx.journaler.journal({
-        type: "violation",
-        sessionID: child,
-        agent,
-        reason: "task output contained no GATE/VERDICT marker",
-      })
-    }
+    if (!bare) return
+    const recovered = await ctx.retryMarker(child, agent)
+    if (recovered) return
+    ctx.journaler.journal({
+      type: "violation",
+      sessionID: child,
+      agent,
+      reason: "task output contained no GATE/VERDICT marker",
+    })
   }
   /**
    * Applies reviewer-APPROVE capture (landing gate) when the delivery's
@@ -227,7 +230,7 @@ export function createToolHooks(ctx: TurnstileContext): {
     )
     creditReviewerDelivery(child, effectiveAgent, markerEvents)
     await attributePlanDelivery(child, effectiveAgent, output)
-    flagBareOutput(agent, child, output)
+    await handleBareOutput(agent, child, output)
     // Orchestrator policy injection: see injectOrchestratorPolicy.
     // Attribution is edge-first via childToParent (both host
     // delivery shapes inject when the edge resolves); the name

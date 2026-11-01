@@ -56,16 +56,20 @@ const dispatchGap = (): Promise<void> => settle()
 /** Boots a temp project dir with a plan file so an executor dispatch is gated. */
 async function bootWithPlan(
   planBody = "# P\n",
-  opts?: { throwingGet?: boolean },
+  opts?: { throwingGet?: boolean; agentMarkerRetry?: number },
 ): Promise<{ h: FakeHost; metricsDir: string; project: string; restore: () => void }> {
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), planBody)
   const metricsDir = tmpDir()
-  const h = makeFakeHost(opts)
   const prev = process.cwd()
   process.chdir(project)
-  const setup = turnstile(h.host, { env: isolatedEnv(metricsDir), config: { metricsDir } })
+  const { agentMarkerRetry, ...hostOpts } = opts ?? {}
+  const h = makeFakeHost(hostOpts)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, agentMarkerRetry },
+  })
   const dispose = (await setup(h.host)) as () => void
   return {
     h,
@@ -562,7 +566,7 @@ test("unresolved edge + streamed APPROVE is attributed through the streaming sto
  * by the delivery session, p1).
  */
 test("unresolved edge without a recorded dispatch fails open", async () => {
-  const { h, metricsDir, restore } = await bootWithPlan()
+  const { h, metricsDir, restore } = await bootWithPlan("# P\n", { agentMarkerRetry: 0 })
   try {
     // Child streams APPROVE (unresolved); no dispatch is recorded.
     streamApprove(h)
