@@ -652,6 +652,50 @@ test("mergeConfig keeps a valid gitGates.commitFormat override", () => {
   assert.equal(config.gitGates.commitFormat, "\\bcowsay\\b")
 })
 
+/** commitRetryThreshold defaults 3; a non-positive or non-number keeps the default and warns. */
+test("mergeConfig validates gitGates.commitRetryThreshold", () => {
+  assert.equal(defaultConfig({}).gitGates.commitRetryThreshold, 3)
+  const bad = mergeConfig(defaultConfig({}), { gitGates: { commitRetryThreshold: 0 } })
+  assert.equal(bad.config.gitGates.commitRetryThreshold, 3)
+  const nonNumber = mergeConfig(defaultConfig({}), { gitGates: { commitRetryThreshold: "3" } })
+  assert.equal(nonNumber.config.gitGates.commitRetryThreshold, 3)
+  assert.ok(
+    bad.warnings.includes(
+      "config: gitGates.commitRetryThreshold must be a positive number; keeping default",
+    ),
+  )
+  assert.ok(
+    nonNumber.warnings.includes(
+      "config: gitGates.commitRetryThreshold must be a positive number; keeping default",
+    ),
+  )
+  const good = mergeConfig(defaultConfig({}), { gitGates: { commitRetryThreshold: 5 } })
+  assert.equal(good.config.gitGates.commitRetryThreshold, 5)
+  assert.deepEqual(good.warnings, [])
+})
+
+/** commitRetryWindowMs defaults 60000; a negative or non-number keeps the default and warns. */
+test("mergeConfig validates gitGates.commitRetryWindowMs", () => {
+  assert.equal(defaultConfig({}).gitGates.commitRetryWindowMs, 60_000)
+  const negative = mergeConfig(defaultConfig({}), { gitGates: { commitRetryWindowMs: -1 } })
+  assert.equal(negative.config.gitGates.commitRetryWindowMs, 60_000)
+  const nonNumber = mergeConfig(defaultConfig({}), { gitGates: { commitRetryWindowMs: null } })
+  assert.equal(nonNumber.config.gitGates.commitRetryWindowMs, 60_000)
+  assert.ok(
+    negative.warnings.includes(
+      "config: gitGates.commitRetryWindowMs must be a non-negative number; keeping default",
+    ),
+  )
+  assert.ok(
+    nonNumber.warnings.includes(
+      "config: gitGates.commitRetryWindowMs must be a non-negative number; keeping default",
+    ),
+  )
+  const good = mergeConfig(defaultConfig({}), { gitGates: { commitRetryWindowMs: 1000 } })
+  assert.equal(good.config.gitGates.commitRetryWindowMs, 1000)
+  assert.deepEqual(good.warnings, [])
+})
+
 /** Unknown gitGates sub-keys are ignored with a warning. */
 test("mergeConfig ignores unknown gitGates sub-keys", () => {
   const base = defaultConfig({})

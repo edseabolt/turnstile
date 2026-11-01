@@ -221,6 +221,11 @@ export function defaultConfig(
       // push blocks pass this key explicitly (false) so they stay
       // deterministic against the live repo's git state.
       emptyDiffExempt: true,
+      // Blind-retry escalation for the commit lint: after this many failed
+      // attempts for the same session within the window, the block message
+      // appends a full canonical example (see src/tool-policy.ts).
+      commitRetryThreshold: 3,
+      commitRetryWindowMs: 60_000,
     },
   }
 }
@@ -487,6 +492,21 @@ export function mergeConfig(
             else merged.emptyDiffExempt = gv
           } else {
             warnings.push(`config: gitGates.${gk} must be a boolean; keeping default`)
+          }
+        } else if (gk === "commitRetryThreshold" || gk === "commitRetryWindowMs") {
+          // Burst-escalation knobs: threshold is a positive integer, the window
+          // a non-negative one (0 means only same-millisecond retries
+          // accumulate; larger windows expire via the elapsed-time check).
+          const positive = gk === "commitRetryThreshold"
+          if (typeof gv === "number" && Number.isInteger(gv) && (positive ? gv > 0 : gv >= 0)) {
+            if (positive) merged.commitRetryThreshold = gv
+            else merged.commitRetryWindowMs = gv
+          } else {
+            warnings.push(
+              positive
+                ? "config: gitGates.commitRetryThreshold must be a positive number; keeping default"
+                : "config: gitGates.commitRetryWindowMs must be a non-negative number; keeping default",
+            )
           }
         } else if (gk === "commitFormat") {
           if (typeof gv !== "string") {

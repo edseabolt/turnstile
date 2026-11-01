@@ -302,6 +302,14 @@ export interface TurnstileGitGates {
   landingGate: boolean
   /** Whether a statically-provable empty-diff `git push` (ref-equal to upstream) skips the landing gate (default true; `false` is the strict opt-out). */
   emptyDiffExempt: boolean
+  /**
+   * Blind-retry escalation: failed `invalid-commit-message` attempts for the
+   * same session within `commitRetryWindowMs` before the block message appends
+   * a full canonical example (default 3).
+   */
+  commitRetryThreshold: number
+  /** Window in milliseconds for `commitRetryThreshold` burst counting (default 60000). */
+  commitRetryWindowMs: number
 }
 
 /** Gate state for one parent session. */
