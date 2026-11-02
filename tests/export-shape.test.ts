@@ -238,6 +238,24 @@ test("evidence-hits.ts exposes the hits factory and the ring cap", async () => {
 })
 
 /**
+ * The tool-hooks-before module must expose exactly the extracted
+ * execute.before body at runtime.
+ */
+test("tool-hooks-before.ts exposes the before hook body", async () => {
+  const mod = await import("../src/tool-hooks-before.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["toolHooksBefore"])
+})
+
+/**
+ * The tool-hooks-after module must expose exactly the extracted
+ * execute.after body at runtime.
+ */
+test("tool-hooks-after.ts exposes the after hook body", async () => {
+  const mod = await import("../src/tool-hooks-after.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["toolHooksAfter"])
+})
+
+/**
  * The session-hook-bodies module must expose exactly the four extracted hook
  * bodies at runtime.
  */
