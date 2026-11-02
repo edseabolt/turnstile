@@ -210,3 +210,26 @@ test("rotateIfLarge no-ops when the file is missing", () => {
   assert.equal(fs.existsSync(file), false)
   assert.equal(fs.existsSync(`${file}.1`), false)
 })
+
+/**
+ * The commit-args module must expose exactly the commit argument scanner at
+ * runtime (the cluster reader is module-private).
+ */
+test("commit-args.ts exposes only parseCommitArgs at runtime", async () => {
+  const mod = await import("../src/commit-args.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["parseCommitArgs"])
+})
+
+/**
+ * The shell-parse module must expose exactly the shared tokenizer pair, the
+ * redirect scanner, and the device/fd-target predicate at runtime.
+ */
+test("shell-parse.ts exposes the tokenizer pair, redirect scanner, and target predicate", async () => {
+  const mod = await import("../src/shell-parse.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "isDevOrFdTarget",
+    "scanRedirects",
+    "splitCommands",
+    "tokenizeWords",
+  ])
+})

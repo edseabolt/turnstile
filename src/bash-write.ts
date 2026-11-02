@@ -26,115 +26,16 @@
  * `mv a b`, `cp -n`, `touch` on an existing file — real file writes,
  * consistent with the write/edit tool gate that ignores paths.
  *
- * This boundary owns the shell-aware tokenizer (`splitCommands`/
- * `tokenizeWords`, relocated here from tool-policy and re-exported there) so
- * detection reuses the single parser shared with landing and commit-lint —
- * no second parser, and the dependency direction stays acyclic
- * (`tool-policy → bash-write`).
+ * The shell-aware tokenizer lives in `src/shell-parse.ts` (one parser shared
+ * with landing and commit-lint — no second parser); this boundary re-exports
+ * `splitCommands`/`tokenizeWords` so `tool-policy` and the tests keep
+ * importing them from here, and the dependency direction stays acyclic
+ * (`tool-policy → bash-write → shell-parse`).
  */
 
-/**
- * Splits a command into simple commands on top-level shell separators
- * (`;` `|` `&` `\r` `\n`), quote- and backslash-aware: a backslash escapes the
- * next character (`\;` inside quotes is not a separator, `\"` does not close a
- * quote early), so a quoted `echo "git commit"` stays on one side of a
- * separator (never parsed as an invocation). Shared with the commit-lint and
- * landing guards so landing detection, commit linting, and write-shape
- * classification parse the same shape.
- * @param command The raw command string to split.
- * @returns The simple command strings, in order.
- */
-export function splitCommands(command: string): string[] {
-  const out: string[] = []
-  let cur = ""
-  let quote = ""
-  let escaped = false
-  for (const ch of command) {
-    if (escaped) {
-      // The previous backslash consumed this character: append it verbatim.
-      cur += ch
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") {
-        escaped = true
-        cur += ch
-        continue
-      }
-      if (ch === quote) quote = ""
-      cur += ch
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      cur += ch
-      continue
-    }
-    if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
-      out.push(cur)
-      cur = ""
-      continue
-    }
-    cur += ch
-  }
-  out.push(cur)
-  return out
-}
+import { isDevOrFdTarget, scanRedirects, splitCommands, tokenizeWords } from "./shell-parse.ts"
 
-/**
- * Tokenizes one simple command into quoted-aware words, stripping the quotes so
- * a `-m "feat: x"` word yields the bare message `feat: x`. Honors the same
- * backslash escape so a `\"` inside a double-quoted word is a literal quote,
- * not a word break.
- * @param input The simple command string to tokenize.
- * @returns The bare words, in order.
- */
-export function tokenizeWords(input: string): string[] {
-  const words: string[] = []
-  let cur = ""
-  let quote = ""
-  let escaped = false
-  for (const ch of input) {
-    if (escaped) {
-      cur += ch
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") {
-        escaped = true
-        cur += ch
-        continue
-      }
-      if (ch === quote) quote = ""
-      else cur += ch
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    if (/\s/.test(ch)) {
-      if (cur) words.push(cur)
-      cur = ""
-      continue
-    }
-    cur += ch
-  }
-  if (cur) words.push(cur)
-  return words
-}
+export { splitCommands, tokenizeWords } from "./shell-parse.ts"
 
 /** The classifier verdict for one command string. */
 export type BashWriteVerdict = "gate" | "telemetry" | "none"
@@ -151,11 +52,6 @@ const UNCONDITIONAL_WRITER_HEADS = new Set(["cp", "mv", "dd", "truncate", "touch
 /** Wrapper words that prefix a command without changing the executed head. */
 const WRAPPER_WORDS = new Set(["sudo", "env", "nice", "command"])
 
-/** True when a redirect target is a device or fd-dup (never a file write). */
-function isDevOrFdTarget(target: string): boolean {
-  return target.startsWith("/dev/") || target.startsWith("&")
-}
-
 /**
  * True when a tokenized `tee` operand is an fd form, never a file operand:
  * `>&N`, the tokenized `N>&M` fd-dup, or a split remnant like `N>` (the
@@ -166,59 +62,6 @@ function isDevOrFdTarget(target: string): boolean {
  */
 function isFdFormWord(word: string): boolean {
   return word.startsWith("&") || /^\d*>>?&?\d*$/.test(word)
-}
-
-/**
- * Scans ONE simple command for write redirects: the operators `>>`, `>`,
- * `&>`, `2>`, `1>` found OUTSIDE quotes, collecting each non-`/dev`,
- * non-fd-dup target (the characters after the operator up to unquoted
- * whitespace, quotes stripped). Heredoc/stdin operators `<<`/`<<<` are
- * deliberately not collected — they feed stdin, never a file, and a heredoc
- * that writes a file always also carries `>`/`>>` on the same simple command.
- * @param simple One simple command string (already separator-split).
- * @returns The collected write-target strings (`[]` when none).
- */
-function scanRedirects(simple: string): string[] {
-  const targets: string[] = []
-  let quote = ""
-  let escaped = false
-  for (let i = 0; i < simple.length; i++) {
-    const ch = simple[i]!
-    if (escaped) {
-      escaped = false
-      continue
-    }
-    if (quote) {
-      if (ch === "\\") escaped = true
-      else if (ch === quote) quote = ""
-      continue
-    }
-    if (ch === "\\") {
-      escaped = true
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    if (ch === ">") {
-      // `>>` appends, `&>`/`>&`/`2>`/`1>` are fd-aware forms; the target
-      // parse is identical for all of them.
-      if (simple[i + 1] === ">") i++
-      // Whitespace between the operator and its target is legal shell
-      // (`npm test > log`), so skip it before reading the target word.
-      let target = ""
-      for (i++; i < simple.length && /\s/.test(simple[i]!); i++);
-      for (; i < simple.length; i++) {
-        const t = simple[i]!
-        if (t === '"' || t === "'") continue
-        if (/\s/.test(t)) break
-        target += t
-      }
-      if (target && !isDevOrFdTarget(target)) targets.push(target)
-    }
-  }
-  return targets
 }
 
 /**

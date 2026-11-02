@@ -1105,6 +1105,72 @@ function foldChildEdge(
  * @returns The kind's drop record, or `null` when the entry folded (or is an
  *     inert sub-kind, which folds nothing and drops nothing).
  */
+/**
+ * One per-kind replay fold arm: folds a parsed journal entry of a known
+ * `type` into the last-wins maps / period state, returning the kind's drop
+ * record (or `null` when the entry folded).
+ */
+type ReplayFoldArm = (
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+  period: ObservePeriod,
+  suspended: Map<string, true>,
+) => ReplayDrop | null
+
+/** Folds an `engagement` row: last-wins boolean per session. */
+function foldEngagement(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  const engaged = entry.engaged
+  if (typeof engaged === "boolean") maps.lastEngagement.set(sessionID, engaged)
+  return null
+}
+
+/** Dispatch table for the replay fold: one arm per known entry `type`.
+ *  Unknown types (and the inert `plan-impact` rows) fall through to the
+ *  ensemble arm via the `foldReplayLine` fallback, matching the historical
+ *  if-chain's tail. */
+const REPLAY_FOLDS: Record<string, ReplayFoldArm> = {
+  gate: (entry, maps, sessionID) => {
+    foldGate(entry, maps.lastGateResult, maps.lastGateFp, sessionID)
+    return null
+  },
+  plan: (entry, maps, sessionID) => {
+    foldPlan(entry, maps, sessionID)
+    return null
+  },
+  verdict: (entry, maps, sessionID) =>
+    foldVerdict(entry, maps.lastReviewVerdict, maps.lastVerdictAgent, sessionID),
+  observe: (entry, _maps, sessionID, period) => foldObserve(entry, period, sessionID),
+  "would-block": (entry, _maps, sessionID, period) => foldWouldBlock(entry, period, sessionID),
+  suspended: (entry, _maps, sessionID, _period, suspended) =>
+    foldSuspended(entry, suspended, sessionID),
+  "child-edge": (entry, maps, sessionID) => foldChildEdge(entry, maps, sessionID),
+  permission: (entry, maps, sessionID) => foldStickyDecision(entry, maps, sessionID),
+  "task-complete": (_entry, maps, sessionID) => {
+    foldTaskComplete(maps, sessionID)
+    return null
+  },
+  engagement: (entry, maps, sessionID) => foldEngagement(entry, maps, sessionID),
+  "plan-impact": () => null,
+}
+
+/**
+ * Folds one parsed replay-typed journal entry into the replay state, by
+ * dispatching on `entry.type` through `REPLAY_FOLDS`; unknown types fall to
+ * the ensemble arm (the historical if-chain's fallback).
+ * @param entry The parsed replay-typed entry.
+ * @param maps The last-wins maps to fill.
+ * @param sessionID The validated session ID.
+ * @param period The observe-mode period state to fill (observe-mode kinds
+ *     only).
+ * @param suspended The suspended-session map to fill (`suspended` kind only).
+ * @returns The kind's drop record, or `null` when the entry folded (or is an
+ *     inert sub-kind, which folds nothing and drops nothing).
+ */
 function foldReplayLine(
   entry: Record<string, unknown>,
   maps: ReplayMaps,
@@ -1112,43 +1178,8 @@ function foldReplayLine(
   period: ObservePeriod,
   suspended: Map<string, true>,
 ): ReplayDrop | null {
-  const type = entry.type
-  if (type === "gate") {
-    foldGate(entry, maps.lastGateResult, maps.lastGateFp, sessionID)
-    return null
-  }
-  if (type === "plan") {
-    foldPlan(entry, maps, sessionID)
-    return null
-  }
-  if (type === "verdict") {
-    return foldVerdict(entry, maps.lastReviewVerdict, maps.lastVerdictAgent, sessionID)
-  }
-  if (type === "observe") {
-    return foldObserve(entry, period, sessionID)
-  }
-  if (type === "would-block") {
-    return foldWouldBlock(entry, period, sessionID)
-  }
-  if (type === "suspended") {
-    return foldSuspended(entry, suspended, sessionID)
-  }
-  if (type === "child-edge") {
-    return foldChildEdge(entry, maps, sessionID)
-  }
-  if (type === "permission") {
-    return foldStickyDecision(entry, maps, sessionID)
-  }
-  if (type === "task-complete") {
-    foldTaskComplete(maps, sessionID)
-    return null
-  }
-  if (type === "engagement") {
-    const engaged = entry.engaged
-    if (typeof engaged === "boolean") maps.lastEngagement.set(sessionID, engaged)
-    return null
-  }
-  if (type === "plan-impact") return null
+  const fold = REPLAY_FOLDS[entry.type as string]
+  if (fold) return fold(entry, maps, sessionID, period, suspended)
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
 
