@@ -496,6 +496,36 @@ async function guardExecutorDispatch(
 }
 
 /**
+ * The dormant-until-engaged arm of a task dispatch: a dormant session's
+ * dispatch is allowed without touching the plan gates — except an actual
+ * planner dispatch, which engages the pipeline first (R2's dispatch trigger).
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ * @param agent The resolved agent name.
+ * @param description The trace-gated dispatch description.
+ * @returns True when the dispatch was settled inside this arm (the caller
+ *     returns without running the guard chain).
+ */
+function dormantDispatchArm(
+  st: DispatchGuardState,
+  sessionID: string,
+  agent: string,
+  description: string,
+): boolean {
+  if (st.enforcementArmed(sessionID)) return false
+  const s = st.ledger.state(sessionID)
+  if (agent === st.config.agents.planner && !s.engaged) {
+    s.engaged = true
+    st.journalEngagement(sessionID, true, "dispatch-request")
+    // Fall through to the full guard chain: the planner dispatch that
+    // armed enforcement is itself governed.
+    return false
+  }
+  allowDispatchBody(st, sessionID, agent, description, false)
+  return true
+}
+
+/**
  * Guard-and-meter-and-journal section of a task dispatch: the budget guard,
  * the reviewer evidence guard, and the executor branch — then the counters
  * advance and the dispatch entry is recorded at the admitted exit (a blocked
@@ -516,21 +546,7 @@ async function guardedTaskDispatchBody(
 ): Promise<void> {
   let waived = false
   try {
-    // Dormant-until-engaged: a dormant session's dispatch is allowed without
-    // touching the plan gates — except an actual planner dispatch, which
-    // engages the pipeline first (R2's dispatch trigger).
-    if (!st.enforcementArmed(sessionID)) {
-      const s = st.ledger.state(sessionID)
-      if (agent === st.config.agents.planner && !s.engaged) {
-        s.engaged = true
-        st.journalEngagement(sessionID, true, "dispatch-request")
-        // Fall through to the full guard chain: the planner dispatch that
-        // armed enforcement is itself governed.
-      } else {
-        allowDispatchBody(st, sessionID, agent, description, false)
-        return
-      }
-    }
+    if (dormantDispatchArm(st, sessionID, agent, description)) return
     waived = dispatchBudgetBody(st, sessionID, agent)
     if (agent === st.config.agents.reviewer) reviewerDecisionRecheckBody(st, sessionID)
     if (agent === st.config.agents.executor) {

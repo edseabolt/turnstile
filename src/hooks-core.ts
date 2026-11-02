@@ -1,9 +1,12 @@
 /**
  * @fileoverview Shared hook state and services for turnstile's per-surface
- * hook modules. Builds the per-setup context: config, journaler, gates,
- * ledger, maps, constants, bounders, and the service closures that wire
- * them together. No hook bodies live here; per-surface hook modules own
- * their own registration bodies.
+ * hook modules. Composes the per-setup context from a `CoreState` object:
+ * module-level builders construct the deps, bounded maps, constants, holders,
+ * and bound helper fields; the concern modules (context-surface,
+ * parent-resolution, verdict-capture, plan-verdict, dispatch-guard,
+ * bash-write-guard, prompt-admission) are wired against that state; and
+ * `coreContext` assembles the returned `TurnstileContext`. No hook bodies
+ * live here; per-surface hook modules own their own registration bodies.
  */
 
 import { evictTo } from "./bounded.ts"
@@ -24,7 +27,6 @@ import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
 import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
-
 import { createLedger, type GateLedger } from "./ledger.ts"
 import { createContextSurface, type ContextSurfaceFlags } from "./context-surface.ts"
 import { createParentResolution } from "./parent-resolution.ts"
@@ -379,20 +381,1101 @@ export interface TurnstileContext {
 }
 
 /**
- * Builds the shared per-setup context for turnstile's hook registrations.
- * All shared state (config, journaler, gates, maps, services) is scoped to
- * one setup() call: a host calling setup() twice gets fresh dedupe/metering
- * state. The one-setup-per-load lifecycle makes this unobservable.
- * @param opts Injected config/env overrides; see TurnstileOptions.
- * @returns The shared context consumed by per-surface hook modules.
+ * The shared per-setup state threaded through the hooks-core module functions:
+ * the resolved deps, the bounded maps/sets, the constants, the mutable holders,
+ * the concern objects, and every cross-concern helper as a bound function
+ * field. Built once by {@link createCoreState}; never exported.
  */
-export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
+interface CoreState {
+  // deps
+  policyText: string
+  journaler: Journaler
+  surfaceFlags: ContextSurfaceFlags
+  gateRe: RegExp
+  verdictRe: RegExp
+  ledger: GateLedger
+  nearMissPending: Map<string, MarkerNearMiss[]>
+  maxTrackedNearMiss: number
+  gates: Gates
+  toolPolicy: ToolPolicy
+  evidence: EvidenceTracker
+  subagentNames: Set<string>
+  failedLookups: Map<string, { attempts: number; reason: string }>
+  lookupReasonNotVisible: string
+  lookupReasonNoParentId: string
+  planReviewerDispatch: Map<string, number>
+  planReviewTarget: Map<string, string[]>
+  taskWindows: Map<string, number>
+  planGateAsks: Map<string, { sessionID: string; recordedAt: number }>
+  maxTrackedPlanAsks: number
+  awaitingPlanAsk: Map<string, number>
+  awaitingPlanAskTtlMs: number
+  pendingLandingAsk: Map<string, number>
+  maxTrackedLandingAsks: number
+  pendingLandingAskTtlMs: number
+  landingGateAsks: Map<string, { sessionID: string; recordedAt: number }>
+  maxTrackedLandingGateAsks: number
+  pendingHandsOnAsk: Map<string, number>
+  maxTrackedHandsOnAsks: number
+  pendingHandsOnAskTtlMs: number
+  lastLandingEscalateAt: Map<string, number>
+  lastHandsOnEscalateAt: Map<string, number>
+  handsOnGateAsks: Map<string, { sessionID: string; recordedAt: number }>
+  maxTrackedHandsOnGateAsks: number
+  intentNudgePending: Map<string, IntentKind>
+  planImpactAdvisories: Map<string, string>
+  intentNudgedKinds: Set<string>
+  maxTrackedIntentNudges: number
+  maxLookupAttempts: number
+  maxTrackedLookups: number
+  maxTrackedSessionDirs: number
+  sessionDirs: Map<string, string>
+  markerRetries: Map<string, number>
+  deltaWindows: Map<string, string>
+  maxDeltaWindowChars: number
+  maxTrackedDeltaWindows: number
+  sessionAgents: Map<string, string>
+  maxTrackedEmitters: number
+  admittedIds: Set<string>
+  maxTrackedAdmittedIds: number
+  summarizedSessions: Set<string>
+  maintenanceCounts: Map<string, number>
+  maxTrackedMaintenancePlans: number
+  config: TurnstileConfig
+  configWarnings: string[]
+  // holders
+  flags: ContextSurfaceFlags
+  admissionFlags: PromptAdmissionFlags
+  hostSessionRef: { current: Host["session"] | undefined }
+  promptHookFires: { current: number }
+  keylessPrompts: { current: number }
+  taskDeliverySeq: { current: number }
+  toast: {
+    current:
+      ((message: string, variant: "info" | "success" | "warning") => Promise<void>) | undefined
+  }
+  planVerdictRef: { current: ReturnType<typeof createPlanVerdict> | undefined }
+  // concern objects
+  contextSurface: ReturnType<typeof createContextSurface>
+  parentResolution: ReturnType<typeof createParentResolution>
+  verdictCapture: ReturnType<typeof createVerdictCapture>
+  dispatchGuard: ReturnType<typeof createDispatchGuard>
+  bashWriteGuard: ReturnType<typeof createBashWriteGuard>
+  promptAdmission: ReturnType<typeof createPromptAdmission>
+  planVerdict: ReturnType<typeof createPlanVerdict>
+  // bound module functions + flattened concern methods
+  surfaceConfigWarnings: ReturnType<typeof createContextSurface>["surfaceConfigWarnings"]
+  surfaceObserveSummary: ReturnType<typeof createContextSurface>["surfaceObserveSummary"]
+  observeRequestDraft: ReturnType<typeof createContextSurface>["observeRequestDraft"]
+  injectContextPolicy: ReturnType<typeof createContextSurface>["injectContextPolicy"]
+  boundSessionDirs: ReturnType<typeof createParentResolution>["boundSessionDirs"]
+  seedEmitter: ReturnType<typeof createParentResolution>["seedEmitter"]
+  reseedChildEdges: ReturnType<typeof createParentResolution>["reseedChildEdges"]
+  emitterAgent: ReturnType<typeof createParentResolution>["emitterAgent"]
+  childStatus: ReturnType<typeof createParentResolution>["childStatus"]
+  markerKindAllowed: ReturnType<typeof createParentResolution>["markerKindAllowed"]
+  currentProjectDir: ReturnType<typeof createParentResolution>["currentProjectDir"]
+  resolveProjectDir: ReturnType<typeof createParentResolution>["resolveProjectDir"]
+  resolveParent: ReturnType<typeof createParentResolution>["resolveParent"]
+  parseMarkers: ReturnType<typeof createVerdictCapture>["parseMarkers"]
+  lastMatch: ReturnType<typeof createVerdictCapture>["lastMatch"]
+  handleTaskDispatch: ReturnType<typeof createDispatchGuard>["handleTaskDispatch"]
+  guardedTaskDispatch: ReturnType<typeof createDispatchGuard>["guardedTaskDispatch"]
+  allowDispatch: ReturnType<typeof createDispatchGuard>["allowDispatch"]
+  handleBashDispatch: ReturnType<typeof createBashWriteGuard>["handleBashDispatch"]
+  handleWriteEditDispatch: ReturnType<typeof createBashWriteGuard>["handleWriteEditDispatch"]
+  handleSessionMove: ReturnType<typeof createBashWriteGuard>["handleSessionMove"]
+  admitPrompt: ReturnType<typeof createPromptAdmission>["admitPrompt"]
+  resetTaskScope: ReturnType<typeof createPromptAdmission>["resetTaskScope"]
+  journalPlanApproval: ReturnType<typeof createPlanVerdict>["journalPlanApproval"]
+  planApprovalStampFields: ReturnType<typeof createPlanVerdict>["planApprovalStampFields"]
+  recordDurablePlanApproval: ReturnType<typeof createPlanVerdict>["recordDurablePlanApproval"]
+  applyApprovalBinding: ReturnType<typeof createPlanVerdict>["applyApprovalBinding"]
+  /** See {@link hasMarker}. */
+  hasMarker(text: string): boolean
+  /** See {@link recordDispatch}. */
+  recordDispatch(sessionID: string, agent: string, description: string, blocked: boolean): void
+  /** See {@link boundNearMissPending}. */
+  boundNearMissPending(): void
+  /** See {@link surfaceNearMissDiagnostics}. */
+  surfaceNearMissDiagnostics(event: ToolHookEvent): void
+  /** See {@link boundIntentNudges}. */
+  boundIntentNudges(): void
+  /** See {@link clearIntentNudge}. */
+  clearIntentNudge(sessionID: string): void
+  /** See {@link boundDeltaWindows}. */
+  boundDeltaWindows(): void
+  /** See {@link boundDispatches}. */
+  boundDispatches(): void
+  /** See {@link boundTargets}. */
+  boundTargets(): void
+  /** See {@link boundTaskWindows}. */
+  boundTaskWindows(): void
+  /** See {@link boundPlanAsks}. */
+  boundPlanAsks(): void
+  /** See {@link boundAwaitingAsks}. */
+  boundAwaitingAsks(): void
+  /** See {@link hasLiveAwaitingAsk}. */
+  hasLiveAwaitingAsk(sid: string): boolean
+  /** See {@link boundLandingAsks}. */
+  boundLandingAsks(): void
+  /** See {@link boundHandsOnAsks}. */
+  boundHandsOnAsks(): void
+  /** See {@link boundHandsOnGateAsks}. */
+  boundHandsOnGateAsks(): void
+  /** See {@link boundLandingGateAsks}. */
+  boundLandingGateAsks(): void
+  /** See {@link hasLiveLandingAsk}. */
+  hasLiveLandingAsk(sid: string): boolean
+  /** See {@link hasLiveHandsOnAsk}. */
+  hasLiveHandsOnAsk(sid: string): boolean
+  /** See {@link promoteOnEvidence}. */
+  promoteOnEvidence(parent: string): void
+  /** See {@link evidenceSearch}. */
+  evidenceSearch(sid: string): EvidenceSearch
+  /** See {@link readBudgetKey}. */
+  readBudgetKey(sid: string): Promise<string>
+  /** See {@link handleReadBudget}. */
+  handleReadBudget(key: string): void
+  /** See {@link discoverCandidates}. */
+  discoverCandidates(sid: string): {
+    edge: string[]
+    unresolved: Array<{ child: string; verdict: ChildVerdict }>
+  }
+  /** See {@link plausibleUnresolved}. */
+  plausibleUnresolved(
+    sid: string,
+    unresolved: Array<{ child: string; verdict: ChildVerdict }>,
+  ): string[]
+  /** See {@link mostRecentUnresolved}. */
+  mostRecentUnresolved(children: string[]): string | undefined
+  /** See {@link lookupDiag}. */
+  lookupDiag(
+    child: string,
+    unresolved: string[],
+  ): Record<string, { attempts: number; reason: string }>
+  /** See {@link journalPolicy}. */
+  journalPolicy(sessionID: string, injected: boolean, extra?: Record<string, unknown>): void
+  /** See {@link nameGuardSkips}. */
+  nameGuardSkips(event: ToolHookEvent, child: string): boolean
+  /** See {@link injectOrchestratorPolicy}. */
+  injectOrchestratorPolicy(
+    event: ToolHookEvent,
+    child: string,
+    delivery: Delivery,
+    agent: string,
+  ): Promise<void>
+  /** See {@link appendPipelineStatus}. */
+  appendPipelineStatus(
+    parent: string,
+    event: ToolHookEvent,
+    delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+    agent: string,
+  ): void
+  /** See {@link prependPolicy}. */
+  prependPolicy(
+    parent: string,
+    event: ToolHookEvent,
+    delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+  ): void
+  /** See {@link applyPolicyResult}. */
+  applyPolicyResult(parent: string, event: ToolHookEvent, delivery: Delivery, agent: string): void
+  /** See {@link handlePromptIntent}. */
+  handlePromptIntent(sessionID: string, properties: PromptHookProperties): void
+  /** See {@link prependIntentNudge}. */
+  prependIntentNudge(event: ToolHookEvent, parent: string, delivery: Delivery): void
+  /** See {@link prependPlanImpactAdvisory}. */
+  prependPlanImpactAdvisory(event: ToolHookEvent, parent: string, delivery: Delivery): void
+  /** See {@link prependIntentNudgeRead}. */
+  prependIntentNudgeRead(event: ToolHookEvent): void
+  /** See {@link creditReviewApproval}. */
+  creditReviewApproval(child: string, markerEvents: MarkerEvent[]): void
+  /** See {@link attributeEdgeVerdict}. */
+  attributeEdgeVerdict(sid: string, child: string, own: string): Promise<void>
+  /** See {@link selectAttributedChild}. */
+  selectAttributedChild(sid: string): AttributedChildDiscovery
+  /** See {@link attributionEntry}. */
+  attributionEntry(sid: string, child: string, d: AttributedChildDiscovery): Record<string, unknown>
+  /** See {@link noteUnattributable}. */
+  noteUnattributable(sid: string, poolSize: number): void
+  /** See {@link attributePlanVerdict}. */
+  attributePlanVerdict(child: string, output: string): Promise<void>
+  /** See {@link observeActive}. */
+  observeActive(sessionID: string): boolean
+  /** See {@link enforcementArmed}. */
+  enforcementArmed(sessionID: string): boolean
+  /** See {@link journalEngagement}. */
+  journalEngagement(sessionID: string, engaged: boolean, reason: EngagementReason): void
+  /** See {@link suspendSuppressionActive}. */
+  suspendSuppressionActive(sessionID: string): boolean
+  /** See {@link journalSuspendedWouldBlock}. */
+  journalSuspendedWouldBlock(sessionID: string, cause: string): void
+  /** See {@link suspendDispatchOutcome}. */
+  suspendDispatchOutcome(
+    e: BlockError,
+    sessionID: string,
+    agent: string,
+    description: string,
+    waived: boolean,
+  ): boolean
+  /** See {@link blockCause}. */
+  blockCause(e: BlockError, agent: string): string
+  /** See {@link dispatchBlockOutcome}. */
+  dispatchBlockOutcome(
+    e: unknown,
+    sessionID: string,
+    agent: string,
+    description: string,
+    waived: boolean,
+  ): boolean
+  /** See {@link armLandingAsk}. */
+  armLandingAsk(parent: string): boolean
+  /** See {@link armHandsOnAsk}. */
+  armHandsOnAsk(parent: string): boolean
+  /** See {@link suspendBlock}. */
+  suspendBlock(event: ToolHookEvent, e: BlockError): boolean
+  /** See {@link boundAdmittedIds}. */
+  boundAdmittedIds(): void
+  /** See {@link boundSummarizedSessions}. */
+  boundSummarizedSessions(): void
+  /** See {@link boundMaintenanceCounts}. */
+  boundMaintenanceCounts(): void
+  /** See {@link bindToast}. */
+  bindToast(show: ToastShow | undefined): void
+  /** See {@link markTaskComplete}. */
+  markTaskComplete(sessionID: string, s: GateState): void
+  /** See {@link bindHost}. */
+  bindHost(session: Host["session"]): void
+  /** See {@link noteRetrySkipped}. */
+  noteRetrySkipped(
+    child: string,
+    agent: string,
+    used: number,
+    outcome: "exhausted" | "skipped-no-api",
+  ): false
+  /** See {@link retryMarker}. */
+  retryMarker(child: string, agent: string): Promise<boolean>
+  /** See {@link bumpPromptFires}. */
+  bumpPromptFires(): void
+  /** See {@link nextTaskDeliverySeq}. */
+  nextTaskDeliverySeq(): number
+}
+
+type AttributedChildDiscovery = {
+  edgeCount: number
+  unresolvedCount: number
+  plausibleCount: number
+  unresolvedIDs: string[]
+  attributed: string | undefined
+  decision: "attributed" | "fail-open"
+  poolSize: number
+}
+
+function hasMarker(st: CoreState, text: string): boolean {
+  return (text.match(st.gateRe)?.length ?? 0) > 0 || (text.match(st.verdictRe)?.length ?? 0) > 0
+}
+
+function recordDispatch(
+  st: CoreState,
+  sessionID: string,
+  agent: string,
+  description: string,
+  blocked: boolean,
+): void {
+  st.journaler.journal({
+    type: "dispatch",
+    sessionID,
+    agent,
+    description,
+    ...(blocked ? { blocked: true } : {}),
+  })
+  st.journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+}
+
+function boundNearMissPending(st: CoreState): void {
+  evictTo(st.nearMissPending, st.maxTrackedNearMiss)
+}
+
+function surfaceNearMissDiagnostics(st: CoreState, event: ToolHookEvent): void {
+  const sessionID = st.ledger.parentOf(asSessionID(event?.sessionID))
+  const hits = st.nearMissPending.get(sessionID)
+  if (!hits || hits.length === 0) return
+  if (!event?.result || typeof event.result.output !== "string") return
+  try {
+    event.result.output =
+      formatNearMissDiagnostics(hits, st.journaler.journalPath) + "\n" + event.result.output
+    st.nearMissPending.delete(sessionID)
+    st.journaler.journal({
+      type: "marker",
+      event: "surfaced",
+      sessionID,
+      surfaced: true,
+      count: hits.length,
+    })
+  } catch (e) {
+    st.journaler.journal({
+      type: "marker",
+      event: "surfaced",
+      sessionID,
+      surfaced: false,
+      count: hits.length,
+      error: String(e),
+    })
+  }
+}
+
+function boundIntentNudges(st: CoreState): void {
+  evictTo(st.intentNudgedKinds, st.maxTrackedIntentNudges)
+  evictTo(st.intentNudgePending, st.config.maxSessions)
+  evictTo(st.planImpactAdvisories, st.config.maxSessions)
+}
+
+function clearIntentNudge(st: CoreState, sessionID: string): void {
+  st.intentNudgePending.delete(sessionID)
+  for (const kind of INTENT_KINDS) {
+    st.intentNudgedKinds.delete(`${sessionID}:${kind}`)
+  }
+}
+
+function boundDeltaWindows(st: CoreState): void {
+  evictTo(st.deltaWindows, st.maxTrackedDeltaWindows)
+}
+
+function boundDispatches(st: CoreState): void {
+  evictTo(st.planReviewerDispatch, st.maxTrackedLookups)
+}
+
+function boundTargets(st: CoreState): void {
+  evictTo(st.planReviewTarget, st.maxTrackedLookups)
+}
+
+function boundTaskWindows(st: CoreState): void {
+  evictTo(st.taskWindows, st.maxTrackedLookups)
+}
+
+function boundPlanAsks(st: CoreState): void {
+  evictTo(st.planGateAsks, st.maxTrackedPlanAsks)
+}
+
+function boundAwaitingAsks(st: CoreState): void {
+  evictTo(st.awaitingPlanAsk, st.maxTrackedPlanAsks)
+}
+
+function hasLiveAwaitingAsk(st: CoreState, sid: string): boolean {
+  const at = st.awaitingPlanAsk.get(sid)
+  if (at === undefined) return false
+  if (Date.now() - at > st.awaitingPlanAskTtlMs) {
+    st.awaitingPlanAsk.delete(sid)
+    return false
+  }
+  return true
+}
+
+function boundLandingAsks(st: CoreState): void {
+  evictTo(st.pendingLandingAsk, st.maxTrackedLandingAsks)
+  evictTo(st.lastLandingEscalateAt, st.maxTrackedLandingAsks)
+}
+
+function boundHandsOnAsks(st: CoreState): void {
+  evictTo(st.pendingHandsOnAsk, st.maxTrackedHandsOnAsks)
+  evictTo(st.lastHandsOnEscalateAt, st.maxTrackedHandsOnAsks)
+}
+
+function boundHandsOnGateAsks(st: CoreState): void {
+  evictTo(st.handsOnGateAsks, st.maxTrackedHandsOnGateAsks)
+}
+
+function boundLandingGateAsks(st: CoreState): void {
+  evictTo(st.landingGateAsks, st.maxTrackedLandingGateAsks)
+}
+
+function hasLiveLandingAsk(st: CoreState, sid: string): boolean {
+  const at = st.pendingLandingAsk.get(sid)
+  if (at === undefined) return false
+  if (Date.now() - at > st.pendingLandingAskTtlMs) {
+    st.pendingLandingAsk.delete(sid)
+    // Mirror the expiry on the dedupe map too: a stale timestamp must not
+    // suppress a legitimate new ask row after the latch expired.
+    st.lastLandingEscalateAt.delete(sid)
+    return false
+  }
+  return true
+}
+
+function hasLiveHandsOnAsk(st: CoreState, sid: string): boolean {
+  const at = st.pendingHandsOnAsk.get(sid)
+  if (at === undefined) return false
+  if (Date.now() - at > st.pendingHandsOnAskTtlMs) {
+    st.pendingHandsOnAsk.delete(sid)
+    // Mirror the expiry on the dedupe map too: a stale timestamp must not
+    // suppress a legitimate new ask row after the latch expired.
+    st.lastHandsOnEscalateAt.delete(sid)
+    return false
+  }
+  return true
+}
+
+function promoteOnEvidence(st: CoreState, parent: string): void {
+  const ps = st.ledger.peek(parent)
+  if (ps && ps.unverifiedPass && st.evidence.has(parent, st.taskWindows.get(parent) ?? 0)) {
+    ps.hasGatePass = true
+    ps.unverifiedPass = ""
+    st.journaler.journal({
+      type: "gate",
+      sessionID: parent,
+      result: "PASS",
+      event: "promoted",
+      verified: true,
+      mode: st.config.gateEvidence,
+      ...(ps.taskFingerprint !== "" ? { fp: ps.taskFingerprint } : {}),
+    })
+    // The gate's green flip is the task's completion boundary (Phase 3):
+    // the flip journals its task-complete companion row and stamps the
+    // retire, so the next admitted prompt starts a fresh scope.
+    st.markTaskComplete(parent, ps)
+    st.journaler.traceEvent("test-runner", "gate", "GATE: PASS promoted on evidence", parent)
+  }
+}
+
+function evidenceSearch(st: CoreState, sid: string): EvidenceSearch {
+  const window = st.taskWindows.get(sid) ?? 0
+  const attributed: string[] = []
+  const unresolved: Array<{ session: string; reason: string }> = []
+  let direct = false
+  for (const { session, last } of st.evidence.snapshot()) {
+    if (session === sid) {
+      direct = last >= window
+      continue
+    }
+    const parent = st.ledger.parentOf(session)
+    if (parent === sid) {
+      // In-window attributed hits were already promoted (the decision-time
+      // re-check ran first), so only stale ones reach a refusal.
+      if (last < window) attributed.push(session)
+      continue
+    }
+    unresolved.push({
+      session,
+      reason: st.ledger.childToParent.has(session) ? `edge: ${parent}` : "no parent edge",
+    })
+  }
+  return { attributed, unresolved, direct }
+}
+
+async function readBudgetKey(st: CoreState, sid: string): Promise<string> {
+  await st.resolveParent(sid)
+  const key = st.ledger.parentOf(sid)
+  if (key === sid) {
+    // Byte-identical read: reads the attempts count off the
+    // structured record; the gate (`attempts > 0 && attempts < max`) is
+    // unchanged, so this signal is byte-identical to the pre-enrichment form.
+    const attempts = st.failedLookups.get(sid)?.attempts ?? 0
+    // Inconclusive window only: a lookup was tried and the record was not yet
+    // visible (attempts climb 1..max-1). Zero means no host session API
+    // (never knowable); at the cap means a resolved parent-less root. Bounded
+    // to ≤ maxLookupAttempts-1 signals per session.
+    if (attempts > 0 && attempts < st.maxLookupAttempts) {
+      st.journaler.journal({
+        type: "error",
+        sessionID: sid,
+        error: `read budget keyed by session; parent unresolved after ${attempts}/${st.maxLookupAttempts} lookup attempt(s)`,
+      })
+    }
+  }
+  return key
+}
+
+function handleReadBudget(st: CoreState, key: string): void {
+  // Dormant-until-engaged: the whole-file read horizon sleeps until the
+  // parent engages.
+  if (!st.enforcementArmed(key)) return
+  try {
+    st.gates.guardReadLimit(key, st.ledger)
+  } catch (e) {
+    if (e instanceof BlockError && st.observeActive(key)) {
+      const totals = st.ledger.noteWouldBlock(key)
+      st.journaler.journal(wouldBlockEntry(key, "read-budget", totals.observed, totals.wouldBlocks))
+      return
+    }
+    if (e instanceof BlockError && st.suspendSuppressionActive(key)) {
+      st.journalSuspendedWouldBlock(key, "read-budget")
+      return
+    }
+    throw e
+  }
+}
+
+function discoverCandidates(
+  st: CoreState,
+  sid: string,
+): {
+  edge: string[]
+  unresolved: Array<{ child: string; verdict: ChildVerdict }>
+} {
+  const edge: string[] = []
+  for (const c of st.ledger.childToParent.keys()) {
+    if (st.ledger.childToParent.get(c) === sid && st.ledger.childVerdict(c).marker !== "")
+      edge.push(c)
+  }
+  return {
+    edge,
+    unresolved: st.ledger.evidencedChildren().filter(({ child }) => child !== sid),
+  }
+}
+
+function plausibleUnresolved(
+  st: CoreState,
+  sid: string,
+  unresolved: Array<{ child: string; verdict: ChildVerdict }>,
+): string[] {
+  const dispatchTs = st.planReviewerDispatch.get(sid)
+  if (dispatchTs === undefined) return []
+  const out: string[] = []
+  for (const { child, verdict } of unresolved) {
+    if (verdict.recordedAt < dispatchTs) continue
+    // Unique-owner: another parent dispatched at-or-before this verdict's
+    // recordedAt ⇒ ambiguous ⇒ excluded (never-guess).
+    let ambiguous = false
+    for (const [other, ts] of st.planReviewerDispatch) {
+      if (other === sid) continue
+      if (ts <= verdict.recordedAt) {
+        ambiguous = true
+        break
+      }
+    }
+    if (!ambiguous) out.push(child)
+  }
+  return out
+}
+
+function mostRecentUnresolved(st: CoreState, children: string[]): string | undefined {
+  let best: string | undefined
+  let bestAt = -1
+  for (const c of children) {
+    const at = st.ledger.childVerdict(c).recordedAt
+    if (at > bestAt) {
+      bestAt = at
+      best = c
+    }
+  }
+  return best
+}
+
+function lookupDiag(
+  st: CoreState,
+  child: string,
+  unresolved: string[],
+): Record<string, { attempts: number; reason: string }> {
+  const out: Record<string, { attempts: number; reason: string }> = {}
+  for (const s of [child, ...unresolved])
+    out[s] = {
+      attempts: st.failedLookups.get(s)?.attempts ?? 0,
+      reason: st.failedLookups.get(s)?.reason ?? "resolved-or-never-tried",
+    }
+  return out
+}
+
+function journalPolicy(
+  st: CoreState,
+  sessionID: string,
+  injected: boolean,
+  extra: Record<string, unknown> = {},
+): void {
+  st.journaler.journal({ type: "policy", sessionID, injected, ...extra })
+}
+
+function nameGuardSkips(st: CoreState, event: ToolHookEvent, child: string): boolean {
+  if (st.ledger.childToParent.has(child)) return false
+  const knownName = typeof event.agent === "string" && st.subagentNames.has(event.agent)
+  if (knownName) st.journalPolicy(child, false, { skipped: true, reason: "agent-name" })
+  return knownName
+}
+
+async function injectOrchestratorPolicy(
+  st: CoreState,
+  event: ToolHookEvent,
+  child: string,
+  delivery: Delivery,
+  agent: string,
+): Promise<void> {
+  // Close the late-edge window for background dispatches before deciding:
+  // idempotent (early-returns on a registered edge) and bounded by the
+  // failedLookups retry cap, so the await is cheap on the common path.
+  await st.resolveParent(child)
+  const parent = st.ledger.parentOf(child)
+  // Name guard first: a child-facing delivery the guard skips (unresolvable
+  // edge + config-known subagent name) returns here and never receives the
+  // parent-addressed nudge text below.
+  if (delivery.kind !== "structured" && st.nameGuardSkips(event, child)) return
+  // Advisory intent nudge: independent of the policy head, delivered on the
+  // first classified parent-facing delivery after admission.
+  st.prependIntentNudge(event, parent, delivery)
+  st.prependPlanImpactAdvisory(event, parent, delivery)
+  st.applyPolicyResult(parent, event, delivery, agent)
+}
+
+function appendPipelineStatus(
+  st: CoreState,
+  parent: string,
+  event: ToolHookEvent,
+  delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+  agent: string,
+): void {
+  const line = formatPipelineStatus(st.ledger.state(parent), st.config.agents, agent)
+  if (line === "") return
+  try {
+    mutateDeliveryText(event, delivery, (text) => text + "\n" + line, "append")
+  } catch (e) {
+    st.journaler.journal({ type: "error", error: `pipeline-status: ${e}` })
+  }
+}
+
+function prependPolicy(
+  st: CoreState,
+  parent: string,
+  event: ToolHookEvent,
+  delivery: Extract<Delivery, { kind: "string" | "structured" }>,
+): void {
+  // Dormant-until-engaged: a dormant session's deliveries stay clean — the
+  // policy head lands only once enforcement is armed.
+  if (!st.enforcementArmed(parent)) return
+  const policyState = st.ledger.state(parent)
+  if (policyState.policyInjected) return
+  try {
+    prependDeliveryText(event, delivery, st.policyText)
+    policyState.policyInjected = true
+    st.journalPolicy(parent, true)
+  } catch (e) {
+    st.journalPolicy(parent, false, { error: String(e) })
+  }
+}
+
+function applyPolicyResult(
+  st: CoreState,
+  parent: string,
+  event: ToolHookEvent,
+  delivery: Delivery,
+  agent: string,
+): void {
+  if (delivery.kind === "absent") return
+  if (delivery.kind === "unknown") {
+    st.journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
+    return
+  }
+  st.appendPipelineStatus(parent, event, delivery, agent)
+  st.prependPolicy(parent, event, delivery)
+}
+
+function handlePromptIntent(
+  st: CoreState,
+  sessionID: string,
+  properties: PromptHookProperties,
+): void {
+  if (!st.config.intentNudge) return
+  try {
+    const kind = classifyIntent(promptTextOf(properties))
+    if (kind === null) return
+    // Engagement replaced the nudge for the engaging kinds: a dispatch or
+    // plan-reference prompt journals its intent row but never nudges (the
+    // pipeline is armed instead) — consistently, regardless of
+    // `alwaysEnforce`. Issue/work intents keep the one-shot advisory
+    // nudge: that is dormant mode's one-time hint.
+    if (shouldEngage(kind)) {
+      st.journaler.journal({ type: "intent", sessionID, kind })
+      return
+    }
+    if (st.ledger.state(sessionID).hasPlanVerdict) return
+    st.journaler.journal({ type: "intent", sessionID, kind })
+    const key = `${sessionID}:${kind}`
+    if (st.intentNudgedKinds.has(key)) return
+    st.intentNudgedKinds.add(key)
+    st.intentNudgePending.set(sessionID, kind)
+    st.boundIntentNudges()
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID, error: `intent classification: ${e}` })
+  }
+}
+
+function prependIntentNudge(
+  st: CoreState,
+  event: ToolHookEvent,
+  parent: string,
+  delivery: Delivery,
+): void {
+  if (delivery.kind !== "string" && delivery.kind !== "structured") return
+  const kind = st.intentNudgePending.get(parent)
+  if (kind === undefined) return
+  st.intentNudgePending.delete(parent)
+  try {
+    prependDeliveryText(event, delivery, intentNudge(kind))
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
+  }
+}
+
+function prependPlanImpactAdvisory(
+  st: CoreState,
+  event: ToolHookEvent,
+  parent: string,
+  delivery: Delivery,
+): void {
+  if (delivery.kind !== "string" && delivery.kind !== "structured") return
+  const text = st.planImpactAdvisories.get(parent)
+  if (text === undefined) return
+  st.planImpactAdvisories.delete(parent)
+  try {
+    prependDeliveryText(event, delivery, text)
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID: parent, error: `plan-impact advisory: ${e}` })
+  }
+}
+
+function prependIntentNudgeRead(st: CoreState, event: ToolHookEvent): void {
+  const raw = asSessionID(event?.sessionID)
+  const parent = st.ledger.parentOf(raw)
+  if (parent !== raw) return
+  const kind = st.intentNudgePending.get(parent)
+  if (kind === undefined) return
+  if (!event?.result || typeof event.result.output !== "string") return
+  st.intentNudgePending.delete(parent)
+  try {
+    event.result.output = `${intentNudge(kind)}\n${event.result.output}`
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
+  }
+}
+
+function creditReviewApproval(st: CoreState, child: string, markerEvents: MarkerEvent[]): void {
+  if (!markerEvents.some((e) => e.kind === "verdict" && e.marker.includes("APPROVE"))) return
+  const parent = st.ledger.parentOf(child)
+  if (!st.gates.reviewEnsembleComplete(parent, st.ledger)) return
+  st.ledger.state(parent).hasReviewApprove = true
+  // Credit the bucket-free trace too: the flag above dies on the landing
+  // prompt's reset, but the journaled APPROVE outlives it — the trace is
+  // what the landing gate reads to escalate the first push instead of
+  // throwing the misleading `no-landing-approval` block.
+  st.ledger.markCreditedApproval(parent)
+}
+
+async function attributeEdgeVerdict(
+  st: CoreState,
+  sid: string,
+  child: string,
+  own: string,
+): Promise<void> {
+  const rec = st.ledger.childVerdict(child)
+  const marker = own || rec.marker
+  const markerSource = own ? "task-result" : rec.source || "task-result"
+  const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+  await st.journalPlanApproval(
+    sid,
+    child,
+    result,
+    marker || "<none>",
+    markerSource,
+    marker || "<no verdict marker>",
+  )
+}
+
+function selectAttributedChild(st: CoreState, sid: string): AttributedChildDiscovery {
+  const { edge, unresolved } = st.discoverCandidates(sid)
+  const unresolvedIDs = unresolved.map(({ child: cid }) => cid)
+  const plausible = st.plausibleUnresolved(sid, unresolved)
+  const dispatchTs = st.planReviewerDispatch.get(sid)
+  const edgeCandidates =
+    dispatchTs === undefined
+      ? edge
+      : edge.filter((c) => st.ledger.childVerdict(c).recordedAt >= dispatchTs)
+  const pool = [...edgeCandidates, ...plausible]
+  const verdictOf = (c: string): "APPROVE" | "BLOCK" =>
+    st.ledger.childVerdict(c).marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+  const unanimous = new Set(pool.map(verdictOf))
+  const attributed =
+    pool.length > 0 && unanimous.size === 1
+      ? (edgeCandidates[0] ?? st.mostRecentUnresolved(plausible))
+      : undefined
+  const decision = attributed ? "attributed" : "fail-open"
+  return {
+    edgeCount: edgeCandidates.length,
+    unresolvedCount: unresolved.length,
+    plausibleCount: plausible.length,
+    unresolvedIDs,
+    attributed,
+    decision,
+    poolSize: pool.length,
+  }
+}
+
+function attributionEntry(
+  st: CoreState,
+  sid: string,
+  child: string,
+  d: AttributedChildDiscovery,
+): Record<string, unknown> {
+  return {
+    type: "attribution",
+    sessionID: sid,
+    raw: child,
+    decision: d.decision,
+    deliveryIsParent: child === sid,
+    sessionApi: typeof st.hostSessionRef.current?.get === "function",
+    candidates: {
+      edge: d.edgeCount,
+      unresolved: d.unresolvedCount,
+      plausible: d.plausibleCount,
+    },
+    unresolvedIDs: d.unresolvedIDs,
+    lookup: st.lookupDiag(child, d.unresolvedIDs),
+  }
+}
+
+function noteUnattributable(st: CoreState, sid: string, poolSize: number): void {
+  st.journaler.journal({
+    type: "error",
+    sessionID: sid,
+    error: `plan attribution: unattributable parent-keyed delivery; gate unchanged (${poolSize} evidenced candidates)`,
+  })
+}
+
+async function attributePlanVerdict(st: CoreState, child: string, output: string): Promise<void> {
+  const sid = st.ledger.parentOf(child)
+  const own = st.lastMatch(output, st.verdictRe)
+  // Edge-resolved: attribute through the child directly, delivery-wins merge.
+  if (st.ledger.childToParent.has(child)) {
+    await st.attributeEdgeVerdict(sid, child, own)
+    return
+  }
+  // Self-keyed: the delivery's own session id is not a registered child.
+  const d = st.selectAttributedChild(sid)
+  // Journal the forensic entry first (before any gate mutation). A new journal
+  // type is replay-inert; its wording avoids "unattributable" so the
+  // single-error count is stable.
+  st.journaler.journal(st.attributionEntry(sid, child, d))
+  if (d.attributed) {
+    const rec = st.ledger.childVerdict(d.attributed)
+    // Attributed candidates are evidenced (a non-empty stored marker and a
+    // non-empty source label), so marker needs no "<none>" fallback here —
+    // the edge-resolved branch above keeps its fallback for marker-less
+    // deliveries.
+    const marker = own || rec.marker
+    const markerSource = own ? "task-result" : rec.source
+    const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+    await st.journalPlanApproval(sid, d.attributed, result, marker, markerSource, marker)
+    return
+  }
+  st.noteUnattributable(sid, d.poolSize)
+}
+
+function observeActive(st: CoreState, sessionID: string): boolean {
+  try {
+    return st.ledger.observePhase(sessionID).phase === "observe"
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID, error: `observe phase read: ${e}` })
+    return false
+  }
+}
+
+function enforcementArmed(st: CoreState, sessionID: string): boolean {
+  if (st.config.alwaysEnforce) return true
+  try {
+    return st.ledger.state(st.ledger.parentOf(sessionID)).engaged
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID, error: `engagement read: ${e}` })
+    return false
+  }
+}
+
+function journalEngagement(
+  st: CoreState,
+  sessionID: string,
+  engaged: boolean,
+  reason: EngagementReason,
+): void {
+  st.journaler.journal(engagementEntry(sessionID, engaged, reason))
+}
+
+function suspendSuppressionActive(st: CoreState, sessionID: string): boolean {
+  try {
+    return st.ledger.isSuspended(st.ledger.parentOf(sessionID))
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID, error: `suspension read: ${e}` })
+    return false
+  }
+}
+
+function journalSuspendedWouldBlock(st: CoreState, sessionID: string, cause: string): void {
+  st.journaler.journal({
+    type: "suspended",
+    sessionID,
+    event: "would-block",
+    cause: cause.slice(0, 200),
+  })
+}
+
+function suspendDispatchOutcome(
+  st: CoreState,
+  e: BlockError,
+  sessionID: string,
+  agent: string,
+  description: string,
+  waived: boolean,
+): boolean {
+  if (!st.suspendSuppressionActive(sessionID)) return false
+  st.journalSuspendedWouldBlock(sessionID, st.blockCause(e, agent))
+  st.allowDispatch(sessionID, agent, description, waived)
+  return true
+}
+
+function blockCause(st: CoreState, e: BlockError, agent: string): string {
+  return e.cause ?? (agent || "gate")
+}
+
+function dispatchBlockOutcome(
+  st: CoreState,
+  e: unknown,
+  sessionID: string,
+  agent: string,
+  description: string,
+  waived: boolean,
+): boolean {
+  if (!(e instanceof BlockError)) return false
+  if (st.observeActive(sessionID)) {
+    const cause = st.blockCause(e, agent)
+    const totals = st.ledger.noteWouldBlock(sessionID)
+    st.journaler.journal(wouldBlockEntry(sessionID, cause, totals.observed, totals.wouldBlocks))
+    st.allowDispatch(sessionID, agent, description, waived)
+    return true
+  }
+  if (st.suspendDispatchOutcome(e, sessionID, agent, description, waived)) return true
+  st.recordDispatch(sessionID, agent, description, true)
+  return false
+}
+
+function armLandingAsk(st: CoreState, parent: string): boolean {
+  const now = Date.now()
+  const last = st.lastLandingEscalateAt.get(parent)
+  st.pendingLandingAsk.set(parent, now)
+  st.boundLandingAsks()
+  if (last !== undefined && now - last < askLatchTtlMs) return false
+  st.lastLandingEscalateAt.set(parent, now)
+  st.boundLandingAsks()
+  return true
+}
+
+function armHandsOnAsk(st: CoreState, parent: string): boolean {
+  const now = Date.now()
+  const last = st.lastHandsOnEscalateAt.get(parent)
+  st.pendingHandsOnAsk.set(parent, now)
+  st.boundHandsOnAsks()
+  if (last !== undefined && now - last < askLatchTtlMs) return false
+  st.lastHandsOnEscalateAt.set(parent, now)
+  st.boundHandsOnAsks()
+  return true
+}
+
+function suspendBlock(st: CoreState, event: ToolHookEvent, e: BlockError): boolean {
+  const parent = st.ledger.parentOf(asSessionID(event?.sessionID))
+  if (!st.suspendSuppressionActive(parent)) return false
+  st.journalSuspendedWouldBlock(parent, st.blockCause(e, ""))
+  return true
+}
+
+function boundAdmittedIds(st: CoreState): void {
+  evictTo(st.admittedIds, st.maxTrackedAdmittedIds)
+}
+
+function boundSummarizedSessions(st: CoreState): void {
+  evictTo(st.summarizedSessions, st.config.maxSessions)
+}
+
+function boundMaintenanceCounts(st: CoreState): void {
+  evictTo(st.maintenanceCounts, st.maxTrackedMaintenancePlans)
+}
+
+function bindToast(st: CoreState, show: ToastShow | undefined): void {
+  st.toast.current =
+    typeof show === "function"
+      ? async (message: string, variant: "info" | "success" | "warning"): Promise<void> => {
+          await show({ message, variant })
+        }
+      : undefined
+}
+
+function markTaskComplete(st: CoreState, sessionID: string, s: GateState): void {
+  if (s.taskComplete || s.activePlan === "") return
+  s.taskComplete = true
+  // Dormant-until-engaged: a retired task sleeps the pipeline again.
+  if (s.engaged) {
+    s.engaged = false
+    st.journalEngagement(sessionID, false, "task-complete")
+  }
+  // The successor task must be able to nudge again: a retire clears the
+  // per-kind dedupe latch exactly like a plan approval does (both retire
+  // paths — the explicit marker and the gate flip — route here).
+  st.clearIntentNudge(sessionID)
+  st.journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
+}
+
+function bindHost(st: CoreState, session: Host["session"]): void {
+  st.hostSessionRef.current = session
+}
+
+function noteRetrySkipped(
+  st: CoreState,
+  child: string,
+  agent: string,
+  used: number,
+  outcome: "exhausted" | "skipped-no-api",
+): false {
+  st.journaler.journal({ type: "marker-retry", sessionID: child, agent, attempt: used, outcome })
+  return false
+}
+
+async function retryMarker(st: CoreState, child: string, agent: string): Promise<boolean> {
+  if (st.config.agentMarkerRetry === 0) return false
+  const used = st.markerRetries.get(child) ?? 0
+  if (used >= st.config.agentMarkerRetry)
+    return st.noteRetrySkipped(child, agent, used, "exhausted")
+  if (typeof st.hostSessionRef.current?.prompt !== "function")
+    return st.noteRetrySkipped(child, agent, used, "skipped-no-api")
+  st.journaler.journal({
+    type: "marker-retry",
+    sessionID: child,
+    agent,
+    attempt: used,
+    outcome: "prompted",
+  })
+  st.markerRetries.set(child, used + 1)
+  evictTo(st.markerRetries, MAX_TRACKED_MARKER_RETRIES)
+  try {
+    await st.hostSessionRef.current.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
+  } catch (e) {
+    st.journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
+    return false
+  }
+  return true
+}
+
+function bumpPromptFires(st: CoreState): void {
+  st.promptHookFires.current++
+}
+
+function nextTaskDeliverySeq(st: CoreState): number {
+  return ++st.taskDeliverySeq.current
+}
+
+function buildCoreConfig(opts: TurnstileOptions, st: CoreState): void {
   const env = opts.env ?? process.env
   const { config, warnings: configWarnings } = loadConfig(env, opts.config)
+  st.config = config
+  st.configWarnings = configWarnings
   // The policy head is built once per plugin load from the resolved config so
   // the injected prose (caps, markers, journal paths) matches the mechanical
   // enforcement; it is constant for the load's lifetime.
-  const policyText = orchestratorPolicyFor(config)
+  st.policyText = orchestratorPolicyFor(st.config)
+}
+
+function buildCoreJournaler(st: CoreState): void {
   // Per-session sink routing resolves through the ledger's parent map. The
   // resolver closure reads `ledger` before its declaration line, but it only
   // fires once hooks run — after `createHooksCore` finished constructing both
@@ -400,29 +1483,18 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // unregistered parents (a parent's own entries → its own file) and falls
   // back to the session when a child's edge is not yet resolved; both files
   // are read by replay, so nothing is lost.
-  const journaler: Journaler = createJournaler({
-    metricsDir: config.metricsDir,
-    trace: config.trace,
-    maxBytes: config.journalMaxBytes,
-    maxGenerations: config.journalMaxGenerations,
-    rotateEveryEntries: config.journalRotateEveryEntries,
-    perSession: config.journalPerSession,
-    sinkFor: (sessionID) => ledger.parentOf(sessionID),
+  st.journaler = createJournaler({
+    metricsDir: st.config.metricsDir,
+    trace: st.config.trace,
+    maxBytes: st.config.journalMaxBytes,
+    maxGenerations: st.config.journalMaxGenerations,
+    rotateEveryEntries: st.config.journalRotateEveryEntries,
+    perSession: st.config.journalPerSession,
+    sinkFor: (sessionID) => st.ledger.parentOf(sessionID),
   })
-  // Config warnings are journaled exactly once, by config.ts (the pre-journaler
-  // sink); they are now also *surfaced* once into the model context by the
-  // first tool delivery that carries string output (see
-  // `surfaceConfigWarnings`), and never re-journaled here (that would
-  // double-write every entry). The once-per-load latches the context surfaces
-  // consume live on this shared flags object (see ContextSurfaceFlags): the
-  // boot replay and the admission stamp arm `observeSummaryPending`; the
-  // surfaces consume the latches one-shot.
-  const surfaceFlags: ContextSurfaceFlags = {
-    configWarningsPending: configWarnings.length > 0,
-    observeSummaryPending: false,
-    draftDiagnosticDone: false,
-    draftShapeErrorJournaled: false,
-  }
+}
+
+function buildCoreRegexes(st: CoreState): void {
   // Surfaces unresolved config-validation warnings once per plugin load by
   // prepending a `[turnstile] config:` block to the first tool result with
   // string output — from any session, primary or child — the model-facing
@@ -431,69 +1503,66 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // `{type:"config", surfaced:false}` and never blocks the tool; the journal
   // already carries every warning (loadConfig journaled them), so this entry
   // is a surface audit (surfaced/count), not a second copy of the warnings.
-  const gateRe = compileMarkerRegex(config.gateMarker, GATE_RE, (cause) =>
-    journaler.journal({
+  st.gateRe = compileMarkerRegex(st.config.gateMarker, GATE_RE, (cause) =>
+    st.journaler.journal({
       type: "error",
       error: `config gateMarker: invalid regex, using default: ${String(cause)}`,
     }),
   )
-  const verdictRe = compileMarkerRegex(config.verdictMarker, VERDICT_RE, (cause) =>
-    journaler.journal({
+
+  st.verdictRe = compileMarkerRegex(st.config.verdictMarker, VERDICT_RE, (cause) =>
+    st.journaler.journal({
       type: "error",
       error: `config verdictMarker: invalid regex, using default: ${String(cause)}`,
     }),
   )
+}
 
-  /**
-   * True when the text contains at least one GATE or VERDICT marker per the
-   * compiled config regexes. Uses `String.match`, so the `g` flag's
-   * `lastIndex` state is not an issue; scans the whole output (no window).
-   * @param text The output text to scan.
-   */
-  function hasMarker(text: string): boolean {
-    return (text.match(gateRe)?.length ?? 0) > 0 || (text.match(verdictRe)?.length ?? 0) > 0
-  }
+function buildCoreServices(st: CoreState): void {
+  st.gates = createGates(st.config, st.journaler)
 
-  /**
-   * Records one `task`/`subagent` dispatch plus its trace line — the single
-   * canonical copy, called at guard exit so an allowed dispatch is
-   * byte-identical to before while a blocked attempt stamps `blocked:true`
-   * (audit distinguishes dispatched from blocked-and-attempted).
-   * @param sessionID The dispatching session ID.
-   * @param agent The resolved agent name.
-   * @param description The trace-gated dispatch description.
-   * @param blocked Whether a guard rejected the dispatch (stamps `blocked:true`).
-   */
-  function recordDispatch(
-    sessionID: string,
-    agent: string,
-    description: string,
-    blocked: boolean,
-  ): void {
-    journaler.journal({
-      type: "dispatch",
-      sessionID,
-      agent,
-      description,
-      ...(blocked ? { blocked: true } : {}),
-    })
-    journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
+  // Stateless denylist for bash/shell and write/edit tools in execute.before
+  // regexes compile once here; it throws the same BlockError gates
+  // throw, so the hook's existing catch rethrows blocks and journals the rest.
+  st.toolPolicy = createToolPolicy(st.config, st.journaler)
+}
+
+function buildCoreFlags(st: CoreState): void {
+  // Config warnings are journaled exactly once, by config.ts (the pre-journaler
+  // sink); they are now also *surfaced* once into the model context by the
+  // first tool delivery that carries string output (see
+  // `surfaceConfigWarnings`), and never re-journaled here (that would
+  // double-write every entry). The once-per-load latches the context surfaces
+  // consume live on this shared flags object (see ContextSurfaceFlags): the
+  // boot replay and the admission stamp arm `observeSummaryPending`; the
+  // surfaces consume the latches one-shot.
+  st.surfaceFlags = {
+    configWarningsPending: st.configWarnings.length > 0,
+    observeSummaryPending: false,
+    draftDiagnosticDone: false,
+    draftShapeErrorJournaled: false,
   }
-  const ledger: GateLedger = createLedger(
-    journaler.journalPath,
-    config.maxSessions,
-    config.replayTailLines,
+  st.flags = st.surfaceFlags
+}
+
+function buildCoreLedger(opts: TurnstileOptions, st: CoreState): void {
+  st.ledger = createLedger(
+    st.journaler.journalPath,
+    st.config.maxSessions,
+    st.config.replayTailLines,
     opts.approvalLedgerPath,
-    config.observeSessions,
-    config.agents.reviewer,
+    st.config.observeSessions,
+    st.config.agents.reviewer,
   )
-  // Re-arm the end-of-period summary at boot: the replayed tail may show a
-  // completed period whose summary never surfaced (the process died between
-  // the completing stamp and the first string-output delivery) — replay
-  // re-arms the one-shot so the summary still lands on this load. A tail
-  // that already holds the `kind:"summary"` marker re-arms nothing; a
-  // default (off) period never completes, so this is a no-op there.
-  if (ledger.observeCounts().pendingSummary) surfaceFlags.observeSummaryPending = true
+
+  // Evidence tracker: correlates a GATE: PASS against journaled exit-0
+  // bash/shell test executions attributed to the parent. Owns only the
+  // *evidence* dimension; marker authority is separate.
+  st.evidence = createEvidenceTracker(st.config, (raw) => st.ledger.parentOf(raw), st.journaler)
+  if (st.ledger.observeCounts().pendingSummary) st.surfaceFlags.observeSummaryPending = true
+}
+
+function buildCoreNearMissMaps(st: CoreState): void {
   // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
   // Hits are detected and journaled at prompt admission (see admitPrompt) and
   // parked here; the session's next string-output tool delivery surfaces them
@@ -501,76 +1570,21 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // the config-warning and read-budget blocks. A blocked dispatch never reaches
   // execute.after, so the diagnostic lands on the next string output. Bounded
   // like the admission dedupe set: FIFO-evict the oldest parent past the cap.
-  const nearMissPending = new Map<string, MarkerNearMiss[]>()
+  st.nearMissPending = new Map<string, MarkerNearMiss[]>()
+
   // Cap on parents holding pending near-miss diagnostics (bounded memory).
-  const maxTrackedNearMiss = 16
-  /**
-   * Bounds the pending near-miss map by evicting its oldest parents.
-   */
-  function boundNearMissPending(): void {
-    evictTo(nearMissPending, maxTrackedNearMiss)
-  }
-  /**
-   * Surfaces pending near-miss marker diagnostics once into the model context
-   * by prepending a `[turnstile] marker:` block to the first tool result with
-   * string output for a parent that has a pending entry — the same channel as
-   * `surfaceConfigWarnings`. The hits were already journaled at detection
-   * (prompt admission), so this entry is a surface audit only (surfaced/count),
-   * not a second copy. Fail-open: a throwing mutation journals
-   * `{type:"marker", event:"surfaced", surfaced:false}` and never blocks the
-   * tool; a non-string output retries on the next delivery (the pending entry
-   * stays). Child deliveries surface to their parent (same keying as the
-   * read-budget warning); an unregistered child self-keys.
-   * @param event The `execute.after` tool hook payload.
-   */
-  function surfaceNearMissDiagnostics(event: ToolHookEvent): void {
-    const sessionID = ledger.parentOf(asSessionID(event?.sessionID))
-    const hits = nearMissPending.get(sessionID)
-    if (!hits || hits.length === 0) return
-    if (!event?.result || typeof event.result.output !== "string") return
-    try {
-      event.result.output =
-        formatNearMissDiagnostics(hits, journaler.journalPath) + "\n" + event.result.output
-      nearMissPending.delete(sessionID)
-      journaler.journal({
-        type: "marker",
-        event: "surfaced",
-        sessionID,
-        surfaced: true,
-        count: hits.length,
-      })
-    } catch (e) {
-      journaler.journal({
-        type: "marker",
-        event: "surfaced",
-        sessionID,
-        surfaced: false,
-        count: hits.length,
-        error: String(e),
-      })
-    }
-  }
-  const gates: Gates = createGates(config, journaler)
-  // Stateless denylist for bash/shell and write/edit tools in execute.before
-  // regexes compile once here; it throws the same BlockError gates
-  // throw, so the hook's existing catch rethrows blocks and journals the rest.
-  const toolPolicy: ToolPolicy = createToolPolicy(config, journaler)
-  // Evidence tracker: correlates a GATE: PASS against journaled exit-0
-  // bash/shell test executions attributed to the parent. Owns only the
-  // *evidence* dimension; marker authority is separate.
-  const evidence = createEvidenceTracker(config, (raw) => ledger.parentOf(raw), journaler)
-  // Per-delivery dedup scope counter: each task result is a distinct
-  // delivery, so a re-run emitting a byte-identical marker is still
-  // journaled; streaming sources share the empty scope (re-delivery dedup).
-  let taskDeliverySeq = 0
+  st.maxTrackedNearMiss = 16
+}
+
+function buildCoreDeliveryMaps(st: CoreState): void {
   // Dispatchable agent names, the conservative-exclusion fallback for
   // orchestrator-policy injection: a delivery carrying one of these names
   // with an UNRESOLVABLE child→parent edge is skipped (and journaled)
   // rather than injected self-keyed. Same config.agents keys the dispatch
   // guards read, so a renamed agent is excluded by name exactly as before.
-  const subagentNames = new Set(
+  st.subagentNames = new Set(
     (["reviewer", "planReviewer", "executor", "testRunner", "debugger", "planner"] as const).map(
-      (name) => config.agents[name],
+      (name) => st.config.agents[name],
     ),
   )
 
@@ -579,25 +1593,76 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // retry/attribution helpers) read the live binding without capturing the
   // per-setup `h`; enables the plan-reviewer delivery path to await edge
   // resolution via `session.get`.
-  const hostSessionRef: { current: Host["session"] | undefined } = { current: undefined }
+  st.hostSessionRef = { current: undefined }
 
-  // Parent-lookup bookkeeping, keyed by child session ID.
-  // Values record how many lookups were attempted and why the record stayed
-  // unresolved: `"not-visible"` (host `session.get` threw) or `"no-parent-id"`
-  // (the record exists but has no parent edge); cleared on success. Capped so
-  // long-lived hosts cannot grow it unboundedly.
-  const failedLookups = new Map<string, { attempts: number; reason: string }>()
-  // `"not-visible"`: host `session.get` threw the lookup is retryable.
-  const LOOKUP_REASON_NOT_VISIBLE = "not-visible"
-  // `"no-parent-id"`: the record exists but has no parent edge (negative cache).
-  const LOOKUP_REASON_NO_PARENT_ID = "no-parent-id"
+  /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
+  st.markerRetries = new Map<string, number>()
+  st.taskDeliverySeq = { current: 0 }
+}
+
+function buildCoreDeltaMaps(st: CoreState): void {
+  /**
+   * Per-session sliding window of streamed child text: a host may split one
+   * marker across `session.text.delta` chunks, and a fragment-only parse silently
+   * loses the gate flip. Each delta re-parses the window's tail; markers.ts dedup
+   * suppresses every re-fire, so only a newly completed marker is first-sighted.
+   * Bounded by boundDeltaWindows; cleared on the next task dispatch (see
+   * execute.before age-out) so stale fragments of a prior task do not leak.
+   */
+  st.deltaWindows = new Map<string, string>()
+
+  // Derived from the effective compiled marker sources with a 512-char floor
+  // (deltaWindowFloorChars): the tail keeps a window whose head was evicted so
+  // a marker split across many small deltas still completes, including one
+  // whose configured literal is longer than the historical bound.
+  st.maxDeltaWindowChars = deltaWindowFloorChars(st.gateRe.source, st.verdictRe.source)
+
+  st.maxTrackedDeltaWindows = 50
+}
+
+function buildCoreAdmissionMaps(st: CoreState): void {
+  /**
+   * Emitter-authority cache: a child session ID → its resolved agent name,
+   * seeded at three redundant points (`resolveParent` record read,
+   * `session.created`, and `execute.after` task input). Read by
+   * `markerKindAllowed` to decide whether a session's `GATE:`/`VERDICT:` text
+   * is authoritative for that kind. Bounded by boundSessionAgents.
+   */
+  st.sessionAgents = new Map<string, string>()
+
+  st.maxTrackedEmitters = 50
+
+  // One-time flag backing the dead-channel surfacing below.
+  // Dedupe keys `${sessionID}:${admissionID}` for every prompt admitted, so
+  // the hook path and the inbox stream each admit one prompt exactly once
+  // (the normal host sequence is hook-then-inbox on the shared message id).
+  st.admittedIds = new Set<string>()
+
+  // Cap on tracked dedupe keys (FIFO; evict the first-seen key past the
+  // cap — Set insertion order is never refreshed, which is fine: the host
+  // never re-fires an old admission id, so recency adds nothing) — bounded
+  // memory per plugin instance.
+  st.maxTrackedAdmittedIds = 64
+}
+
+function buildCoreSummaryMaps(st: CoreState): void {
+  // Session-end summary dedupe: one summary per session per host process.
+  // In-memory only — after a restart the same session may re-summary once
+  // (accepted; the journaled `session-summary` entry makes it diagnosable).
+  // Bounded like the admitted-id set (cap = maxSessions, the same LRU bound
+  // the ledger uses; a session that idled once never fires again).
+  st.summarizedSessions = new Set<string>()
+}
+
+function buildCoreDispatchMaps(st: CoreState): void {
   // Parent session ID → Date.now() of its LATEST plan-reviewer dispatch
   // (last-wins; cleared on task-scope reset for that parent). Plausibility
   // input: an unresolved-child verdict is plausible only within the parent's
   // current task scope (recorded at-or-after this time, and unique across
   // parents). Capped via boundDispatches, the same eviction idiom as
   // boundLookups.
-  const planReviewerDispatch = new Map<string, number>()
+  st.planReviewerDispatch = new Map<string, number>()
+
   // Parent session ID → plan file names extracted from its LATEST
   // plan-reviewer dispatch prompt (last-wins; cleared on task-scope reset for
   // that parent). Binding input: when the round's plan-reviewer APPROVE
@@ -605,7 +1670,10 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // gates.planApprovalBinding (a unique existing mention binds the plan name
   // + content key; anything else stays unbound). Capped via boundTargets,
   // the same eviction idiom as boundDispatches.
-  const planReviewTarget = new Map<string, string[]>()
+  st.planReviewTarget = new Map<string, string[]>()
+}
+
+function buildCoreTaskWindowMaps(st: CoreState): void {
   // Parent session ID → Date.now() of its LATEST admitted prompt: the current
   // task's evidence window. A GATE: PASS may only be promoted by executions
   // journaled at-or-after the stamp, so a stale prior-task execution
@@ -613,16 +1681,31 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // A parent that never admits a prompt has no stamp and keeps the unbounded
   // join (fail-open, documented). Capped via boundTaskWindows, the same
   // eviction idiom as boundDispatches.
-  const taskWindows = new Map<string, number>()
+  st.taskWindows = new Map<string, number>()
+
+  // ── concern modules (10b) ─────────────────────────────────────────────────
+  // The dispatch-guard, bash-write-guard, and prompt-admission concerns live
+  // in their own modules; each receives the shared per-setup state it needs
+  // as one typed state object. The destructured aliases below keep every
+  // remaining call site (and the returned context literal) unchanged.
+  st.maintenanceCounts = new Map<string, number>()
+
+  /** Cap on tracked per-plan maintenance counters (bounded memory). */
+  st.maxTrackedMaintenancePlans = 16
+}
+
+function buildCorePlanAskMaps(st: CoreState): void {
   // Plan-gate permission asks, keyed by host request id → the parent session
   // the ask was raised for + when it was recorded. Only asks escalated by the
   // evaluate handler (reason "plan-gate") are recorded, so a reply to an
   // unrelated permission ask (bash, write, …) can never match or release the
   // plan gate, and concurrent sessions cannot clobber each other (values
   // carry their own session). Bounded: evict oldest past the cap.
-  const planGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+  st.planGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+
   // Cap on tracked plan-gate asks: evict oldest (insertion order) past it.
-  const maxTrackedPlanAsks = 50
+  st.maxTrackedPlanAsks = 50
+
   // Parents whose evaluate handler has escalated to an ask but whose
   // `permission.asked` stream event has not arrived yet: parent → escalation
   // time. The evaluate handler does not know the host request id (it rides the
@@ -630,12 +1713,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // the plan ask and recorded. Bounded by boundAwaitingAsks, and latches
   // expire (see awaitingPlanAskTtlMs) so a lost stream event cannot latch a
   // parent indefinitely.
-  const awaitingPlanAsk = new Map<string, number>()
+  st.awaitingPlanAsk = new Map<string, number>()
+
   // Latch TTL for awaiting-plan-ask markers: an escalation whose stream event
   // never arrives stops latching after this window, so a stale marker cannot
   // record an unrelated later ask (whose approval would then release the plan
   // gate). The value is single-sourced at module scope (`askLatchTtlMs`).
-  const awaitingPlanAskTtlMs = askLatchTtlMs
+  st.awaitingPlanAskTtlMs = askLatchTtlMs
+}
+
+function buildCoreLandingAskMaps(st: CoreState): void {
   // Parents whose evaluate handler has been armed to force a landing ask (the
   // guard sets this on a repeat `git push` attempt: no reviewer approval AND
   // >= 1 prior landing block). Parent → arm
@@ -644,11 +1731,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // for landing-candidate detection via isPushLanding). Bounded by
   // boundLandingAsks; expires like awaitingPlanAsk so a lost stream event
   // cannot latch a parent indefinitely.
-  const pendingLandingAsk = new Map<string, number>()
-  const maxTrackedLandingAsks = 50
+  st.pendingLandingAsk = new Map<string, number>()
+
+  st.maxTrackedLandingAsks = 50
+
   // The landing arm shares the awaiting-plan-ask TTL: same fail-toward-strict
   // expiry, single-sourced at module scope (`askLatchTtlMs`).
-  const pendingLandingAskTtlMs = askLatchTtlMs
+  st.pendingLandingAskTtlMs = askLatchTtlMs
+}
+
+function buildCoreLandingGateAsks(st: CoreState): void {
   // Landing-gate permission asks, keyed by host request id → the parent session
   // the ask was raised for + when it was recorded. Only asks by the evaluate
   // handler's landing arm (message prefixed with `LANDING_ASK_MESSAGE_PREFIX`
@@ -657,29 +1749,40 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // release the landing gate; per-reason keying keeps a landing `once` grant
   // from ever being consumed by a plan-gate (task) dispatch and vice versa.
   // Bounded: evict oldest past the cap.
-  const landingGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
-  const maxTrackedLandingGateAsks = 50
-  // Parents whose evaluate handler has been armed to force a hands-on ask
-  // (the guard sets this on a repeat parent
-  // write/edit attempt: no release AND >= 1 prior hands-on block). Parent →
-  // arm time. Bounded by boundHandsOnAsks; expires like the other latches so
-  // a lost stream event cannot latch a parent indefinitely.
-  const pendingHandsOnAsk = new Map<string, number>()
-  const maxTrackedHandsOnAsks = 50
-  // The hands-on arm shares the ask-latch TTL: same fail-toward-strict
-  // expiry, single-sourced at module scope (`askLatchTtlMs`).
-  const pendingHandsOnAskTtlMs = askLatchTtlMs
+  st.landingGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+
+  st.maxTrackedLandingGateAsks = 50
+
   // Landing-ask dedupe: parent → Date.now() of the parent's last landing
   // escalation. A re-arm within `askLatchTtlMs` of the previous escalation
   // collapses into the already-armed latch's single ask row — the guard
   // journals no second `permission` ask row and takes the block path instead
   // while the latch stays live for the evaluate handler. Bounded by
   // boundLandingAsks; cleared wherever pendingLandingAsk is cleared.
-  const lastLandingEscalateAt = new Map<string, number>()
+  st.lastLandingEscalateAt = new Map<string, number>()
+}
+
+function buildCoreHandsOnAskMaps(st: CoreState): void {
+  // Parents whose evaluate handler has been armed to force a hands-on ask
+  // (the guard sets this on a repeat parent
+  // write/edit attempt: no release AND >= 1 prior hands-on block). Parent →
+  // arm time. Bounded by boundHandsOnAsks; expires like the other latches so
+  // a lost stream event cannot latch a parent indefinitely.
+  st.pendingHandsOnAsk = new Map<string, number>()
+
+  st.maxTrackedHandsOnAsks = 50
+
+  // The hands-on arm shares the ask-latch TTL: same fail-toward-strict
+  // expiry, single-sourced at module scope (`askLatchTtlMs`).
+  st.pendingHandsOnAskTtlMs = askLatchTtlMs
+
   // Hands-on-ask dedupe (mirrors lastLandingEscalateAt for the hands-on
   // gate): bounded by boundHandsOnAsks; cleared wherever pendingHandsOnAsk
   // is cleared.
-  const lastHandsOnEscalateAt = new Map<string, number>()
+  st.lastHandsOnEscalateAt = new Map<string, number>()
+}
+
+function buildCoreHandsOnGateAsks(st: CoreState): void {
   // Hands-on-gate permission asks, keyed by host request id → the parent
   // session the ask was raised for + when it was recorded. Only asks by the
   // evaluate handler's hands-on arm (message prefixed with
@@ -688,8 +1791,12 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // keying keeps a hands-on `once` grant from ever being consumed by a
   // plan-gate (task) dispatch or a landing push and vice versa. Bounded: evict
   // oldest past the cap.
-  const handsOnGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
-  const maxTrackedHandsOnGateAsks = 50
+  st.handsOnGateAsks = new Map<string, { sessionID: string; recordedAt: number }>()
+
+  st.maxTrackedHandsOnGateAsks = 50
+}
+
+function buildCoreIntentMaps(st: CoreState): void {
   // Pending intent nudges: parent → the detected IntentKind awaiting the
   // parent's next tool delivery (armed by prompt admission, consumed once).
   // Latest-wins when one prompt's nudge is still undelivered and a later
@@ -699,7 +1806,8 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // per-parent queue would let stale nudges land long after their prompt).
   // A task-scope drop releases any undelivered nudge (task-scoped delivery
   // state); bounded by boundIntentNudges alongside the dedupe set.
-  const intentNudgePending = new Map<string, IntentKind>()
+  st.intentNudgePending = new Map<string, IntentKind>()
+
   // Pending plan-impact advisories, keyed by parent session ID: the text
   // stashed by the plan-impact classifier (hooks-core) for one classified
   // parent write/edit/write-shaped bash call, consumed one-shot by the next
@@ -707,1414 +1815,68 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // when a second classification lands before delivery; a task-scope reset
   // drops the undelivered advisory with the intent-nudge state. Bounded by
   // boundIntentNudges alongside the pending-nudge map.
-  const planImpactAdvisories = new Map<string, string>()
+  st.planImpactAdvisories = new Map<string, string>()
+
   // Intent-nudge one-shot latch: `${sessionID}:${kind}` keys already nudged.
   // One nudge per detected intent signal, deduped across the task scope (a
   // repeated intent prompt journals but does not re-nudge); the
   // latch is NOT cleared by a task-scope drop — a plan approval clears it, so
   // a later task's intents can nudge again. Bounded: evict oldest past the cap.
-  const intentNudgedKinds = new Set<string>()
-  const maxTrackedIntentNudges = 64
+  st.intentNudgedKinds = new Set<string>()
 
-  /**
-   * Bounds the intent-nudge state: evicts the oldest dedupe keys past the
-   * latch cap and the oldest pending nudges past the session cap.
-   */
-  function boundIntentNudges(): void {
-    evictTo(intentNudgedKinds, maxTrackedIntentNudges)
-    evictTo(intentNudgePending, config.maxSessions)
-    evictTo(planImpactAdvisories, config.maxSessions)
-  }
+  st.maxTrackedIntentNudges = 64
+}
 
-  /**
-   * Clears a session's entire intent-nudge state: the pending (undelivered)
-   * nudge and every per-kind dedupe key. Called when a plan approval lands —
-   * the task got its plan, so a later task's intents may nudge again — and
-   * when the active task retires (both retire paths route through
-   * `markTaskComplete`), so the successor task's first repeated intent can
-   * nudge. (The task-scope reset drops only the undelivered pending nudge;
-   * the dedupe keys survive it by design.)
-   * @param sessionID The parent session whose nudge state is cleared.
-   */
-  function clearIntentNudge(sessionID: string): void {
-    intentNudgePending.delete(sessionID)
-    for (const kind of INTENT_KINDS) {
-      intentNudgedKinds.delete(`${sessionID}:${kind}`)
-    }
-  }
+function buildCoreLookupMaps(st: CoreState): void {
+  // Parent-lookup bookkeeping, keyed by child session ID.
+  // Values record how many lookups were attempted and why the record stayed
+  // unresolved: `"not-visible"` (host `session.get` threw) or `"no-parent-id"`
+  // (the record exists but has no parent edge); cleared on success. Capped so
+  // long-lived hosts cannot grow it unboundedly.
+  st.failedLookups = new Map<string, { attempts: number; reason: string }>()
+
+  // `"not-visible"`: host `session.get` threw the lookup is retryable.
+  st.lookupReasonNotVisible = "not-visible"
+
+  // `"no-parent-id"`: the record exists but has no parent edge (negative cache).
+  st.lookupReasonNoParentId = "no-parent-id"
+
   // A thrown lookup may mean the child record is not yet visible to the
   // host API, so failures are retried up to this many times per session.
-  const maxLookupAttempts = 3
+  st.maxLookupAttempts = 3
+
   // Bound on tracked sessions: evict oldest (insertion order) when past.
-  const maxTrackedLookups = 256
+  st.maxTrackedLookups = 256
+}
+
+function buildCoreSessionDirMaps(st: CoreState): void {
   // Bound on tracked per-session project directories: evict oldest (insertion
   // order) when past. Mirrors maxTrackedLookups.
-  const maxTrackedSessionDirs = 50
+  st.maxTrackedSessionDirs = 50
+
   // Last-known project directory per session, resolved via session.get and
   // invalidated on session_move. The per-dispatch resolver caches fresh here so
   // the sync consumers (evaluate, continuation carry) read one dispatch behind;
   // the sync consumers fall back to a cached value, then process.cwd().
   // Bounded by boundSessionDirs.
-  const sessionDirs = new Map<string, string>()
+  st.sessionDirs = new Map<string, string>()
+}
 
-  /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
-  const markerRetries = new Map<string, number>()
-
-  /**
-   * Per-session sliding window of streamed child text: a host may split one
-   * marker across `session.text.delta` chunks, and a fragment-only parse silently
-   * loses the gate flip. Each delta re-parses the window's tail; markers.ts dedup
-   * suppresses every re-fire, so only a newly completed marker is first-sighted.
-   * Bounded by boundDeltaWindows; cleared on the next task dispatch (see
-   * execute.before age-out) so stale fragments of a prior task do not leak.
-   */
-  const deltaWindows = new Map<string, string>()
-  // Derived from the effective compiled marker sources with a 512-char floor
-  // (deltaWindowFloorChars): the tail keeps a window whose head was evicted so
-  // a marker split across many small deltas still completes, including one
-  // whose configured literal is longer than the historical bound.
-  const maxDeltaWindowChars = deltaWindowFloorChars(gateRe.source, verdictRe.source)
-  const maxTrackedDeltaWindows = 50
-
-  /**
-   * Bounds the delta-window map by evicting its oldest entries.
-   */
-  function boundDeltaWindows(): void {
-    evictTo(deltaWindows, maxTrackedDeltaWindows)
-  }
-
-  /**
-   * Bounds the dispatch-timestamp map by evicting its oldest entries.
-   */
-  function boundDispatches(): void {
-    evictTo(planReviewerDispatch, maxTrackedLookups)
-  }
-
-  /**
-   * Bounds the plan-review-target map by evicting its oldest entries.
-   */
-  function boundTargets(): void {
-    evictTo(planReviewTarget, maxTrackedLookups)
-  }
-
-  /**
-   * Bounds the task-window map by evicting its oldest entries.
-   */
-  function boundTaskWindows(): void {
-    evictTo(taskWindows, maxTrackedLookups)
-  }
-
-  /**
-   * Bounds the plan-gate ask map by evicting its oldest recorded asks.
-   */
-  function boundPlanAsks(): void {
-    evictTo(planGateAsks, maxTrackedPlanAsks)
-  }
-
-  /**
-   * Bounds the awaiting-plan-ask map (parent → escalation time), evicting its
-   * oldest entries.
-   */
-  function boundAwaitingAsks(): void {
-    evictTo(awaitingPlanAsk, maxTrackedPlanAsks)
-  }
-
-  /**
-   * Reads (and expires) the awaiting-plan-ask latch for a session: a marker
-   * older than the TTL is dropped and reported as absent. Fail-toward-strict:
-   * an expired latch records nothing, so a reply to any later ask stays inert
-   * and the plan gate re-asks on the next dispatch.
-   * @param sid The session whose latch is consulted.
-   * @returns Whether a live (unexpired) latch exists for the session.
-   */
-  function hasLiveAwaitingAsk(sid: string): boolean {
-    const at = awaitingPlanAsk.get(sid)
-    if (at === undefined) return false
-    if (Date.now() - at > awaitingPlanAskTtlMs) {
-      awaitingPlanAsk.delete(sid)
-      return false
-    }
-    return true
-  }
-
-  /**
-   * Bounds the pending-landing-ask map (parent → arm time) and the landing
-   * dedupe-timestamp map, evicting their oldest entries.
-   */
-  function boundLandingAsks(): void {
-    evictTo(pendingLandingAsk, maxTrackedLandingAsks)
-    evictTo(lastLandingEscalateAt, maxTrackedLandingAsks)
-  }
-
-  /**
-   * Bounds the pending-hands-on-ask map (parent → arm time) and the hands-on
-   * dedupe-timestamp map, evicting their oldest entries.
-   */
-  function boundHandsOnAsks(): void {
-    evictTo(pendingHandsOnAsk, maxTrackedHandsOnAsks)
-    evictTo(lastHandsOnEscalateAt, maxTrackedHandsOnAsks)
-  }
-
-  /**
-   * Bounds the hands-on-gate ask map (requestID → parent + record time),
-   * evicting its oldest entries.
-   */
-  function boundHandsOnGateAsks(): void {
-    evictTo(handsOnGateAsks, maxTrackedHandsOnGateAsks)
-  }
-
-  /**
-   * Bounds the landing-gate ask map (requestID → parent + record time),
-   * evicting its oldest entries.
-   */
-  function boundLandingGateAsks(): void {
-    evictTo(landingGateAsks, maxTrackedLandingGateAsks)
-  }
-
-  /**
-   * Emitter-authority cache: a child session ID → its resolved agent name,
-   * seeded at three redundant points (`resolveParent` record read,
-   * `session.created`, and `execute.after` task input). Read by
-   * `markerKindAllowed` to decide whether a session's `GATE:`/`VERDICT:` text
-   * is authoritative for that kind. Bounded by boundSessionAgents.
-   */
-  const sessionAgents = new Map<string, string>()
-  const maxTrackedEmitters = 50
-
-  // ── concern modules (10a) ─────────────────────────────────────────────────
-  // The context-surface, parent-resolution, verdict-capture, and plan-verdict
-  // concerns live in their own modules; each receives the shared per-setup
-  // state it needs as one typed state object. The destructured aliases below
-  // keep every existing call site (and the returned context literal)
-  // unchanged. Cross-concern helpers that stay local for now (10b scope) are
-  // threaded as function references; function declarations hoist, so the
-  // wiring order matches the state-block order, not the declaration order.
-  const contextSurface = createContextSurface({
-    journaler,
-    ledger,
-    subagentNames,
-    policyText,
-    configWarnings,
-    flags: surfaceFlags,
-    intentNudgePending,
-    journalPolicy,
-    enforcementArmed,
-  })
-  const { surfaceConfigWarnings, surfaceObserveSummary, observeRequestDraft, injectContextPolicy } =
-    contextSurface
-  const parentResolution = createParentResolution({
-    config,
-    journaler,
-    ledger,
-    subagentNames,
-    hostSessionRef,
-    sessionAgents,
-    maxTrackedEmitters,
-    failedLookups,
-    maxLookupAttempts,
-    maxTrackedLookups,
-    lookupReasonNotVisible: LOOKUP_REASON_NOT_VISIBLE,
-    lookupReasonNoParentId: LOOKUP_REASON_NO_PARENT_ID,
-    sessionDirs,
-    maxTrackedSessionDirs,
-    toolPolicy,
-    promoteOnEvidence,
-  })
-  const {
-    boundSessionDirs,
-    seedEmitter,
-    reseedChildEdges,
-    emitterAgent,
-    childStatus,
-    markerKindAllowed,
-    currentProjectDir,
-    resolveProjectDir,
-    resolveParent,
-  } = parentResolution
-  const verdictCapture = createVerdictCapture({
-    config,
-    journaler,
-    ledger,
-    gateRe,
-    verdictRe,
-    evidence,
-    taskWindows,
-    markerKindAllowed,
-    emitterAgent,
-    markTaskComplete,
-  })
-  const { parseMarkers, lastMatch } = verdictCapture
-  /**
-   * Reads (and expires) the pending-landing-ask latch for a session: an arm
-   * older than the TTL is dropped and reported as absent. Fail-toward-strict:
-   * an expired latch arms nothing, so a later ask is inert and the landing gate
-   * re-blocks.
-   * @param sid The parent session whose latch is consulted.
-   * @returns Whether a live (unexpired) latch exists for the session.
-   */
-  function hasLiveLandingAsk(sid: string): boolean {
-    const at = pendingLandingAsk.get(sid)
-    if (at === undefined) return false
-    if (Date.now() - at > pendingLandingAskTtlMs) {
-      pendingLandingAsk.delete(sid)
-      // Mirror the expiry on the dedupe map too: a stale timestamp must not
-      // suppress a legitimate new ask row after the latch expired.
-      lastLandingEscalateAt.delete(sid)
-      return false
-    }
-    return true
-  }
-
-  /**
-   * Reads (and expires) the pending-hands-on-ask latch for a session: an arm
-   * older than the TTL is dropped and reported as absent. Fail-toward-strict:
-   * an expired latch arms nothing, so a later ask is inert and the hands-on
-   * gate re-blocks.
-   * @param sid The parent session whose latch is consulted.
-   * @returns Whether a live (unexpired) latch exists for the session.
-   */
-  function hasLiveHandsOnAsk(sid: string): boolean {
-    const at = pendingHandsOnAsk.get(sid)
-    if (at === undefined) return false
-    if (Date.now() - at > pendingHandsOnAskTtlMs) {
-      pendingHandsOnAsk.delete(sid)
-      // Mirror the expiry on the dedupe map too: a stale timestamp must not
-      // suppress a legitimate new ask row after the latch expired.
-      lastHandsOnEscalateAt.delete(sid)
-      return false
-    }
-    return true
-  }
-
-  /**
-   * Re-evaluates evidence correlation for a parent whose pending unverified
-   * PASS may now verify: peeks the parent bucket (never mints one — a fresh
-   * bucket can never carry a claim, so unknown sessions stay out of the LRU)
-   * and, when the bucket holds an unverified claim and the tracker still
-   * correlates an in-window exit-0 hit for it, flips the gate green, clears
-   * the claim, and journals the promoted gate entry plus its trace event —
-   * byte-identical to the evidence-arrival promotion this helper was
-   * extracted from. The promoted entry carries the parent's task fingerprint
-   * only when its bucket has stamped one (omitted when empty, like the live
-   * gate rows), so replay restores the carry identity. A parent with no
-   * admitted-prompt task-window stamp keeps
-   * the unbounded join (`?? 0`), preserving today's correlation for hosts
-   * that never admit a prompt (fail-open, documented). No-op otherwise;
-   * never throws.
-   * @param parent The parent session whose pending claim is re-evaluated.
-   */
-  function promoteOnEvidence(parent: string): void {
-    const ps = ledger.peek(parent)
-    if (ps && ps.unverifiedPass && evidence.has(parent, taskWindows.get(parent) ?? 0)) {
-      ps.hasGatePass = true
-      ps.unverifiedPass = ""
-      journaler.journal({
-        type: "gate",
-        sessionID: parent,
-        result: "PASS",
-        event: "promoted",
-        verified: true,
-        mode: config.gateEvidence,
-        ...(ps.taskFingerprint !== "" ? { fp: ps.taskFingerprint } : {}),
-      })
-      // The gate's green flip is the task's completion boundary (Phase 3):
-      // the flip journals its task-complete companion row and stamps the
-      // retire, so the next admitted prompt starts a fresh scope.
-      markTaskComplete(parent, ps)
-      journaler.traceEvent("test-runner", "gate", "GATE: PASS promoted on evidence", parent)
-    }
-  }
-
-  /**
-   * Builds the attribution diagnostic for a gate-unverified refusal: which
-   * journaled test executions exist and why none verified the claim. A child
-   * whose executions resolve to `sid` but predate its task window is
-   * `attributed`; every other execution-bearing child is `unresolved` with
-   * its reason ("no parent edge" when no edge is registered,
-   * "edge: <parent>" when the edge resolves elsewhere); `direct` reports an
-   * in-window bucket on `sid` itself (always false on a live refusal — see
-   * EvidenceSearch). Pure read with respect to the evidence tracker: the
-   * tracker is never mutated and nothing is journaled. `ledger.parentOf`
-   * does LRU bookkeeping on the ledger's edge map (state-boundary
-   * contract), so the purity claim is scoped to the tracker and gate state,
-   * not the edge map's ordering.
-   * @param sid The parent session the reviewer dispatch was searched for.
-   * @returns The EvidenceSearch diagnostic for `sid`.
-   */
-  function evidenceSearch(sid: string): EvidenceSearch {
-    const window = taskWindows.get(sid) ?? 0
-    const attributed: string[] = []
-    const unresolved: Array<{ session: string; reason: string }> = []
-    let direct = false
-    for (const { session, last } of evidence.snapshot()) {
-      if (session === sid) {
-        direct = last >= window
-        continue
-      }
-      const parent = ledger.parentOf(session)
-      if (parent === sid) {
-        // In-window attributed hits were already promoted (the decision-time
-        // re-check ran first), so only stale ones reach a refusal.
-        if (last < window) attributed.push(session)
-        continue
-      }
-      unresolved.push({
-        session,
-        reason: ledger.childToParent.has(session) ? `edge: ${parent}` : "no parent edge",
-      })
-    }
-    return { attributed, unresolved, direct }
-  }
-
-  /**
-   * Resolves the read-budget key for a whole-file read: awaits the child→parent
-   * edge, then returns the parent session (or the session itself when the edge
-   * is genuinely absent). Journals a bounded signal only when a lookup was
-   * attempted but stayed inconclusive — a child whose record is not yet visible
-   * to `session.get`. Root sessions that resolve cleanly as parent-less, and
-   * children already resolved to a parent, never signal (no journal spam).
-   * Observe-mode edge: when the edge is genuinely absent the caller keys the
-   * suppression check on the session itself, so a suppressed read there can
-   * stamp the child as an extra observed session (shifting the period boundary
-   * by one per unresolved child) and carry the `would-block` entry under the
-   * child key rather than a parent key. Accepted: it only happens while an
-   * observe period is armed (an off phase stamps nothing) and the audit stays
-   * internally consistent — the entry is keyed like the suppression that
-   * produced it.
-   * @param sid The reading session ID, already normalized via `asSessionID`.
-   * @returns The session ID the read budget should be keyed against.
-   */
-  async function readBudgetKey(sid: string): Promise<string> {
-    await resolveParent(sid)
-    const key = ledger.parentOf(sid)
-    if (key === sid) {
-      // Byte-identical read: reads the attempts count off the
-      // structured record; the gate (`attempts > 0 && attempts < max`) is
-      // unchanged, so this signal is byte-identical to the pre-enrichment form.
-      const attempts = failedLookups.get(sid)?.attempts ?? 0
-      // Inconclusive window only: a lookup was tried and the record was not yet
-      // visible (attempts climb 1..max-1). Zero means no host session API
-      // (never knowable); at the cap means a resolved parent-less root. Bounded
-      // to ≤ maxLookupAttempts-1 signals per session.
-      if (attempts > 0 && attempts < maxLookupAttempts) {
-        journaler.journal({
-          type: "error",
-          sessionID: sid,
-          error: `read budget keyed by session; parent unresolved after ${attempts}/${maxLookupAttempts} lookup attempt(s)`,
-        })
-      }
-    }
-    return key
-  }
-
-  /**
-   * Runs the whole-file read horizon for a session with observe-mode
-   * suppression: the guard evaluation is unchanged (the same
-   * check-then-increment), and when a deliberate block fires during an
-   * observe period the `would-block` audit entry is journaled and the read
-   * proceeds instead of the block throwing. A non-BlockError failure
-   * propagates to the fail-open handler (only deliberate blocks are
-   * suppressible).
-   * Deliberate asymmetry with the dispatch path: the read guard journals its
-   * own `blocked`/`read-limit` line before throwing (that stamping stays
-   * byte-identical for enforce users, so the suppression cannot remove it),
-   * whereas a suppressed dispatch journals no `blocked` stamp at all (its
-   * catch branch skips it). A suppressed read therefore co-journals both that
-   * `blocked` line and the `would-block` audit entry; the dispatch path
-   * journals the `would-block` entry alone. The same suppression applies
-   * when a user-typed gate suspension is active (keyed on the same budget
-   * key): the `suspended` audit flavor is journaled and the read proceeds.
-   * @param key The session ID the read budget is keyed against (the parent,
-   *     or the session itself when the edge is genuinely absent).
-   * @throws The deliberate read-budget block error when the block is not
-   *     suppressed.
-   */
-  function handleReadBudget(key: string): void {
-    // Dormant-until-engaged: the whole-file read horizon sleeps until the
-    // parent engages.
-    if (!enforcementArmed(key)) return
-    try {
-      gates.guardReadLimit(key, ledger)
-    } catch (e) {
-      if (e instanceof BlockError && observeActive(key)) {
-        const totals = ledger.noteWouldBlock(key)
-        journaler.journal(wouldBlockEntry(key, "read-budget", totals.observed, totals.wouldBlocks))
-        return
-      }
-      if (e instanceof BlockError && suspendSuppressionActive(key)) {
-        journalSuspendedWouldBlock(key, "read-budget")
-        return
-      }
-      throw e
-    }
-  }
-
-  /**
-   * Splits a self-keyed delivery's attributable children into the
-   * registered-edge scan (`edge`, today's scan) and every child with a stored
-   * verdict that is not the delivery session itself (`unresolved`). `edge`
-   * keeps its LRU promotion; `unresolved` is a pure snapshot that feeds the
-   * plausibility join in plausibleUnresolved.
-   * @param sid The delivery's parent id (=== child in the self-keyed branch).
-   * @returns Registered candidates and verdict-bearing children (minus sid).
-   */
-  function discoverCandidates(sid: string): {
-    edge: string[]
-    unresolved: Array<{ child: string; verdict: ChildVerdict }>
-  } {
-    const edge: string[] = []
-    for (const c of ledger.childToParent.keys()) {
-      if (ledger.childToParent.get(c) === sid && ledger.childVerdict(c).marker !== "") edge.push(c)
-    }
-    return {
-      edge,
-      unresolved: ledger.evidencedChildren().filter(({ child }) => child !== sid),
-    }
-  }
-
-  /**
-   * Unresolved children plausibly this parent's next task: a plan-reviewer
-   * dispatch is recorded for `sid` AND the verdict was recorded at-or-after it
-   * (inclusive, tolerating same-millisecond ties) AND no OTHER parent
-   * dispatched at-or-before that verdict (unique-owner rule; a verdict with two
-   * candidate parents is ambiguous and excluded → fail-open). Pure read.
-   * @param sid The delivery's parent id.
-   * @param unresolved The `{ child, verdict }` candidates from discoverCandidates.
-   * @returns The child ids plausibly belonging to `sid`.
-   */
-  function plausibleUnresolved(
-    sid: string,
-    unresolved: Array<{ child: string; verdict: ChildVerdict }>,
-  ): string[] {
-    const dispatchTs = planReviewerDispatch.get(sid)
-    if (dispatchTs === undefined) return []
-    const out: string[] = []
-    for (const { child, verdict } of unresolved) {
-      if (verdict.recordedAt < dispatchTs) continue
-      // Unique-owner: another parent dispatched at-or-before this verdict's
-      // recordedAt ⇒ ambiguous ⇒ excluded (never-guess).
-      let ambiguous = false
-      for (const [other, ts] of planReviewerDispatch) {
-        if (other === sid) continue
-        if (ts <= verdict.recordedAt) {
-          ambiguous = true
-          break
-        }
-      }
-      if (!ambiguous) out.push(child)
-    }
-    return out
-  }
-
-  /**
-   * The most-recently-recorded child among the given ids, by stored
-   * `recordedAt` (ties keep insertion order); undefined when none. Pure read.
-   * @param children The candidate child ids (from the plausible list).
-   * @returns The most recently recorded child id, or undefined.
-   */
-  function mostRecentUnresolved(children: string[]): string | undefined {
-    let best: string | undefined
-    let bestAt = -1
-    for (const c of children) {
-      const at = ledger.childVerdict(c).recordedAt
-      if (at > bestAt) {
-        bestAt = at
-        best = c
-      }
-    }
-    return best
-  }
-
-  /**
-   * Parent-lookup diagnostic for the delivery child, its parent (sid, when
-   * distinct), and each unresolved candidate: `{ attempts, reason }` — the
-   * current parent-lookup attempt count and why it stayed unresolved
-   * (`"not-visible"` / `"no-parent-id"`, or `"resolved-or-never-tried"` when
-   * clean). Distinct sessions are kept in the entry so the field can tell the
-   * three root-cause hypotheses apart. Pure read; clears nothing.
-   * @param child The delivery's session id.
-   * @param unresolved The unresolved candidate child ids.
-   * @returns A per-session `{ attempts, reason }` map.
-   */
-  function lookupDiag(
-    child: string,
-    unresolved: string[],
-  ): Record<string, { attempts: number; reason: string }> {
-    const out: Record<string, { attempts: number; reason: string }> = {}
-    for (const s of [child, ...unresolved])
-      out[s] = {
-        attempts: failedLookups.get(s)?.attempts ?? 0,
-        reason: failedLookups.get(s)?.reason ?? "resolved-or-never-tried",
-      }
-    return out
-  }
-
-  /**
-   * Journals a policy-injection outcome for a session: `{ type: "policy",
-   * sessionID, injected }` plus any extra fields. One source for the shared
-   * entry shape so the skip/success/failure call sites stay under the
-   * function-size ceiling instead of repeating the literals inline.
-   * @param sessionID The session the entry names: the child on a name-skip,
-   *     the resolved parent on success or failure.
-   * @param injected Whether the policy landed (`true`) or was rejected
-   *     (`false`).
-   * @param extra Additional entry fields, or an empty object when none.
-   */
-  function journalPolicy(
-    sessionID: string,
-    injected: boolean,
-    extra: Record<string, unknown> = {},
-  ): void {
-    journaler.journal({ type: "policy", sessionID, injected, ...extra })
-  }
-
-  /**
-   * Whether the conservative `event.agent` name guard must skip injection:
-   * only when the child→parent edge is unresolvable AND the delivery carries
-   * a config-known subagent name. The registered-edge case returns first (it
-   * always injects), so the name guard never contradicts a resolved edge;
-   * the skip is journaled so the decision stays observable.
-   * @param event The execute.after payload.
-   * @param child The delivery's session ID.
-   * @returns True when the delivery is skipped without injecting.
-   */
-  function nameGuardSkips(event: ToolHookEvent, child: string): boolean {
-    if (ledger.childToParent.has(child)) return false
-    const knownName = typeof event.agent === "string" && subagentNames.has(event.agent)
-    if (knownName) journalPolicy(child, false, { skipped: true, reason: "agent-name" })
-    return knownName
-  }
-
-  /**
-   * Prepends the orchestrator policy to the first parent-side
-   * `task`/`subagent` result delivery per task, so the model always carries
-   * the pipeline contract. Attribution is edge-first: the child→parent edge
-   * (`ledger.childToParent`, seeded by `session.created` and back-filled via
-   * `session.get` in `resolveParent`) decides where the policy lands, so
-   * both host delivery shapes — the v1 string shape (child-keyed event,
-   * text in `result.output`) and the v2 structured shape (parent-keyed
-   * event, child on `metadata.sessionID`, canonical text in
-   * `output.output`, string or block-array `content`) — inject when the
-   * edge resolves; the once-flag and the `injected:true`
-   * journal entry key on the resolved parent (identical to the raw child
-   * for the self-keyed shape). The `event.agent` name guard is a
-   * conservative fallback that fires ONLY for non-structured deliveries
-   * when the edge is unresolvable (no `session.created` record AND no
-   * `session.get` record) and the delivery carries a config-known subagent
-   * name: refusing there is the safe choice, and the skip is journaled
-   * (`skipped:true`, `reason:"agent-name"`) so the decision is observable.
-   * Structured deliveries skip the guard by construction: the host builds
-   * that result on the parent's own tool call, so it is always the
-   * parent-facing channel and `event.agent` there is the parent's agent
-   * name — consulting it risks a bogus skip for a parent running under a
-   * config-known name. The one residual corner that still injects without
-   * an edge is a config-UNKNOWN agent name on a host without a session API:
-   * with no edge and no name signal there is no way to tell a parent-facing
-   * delivery from a child-own session one, so the self-keyed injection
-   * there is a documented, accepted residual (the handler fires only on
-   * `task`/`subagent` tool results, so child streaming text never reaches
-   * it). Every non-injection is journaled except one documented silent
-   * case: an absent result (nothing to deliver). A present-but-unclassifiable
-   * result journals loudly (`reason:"unknown-shape"` with a safe shape
-   * descriptor) on EVERY such delivery — the once-flag no longer gates that
-   * journal, so a repeated unclassifiable delivery journals again. When the
-   * delivery classifies (string or structured), the per-delivery PIPELINE:
-   * status tail is appended for a pipeline stage (independent of the
-   * once-flag), and the policy head is prepended once per task; the tail and
-   * the head are independent fail-open paths — a tail failure journals a
-   * `pipeline-status:` error and the head still lands, and a head failure
-   * journals `injected:false` and the tail still landed.
-   * @param event The execute.after payload whose result is mutated.
-   * @param child The delivery's child session ID (classified, per shape).
-   * @param delivery The classified delivery (see `classifyDelivery`).
-   * @param agent The resolved agent name (the just-completed pipeline stage).
-   */
-  async function injectOrchestratorPolicy(
-    event: ToolHookEvent,
-    child: string,
-    delivery: Delivery,
-    agent: string,
-  ): Promise<void> {
-    // Close the late-edge window for background dispatches before deciding:
-    // idempotent (early-returns on a registered edge) and bounded by the
-    // failedLookups retry cap, so the await is cheap on the common path.
-    await resolveParent(child)
-    const parent = ledger.parentOf(child)
-    // Name guard first: a child-facing delivery the guard skips (unresolvable
-    // edge + config-known subagent name) returns here and never receives the
-    // parent-addressed nudge text below.
-    if (delivery.kind !== "structured" && nameGuardSkips(event, child)) return
-    // Advisory intent nudge: independent of the policy head, delivered on the
-    // first classified parent-facing delivery after admission.
-    prependIntentNudge(event, parent, delivery)
-    prependPlanImpactAdvisory(event, parent, delivery)
-    applyPolicyResult(parent, event, delivery, agent)
-  }
-
-  /**
-   * Appends the per-delivery pipeline status tail to a classified delivery's
-   * model-visible text: runs on EVERY delivery for a pipeline stage, so a
-   * follow-up delivery still names the next stage even after the policy head
-   * already landed. The line is a pure read of the resolved parent's gate
-   * state via `formatPipelineStatus` (never throws and never journals by
-   * itself); a non-pipeline agent renders "" and the append is a no-op,
-   * leaving such deliveries byte-identical. Fail-open: a throwing mutation
-   * journals `{type:"error", error:"pipeline-status: …"}` and never rethrows,
-   * so the independent policy-prepend path below still runs.
-   * @param parent The resolved parent session for the delivery.
-   * @param event The execute.after payload whose result is mutated.
-   * @param delivery The classified delivery (string or structured only).
-   * @param agent The resolved agent name (the just-completed pipeline stage).
-   */
-  function appendPipelineStatus(
-    parent: string,
-    event: ToolHookEvent,
-    delivery: Extract<Delivery, { kind: "string" | "structured" }>,
-    agent: string,
-  ): void {
-    const line = formatPipelineStatus(ledger.state(parent), config.agents, agent)
-    if (line === "") return
-    try {
-      mutateDeliveryText(event, delivery, (text) => text + "\n" + line, "append")
-    } catch (e) {
-      journaler.journal({ type: "error", error: `pipeline-status: ${e}` })
-    }
-  }
-
-  /**
-   * Prepends the orchestrator policy head to a classified delivery's
-   * model-visible text once per task: the silent per-task once-flag path.
-   * Fail-open: a throwing mutation journals `{type:"policy", injected:false}`
-   * and never rethrows.
-   * @param parent The resolved parent session for the delivery.
-   * @param event The execute.after payload whose result is mutated.
-   * @param delivery The classified delivery (string or structured only).
-   */
-  function prependPolicy(
-    parent: string,
-    event: ToolHookEvent,
-    delivery: Extract<Delivery, { kind: "string" | "structured" }>,
-  ): void {
-    // Dormant-until-engaged: a dormant session's deliveries stay clean — the
-    // policy head lands only once enforcement is armed.
-    if (!enforcementArmed(parent)) return
-    const policyState = ledger.state(parent)
-    if (policyState.policyInjected) return
-    try {
-      prependDeliveryText(event, delivery, policyText)
-      policyState.policyInjected = true
-      journalPolicy(parent, true)
-    } catch (e) {
-      journalPolicy(parent, false, { error: String(e) })
-    }
-  }
-
-  /**
-   * Applies the injection once the name guard passes. Dispatch table: an
-   * absent result (silent), a present-but-unclassifiable result (journaled
-   * loudly as `reason:"unknown-shape"` with the shape descriptor on EVERY such
-   * delivery — the once-flag no longer gates it), then the per-delivery
-   * status tail (every pipeline-stage delivery, independent of the once-flag),
-   * then the once-per-task policy head. The two text mutations are independent
-   * fail-open paths: a tail failure journals a `pipeline-status:` error and the
-   * head still lands, and vice versa.
-   * @param parent The resolved parent session for the delivery.
-   * @param event The execute.after payload whose result is mutated.
-   * @param delivery The classified delivery (see `classifyDelivery`).
-   * @param agent The resolved agent name (the just-completed pipeline stage).
-   */
-  function applyPolicyResult(
-    parent: string,
-    event: ToolHookEvent,
-    delivery: Delivery,
-    agent: string,
-  ): void {
-    if (delivery.kind === "absent") return
-    if (delivery.kind === "unknown") {
-      journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
-      return
-    }
-    appendPipelineStatus(parent, event, delivery, agent)
-    prependPolicy(parent, event, delivery)
-  }
-
-  /**
-   * Classifies an admitted parent prompt for implementation intent and arms
-   * the advisory pipeline-entry nudge. Runs only when the intent-nudge key is
-   * enabled (disabled = full no-op: no journal, no nudge); every detection is
-   * journaled `{type:"intent", sessionID, kind}`, but the nudge arms only
-   * when the parent has no plan approval (the active-plan proxy — a parent
-   * already working under an approved plan needs no pipeline-entry reminder)
-   * and only once per detected intent signal (the dedupe latch survives
-   * task-scope resets; a plan approval or a task retire clears it). Fail-open:
-   * the classification
-   * step is wrapped, so a throw anywhere in it journals an `error` row and
-   * never propagates from the prompt path.
-   * @param sessionID The admitted parent session.
-   * @param properties The prompt payload to classify.
-   */
-  function handlePromptIntent(sessionID: string, properties: PromptHookProperties): void {
-    if (!config.intentNudge) return
-    try {
-      const kind = classifyIntent(promptTextOf(properties))
-      if (kind === null) return
-      // Engagement replaced the nudge for the engaging kinds: a dispatch or
-      // plan-reference prompt journals its intent row but never nudges (the
-      // pipeline is armed instead) — consistently, regardless of
-      // `alwaysEnforce`. Issue/work intents keep the one-shot advisory
-      // nudge: that is dormant mode's one-time hint.
-      if (shouldEngage(kind)) {
-        journaler.journal({ type: "intent", sessionID, kind })
-        return
-      }
-      if (ledger.state(sessionID).hasPlanVerdict) return
-      journaler.journal({ type: "intent", sessionID, kind })
-      const key = `${sessionID}:${kind}`
-      if (intentNudgedKinds.has(key)) return
-      intentNudgedKinds.add(key)
-      intentNudgePending.set(sessionID, kind)
-      boundIntentNudges()
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID, error: `intent classification: ${e}` })
-    }
-  }
-
-  /**
-   * Delivers a pending intent nudge on a classified task/subagent delivery:
-   * consumes the parent's pending nudge (one-shot) and prepends the advisory
-   * text ahead of the delivery text. Deliveries that cannot carry text
-   * (absent/unclassifiable) keep the nudge pending for a later delivery.
-   * Fail-open: a throwing mutation journals `type:"error"` and never blocks.
-   * @param event The execute.after payload whose result is mutated.
-   * @param parent The resolved parent session for the delivery.
-   * @param delivery The classified delivery (see `classifyDelivery`).
-   */
-  function prependIntentNudge(event: ToolHookEvent, parent: string, delivery: Delivery): void {
-    if (delivery.kind !== "string" && delivery.kind !== "structured") return
-    const kind = intentNudgePending.get(parent)
-    if (kind === undefined) return
-    intentNudgePending.delete(parent)
-    try {
-      prependDeliveryText(event, delivery, intentNudge(kind))
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
-    }
-  }
-
-  /**
-   * Delivers a pending plan-impact advisory on a classified task/subagent
-   * delivery: consumes the parent's stashed advisory (one-shot) and prepends
-   * the text ahead of the delivery text — the same channel and one-shot
-   * semantics as the intent nudge. Deliveries that cannot carry text keep
-   * the advisory pending for a later delivery. Fail-open: a throwing
-   * mutation journals `type:"error"` and never blocks.
-   * @param event The execute.after payload whose result is mutated.
-   * @param parent The resolved parent session for the delivery.
-   * @param delivery The classified delivery (see `classifyDelivery`).
-   */
-  function prependPlanImpactAdvisory(
-    event: ToolHookEvent,
-    parent: string,
-    delivery: Delivery,
-  ): void {
-    if (delivery.kind !== "string" && delivery.kind !== "structured") return
-    const text = planImpactAdvisories.get(parent)
-    if (text === undefined) return
-    planImpactAdvisories.delete(parent)
-    try {
-      prependDeliveryText(event, delivery, text)
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID: parent, error: `plan-impact advisory: ${e}` })
-    }
-  }
-
-  /**
-   * Delivers a pending intent nudge on a parent-keyed read delivery: the
-   * parent's own read results are the exploration-phase channel the nudge
-   * rides. A child-keyed read (the event session differs from the resolved
-   * parent) is left untouched — the nudge is addressed to the parent. A
-   * non-string output keeps the nudge pending for a later delivery.
-   * Fail-open: a throwing mutation journals `type:"error"` and never blocks.
-   * @param event The execute.after payload whose result is mutated.
-   */
-  function prependIntentNudgeRead(event: ToolHookEvent): void {
-    const raw = asSessionID(event?.sessionID)
-    const parent = ledger.parentOf(raw)
-    if (parent !== raw) return
-    const kind = intentNudgePending.get(parent)
-    if (kind === undefined) return
-    if (!event?.result || typeof event.result.output !== "string") return
-    intentNudgePending.delete(parent)
-    try {
-      event.result.output = `${intentNudge(kind)}\n${event.result.output}`
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID: parent, error: `intent nudge: ${e}` })
-    }
-  }
-
-  /**
-   * Reviewer-APPROVE credit (landing-gate release signal): sets the child's
-   * parent-bucket `hasReviewApprove` when the delivery's first-sight marker
-   * events carry a reviewer `VERDICT: APPROVE` and the parent's review
-   * ensemble is complete. The credit fires only on a first-sight APPROVE
-   * event surfaced by task-result parsing (streaming never credits: a
-   * denied or unseeded observation is suppressed and never returned), and
-   * it lands on the parent bucket via `ledger.parentOf(child)` — the caller
-   * awaits the child→parent edge for deliveries whose dispatch input names
-   * no agent, so a background dispatch credits the parent, not the
-   * unregistered child. An incomplete ensemble journals the refusal (and a
-   * `refusedApprove:true` stamp) through `reviewEnsembleComplete` and leaves
-   * the gate red. Never throws.
-   * @param child The raw child session ID that delivered the verdict.
-   * @param markerEvents The first-sight authoritative marker events parsed
-   *     from the delivery text (suppressed events are already journaled and
-   *     excluded).
-   */
-  function creditReviewApproval(child: string, markerEvents: MarkerEvent[]): void {
-    if (!markerEvents.some((e) => e.kind === "verdict" && e.marker.includes("APPROVE"))) return
-    const parent = ledger.parentOf(child)
-    if (!gates.reviewEnsembleComplete(parent, ledger)) return
-    ledger.state(parent).hasReviewApprove = true
-    // Credit the bucket-free trace too: the flag above dies on the landing
-    // prompt's reset, but the journaled APPROVE outlives it — the trace is
-    // what the landing gate reads to escalate the first push instead of
-    // throwing the misleading `no-landing-approval` block.
-    ledger.markCreditedApproval(parent)
-  }
-
-  /** The discovery snapshot for a self-keyed plan-verdict delivery. */
-  type AttributedChildDiscovery = {
-    edgeCount: number
-    unresolvedCount: number
-    plausibleCount: number
-    unresolvedIDs: string[]
-    attributed: string | undefined
-    decision: "attributed" | "fail-open"
-    poolSize: number
-  }
-
-  /**
-   * Edge-resolved arm of the plan-verdict attribution: the delivery's own
-   * session is a registered edge child, so attribute the verdict through the
-   * child directly (delivery-wins merge: the delivery's own marker wins only
-   * when the output itself carries a marker). The `source` names the winning
-   * pipeline; `raw` is the child itself.
-   * @param sid The parent session the `plan` entry is keyed on.
-   * @param child The raw child session ID (a registered edge child).
-   * @param own The delivery's own last verdict marker, or "" when marker-less.
-   */
-  async function attributeEdgeVerdict(sid: string, child: string, own: string): Promise<void> {
-    const rec = ledger.childVerdict(child)
-    const marker = own || rec.marker
-    const markerSource = own ? "task-result" : rec.source || "task-result"
-    const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
-    await journalPlanApproval(
-      sid,
-      child,
-      result,
-      marker || "<none>",
-      markerSource,
-      marker || "<no verdict marker>",
-    )
-  }
-
-  /**
-   * Candidate discovery for a self-keyed plan-verdict delivery: discovers
-   * attributable children from registered edges AND from unresolved children
-   * whose streamed verdict plausibly belongs to this parent, and attributes
-   * through the unique unanimous pool (`raw` = first edge child, else
-   * most-recently-recorded unresolved child).
-   *
-   * The registered-edge scan is round-scoped to the parent's most-recent
-   * plan-reviewer dispatch (exactly as the unresolved scan is): an
-   * earlier-round BLOCK stored on an edge child left behind by a prior review
-   * round is superseded by this round's verdict, so a re-issued APPROVE is
-   * credited. When no dispatch is recorded the scan stays structural (a lone
-   * edge child still attributes, unchanged).
-   *
-   * Attribute only on a non-empty unanimous pool: a lone-edge-candidate
-   * attribution (edge-only) is unchanged; a plausible streamed APPROVE either
-   * becomes the sole candidate (approved) or contradicts a BLOCK pool
-   * (fail-open) — so a self-keyed BLOCK is unreachable while such evidence
-   * exists. Zero candidates, or more than one (a contradiction within this
-   * same round), attributes nothing: a marker-less, unattributable
-   * parent-keyed delivery can never clobber a live approval with a BLOCK
-   * (structural fail-open).
-   *
-   * Pure read: journals nothing, mutates nothing.
-   * @param sid The delivery's parent id.
-   * @returns The discovery snapshot: forensic candidate counts and
-   *     unresolved ids, the attributed child (if any), the pool size (for the
-   *     fail-open error), and the decision label for the forensic attribution
-   *     entry.
-   */
-  function selectAttributedChild(sid: string): AttributedChildDiscovery {
-    const { edge, unresolved } = discoverCandidates(sid)
-    const unresolvedIDs = unresolved.map(({ child: cid }) => cid)
-    const plausible = plausibleUnresolved(sid, unresolved)
-    const dispatchTs = planReviewerDispatch.get(sid)
-    const edgeCandidates =
-      dispatchTs === undefined
-        ? edge
-        : edge.filter((c) => ledger.childVerdict(c).recordedAt >= dispatchTs)
-    const pool = [...edgeCandidates, ...plausible]
-    const verdictOf = (c: string): "APPROVE" | "BLOCK" =>
-      ledger.childVerdict(c).marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
-    const unanimous = new Set(pool.map(verdictOf))
-    const attributed =
-      pool.length > 0 && unanimous.size === 1
-        ? (edgeCandidates[0] ?? mostRecentUnresolved(plausible))
-        : undefined
-    const decision = attributed ? "attributed" : "fail-open"
-    return {
-      edgeCount: edgeCandidates.length,
-      unresolvedCount: unresolved.length,
-      plausibleCount: plausible.length,
-      unresolvedIDs,
-      attributed,
-      decision,
-      poolSize: pool.length,
-    }
-  }
-
-  /**
-   * Builds the replay-inert forensic `type:"attribution"` entry for a
-   * self-keyed delivery: the decision label, the parent/self delivery flag,
-   * the session-API availability, the candidate counts, the unresolved child
-   * ids, and the per-session lookup diagnostics. The wording deliberately
-   * avoids "unattributable" so the /unattributable/ error count stays exactly
-   * one (only the fail-open gate error uses it).
-   * @param sid The delivery's parent id.
-   * @param child The delivery's raw session id.
-   * @param d The discovery snapshot from selectAttributedChild.
-   * @returns The entry object for the caller to journal before any gate
-   *     mutation.
-   */
-  function attributionEntry(
-    sid: string,
-    child: string,
-    d: AttributedChildDiscovery,
-  ): Record<string, unknown> {
-    return {
-      type: "attribution",
-      sessionID: sid,
-      raw: child,
-      decision: d.decision,
-      deliveryIsParent: child === sid,
-      sessionApi: typeof hostSessionRef.current?.get === "function",
-      candidates: {
-        edge: d.edgeCount,
-        unresolved: d.unresolvedCount,
-        plausible: d.plausibleCount,
-      },
-      unresolvedIDs: d.unresolvedIDs,
-      lookup: lookupDiag(child, d.unresolvedIDs),
-    }
-  }
-
-  /**
-   * The fail-open tail of a self-keyed plan-verdict delivery: journals the
-   * single `plan attribution:` error and leaves the gate untouched — never a
-   * BLOCK, never a parent-keyed plan entry, never a clobber of a live
-   * approval (the attribution entry carries the diagnostics). A
-   * one-candidate pool always attributes, so this error only fires with zero
-   * or multiple candidates — plural noun always correct.
-   * @param sid The parent session the error is keyed on.
-   * @param poolSize The number of evidenced candidates the discovery snapshot
-   *     counted.
-   */
-  function noteUnattributable(sid: string, poolSize: number): void {
-    journaler.journal({
-      type: "error",
-      sessionID: sid,
-      error: `plan attribution: unattributable parent-keyed delivery; gate unchanged (${poolSize} evidenced candidates)`,
-    })
-  }
-
-  /**
-   * Attributes a plan-reviewer result to the parent's plan-approval gate,
-   * ensuring the journaled `plan` entry's `raw` is always an actual child
-   * session ID (never the parent `sessionID`):
-   *
-   * - Edge-resolved (`childToParent.has(child)`): the delivery's own verdict
-   *   wins over any stored child-text observation (delivery-wins only when the
-   *   output itself carries a marker); the `source` names the winning pipeline.
-   *   `raw = child`.
-   * - Self-keyed (`parentOf(child) === child`, e.g. a host re-fire reporting
-   *   the parent's own session ID): never reads `childVerdict(child)` (that is
-   *   the parent's own quoted text, not a child's evidence). It journals a
-   *   forensic `type:"attribution"` entry first (before any mutation,
-   *   replay-inert, never containing the word "unattributable" so the
-   *   /unattributable/ error count stays exactly one), then attributes
-   *   through the unique unanimous pool discovered by
-   *   `selectAttributedChild` (`raw` = first edge child, else
-   *   most-recently-recorded unresolved child); zero or contradictory
-   *   candidates journal the fail-open error and mutate nothing.
-   *
-   * An APPROVE also binds the plan identity from the round's dispatch-prompt
-   * candidates (`planReviewTarget`): a unique existing plan mention journals
-   * `plan`/`planKey` on the `plan` entry (restored by journal replay); an
-   * unbound approval journals neither field (legacy lines unchanged).
-   *
-   * Never throws (fail-open).
-   * @param child The raw child session ID, for the `plan` entry's `raw` field.
-   * @param output The delivery's own result text.
-   */
-  async function attributePlanVerdict(child: string, output: string): Promise<void> {
-    const sid = ledger.parentOf(child)
-    const own = lastMatch(output, verdictRe)
-    // Edge-resolved: attribute through the child directly, delivery-wins merge.
-    if (ledger.childToParent.has(child)) {
-      await attributeEdgeVerdict(sid, child, own)
-      return
-    }
-    // Self-keyed: the delivery's own session id is not a registered child.
-    const d = selectAttributedChild(sid)
-    // Journal the forensic entry first (before any gate mutation). A new journal
-    // type is replay-inert; its wording avoids "unattributable" so the
-    // single-error count is stable.
-    journaler.journal(attributionEntry(sid, child, d))
-    if (d.attributed) {
-      const rec = ledger.childVerdict(d.attributed)
-      // Attributed candidates are evidenced (a non-empty stored marker and a
-      // non-empty source label), so marker needs no "<none>" fallback here —
-      // the edge-resolved branch above keeps its fallback for marker-less
-      // deliveries.
-      const marker = own || rec.marker
-      const markerSource = own ? "task-result" : rec.source
-      const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
-      await journalPlanApproval(sid, d.attributed, result, marker, markerSource, marker)
-      return
-    }
-    noteUnattributable(sid, d.poolSize)
-  }
-
-  /**
-   * True while the session is inside its observe period: gate decisions are
-   * computed and journaled, but the deliberate block is suppressed. Reads the
-   * stored admission-phase stamp (admission is the stamping point; a mid-task
-   * read of an already-stamped session re-stamps nothing). Fail-toward-
-   * enforce: any ledger throw journals and returns false — a broken observer
-   * must not silently un-guard the pipeline (the fail-toward-strict direction
-   * this codebase takes when an auxiliary read fails).
-   * @param sessionID The session whose enforcement decision is being made.
-   * @returns True when the deliberate block should be suppressed and
-   *     journaled as a would-have-blocked event.
-   */
-  function observeActive(sessionID: string): boolean {
-    try {
-      return ledger.observePhase(sessionID).phase === "observe"
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID, error: `observe phase read: ${e}` })
-      return false
-    }
-  }
-
-  /**
-   * Whether reactive gate enforcement is armed for the session's parent:
-   * the configured `alwaysEnforce` short-circuits to always-armed; otherwise
-   * the parent bucket's `engaged` flag decides (dormant-until-engaged).
-   * Children draw on the parent's engagement via `ledger.parentOf`, matching
-   * the per-parent state rule. Fail toward the configured mode: any ledger
-   * throw journals and returns `config.alwaysEnforce` — a broken engagement
-   * read must not silently arm or disarm beyond the configured default.
-   * @param sessionID The session whose enforcement decision is being made.
-   * @returns True when reactive enforcement is armed for the session's parent.
-   */
-  function enforcementArmed(sessionID: string): boolean {
-    if (config.alwaysEnforce) return true
-    try {
-      return ledger.state(ledger.parentOf(sessionID)).engaged
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID, error: `engagement read: ${e}` })
-      return false
-    }
-  }
-
-  /**
-   * Journals one `type:"engagement"` row for a transition that already
-   * mutated the bucket's `engaged` flag. Fail-open: a journaling failure
-   * propagates to the caller's guard (the journaler itself never throws
-   * through the hook bodies).
-   * @param sessionID The parent session whose engagement changed.
-   * @param engaged The new engagement value.
-   * @param reason Why the value changed.
-   */
-  function journalEngagement(sessionID: string, engaged: boolean, reason: EngagementReason): void {
-    journaler.journal(engagementEntry(sessionID, engaged, reason))
-  }
-
-  /**
-   * Whether gate enforcement is suspended for the session's parent: the
-   * session-level suspend state (decisions keep computing and journaling,
-   * but deliberate blocks are suppressed). Children draw on the parent's
-   * suspension via `ledger.parentOf`, matching the per-parent state rule.
-   * Fail-open: any ledger throw journals and returns false — a broken
-   * suspension read must not silently un-guard the pipeline.
-   * @param sessionID The session whose enforcement decision is being made.
-   * @returns True when enforcement is suspended for the session's parent.
-   */
-  function suspendSuppressionActive(sessionID: string): boolean {
-    try {
-      return ledger.isSuspended(ledger.parentOf(sessionID))
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID, error: `suspension read: ${e}` })
-      return false
-    }
-  }
-
-  /**
-   * Journals one replay-inert `suspended` audit entry for a block suppressed
-   * by an active gate suspension: the parent-keyed session, the
-   * `event:"would-block"` audit flavor, and the blocking gate's audit cause
-   * truncated to 200 characters. One entry per suppressed deliberate block;
-   * replay folds it inert (it records a suppression, never a state change).
-   * @param sessionID The session the entry is keyed on (the parent).
-   * @param cause The blocking gate's audit cause.
-   */
-  function journalSuspendedWouldBlock(sessionID: string, cause: string): void {
-    journaler.journal({
-      type: "suspended",
-      sessionID,
-      event: "would-block",
-      cause: cause.slice(0, 200),
-    })
-  }
-
-  /**
-   * Settles a task-dispatch guard catch under an active gate suspension
-   * (the observe arm above wins the flavor when both are active): the
-   * `suspended` audit entry is journaled and the dispatch is metered like
-   * any admit. Returns false when the suspension is not the active
-   * suppressor, so the caller keeps its ordinary blocked-stamp path.
-   * @param e The caught guard failure (an already-checked BlockError).
-   * @param sessionID The dispatching session ID.
-   * @param agent The resolved agent name.
-   * @param description The trace-gated dispatch description.
-   * @param waived The budget guard's admission-time waiver-exemption verdict.
-   * @returns True when the suspension suppressed the block (dispatch
-   *     proceeded, metered).
-   */
-  function suspendDispatchOutcome(
-    e: BlockError,
-    sessionID: string,
-    agent: string,
-    description: string,
-    waived: boolean,
-  ): boolean {
-    if (!suspendSuppressionActive(sessionID)) return false
-    journalSuspendedWouldBlock(sessionID, blockCause(e, agent))
-    allowDispatch(sessionID, agent, description, waived)
-    return true
-  }
-
-  /**
-   * Names the blocking gate for a suppressed dispatch: the gate's stamped
-   * audit cause when the throw site carries one, else the dispatched agent
-   * name, else the `"gate"` fallback. Never re-parses the block message —
-   * the message is byte-identity-sensitive (goldens pin it), the cause is
-   * audit-only.
-   * @param e The deliberate block error.
-   * @param agent The dispatched agent name ("" when the host named none).
-   * @returns The audit cause for the `would-block` entry.
-   */
-  function blockCause(e: BlockError, agent: string): string {
-    return e.cause ?? (agent || "gate")
-  }
-
-  /**
-   * Settles a task-dispatch guard catch. A deliberate BlockError inside an
-   * observe period is suppressed: the `would-block` audit entry is journaled
-   * with the running totals and the dispatch is metered like any admit — the
-   * suppressed dispatch happened, so counters mean the same thing in both
-   * modes and a "would have been blocked" count is an attempt count, not a
-   * counter delta. The same applies when a user-typed gate suspension is
-   * active (the observe arm wins the flavor when both are active): the
-   * `suspended` audit entry is journaled instead. Outside both suppression
-   * modes the BlockError stamps
-   * `blocked:true` (a blocked attempt draws down nothing) and is re-thrown
-   * for the fail-open wrapper; any non-BlockError is an internal error that
-   * propagates un-stamped, so the dispatch entry is never mislabeled.
-   * @param e The caught guard failure.
-   * @param sessionID The dispatching session ID.
-   * @param agent The resolved agent name.
-   * @param description The trace-gated dispatch description.
-   * @param waived The budget guard's admission-time waiver-exemption verdict
-   *     (false when the budget guard itself threw).
-   * @returns True when the block was suppressed (the dispatch proceeded).
-   */
-  function dispatchBlockOutcome(
-    e: unknown,
-    sessionID: string,
-    agent: string,
-    description: string,
-    waived: boolean,
-  ): boolean {
-    if (!(e instanceof BlockError)) return false
-    if (observeActive(sessionID)) {
-      const cause = blockCause(e, agent)
-      const totals = ledger.noteWouldBlock(sessionID)
-      journaler.journal(wouldBlockEntry(sessionID, cause, totals.observed, totals.wouldBlocks))
-      allowDispatch(sessionID, agent, description, waived)
-      return true
-    }
-    if (suspendDispatchOutcome(e, sessionID, agent, description, waived)) return true
-    recordDispatch(sessionID, agent, description, true)
-    return false
-  }
-
-  /**
-   * Arms the pending-landing-ask latch and reports whether the caller must
-   * journal the ask row: a re-arm within `askLatchTtlMs` of the parent's
-   * previous escalation is a same-tick duplicate — the latch is (re-)armed
-   * so the evaluate handler still forces the ask, but the ask row is
-   * collapsed into the already-journaled one and the guard takes the block
-   * path. The latch set happens before the dedupe check so a duplicate arm
-   * refreshes the latch the evaluate handler consumes.
-   * @param parent The parent session (the latch's and dedupe map's key).
-   * @returns True when the caller must journal the `permission` ask row.
-   */
-  function armLandingAsk(parent: string): boolean {
-    const now = Date.now()
-    const last = lastLandingEscalateAt.get(parent)
-    pendingLandingAsk.set(parent, now)
-    boundLandingAsks()
-    if (last !== undefined && now - last < askLatchTtlMs) return false
-    lastLandingEscalateAt.set(parent, now)
-    boundLandingAsks()
-    return true
-  }
-
-  /**
-   * Hands-on twin of {@link armLandingAsk}: arms the pending-hands-on-ask
-   * latch and dedupes same-tick escalations by the same within-TTL rule.
-   * @param parent The parent session (the latch's and dedupe map's key).
-   * @returns True when the caller must journal the `permission` ask row.
-   */
-  function armHandsOnAsk(parent: string): boolean {
-    const now = Date.now()
-    const last = lastHandsOnEscalateAt.get(parent)
-    pendingHandsOnAsk.set(parent, now)
-    boundHandsOnAsks()
-    if (last !== undefined && now - last < askLatchTtlMs) return false
-    lastHandsOnEscalateAt.set(parent, now)
-    boundHandsOnAsks()
-    return true
-  }
-
-  /**
-   * Swallows a deliberate BlockError thrown at the catch-all
-   * `execute.before` choke point (bash denylist, commit lint, landing gate)
-   * while a user-typed gate suspension is active for the event's parent:
-   * the `suspended` audit entry is journaled (cause from the block, bounded)
-   * and the tool call proceeds. Returns false when no suspension is active,
-   * so the caller rethrows (the ordinary enforce path).
-   * @param event The execute.before tool event.
-   * @param e The deliberate block error (an already-checked BlockError).
-   * @returns True when the suspension suppressed the block.
-   */
-  function suspendBlock(event: ToolHookEvent, e: BlockError): boolean {
-    const parent = ledger.parentOf(asSessionID(event?.sessionID))
-    if (!suspendSuppressionActive(parent)) return false
-    journalSuspendedWouldBlock(parent, blockCause(e, ""))
-    return true
-  }
-
+function buildCorePromptHolders(st: CoreState): void {
   // Prompt-channel waiver capture: the waiver must
   // provenance from the user's prompt, never the dispatch prompt. A counter
   // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
   // non-empty string, so an unresolvable source is reported once (keylessPrompts hits
   // 1 exactly once) as a misconfiguration (mirrors the bash `command ?? cmd`
   // telemetry).
-  const keylessPrompts = { current: 0 }
+  st.keylessPrompts = { current: 0 }
 
   // Prompt-channel admission bookkeeping (per-plugin-load closure state):
   // `promptHookFires` counts prompt-hook dispatches (the hook increments it
   // before it admits); a zero count when the inbox stream admits means this
   // surface does not dispatch the prompt hook, so admission is served by the
   // inbox stream — surfaced once as a one-time telemetry error.
-  const promptHookFires = { current: 0 }
-  // One-time flag backing the dead-channel surfacing below.
-  // Dedupe keys `${sessionID}:${admissionID}` for every prompt admitted, so
-  // the hook path and the inbox stream each admit one prompt exactly once
-  // (the normal host sequence is hook-then-inbox on the shared message id).
-  const admittedIds = new Set<string>()
-  // Cap on tracked dedupe keys (FIFO; evict the first-seen key past the
-  // cap — Set insertion order is never refreshed, which is fine: the host
-  // never re-fires an old admission id, so recency adds nothing) — bounded
-  // memory per plugin instance.
-  const maxTrackedAdmittedIds = 64
-  /**
-   * Bounds the admitted-id dedupe set by evicting its oldest keys.
-   */
-  function boundAdmittedIds(): void {
-    evictTo(admittedIds, maxTrackedAdmittedIds)
-  }
-
-  // Session-end summary dedupe: one summary per session per host process.
-  // In-memory only — after a restart the same session may re-summary once
-  // (accepted; the journaled `session-summary` entry makes it diagnosable).
-  // Bounded like the admitted-id set (cap = maxSessions, the same LRU bound
-  // the ledger uses; a session that idled once never fires again).
-  const summarizedSessions = new Set<string>()
-  /**
-   * Bounds the summarized-session dedupe set by evicting its oldest keys.
-   */
-  function boundSummarizedSessions(): void {
-    evictTo(summarizedSessions, config.maxSessions)
-  }
-
-  // ── concern modules (10b) ─────────────────────────────────────────────────
-  // The dispatch-guard, bash-write-guard, and prompt-admission concerns live
-  // in their own modules; each receives the shared per-setup state it needs
-  // as one typed state object. The destructured aliases below keep every
-  // remaining call site (and the returned context literal) unchanged.
-  const maintenanceCounts = new Map<string, number>()
-  /** Cap on tracked per-plan maintenance counters (bounded memory). */
-  const maxTrackedMaintenancePlans = 16
-  /**
-   * Bounds the per-plan maintenance counters by evicting their oldest entries.
-   */
-  function boundMaintenanceCounts(): void {
-    evictTo(maintenanceCounts, maxTrackedMaintenancePlans)
-  }
-  const dispatchGuard = createDispatchGuard({
-    config,
-    journaler,
-    ledger,
-    gates,
-    deltaWindows,
-    planReviewerDispatch,
-    planReviewTarget,
-    maintenanceCounts,
-    boundDispatches,
-    boundTargets,
-    boundMaintenanceCounts,
-    recordDispatch,
-    enforcementArmed,
-    journalEngagement,
-    promoteOnEvidence,
-    evidenceSearch,
-    resolveProjectDir,
-    dispatchBlockOutcome,
-  })
-  const { handleTaskDispatch, guardedTaskDispatch, allowDispatch } = dispatchGuard
-  const bashWriteGuard = createBashWriteGuard({
-    config,
-    journaler,
-    ledger,
-    gates,
-    toolPolicy,
-    sessionDirs,
-    planImpactAdvisories,
-    childStatus,
-    currentProjectDir,
-    enforcementArmed,
-    armLandingAsk,
-    armHandsOnAsk,
-    boundIntentNudges,
-  })
-  const { handleBashDispatch, handleWriteEditDispatch, handleSessionMove } = bashWriteGuard
+  st.promptHookFires = { current: 0 }
 
   // The plan-verdict and prompt-admission concerns are mutually recursive at
   // the wiring level (an approval binding resets the task scope; the
@@ -2122,323 +1884,507 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // concern is threaded through a holder the admission wrappers read; every
   // wrapper fires at runtime (the admission capture sequence), so the holder
   // is always populated before first use.
-  const admissionFlags: PromptAdmissionFlags = { deadChannelSurfaced: false }
-  const planVerdictRef: {
-    current: ReturnType<typeof createPlanVerdict> | undefined
-  } = { current: undefined }
-  const promptAdmission = createPromptAdmission({
-    config,
-    journaler,
-    ledger,
-    gates,
-    admittedIds,
-    maxTrackedAdmittedIds,
-    boundAdmittedIds,
-    promptHookFires,
-    keylessPrompts,
-    flags: admissionFlags,
-    nearMissPending,
-    boundNearMissPending,
-    planReviewerDispatch,
-    planReviewTarget,
-    evidence,
-    taskWindows,
-    boundTaskWindows,
-    awaitingPlanAsk,
-    pendingLandingAsk,
-    lastLandingEscalateAt,
-    pendingHandsOnAsk,
-    lastHandsOnEscalateAt,
-    intentNudgePending,
-    planImpactAdvisories,
-    surfaceFlags,
-    currentProjectDir,
-    journalEngagement,
-    clearIntentNudge,
-    markTaskComplete,
+  st.admissionFlags = { deadChannelSurfaced: false }
+
+  st.planVerdictRef = { current: undefined }
+  st.toast = { current: undefined }
+}
+
+function buildCoreMaps(st: CoreState): void {
+  buildCoreNearMissMaps(st)
+  buildCoreDeliveryMaps(st)
+  buildCoreDeltaMaps(st)
+  buildCoreAdmissionMaps(st)
+  buildCoreSummaryMaps(st)
+  buildCoreDispatchMaps(st)
+  buildCoreTaskWindowMaps(st)
+  buildCorePlanAskMaps(st)
+  buildCoreLandingAskMaps(st)
+  buildCoreLandingGateAsks(st)
+  buildCoreHandsOnAskMaps(st)
+  buildCoreHandsOnGateAsks(st)
+  buildCoreIntentMaps(st)
+  buildCoreLookupMaps(st)
+  buildCoreSessionDirMaps(st)
+  buildCorePromptHolders(st)
+}
+
+function bindCoreBounders(st: CoreState): void {
+  st.boundNearMissPending = boundNearMissPending.bind(null, st)
+  st.boundIntentNudges = boundIntentNudges.bind(null, st)
+  st.boundDeltaWindows = boundDeltaWindows.bind(null, st)
+  st.boundDispatches = boundDispatches.bind(null, st)
+  st.boundTargets = boundTargets.bind(null, st)
+  st.boundTaskWindows = boundTaskWindows.bind(null, st)
+  st.boundPlanAsks = boundPlanAsks.bind(null, st)
+  st.boundAwaitingAsks = boundAwaitingAsks.bind(null, st)
+  st.boundLandingAsks = boundLandingAsks.bind(null, st)
+  st.boundHandsOnAsks = boundHandsOnAsks.bind(null, st)
+  st.boundHandsOnGateAsks = boundHandsOnGateAsks.bind(null, st)
+  st.boundLandingGateAsks = boundLandingGateAsks.bind(null, st)
+  st.boundAdmittedIds = boundAdmittedIds.bind(null, st)
+  st.boundSummarizedSessions = boundSummarizedSessions.bind(null, st)
+  st.boundMaintenanceCounts = boundMaintenanceCounts.bind(null, st)
+}
+
+function bindCoreGuards(st: CoreState): void {
+  st.observeActive = observeActive.bind(null, st)
+  st.enforcementArmed = enforcementArmed.bind(null, st)
+  st.journalEngagement = journalEngagement.bind(null, st)
+  st.suspendSuppressionActive = suspendSuppressionActive.bind(null, st)
+  st.journalSuspendedWouldBlock = journalSuspendedWouldBlock.bind(null, st)
+  st.suspendDispatchOutcome = suspendDispatchOutcome.bind(null, st)
+  st.blockCause = blockCause.bind(null, st)
+  st.dispatchBlockOutcome = dispatchBlockOutcome.bind(null, st)
+  st.armLandingAsk = armLandingAsk.bind(null, st)
+  st.armHandsOnAsk = armHandsOnAsk.bind(null, st)
+  st.suspendBlock = suspendBlock.bind(null, st)
+  st.markTaskComplete = markTaskComplete.bind(null, st)
+  st.bindToast = bindToast.bind(null, st)
+  st.bindHost = bindHost.bind(null, st)
+}
+
+function bindCoreDeliveryHelpers(st: CoreState): void {
+  st.hasMarker = hasMarker.bind(null, st)
+  st.recordDispatch = recordDispatch.bind(null, st)
+  st.surfaceNearMissDiagnostics = surfaceNearMissDiagnostics.bind(null, st)
+  st.clearIntentNudge = clearIntentNudge.bind(null, st)
+  st.hasLiveAwaitingAsk = hasLiveAwaitingAsk.bind(null, st)
+  st.hasLiveLandingAsk = hasLiveLandingAsk.bind(null, st)
+  st.hasLiveHandsOnAsk = hasLiveHandsOnAsk.bind(null, st)
+  st.promoteOnEvidence = promoteOnEvidence.bind(null, st)
+  st.evidenceSearch = evidenceSearch.bind(null, st)
+  st.readBudgetKey = readBudgetKey.bind(null, st)
+  st.handleReadBudget = handleReadBudget.bind(null, st)
+  st.discoverCandidates = discoverCandidates.bind(null, st)
+  st.plausibleUnresolved = plausibleUnresolved.bind(null, st)
+  st.mostRecentUnresolved = mostRecentUnresolved.bind(null, st)
+  st.lookupDiag = lookupDiag.bind(null, st)
+  st.journalPolicy = journalPolicy.bind(null, st)
+  st.nameGuardSkips = nameGuardSkips.bind(null, st)
+}
+
+function bindCoreVerdictHelpers(st: CoreState): void {
+  st.injectOrchestratorPolicy = injectOrchestratorPolicy.bind(null, st)
+  st.appendPipelineStatus = appendPipelineStatus.bind(null, st)
+  st.prependPolicy = prependPolicy.bind(null, st)
+  st.applyPolicyResult = applyPolicyResult.bind(null, st)
+  st.handlePromptIntent = handlePromptIntent.bind(null, st)
+  st.prependIntentNudge = prependIntentNudge.bind(null, st)
+  st.prependPlanImpactAdvisory = prependPlanImpactAdvisory.bind(null, st)
+  st.prependIntentNudgeRead = prependIntentNudgeRead.bind(null, st)
+  st.creditReviewApproval = creditReviewApproval.bind(null, st)
+  st.attributeEdgeVerdict = attributeEdgeVerdict.bind(null, st)
+  st.selectAttributedChild = selectAttributedChild.bind(null, st)
+  st.attributionEntry = attributionEntry.bind(null, st)
+  st.noteUnattributable = noteUnattributable.bind(null, st)
+  st.attributePlanVerdict = attributePlanVerdict.bind(null, st)
+  st.noteRetrySkipped = noteRetrySkipped.bind(null, st)
+  st.retryMarker = retryMarker.bind(null, st)
+  st.bumpPromptFires = bumpPromptFires.bind(null, st)
+  st.nextTaskDeliverySeq = nextTaskDeliverySeq.bind(null, st)
+}
+
+function bindCoreHelpers(st: CoreState): void {
+  bindCoreBounders(st)
+  bindCoreGuards(st)
+  bindCoreDeliveryHelpers(st)
+  bindCoreVerdictHelpers(st)
+}
+
+function wireSurfaceConcerns(st: CoreState): void {
+  st.contextSurface = createContextSurface(st)
+  st.surfaceConfigWarnings = st.contextSurface.surfaceConfigWarnings
+  st.surfaceObserveSummary = st.contextSurface.surfaceObserveSummary
+  st.observeRequestDraft = st.contextSurface.observeRequestDraft
+  st.injectContextPolicy = st.contextSurface.injectContextPolicy
+  st.parentResolution = createParentResolution(st)
+  st.boundSessionDirs = st.parentResolution.boundSessionDirs
+  st.seedEmitter = st.parentResolution.seedEmitter
+  st.reseedChildEdges = st.parentResolution.reseedChildEdges
+  st.emitterAgent = st.parentResolution.emitterAgent
+  st.childStatus = st.parentResolution.childStatus
+  st.markerKindAllowed = st.parentResolution.markerKindAllowed
+  st.currentProjectDir = st.parentResolution.currentProjectDir
+  st.resolveProjectDir = st.parentResolution.resolveProjectDir
+  st.resolveParent = st.parentResolution.resolveParent
+  st.verdictCapture = createVerdictCapture(st)
+  st.parseMarkers = st.verdictCapture.parseMarkers
+  st.lastMatch = st.verdictCapture.lastMatch
+}
+
+function wireGuardConcerns(st: CoreState): void {
+  st.dispatchGuard = createDispatchGuard(st)
+  st.handleTaskDispatch = st.dispatchGuard.handleTaskDispatch
+  st.guardedTaskDispatch = st.dispatchGuard.guardedTaskDispatch
+  st.allowDispatch = st.dispatchGuard.allowDispatch
+  st.bashWriteGuard = createBashWriteGuard(st)
+  st.handleBashDispatch = st.bashWriteGuard.handleBashDispatch
+  st.handleWriteEditDispatch = st.bashWriteGuard.handleWriteEditDispatch
+  st.handleSessionMove = st.bashWriteGuard.handleSessionMove
+}
+
+function wireAdmissionConcerns(st: CoreState): void {
+  st.promptAdmission = createPromptAdmission({
+    ...st,
+    flags: st.admissionFlags,
     applyApprovalBinding: (sessionID, projectDir, candidates, human) =>
-      planVerdictRef.current!.applyApprovalBinding(sessionID, projectDir, candidates, human),
-    planApprovalStampFields: (s) => planVerdictRef.current!.planApprovalStampFields(s),
+      st.planVerdictRef.current!.applyApprovalBinding(sessionID, projectDir, candidates, human),
+    planApprovalStampFields: (s) => st.planVerdictRef.current!.planApprovalStampFields(s),
     recordDurablePlanApproval: (s, projectDir) =>
-      planVerdictRef.current!.recordDurablePlanApproval(s, projectDir),
-    handlePromptIntent,
+      st.planVerdictRef.current!.recordDurablePlanApproval(s, projectDir),
   })
-  const { admitPrompt, resetTaskScope } = promptAdmission
-  const planVerdict = createPlanVerdict({
-    journaler,
-    ledger,
-    gates,
-    planReviewTarget,
-    resolveProjectDir,
-    clearIntentNudge,
-    resetTaskScope,
-  })
-  planVerdictRef.current = planVerdict
-  const { journalPlanApproval, planApprovalStampFields } = planVerdict
+  st.admitPrompt = st.promptAdmission.admitPrompt
+  st.resetTaskScope = st.promptAdmission.resetTaskScope
+  st.planVerdict = createPlanVerdict(st)
+  st.planVerdictRef.current = st.planVerdict
+  st.journalPlanApproval = st.planVerdict.journalPlanApproval
+  st.planApprovalStampFields = st.planVerdict.planApprovalStampFields
+  st.recordDurablePlanApproval = st.planVerdict.recordDurablePlanApproval
+  st.applyApprovalBinding = st.planVerdict.applyApprovalBinding
+}
 
-  // Host toast surface, bound at setup time (guarded — an absent or
-  // non-function `tui.toast.show` leaves it undefined and the summary
-  // delivers journal-only, the headless path).
-  let toast:
-    ((message: string, variant: "info" | "success" | "warning") => Promise<void>) | undefined
-  /**
-   * Binds the host toast surface: stores a guarded closure over `show` so
-   * the caller (the idle handler) passes a plain (message, variant) call.
-   * The closure itself never catches — the caller wraps the invocation in
-   * its own try/catch (fail-open) so a rejecting toast journals there.
-   * @param show The host `tui.toast.show` function, or undefined when the
-   *     TUI surface is absent.
-   */
-  function bindToast(show: ToastShow | undefined): void {
-    toast =
-      typeof show === "function"
-        ? async (message: string, variant: "info" | "success" | "warning"): Promise<void> => {
-            await show({ message, variant })
-          }
-        : undefined
-  }
+function wireConcerns(st: CoreState): void {
+  wireSurfaceConcerns(st)
+  wireGuardConcerns(st)
+  wireAdmissionConcerns(st)
+}
 
-  /**
-   * Performs a full task-scope reset for a parent: rebuilds the gate bucket
-   * (releasing registered children) and drops all task-scoped dispatch
-   * state, journaling a `child-reset` entry when any registered child's
-   * metering counters were freed. This is the clear both an admission reset
-   * (the scope-change arms of `carryOrReset`) and a reset-at-capture plan
-   * approval perform.
-   * @param sessionID The parent session whose task scope resets.
-   * @param merge Whether the rebuild may merge the restart-sticky flags
-   *     through the bucket's armed `replayGrace`. Omitted (the admission
-   *     arms) keeps the armed-grace default; false (a reset-at-capture
-   *     approval) forces a clean rebuild — the old scope's releases must
-   *     not ride the grace into the new one.
-   */
-  /**
-   * Marks the parent's active task retired: stamps `taskComplete` and
-   * journals one `{type:"task-complete", plan}` row (the plan being the
-   * bucket's `activePlan`). Only a plan-bound task retires — a planless
-   * session's gate flip changes nothing (there is no plan to retire, and the
-   * planless fallback preserves today's per-task-scope reset + carry behavior).
-   * Idempotent within the task — the first PASS (or retire marker) journals,
-   * repeats are silent — so the ordered replay fold sees exactly one retire
-   * per task.
-   * @param sessionID The parent session whose task retires.
-   * @param s The parent's gate state (mutated: taskComplete).
-   */
-  function markTaskComplete(sessionID: string, s: GateState): void {
-    if (s.taskComplete || s.activePlan === "") return
-    s.taskComplete = true
-    // Dormant-until-engaged: a retired task sleeps the pipeline again.
-    if (s.engaged) {
-      s.engaged = false
-      journalEngagement(sessionID, false, "task-complete")
-    }
-    // The successor task must be able to nudge again: a retire clears the
-    // per-kind dedupe latch exactly like a plan approval does (both retire
-    // paths — the explicit marker and the gate flip — route here).
-    clearIntentNudge(sessionID)
-    journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
-  }
-
-  /**
-   * Binds the host session API for the shared `resolveParent` helper.
-   * @param session The live host session API.
-   */
-  function bindHost(session: Host["session"]): void {
-    hostSessionRef.current = session
-  }
-
-  /**
-   * Journals a terminal marker-retry outcome (exhausted or skipped) and
-   * reports the retry as not sent.
-   * @param child The bare-output child session ID.
-   * @param agent The dispatch-input agent name.
-   * @param used Retry attempts already consumed for this child.
-   * @param outcome Why the retry did not send a prompt.
-   * @returns Always false: no reminder was delivered.
-   */
-  function noteRetrySkipped(
-    child: string,
-    agent: string,
-    used: number,
-    outcome: "exhausted" | "skipped-no-api",
-  ): false {
-    journaler.journal({ type: "marker-retry", sessionID: child, agent, attempt: used, outcome })
-    return false
-  }
-
-  /**
-   * Attempts one bounded compliance re-prompt for a bare-output child
-   * delivery: journals the attempt, sends the marker reminder via the
-   * host's session.prompt when available, and reports whether the
-   * reminder was actually sent. Fail-open: a prompt failure journals a
-   * type:"error" row and never throws.
-   * @param child The bare-output child session ID.
-   * @param agent The dispatch-input agent name.
-   * @returns True only when the reminder prompt was sent.
-   */
-  async function retryMarker(child: string, agent: string): Promise<boolean> {
-    if (config.agentMarkerRetry === 0) return false
-    const used = markerRetries.get(child) ?? 0
-    if (used >= config.agentMarkerRetry) return noteRetrySkipped(child, agent, used, "exhausted")
-    if (typeof hostSessionRef.current?.prompt !== "function")
-      return noteRetrySkipped(child, agent, used, "skipped-no-api")
-    journaler.journal({
-      type: "marker-retry",
-      sessionID: child,
-      agent,
-      attempt: used,
-      outcome: "prompted",
-    })
-    markerRetries.set(child, used + 1)
-    evictTo(markerRetries, MAX_TRACKED_MARKER_RETRIES)
-    try {
-      await hostSessionRef.current.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
-    } catch (e) {
-      journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
-      return false
-    }
-    return true
-  }
-
-  /**
-   * Increments the prompt-hook fire counter.
-   */
-  function bumpPromptFires(): void {
-    promptHookFires.current++
-  }
-
-  /**
-   * Returns the next task-delivery sequence number (post-increment).
-   * @returns The new sequence number.
-   */
-  function nextTaskDeliverySeq(): number {
-    return ++taskDeliverySeq
-  }
-
+function coreDeps(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "config"
+  | "journaler"
+  | "gateRe"
+  | "verdictRe"
+  | "ledger"
+  | "gates"
+  | "toolPolicy"
+  | "evidence"
+  | "subagentNames"
+> {
   return {
-    // deps
-    config,
-    journaler,
-    gateRe,
-    verdictRe,
-    ledger,
-    gates,
-    toolPolicy,
-    evidence,
-    subagentNames,
-    // maps
-    nearMissPending,
-    failedLookups,
-    planReviewerDispatch,
-    planReviewTarget,
-    taskWindows,
-    planGateAsks,
-    awaitingPlanAsk,
-    pendingLandingAsk,
-    pendingHandsOnAsk,
-    lastLandingEscalateAt,
-    lastHandsOnEscalateAt,
-    intentNudgePending,
-    intentNudgedKinds,
-    planImpactAdvisories,
-    landingGateAsks,
-    handsOnGateAsks,
-    sessionDirs,
-    markerRetries,
-    deltaWindows,
-    sessionAgents,
-    admittedIds,
-    summarizedSessions,
-    // constants
-    maxTrackedNearMiss,
-    maxTrackedPlanAsks,
-    awaitingPlanAskTtlMs,
-    maxTrackedLandingAsks,
-    pendingLandingAskTtlMs,
-    maxTrackedHandsOnAsks,
-    pendingHandsOnAskTtlMs,
-    maxTrackedLandingGateAsks,
-    maxTrackedHandsOnGateAsks,
-    maxTrackedIntentNudges,
-    maxLookupAttempts,
-    maxTrackedLookups,
-    maxTrackedSessionDirs,
-    maxDeltaWindowChars,
-    maxTrackedDeltaWindows,
-    maxTrackedEmitters,
-    maxTrackedAdmittedIds,
-    LOOKUP_REASON_NOT_VISIBLE,
-    LOOKUP_REASON_NO_PARENT_ID,
-    // bounders
-    boundNearMissPending,
-    boundSessionDirs,
-    boundDeltaWindows,
-    boundDispatches,
-    boundTargets,
-    boundTaskWindows,
-    boundPlanAsks,
-    boundAwaitingAsks,
-    boundLandingAsks,
-    boundHandsOnAsks,
-    boundLandingGateAsks,
-    boundHandsOnGateAsks,
-    boundIntentNudges,
-    boundAdmittedIds,
-    boundSummarizedSessions,
-    // services
-    surfaceConfigWarnings,
-    surfaceObserveSummary,
-    hasMarker,
-    recordDispatch,
-    surfaceNearMissDiagnostics,
-    seedEmitter,
-    emitterAgent,
-    reseedChildEdges,
-    markerKindAllowed,
-    hasLiveAwaitingAsk,
-    hasLiveLandingAsk,
-    hasLiveHandsOnAsk,
-    currentProjectDir,
-    resolveProjectDir,
-    resolveParent,
-    promoteOnEvidence,
-    evidenceSearch,
-    readBudgetKey,
-    handleReadBudget,
-    lastMatch,
-    planApprovalStampFields,
-    discoverCandidates,
-    plausibleUnresolved,
-    mostRecentUnresolved,
-    lookupDiag,
-    journalPolicy,
-    nameGuardSkips,
-    injectOrchestratorPolicy,
-    appendPipelineStatus,
-    prependPolicy,
-    prependIntentNudge,
-    prependIntentNudgeRead,
-    observeRequestDraft,
-    injectContextPolicy,
-    applyPolicyResult,
-    attributePlanVerdict,
-    creditReviewApproval,
-    handleTaskDispatch,
-    guardedTaskDispatch,
-    handleBashDispatch,
-    handleWriteEditDispatch,
-    handleSessionMove,
-    suspendBlock,
-    parseMarkers,
-    admitPrompt,
-    retryMarker,
-    // methods
-    bindHost,
-    bindToast,
-    get toast(): typeof toast {
-      return toast
-    },
-    bumpPromptFires,
-    nextTaskDeliverySeq,
+    config: st.config,
+    journaler: st.journaler,
+    gateRe: st.gateRe,
+    verdictRe: st.verdictRe,
+    ledger: st.ledger,
+    gates: st.gates,
+    toolPolicy: st.toolPolicy,
+    evidence: st.evidence,
+    subagentNames: st.subagentNames,
   }
+}
+
+function coreMapViews(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "nearMissPending"
+  | "failedLookups"
+  | "planReviewerDispatch"
+  | "planReviewTarget"
+  | "taskWindows"
+  | "planGateAsks"
+  | "awaitingPlanAsk"
+  | "pendingLandingAsk"
+  | "pendingHandsOnAsk"
+  | "lastLandingEscalateAt"
+  | "lastHandsOnEscalateAt"
+  | "intentNudgePending"
+  | "intentNudgedKinds"
+  | "planImpactAdvisories"
+  | "landingGateAsks"
+  | "handsOnGateAsks"
+  | "sessionDirs"
+  | "markerRetries"
+  | "deltaWindows"
+  | "sessionAgents"
+  | "admittedIds"
+  | "summarizedSessions"
+> {
+  return {
+    nearMissPending: st.nearMissPending,
+    failedLookups: st.failedLookups,
+    planReviewerDispatch: st.planReviewerDispatch,
+    planReviewTarget: st.planReviewTarget,
+    taskWindows: st.taskWindows,
+    planGateAsks: st.planGateAsks,
+    awaitingPlanAsk: st.awaitingPlanAsk,
+    pendingLandingAsk: st.pendingLandingAsk,
+    pendingHandsOnAsk: st.pendingHandsOnAsk,
+    lastLandingEscalateAt: st.lastLandingEscalateAt,
+    lastHandsOnEscalateAt: st.lastHandsOnEscalateAt,
+    intentNudgePending: st.intentNudgePending,
+    intentNudgedKinds: st.intentNudgedKinds,
+    planImpactAdvisories: st.planImpactAdvisories,
+    landingGateAsks: st.landingGateAsks,
+    handsOnGateAsks: st.handsOnGateAsks,
+    sessionDirs: st.sessionDirs,
+    markerRetries: st.markerRetries,
+    deltaWindows: st.deltaWindows,
+    sessionAgents: st.sessionAgents,
+    admittedIds: st.admittedIds,
+    summarizedSessions: st.summarizedSessions,
+  }
+}
+
+function coreConstViews(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "maxTrackedNearMiss"
+  | "maxTrackedPlanAsks"
+  | "awaitingPlanAskTtlMs"
+  | "maxTrackedLandingAsks"
+  | "pendingLandingAskTtlMs"
+  | "maxTrackedHandsOnAsks"
+  | "pendingHandsOnAskTtlMs"
+  | "maxTrackedLandingGateAsks"
+  | "maxTrackedHandsOnGateAsks"
+  | "maxTrackedIntentNudges"
+  | "maxLookupAttempts"
+  | "maxTrackedLookups"
+  | "maxTrackedSessionDirs"
+  | "maxDeltaWindowChars"
+  | "maxTrackedDeltaWindows"
+  | "maxTrackedEmitters"
+  | "maxTrackedAdmittedIds"
+  | "LOOKUP_REASON_NOT_VISIBLE"
+  | "LOOKUP_REASON_NO_PARENT_ID"
+> {
+  return {
+    maxTrackedNearMiss: st.maxTrackedNearMiss,
+    maxTrackedPlanAsks: st.maxTrackedPlanAsks,
+    awaitingPlanAskTtlMs: st.awaitingPlanAskTtlMs,
+    maxTrackedLandingAsks: st.maxTrackedLandingAsks,
+    pendingLandingAskTtlMs: st.pendingLandingAskTtlMs,
+    maxTrackedHandsOnAsks: st.maxTrackedHandsOnAsks,
+    pendingHandsOnAskTtlMs: st.pendingHandsOnAskTtlMs,
+    maxTrackedLandingGateAsks: st.maxTrackedLandingGateAsks,
+    maxTrackedHandsOnGateAsks: st.maxTrackedHandsOnGateAsks,
+    maxTrackedIntentNudges: st.maxTrackedIntentNudges,
+    maxLookupAttempts: st.maxLookupAttempts,
+    maxTrackedLookups: st.maxTrackedLookups,
+    maxTrackedSessionDirs: st.maxTrackedSessionDirs,
+    maxDeltaWindowChars: st.maxDeltaWindowChars,
+    maxTrackedDeltaWindows: st.maxTrackedDeltaWindows,
+    maxTrackedEmitters: st.maxTrackedEmitters,
+    maxTrackedAdmittedIds: st.maxTrackedAdmittedIds,
+    LOOKUP_REASON_NOT_VISIBLE: st.lookupReasonNotVisible,
+    LOOKUP_REASON_NO_PARENT_ID: st.lookupReasonNoParentId,
+  }
+}
+
+function coreBounderViews(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "boundSessionDirs"
+  | "boundNearMissPending"
+  | "boundIntentNudges"
+  | "boundDeltaWindows"
+  | "boundDispatches"
+  | "boundTargets"
+  | "boundTaskWindows"
+  | "boundPlanAsks"
+  | "boundAwaitingAsks"
+  | "boundLandingAsks"
+  | "boundHandsOnAsks"
+  | "boundHandsOnGateAsks"
+  | "boundLandingGateAsks"
+  | "boundAdmittedIds"
+  | "boundSummarizedSessions"
+> {
+  return {
+    boundSessionDirs: st.boundSessionDirs,
+    boundNearMissPending: st.boundNearMissPending,
+    boundIntentNudges: st.boundIntentNudges,
+    boundDeltaWindows: st.boundDeltaWindows,
+    boundDispatches: st.boundDispatches,
+    boundTargets: st.boundTargets,
+    boundTaskWindows: st.boundTaskWindows,
+    boundPlanAsks: st.boundPlanAsks,
+    boundAwaitingAsks: st.boundAwaitingAsks,
+    boundLandingAsks: st.boundLandingAsks,
+    boundHandsOnAsks: st.boundHandsOnAsks,
+    boundHandsOnGateAsks: st.boundHandsOnGateAsks,
+    boundLandingGateAsks: st.boundLandingGateAsks,
+    boundAdmittedIds: st.boundAdmittedIds,
+    boundSummarizedSessions: st.boundSummarizedSessions,
+  }
+}
+
+function coreServiceViews1(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "surfaceConfigWarnings"
+  | "surfaceObserveSummary"
+  | "hasMarker"
+  | "recordDispatch"
+  | "surfaceNearMissDiagnostics"
+  | "seedEmitter"
+  | "emitterAgent"
+  | "reseedChildEdges"
+  | "markerKindAllowed"
+  | "hasLiveAwaitingAsk"
+  | "hasLiveLandingAsk"
+  | "hasLiveHandsOnAsk"
+  | "currentProjectDir"
+  | "resolveProjectDir"
+  | "resolveParent"
+  | "promoteOnEvidence"
+> {
+  return {
+    surfaceConfigWarnings: st.surfaceConfigWarnings,
+    surfaceObserveSummary: st.surfaceObserveSummary,
+    hasMarker: st.hasMarker,
+    recordDispatch: st.recordDispatch,
+    surfaceNearMissDiagnostics: st.surfaceNearMissDiagnostics,
+    seedEmitter: st.seedEmitter,
+    emitterAgent: st.emitterAgent,
+    reseedChildEdges: st.reseedChildEdges,
+    markerKindAllowed: st.markerKindAllowed,
+    hasLiveAwaitingAsk: st.hasLiveAwaitingAsk,
+    hasLiveLandingAsk: st.hasLiveLandingAsk,
+    hasLiveHandsOnAsk: st.hasLiveHandsOnAsk,
+    currentProjectDir: st.currentProjectDir,
+    resolveProjectDir: st.resolveProjectDir,
+    resolveParent: st.resolveParent,
+    promoteOnEvidence: st.promoteOnEvidence,
+  }
+}
+
+function coreServiceViews2(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "evidenceSearch"
+  | "readBudgetKey"
+  | "handleReadBudget"
+  | "lastMatch"
+  | "planApprovalStampFields"
+  | "discoverCandidates"
+  | "plausibleUnresolved"
+  | "mostRecentUnresolved"
+  | "lookupDiag"
+  | "journalPolicy"
+  | "nameGuardSkips"
+  | "injectOrchestratorPolicy"
+  | "appendPipelineStatus"
+  | "prependPolicy"
+  | "prependIntentNudge"
+  | "prependIntentNudgeRead"
+> {
+  return {
+    evidenceSearch: st.evidenceSearch,
+    readBudgetKey: st.readBudgetKey,
+    handleReadBudget: st.handleReadBudget,
+    lastMatch: st.lastMatch,
+    planApprovalStampFields: st.planApprovalStampFields,
+    discoverCandidates: st.discoverCandidates,
+    plausibleUnresolved: st.plausibleUnresolved,
+    mostRecentUnresolved: st.mostRecentUnresolved,
+    lookupDiag: st.lookupDiag,
+    journalPolicy: st.journalPolicy,
+    nameGuardSkips: st.nameGuardSkips,
+    injectOrchestratorPolicy: st.injectOrchestratorPolicy,
+    appendPipelineStatus: st.appendPipelineStatus,
+    prependPolicy: st.prependPolicy,
+    prependIntentNudge: st.prependIntentNudge,
+    prependIntentNudgeRead: st.prependIntentNudgeRead,
+  }
+}
+
+function coreServiceViews3(
+  st: CoreState,
+): Pick<
+  TurnstileContext,
+  | "observeRequestDraft"
+  | "injectContextPolicy"
+  | "applyPolicyResult"
+  | "attributePlanVerdict"
+  | "creditReviewApproval"
+  | "handleTaskDispatch"
+  | "guardedTaskDispatch"
+  | "handleBashDispatch"
+  | "handleWriteEditDispatch"
+  | "handleSessionMove"
+  | "suspendBlock"
+  | "parseMarkers"
+  | "admitPrompt"
+  | "retryMarker"
+> {
+  return {
+    observeRequestDraft: st.observeRequestDraft,
+    injectContextPolicy: st.injectContextPolicy,
+    applyPolicyResult: st.applyPolicyResult,
+    attributePlanVerdict: st.attributePlanVerdict,
+    creditReviewApproval: st.creditReviewApproval,
+    handleTaskDispatch: st.handleTaskDispatch,
+    guardedTaskDispatch: st.guardedTaskDispatch,
+    handleBashDispatch: st.handleBashDispatch,
+    handleWriteEditDispatch: st.handleWriteEditDispatch,
+    handleSessionMove: st.handleSessionMove,
+    suspendBlock: st.suspendBlock,
+    parseMarkers: st.parseMarkers,
+    admitPrompt: st.admitPrompt,
+    retryMarker: st.retryMarker,
+  }
+}
+
+function coreMethodViews(
+  st: CoreState,
+): Pick<TurnstileContext, "bindHost" | "bindToast" | "bumpPromptFires" | "nextTaskDeliverySeq"> {
+  return {
+    bindHost: st.bindHost,
+    bindToast: st.bindToast,
+    bumpPromptFires: st.bumpPromptFires,
+    nextTaskDeliverySeq: st.nextTaskDeliverySeq,
+  }
+}
+
+function coreContext(st: CoreState): TurnstileContext {
+  return {
+    ...coreDeps(st),
+    ...coreMapViews(st),
+    ...coreConstViews(st),
+    ...coreBounderViews(st),
+    ...coreServiceViews1(st),
+    ...coreServiceViews2(st),
+    ...coreServiceViews3(st),
+    ...coreMethodViews(st),
+    get toast() {
+      return st.toast.current
+    },
+  }
+}
+
+/**
+ * Builds the shared per-setup context for turnstile's hook registrations.
+ * All shared state (config, journaler, gates, maps, services) is scoped to
+ * one setup() call: a host calling setup() twice gets fresh dedupe/metering
+ * state. The one-setup-per-load lifecycle makes this unobservable.
+ * @param opts Injected config/env overrides; see TurnstileOptions.
+ * @returns The shared context consumed by per-surface hook modules.
+ */
+export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
+  const st = createCoreState(opts)
+  return coreContext(st)
+}
+
+function createCoreState(opts: TurnstileOptions): CoreState {
+  const st = {} as CoreState
+  buildCoreConfig(opts, st)
+  buildCoreJournaler(st)
+  buildCoreRegexes(st)
+  buildCoreServices(st)
+  buildCoreFlags(st)
+  buildCoreLedger(opts, st)
+  buildCoreMaps(st)
+  bindCoreHelpers(st)
+  wireConcerns(st)
+  return st
 }

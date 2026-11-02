@@ -176,18 +176,15 @@ function dropTaskScopeBody(st: PromptAdmissionState, sessionID: string): void {
   st.taskWindows.set(sessionID, Date.now())
   st.boundTaskWindows()
   dropAskLatches(st, sessionID)
-  // A task-scope reset also drops undelivered near-miss diagnostics: they
-  // belong to the previous task scope. The scan below re-seeds within the
-  // same admission, so the new prompt's own near misses still surface.
+  // Undelivered diagnostics and advisories belong to the dropped task scope
+  // too: they must not attach to a later task's deliveries. The near-miss
+  // scan below re-seeds within the same admission, so the new prompt's own
+  // near misses still surface; the per-kind intent dedupe keys survive the
+  // drop by design (one nudge per detected intent within the task; a plan
+  // approval or a task retire clears them, and the drop itself only runs on
+  // a scope change).
   st.nearMissPending.delete(sessionID)
-  // A pending intent nudge belongs to the dropped task scope too: an
-  // undelivered nudge must not attach to a later task's deliveries. The
-  // per-kind dedupe keys survive this drop by design (one nudge per detected
-  // intent within the task; a plan approval or a task retire clears them,
-  // and the drop itself only runs on a scope change).
   st.intentNudgePending.delete(sessionID)
-  // An undelivered plan-impact advisory belongs to the dropped task scope
-  // the same way: it must not attach to a later task's deliveries.
   st.planImpactAdvisories.delete(sessionID)
 }
 
