@@ -265,6 +265,15 @@ test("permission-evaluate.ts exposes the permission evaluate body", async () => 
 })
 
 /**
+ * The event-stream-handlers module must expose exactly the handler-table
+ * factory at runtime (the EventHandler type is erased).
+ */
+test("event-stream-handlers.ts exposes the handler-table factory", async () => {
+  const mod = await import("../src/event-stream-handlers.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createEventHandlers"])
+})
+
+/**
  * The session-hook-bodies module must expose exactly the four extracted hook
  * bodies at runtime.
  */
