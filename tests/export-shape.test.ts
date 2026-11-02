@@ -55,6 +55,39 @@ test("gates-common.ts exposes the block error, waiver helpers, and composers", a
   ])
 })
 
+/**
+ * The gate-messages module must expose exactly the shared gate-message
+ * builders at runtime (the EvidenceSearch type is erased).
+ */
+test("gate-messages.ts exposes the shared gate-message builders", async () => {
+  const mod = await import("../src/gate-messages.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "capBlockMessage",
+    "searchSummary",
+    "searchedSessionIds",
+    "unverifiedBlockMessage",
+  ])
+})
+
+/**
+ * The dispatch-review-gate module must expose exactly the review-gate
+ * factory and the shared cap-exhaustion exit at runtime (the
+ * DispatchGateState type is erased).
+ */
+test("dispatch-review-gate.ts exposes the review gate factory", async () => {
+  const mod = await import("../src/dispatch-review-gate.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["blockWithEscalation", "createReviewGate"])
+})
+
+/**
+ * The dispatch-budget module must expose exactly the budget factory and the
+ * searched-ID helper at runtime.
+ */
+test("dispatch-budget.ts exposes the budget factory and search helper", async () => {
+  const mod = await import("../src/dispatch-budget.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createDispatchBudget"])
+})
+
 /** The dispatch gates module must expose exactly createDispatchGates at runtime. */
 test("gates-dispatch.ts exposes only createDispatchGates at runtime", async () => {
   const mod = await import("../src/gates-dispatch.ts")
