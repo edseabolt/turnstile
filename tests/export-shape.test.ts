@@ -41,6 +41,20 @@ test("gates.ts exposes only BlockError and createGates at runtime", async () => 
  * (the gate composers plus the observe-mode admission-stamp, suppressed-block
  * audit, and summary marker builders).
  */
+/**
+ * The ledger-registry module must expose exactly the LRU primitives and the
+ * registry/credit-trace factories at runtime (the deps/types are erased).
+ */
+test("ledger-registry.ts exposes the LRU primitives and factories", async () => {
+  const mod = await import("../src/ledger-registry.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "cap",
+    "createCreditTrace",
+    "createLedgerRegistry",
+    "promote",
+  ])
+})
+
 test("gates-common.ts exposes the block error, waiver helpers, and composers", async () => {
   const mod = await import("../src/gates-common.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
