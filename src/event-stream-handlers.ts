@@ -225,6 +225,20 @@ function recordPlanAskLatch(ctx: TurnstileContext, id: string, sid: string, pare
 }
 
 /**
+ * Records an empty-message landing escalate echo for the landing gate
+ * only. Reached only when the plan latch is NOT live — a coincident
+ * double-escalation (both latches live, one empty-message echo) resolves
+ * to the plan gate by branch order, a documented edge: the human still
+ * sees one ask, and the other latch survives for its own prefixed echo.
+ * @param ctx The shared per-setup context.
+ * @param id The host request id of the ask.
+ * @param sid The session the ask was raised in.
+ */
+function recordLandingAskEcho(ctx: TurnstileContext, id: string, sid: string): void {
+  recordAskedLanding(ctx, id, ctx.ledger.parentOf(sid))
+}
+
+/**
  * Records a plan-gate ask: when the message carries the plan-ask prefix
  * (the evaluate echo) or when the session is live-latched and the ask
  * carries no message of its own (the escalated echo). A non-empty
@@ -263,14 +277,7 @@ function recordAskedPlan(ctx: TurnstileContext, id: string, sid: string, message
     }
     recordPlanAskLatch(ctx, id, sid, parent)
   } else if (message === "" && ctx.hasLiveLandingAsk(sid)) {
-    // Empty-message landing escalate echo: record for the
-    // landing gate only. Reached only when the plan latch is
-    // NOT live — a coincident double-escalation (both latches
-    // live, one empty-message echo) resolves to the plan gate
-    // by branch order, a documented edge: the human still
-    // sees one ask, and the other latch survives for its own
-    // prefixed echo.
-    recordAskedLanding(ctx, id, ctx.ledger.parentOf(sid))
+    recordLandingAskEcho(ctx, id, sid)
   }
 }
 
