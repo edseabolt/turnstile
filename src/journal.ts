@@ -10,7 +10,22 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { createJournalSinks, formatTraceLine } from "./journal-sinks.ts"
+import {
+  appendLine,
+  createJournalSinks,
+  formatTraceLine,
+  now,
+  sessionJournalPath,
+} from "./journal-sinks.ts"
+import type { JournalSinks } from "./journal-sinks.ts"
+
+export {
+  REPLAY_SESSION_RE,
+  appendLine,
+  now,
+  rotateIfLarge,
+  sessionJournalPath,
+} from "./journal-sinks.ts"
 
 /**
  * Resolves the default metrics directory from an environment. Relative
@@ -34,72 +49,6 @@ export const DEFAULT_METRICS_DIR: string = defaultMetricsDir()
 
 /** Default JSONL journal path inside {@link DEFAULT_METRICS_DIR}. */
 export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turnstile.jsonl")
-
-/**
- * Host session-ID alphabet, length-capped: the only shapes that may name a
- * per-session journal file (and the only shapes replay accepts as bucket
- * keys). Anything else is hostile bytes, not a session. Canonical export:
- * both the journal sink routing and the ledger replay validate against this
- * one rule.
- */
-export const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
-
-/**
- * Returns the current time as an ISO-8601 timestamp.
- * @returns The current UTC timestamp, e.g. `2026-10-08T12:00:00.000Z`.
- */
-export function now(): string {
-  return new Date().toISOString()
-}
-
-/**
- * Rotates a journal file when it grows past the size limit, keeping at
- * most `maxGenerations` numbered generations. Silent on any failure.
- * @param file Path of the journal file to check and rotate.
- * @param maxBytes Rotation threshold in bytes.
- * @param maxGenerations Number of numbered generations to keep.
- */
-export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: number): void {
-  try {
-    const stat = fs.statSync(file)
-    if (stat.size <= maxBytes) return
-    // prune the oldest generation first so the shift below has a free slot
-    const oldest = `${file}.${maxGenerations}`
-    try {
-      fs.unlinkSync(oldest)
-    } catch {
-      // no generation at the limit yet; nothing to prune
-    }
-    for (let gen = maxGenerations - 1; gen >= 1; gen--) {
-      try {
-        fs.renameSync(`${file}.${gen}`, `${file}.${gen + 1}`)
-      } catch {
-        // missing generation: skip; lower generations still shift correctly
-      }
-    }
-    fs.renameSync(file, `${file}.1`)
-  } catch {
-    // missing file or stat failure: nothing to rotate
-  }
-}
-
-/**
- * Appends one line to a file, creating the parent directory first. The
- * caller is responsible for rotating when a size bound applies (the journaler's
- * `journal()`/`traceEvent()` call `tickRotate` on an entry-count tick, under a
- * lock-guarded rename). Silent on any failure: journaling must never break
- * execution.
- * @param file Path of the file to append to.
- * @param text The line to append (a trailing newline is added).
- */
-export function appendLine(file: string, text: string): void {
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.appendFileSync(file, text + "\n")
-  } catch {
-    // journaling must never break execution
-  }
-}
 
 /** One parsed journal entry (a JSON object line). */
 export type JournalEntry = Record<string, unknown>
@@ -175,13 +124,26 @@ export interface Journaler {
 }
 
 /**
- * Resolves the per-session journal file for a parent session ID.
- * @param metricsDir The metrics directory.
- * @param parentID The parent session ID.
- * @returns The absolute path `<metricsDir>/sessions/<parentID>.jsonl`.
+ * Appends one timestamped journal entry to its owning sink and runs the
+ * rotation tick for that file, managing the per-file tick counter (created
+ * on first write; keyed by resolved file path).
+ * @param sinks The sink capability (sink resolution + rotation).
+ * @param journalTicks The per-file tick counters, mutated in place.
+ * @param entry The journal entry; a `ts` field is prepended.
  */
-export function sessionJournalPath(metricsDir: string, parentID: string): string {
-  return path.join(metricsDir, "sessions", `${parentID}.jsonl`)
+function writeJournalEntry(
+  sinks: JournalSinks,
+  journalTicks: Map<string, { n: number }>,
+  entry: Record<string, unknown>,
+): void {
+  const file = sinks.sinkFor(entry)
+  appendLine(file, JSON.stringify({ ts: now(), ...entry }))
+  let tick = journalTicks.get(file)
+  if (!tick) {
+    tick = { n: 0 }
+    journalTicks.set(file, tick)
+  }
+  sinks.tickRotate(file, tick)
 }
 
 /**
@@ -229,14 +191,7 @@ export function createJournaler(options: {
       return sessionJournalPath(options.metricsDir, parentID)
     },
     journal(entry: Record<string, unknown>): void {
-      const file = sinks.sinkFor(entry)
-      appendLine(file, JSON.stringify({ ts: now(), ...entry }))
-      let tick = journalTicks.get(file)
-      if (!tick) {
-        tick = { n: 0 }
-        journalTicks.set(file, tick)
-      }
-      sinks.tickRotate(file, tick)
+      writeJournalEntry(sinks, journalTicks, entry)
     },
     traceEvent(agent: string, event: string, detail: string, sessionID?: string): void {
       if (!options.trace) return

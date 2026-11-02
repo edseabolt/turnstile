@@ -1,14 +1,90 @@
 /**
- * @fileoverview Journal-sinks boundary: the per-file sink resolution, rotation
- * locking, and trace-line formatting behind `createJournaler` in
- * `src/journal.ts`. Extracted so the journaler factory stays a thin
- * composition; every write remains fail-open by contract.
+ * @fileoverview Journal-persistence boundary: the append/rotate primitives
+ * (`appendLine`, `rotateIfLarge`, `now`), the session-ID shape rule, the
+ * per-file sink resolution, rotation locking, and trace-line formatting
+ * behind `createJournaler` in `src/journal.ts`. Extracted so the journaler
+ * factory stays a thin composition over one persistence boundary; every
+ * write remains fail-open by contract.
  */
 
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { appendLine, now, rotateIfLarge, sessionJournalPath, REPLAY_SESSION_RE } from "./journal.ts"
+/**
+ * Host session-ID alphabet, length-capped: the only shapes that may name a
+ * per-session journal file (and the only shapes replay accepts as bucket
+ * keys). Anything else is hostile bytes, not a session. Canonical export:
+ * both the journal sink routing and the ledger replay validate against this
+ * one rule.
+ */
+export const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
+
+/**
+ * Returns the current time as an ISO-8601 timestamp.
+ * @returns The current UTC timestamp, e.g. `2026-10-08T12:00:00.000Z`.
+ */
+export function now(): string {
+  return new Date().toISOString()
+}
+
+/**
+ * Rotates a journal file when it grows past the size limit, keeping at
+ * most `maxGenerations` numbered generations. Silent on any failure.
+ * @param file Path of the journal file to check and rotate.
+ * @param maxBytes Rotation threshold in bytes.
+ * @param maxGenerations Number of numbered generations to keep.
+ */
+export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: number): void {
+  try {
+    const stat = fs.statSync(file)
+    if (stat.size <= maxBytes) return
+    // prune the oldest generation first so the shift below has a free slot
+    const oldest = `${file}.${maxGenerations}`
+    try {
+      fs.unlinkSync(oldest)
+    } catch {
+      // no generation at the limit yet; nothing to prune
+    }
+    for (let gen = maxGenerations - 1; gen >= 1; gen--) {
+      try {
+        fs.renameSync(`${file}.${gen}`, `${file}.${gen + 1}`)
+      } catch {
+        // missing generation: skip; lower generations still shift correctly
+      }
+    }
+    fs.renameSync(file, `${file}.1`)
+  } catch {
+    // missing file or stat failure: nothing to rotate
+  }
+}
+
+/**
+ * Appends one line to a file, creating the parent directory first. The
+ * caller is responsible for rotating when a size bound applies (the journaler's
+ * `journal()`/`traceEvent()` call `tickRotate` on an entry-count tick, under a
+ * lock-guarded rename). Silent on any failure: journaling must never break
+ * execution.
+ * @param file Path of the file to append to.
+ * @param text The line to append (a trailing newline is added).
+ */
+export function appendLine(file: string, text: string): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.appendFileSync(file, text + "\n")
+  } catch {
+    // journaling must never break execution
+  }
+}
+
+/**
+ * Resolves the per-session journal file for a parent session ID.
+ * @param metricsDir The metrics directory.
+ * @param parentID The parent session ID.
+ * @returns The absolute path `<metricsDir>/sessions/<parentID>.jsonl`.
+ */
+export function sessionJournalPath(metricsDir: string, parentID: string): string {
+  return path.join(metricsDir, "sessions", `${parentID}.jsonl`)
+}
 
 /** A created `<file>.lock` older than this cannot be held by a live
  *  rotation (the hold spans one stat + at most maxGenerations renames):
@@ -49,8 +125,6 @@ export interface JournalSinks {
   tracePath: string
   /** Resolves the sink file that owns one journal entry. */
   sinkFor(entry: Record<string, unknown>): string
-  /** Acquires the `<file>.lock` mutex for a rotation tick. */
-  tryLock(file: string): boolean
   /** Rotates `file` once per `rotateEveryEntries` writes. */
   tickRotate(file: string, counter: { n: number }): void
 }
@@ -92,47 +166,22 @@ function stealStaleLock(lock: string): boolean {
 }
 
 /**
- * Acquires the `<file>.lock` mutex for the tick. A stale lock (mtime past
- * the staleness bound — its creator crashed) is stolen and journaled as a
- * `rotation-lock-stale:` error entry before the mkdir is retried once; a
- * fresh contention returns false without journaling. Non-EEXIST mkdir
- * errors and steal-path throws propagate to the caller's catch. The error
- * row always lands on the shared journal file, even when the contended
- * file is a session sink (one fixed audit location for rotation errors).
- * @param file Path of the file whose lock is acquired.
- * @param journalPath The shared journal file path (the error row's sink).
- * @returns True when the lock is held by the caller on return.
- */
-function tryLock(file: string, journalPath: string): boolean {
-  const lock = `${file}.lock`
-  try {
-    fs.mkdirSync(lock)
-    return true
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
-    if (!stealStaleLock(lock)) return false
-    appendLine(
-      journalPath,
-      JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
-    )
-    fs.mkdirSync(lock) // raced again: the throw lands in tickRotate's catch
-    return true
-  }
-}
-
-/**
  * Rotates `file` once per `rotateEveryEntries` writes, under a created
  * `<file>.lock` directory that is an atomic mutex (mkdir fails with EEXIST
  * while another session holds it) so concurrent sessions never both rename
  * the shared file. A stale lock — its mtime past the staleness bound,
- * proving its creator crashed — is stolen by `tryLock`, journaled as a
- * `rotation-lock-stale:` error entry, and the mkdir retried; a fresh
- * contention is a silent return. Fail-open: the single outer catch
+ * proving its creator crashed — is stolen (journaled as a
+ * `rotation-lock-stale:` error entry) and the mkdir retried once; a fresh
+ * contention is a silent return. Non-EEXIST mkdir errors and steal-path
+ * throws land in the single outer catch. The error row always lands on the
+ * shared journal file, even when the contended file is a session sink (one
+ * fixed audit location for rotation errors). Fail-open: the outer catch
  * swallows every steal-path throw and the finally's failed rmdir, so a
  * throw inside the finally (a failed rmdir) or the rotate cannot propagate
  * out of `journal()` into the hook. The per-write hot path never calls
  * this past the counter gate.
  * @param options The journaler options (rotation bounds).
+ * @param journalPath The shared journal file path (the error row's sink).
  * @param file Path of the file to rotate.
  * @param counter A per-file `{ n }` counter; callers pass one bound here.
  */
@@ -145,7 +194,18 @@ function tickRotate(
   if (++counter.n < options.rotateEveryEntries) return
   counter.n = 0
   try {
-    if (!tryLock(file, journalPath)) return
+    const lock = `${file}.lock`
+    try {
+      fs.mkdirSync(lock)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
+      if (!stealStaleLock(lock)) return
+      appendLine(
+        journalPath,
+        JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
+      )
+      fs.mkdirSync(lock) // raced again: the throw lands in the outer catch
+    }
     try {
       rotateIfLarge(file, options.maxBytes, options.maxGenerations)
     } finally {
@@ -193,7 +253,6 @@ export function createJournalSinks(options: JournalSinksOptions): JournalSinks {
     sessionsDir,
     tracePath,
     sinkFor: (entry) => sinkFor(options, journalPath, entry),
-    tryLock: (file) => tryLock(file, journalPath),
     tickRotate: (file, counter) => tickRotate(options, journalPath, file, counter),
   }
 }

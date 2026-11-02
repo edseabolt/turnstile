@@ -46,6 +46,35 @@ function splitQuotedChar(cur: string, ch: string, st: QuoteState): string {
 }
 
 /**
+ * Consumes one unquoted character for the separator splitter: a backslash
+ * arms the escape flag, a quote opens a quoted span (the quote character is
+ * kept — the splitter preserves the raw shape), a top-level separator closes
+ * the current simple command.
+ * @param cur The accumulated token so far.
+ * @param ch The unquoted character.
+ * @param st The scanner state to update.
+ * @returns The token with the character consumed.
+ */
+function splitUnquotedChar(
+  cur: string,
+  ch: string,
+  st: QuoteState,
+): { cur: string; split: boolean } {
+  if (ch === "\\") {
+    st.escaped = true
+    return { cur: cur + ch, split: false }
+  }
+  if (ch === '"' || ch === "'") {
+    st.quote = ch
+    return { cur: cur + ch, split: false }
+  }
+  if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
+    return { cur, split: true }
+  }
+  return { cur: cur + ch, split: false }
+}
+
+/**
  * Splits a command into simple commands on top-level shell separators
  * (`;` `|` `&` `\r` `\n`), quote- and backslash-aware: a backslash escapes the
  * next character (`\;` inside quotes is not a separator, `\"` does not close a
@@ -69,22 +98,12 @@ export function splitCommands(command: string): string[] {
       cur = splitQuotedChar(cur, ch, st)
       continue
     }
-    if (ch === "\\") {
-      st.escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      st.quote = ch
-      cur += ch
-      continue
-    }
-    if (ch === ";" || ch === "|" || ch === "&" || ch === "\r" || ch === "\n") {
+    const r = splitUnquotedChar(cur, ch, st)
+    cur = r.cur
+    if (r.split) {
       out.push(cur)
       cur = ""
-      continue
     }
-    cur += ch
   }
   out.push(cur)
   return out
@@ -110,6 +129,27 @@ function tokenizeQuotedChar(cur: string, ch: string, st: QuoteState): string {
 }
 
 /**
+ * Consumes one unquoted character for the word tokenizer: a backslash arms
+ * the escape flag and is kept, a quote opens a quoted span (stripped from
+ * the word), whitespace closes the current word.
+ * @param cur The accumulated word so far.
+ * @param ch The unquoted character.
+ * @param st The scanner state to update.
+ * @returns The word with the character consumed.
+ */
+function tokenizeUnquotedChar(cur: string, ch: string, st: QuoteState): string {
+  if (ch === "\\") {
+    st.escaped = true
+    return cur + ch
+  }
+  if (ch === '"' || ch === "'") {
+    st.quote = ch
+    return cur
+  }
+  return cur + ch
+}
+
+/**
  * Tokenizes one simple command into quoted-aware words, stripping the quotes so
  * a `-m "feat: x"` word yields the bare message `feat: x`. Honors the same
  * backslash escape so a `\"` inside a double-quoted word is a literal quote,
@@ -130,21 +170,12 @@ export function tokenizeWords(input: string): string[] {
       cur = tokenizeQuotedChar(cur, ch, st)
       continue
     }
-    if (ch === "\\") {
-      st.escaped = true
-      cur += ch
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      st.quote = ch
-      continue
-    }
     if (/\s/.test(ch)) {
       if (cur) words.push(cur)
       cur = ""
       continue
     }
-    cur += ch
+    cur = tokenizeUnquotedChar(cur, ch, st)
   }
   if (cur) words.push(cur)
   return words
@@ -178,6 +209,42 @@ function readRedirectTarget(simple: string, i: number): { target: string; next: 
 }
 
 /**
+ * Consumes one unquoted character of the redirect scan: a backslash arms the
+ * escape flag, a quote opens a quoted span, and a `>` operator reads its
+ * target (appending it when it names a real file). Returns the index to
+ * resume scanning at (past a consumed target, else unchanged).
+ * @param simple One simple command string (already separator-split).
+ * @param i The current scan index.
+ * @param ch The unquoted character at `i`.
+ * @param st The scanner state to update (`quote`/`escaped` mirrors).
+ * @param targets The collected write-target strings to append to.
+ * @returns The next scan index.
+ */
+function scanRedirectChar(
+  simple: string,
+  i: number,
+  ch: string,
+  st: { quote: string; escaped: boolean },
+  targets: string[],
+): number {
+  if (ch === "\\") {
+    st.escaped = true
+    return i
+  }
+  if (ch === '"' || ch === "'") {
+    st.quote = ch
+    return i
+  }
+  if (ch !== ">") return i
+  // `>>` appends, `&>`/`>&`/`2>`/`1>` are fd-aware forms; the target
+  // parse is identical for all of them.
+  const opEnd = simple[i + 1] === ">" ? i + 1 : i
+  const { target, next } = readRedirectTarget(simple, opEnd)
+  if (target && !isDevOrFdTarget(target)) targets.push(target)
+  return next - 1
+}
+
+/**
  * Scans ONE simple command for write redirects: the operators `>>`, `>`,
  * `&>`, `2>`, `1>` found OUTSIDE quotes, collecting each non-`/dev`,
  * non-fd-dup target (the characters after the operator up to unquoted
@@ -189,35 +256,19 @@ function readRedirectTarget(simple: string, i: number): { target: string; next: 
  */
 export function scanRedirects(simple: string): string[] {
   const targets: string[] = []
-  let quote = ""
-  let escaped = false
+  const st: QuoteState = { quote: "", escaped: false }
   for (let i = 0; i < simple.length; i++) {
     const ch = simple[i]!
-    if (escaped) {
-      escaped = false
+    if (st.escaped) {
+      st.escaped = false
       continue
     }
-    if (quote) {
-      if (ch === "\\") escaped = true
-      else if (ch === quote) quote = ""
+    if (st.quote) {
+      if (ch === "\\") st.escaped = true
+      else if (ch === st.quote) st.quote = ""
       continue
     }
-    if (ch === "\\") {
-      escaped = true
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    if (ch === ">") {
-      // `>>` appends, `&>`/`>&`/`2>`/`1>` are fd-aware forms; the target
-      // parse is identical for all of them.
-      if (simple[i + 1] === ">") i++
-      const { target, next } = readRedirectTarget(simple, i)
-      i = next - 1
-      if (target && !isDevOrFdTarget(target)) targets.push(target)
-    }
+    i = scanRedirectChar(simple, i, ch, st, targets)
   }
   return targets
 }

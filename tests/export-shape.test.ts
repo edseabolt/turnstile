@@ -215,9 +215,17 @@ test("rotateIfLarge no-ops when the file is missing", () => {
  * The journal-sinks module must expose exactly the sink factory and the
  * trace-line formatter at runtime.
  */
-test("journal-sinks.ts exposes the sink factory and trace formatter", async () => {
+test("journal-sinks.ts exposes the persistence primitives and sink factory", async () => {
   const mod = await import("../src/journal-sinks.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["createJournalSinks", "formatTraceLine"])
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "REPLAY_SESSION_RE",
+    "appendLine",
+    "createJournalSinks",
+    "formatTraceLine",
+    "now",
+    "rotateIfLarge",
+    "sessionJournalPath",
+  ])
 })
 
 /**
