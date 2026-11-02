@@ -246,7 +246,10 @@ stated feature; devDependencies are tooling only.)
 - `npm test` is the sole coverage authority. `scripts/branch-coverage.mjs` is
   diagnostic-only — it localizes what `npm test` already flagged (file:line +
   snippet); never loop on its output, never treat its findings as a work
-  queue. `test:stable`-style retry aliases are forbidden by design: the gate is
+  queue, and do not write ad-hoc V8-parsing scripts to re-derive coverage
+  the gate already enforces; if per-file attribution is needed, run a single
+  test file with the same `node --test` invocation the gate uses.
+  `test:stable`-style retry aliases are forbidden by design: the gate is
   deterministic, so a red run is a real gap.
 
 ## Architecture docs (keep in sync when code changes)
