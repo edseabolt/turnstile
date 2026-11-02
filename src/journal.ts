@@ -10,6 +10,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
+import { createJournalSinks, formatTraceLine } from "./journal-sinks.ts"
+
 /**
  * Resolves the default metrics directory from an environment. Relative
  * `XDG_DATA_HOME` or `HOME` values are ignored: the XDG spec demands the
@@ -42,46 +44,12 @@ export const DEFAULT_JOURNAL_PATH: string = path.join(DEFAULT_METRICS_DIR, "turn
  */
 export const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
 
-/** Rotation bound (rotation-race fix): the append hot path never stats or
- * renames the file — `journal()` only appends and advances a per-file
- * counter. The rotate-then-rename sequence runs once per `rotateEveryEntries`
- * appends (cadence set by the `journalRotateEveryEntries` config key) and only
- * under a created `<file>.lock` directory (an
- * atomic mutex: `mkdir` fails with EEXIST while another session holds it), so
- * two concurrent sessions never both rename the shared file. Disk usage stays
- * bounded at (N + 1) × maxBytes plus at most `rotateEveryEntries × ~2 KB` of
- * overshoot between the size check and the rename. A crashed process between
- * the create and the remove of `<file>.lock` leaves a stale lock: the next
- * tick steals it once its mtime passes the staleness bound, journaling a
- * `rotation-lock-stale:` error entry, so rotation resumes; a fresh
- * (contended) lock is still skipped silently, and the append hot path keeps
- * journaling through either. */
-
-/** A created `<file>.lock` older than this cannot be held by a live
- *  rotation (the hold spans one stat + at most maxGenerations renames):
- *  it marks a crashed process. Steal it. */
-const ROTATION_LOCK_STALE_MS = 60_000
-
 /**
  * Returns the current time as an ISO-8601 timestamp.
  * @returns The current UTC timestamp, e.g. `2026-10-08T12:00:00.000Z`.
  */
 export function now(): string {
   return new Date().toISOString()
-}
-
-/**
- * Steals a lock directory whose mtime proves its creator crashed
- * mid-rotation. A stat or rmdir failure throws to the caller's catch, so a
- * lock in an unexpected state (a file, a non-empty directory, a vanished
- * path) is never forced open — it just skips the tick.
- * @param lock Path of the contended `<file>.lock` directory.
- * @returns True when the stale lock was removed (a steal happened).
- */
-function stealStaleLock(lock: string): boolean {
-  if (Date.now() - fs.statSync(lock).mtimeMs < ROTATION_LOCK_STALE_MS) return false
-  fs.rmdirSync(lock)
-  return true
 }
 
 /**
@@ -246,119 +214,36 @@ export function createJournaler(options: {
   perSession?: boolean
   sinkFor?: (sessionID: string) => string
 }): Journaler {
-  const journalPath = path.join(options.metricsDir, "turnstile.jsonl")
-  const sessionsDir = path.join(options.metricsDir, "sessions")
-  const tracePath = path.join(options.metricsDir, "gate-events.log")
+  const sinks = createJournalSinks(options)
   // Counters per file, never shared: the journal, each session sink, and the
   // trace file each rotate on their own schedule (a trace-off journal still
   // counts its own ticks). Keyed by resolved file path; bounded by the live
   // session count plus the two fixed sinks.
   const journalTicks = new Map<string, { n: number }>()
   const traceTick = { n: 0 }
-  /**
-   * Resolves the sink file that owns one journal entry: the parent session's
-   * file when per-session segmentation is on, the entry carries a string
-   * `sessionID`, the resolver yields a parent, and that parent passes the
-   * session-ID shape rule; the shared file otherwise.
-   * @param entry The journal entry about to be appended.
-   * @returns The absolute path of the owning journal file.
-   */
-  function sinkFor(entry: Record<string, unknown>): string {
-    const sessionID = entry.sessionID
-    if (!options.perSession || typeof sessionID !== "string") return journalPath
-    const parent = options.sinkFor?.(sessionID) ?? ""
-    if (parent === "" || !REPLAY_SESSION_RE.test(parent)) return journalPath
-    return sessionJournalPath(options.metricsDir, parent)
-  }
-  /**
-   * Acquires the `<file>.lock` mutex for the tick. A stale lock (mtime past
-   * the staleness bound — its creator crashed) is stolen and journaled as a
-   * `rotation-lock-stale:` error entry before the mkdir is retried once; a
-   * fresh contention returns false without journaling. Non-EEXIST mkdir
-   * errors and steal-path throws propagate to the caller's catch. The error
-   * row always lands on the shared journal file, even when the contended
-   * file is a session sink (one fixed audit location for rotation errors).
-   * @param file Path of the file whose lock is acquired.
-   * @returns True when the lock is held by the caller on return.
-   */
-  function tryLock(file: string): boolean {
-    const lock = `${file}.lock`
-    try {
-      fs.mkdirSync(lock)
-      return true
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
-      if (!stealStaleLock(lock)) return false
-      appendLine(
-        journalPath,
-        JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
-      )
-      fs.mkdirSync(lock) // raced again: the throw lands in tickRotate's catch
-      return true
-    }
-  }
-
-  /**
-   * Rotates `file` once per `rotateEveryEntries` writes, under a created
-   * `<file>.lock` directory that is an atomic mutex (mkdir fails with EEXIST
-   * while another session holds it) so concurrent sessions never both rename
-   * the shared file. A stale lock — its mtime past the staleness bound,
-   * proving its creator crashed — is stolen by `tryLock`, journaled as a
-   * `rotation-lock-stale:` error entry, and the mkdir retried; a fresh
-   * contention is a silent return. Fail-open: the single outer catch
-   * swallows every steal-path throw and the finally's failed rmdir, so a
-   * throw inside the finally (a failed rmdir) or the rotate cannot propagate
-   * out of `journal()` into the hook. The per-write hot path never calls
-   * this past the counter gate.
-   * @param file Path of the file to rotate.
-   * @param counter A per-file `{ n }` counter; callers pass one bound here.
-   */
-  function tickRotate(file: string, counter: { n: number }): void {
-    if (++counter.n < options.rotateEveryEntries) return
-    counter.n = 0
-    try {
-      if (!tryLock(file)) return
-      try {
-        rotateIfLarge(file, options.maxBytes, options.maxGenerations)
-      } finally {
-        fs.rmdirSync(`${file}.lock`)
-      }
-    } catch {
-      // steal-path throw, non-EEXIST mkdir error, or failed rmdir: skip the tick
-    }
-  }
   return {
-    journalPath,
-    sessionsDir,
-    tracePath,
+    journalPath: sinks.journalPath,
+    sessionsDir: sinks.sessionsDir,
+    tracePath: sinks.tracePath,
     journalPathFor(parentID: string): string {
       return sessionJournalPath(options.metricsDir, parentID)
     },
     journal(entry: Record<string, unknown>): void {
-      const file = sinkFor(entry)
+      const file = sinks.sinkFor(entry)
       appendLine(file, JSON.stringify({ ts: now(), ...entry }))
       let tick = journalTicks.get(file)
       if (!tick) {
         tick = { n: 0 }
         journalTicks.set(file, tick)
       }
-      tickRotate(file, tick)
+      sinks.tickRotate(file, tick)
     },
     traceEvent(agent: string, event: string, detail: string, sessionID?: string): void {
       if (!options.trace) return
-      const d = new Date()
-      const pad = (n: number): string => String(n).padStart(2, "0")
-      // The session segment is optional and appended last; the first four
-      // segments (ts | agent | event | detail) stay byte-identical for every
-      // existing `split("|")` consumer when it is omitted.
-      const tail = sessionID ? ` | ${sessionID}` : ""
-      appendLine(
-        tracePath,
-        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())} | ${agent} | ${event} | ${String(detail).slice(0, 200)}${tail}`,
-      )
+      appendLine(sinks.tracePath, formatTraceLine(agent, event, detail, sessionID))
       // The trace file shares the journal's rotation bound (AGENTS.md
       // retention contract: bounded at (N + 1) × maxBytes per file).
-      tickRotate(tracePath, traceTick)
+      sinks.tickRotate(sinks.tracePath, traceTick)
     },
   }
 }

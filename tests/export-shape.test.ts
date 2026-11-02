@@ -212,6 +212,38 @@ test("rotateIfLarge no-ops when the file is missing", () => {
 })
 
 /**
+ * The journal-sinks module must expose exactly the sink factory and the
+ * trace-line formatter at runtime.
+ */
+test("journal-sinks.ts exposes the sink factory and trace formatter", async () => {
+  const mod = await import("../src/journal-sinks.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createJournalSinks", "formatTraceLine"])
+})
+
+/**
+ * The evidence-hits module must expose exactly the hits-operations factory
+ * and the per-session ring cap at runtime.
+ */
+test("evidence-hits.ts exposes the hits factory and the ring cap", async () => {
+  const mod = await import("../src/evidence-hits.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["MAX_HITS_PER_SESSION", "createEvidenceHits"])
+})
+
+/**
+ * The session-hook-bodies module must expose exactly the four extracted hook
+ * bodies at runtime.
+ */
+test("hooks-session-bodies.ts exposes the four session hook bodies", async () => {
+  const mod = await import("../src/hooks-session-bodies.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "sessionCompactionBody",
+    "sessionContextBody",
+    "sessionGenerateBody",
+    "sessionPromptBody",
+  ])
+})
+
+/**
  * The commit-args module must expose exactly the commit argument scanner at
  * runtime (the cluster reader is module-private).
  */
