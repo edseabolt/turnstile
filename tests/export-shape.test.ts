@@ -256,6 +256,15 @@ test("tool-hooks-after.ts exposes the after hook body", async () => {
 })
 
 /**
+ * The permission-evaluate module must expose exactly the extracted evaluate
+ * body at runtime.
+ */
+test("permission-evaluate.ts exposes the permission evaluate body", async () => {
+  const mod = await import("../src/permission-evaluate.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["permissionEvaluate"])
+})
+
+/**
  * The session-hook-bodies module must expose exactly the four extracted hook
  * bodies at runtime.
  */
