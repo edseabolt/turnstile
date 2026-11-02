@@ -94,6 +94,39 @@ test("gates-dispatch.ts exposes only createDispatchGates at runtime", async () =
   assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGates"])
 })
 
+/**
+ * The plans-scan module must expose exactly the scan-cache factory and the
+ * unreadable-dir journal helper at runtime (the PlansScan type is erased).
+ */
+test("plans-scan.ts exposes the scan-cache factory", async () => {
+  const mod = await import("../src/plans-scan.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPlansScanCache", "journalPlansUnreadable"])
+})
+
+/**
+ * The plan-gate-status module must expose exactly the status factory and the
+ * shared helpers at runtime (the PlanGateRed type is erased).
+ */
+test("plan-gate-status.ts exposes the status factory and helpers", async () => {
+  const mod = await import("../src/plan-gate-status.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "createPlanGateStatus",
+    "decompFallback",
+    "planGateStages",
+    "promptPlanNames",
+    "referencedPlans",
+  ])
+})
+
+/**
+ * The plan-gate-enforce module must expose exactly the enforcement factory at
+ * runtime.
+ */
+test("plan-gate-enforce.ts exposes the enforcement factory", async () => {
+  const mod = await import("../src/plan-gate-enforce.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPlanGateEnforce"])
+})
+
 /** The plan gates module must expose exactly createPlanGates at runtime. */
 test("gates-plan.ts exposes only createPlanGates at runtime", async () => {
   const mod = await import("../src/gates-plan.ts")
