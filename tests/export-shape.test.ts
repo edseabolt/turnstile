@@ -128,6 +128,45 @@ test("hooks-events.ts exposes only startEventStream at runtime", async () => {
   assert.deepEqual(Object.keys(mod).sort(), ["startEventStream"])
 })
 
+/** The config-merge module must expose exactly the default sub-object builders and the merge dispatcher. */
+test("config-merge.ts exposes the default sub-object builders and merge dispatcher", async () => {
+  const mod = await import("../src/config-merge.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "CANONICAL_REVIEWER_AGENT",
+    "DEFAULT_COMMIT_FORMAT",
+    "defaultAgents",
+    "defaultGitGates",
+    "defaultToolPolicy",
+    "mergeAgentsPatch",
+    "mergeConfigKey",
+    "mergeGitGatesPatch",
+    "mergeScalarKey",
+    "mergeToolPolicyPatch",
+  ])
+})
+
+/** The config-validate module must expose exactly the scalar validator and the resolved-config invariants. */
+test("config-validate.ts exposes the scalar validator and validateResolved", async () => {
+  const mod = await import("../src/config-validate.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "BARE_OUTPUT_UNSET",
+    "isValidScalar",
+    "validateResolved",
+  ])
+})
+
+/** The gate-marker parsing module must expose exactly the marker parser. */
+test("gate-markers-parse.ts exposes only parseGateMarkers at runtime", async () => {
+  const mod = await import("../src/gate-markers-parse.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["parseGateMarkers"])
+})
+
+/** The state-carry module must expose exactly the fresh-bucket factory and the replay carry merge. */
+test("state-carry.ts exposes only newState and mergeAfterReplay at runtime", async () => {
+  const mod = await import("../src/state-carry.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["mergeAfterReplay", "newState"])
+})
+
 /** Under the size limit rotation must not fire and no generation file appears. */
 test("rotateIfLarge no-ops when the file is within the size limit", () => {
   const dir = tmpDir()
