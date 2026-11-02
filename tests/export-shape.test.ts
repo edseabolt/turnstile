@@ -448,3 +448,30 @@ test("plan-verdict.ts exposes only createPlanVerdict at runtime", async () => {
   const mod = await import("../src/plan-verdict.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createPlanVerdict"])
 })
+
+/**
+ * The dispatch-guard module must expose exactly the concern factory at
+ * runtime (the state interface is erased).
+ */
+test("dispatch-guard.ts exposes only createDispatchGuard at runtime", async () => {
+  const mod = await import("../src/dispatch-guard.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGuard"])
+})
+
+/**
+ * The bash-write-guard module must expose exactly the concern factory at
+ * runtime (the state interface is erased).
+ */
+test("bash-write-guard.ts exposes only createBashWriteGuard at runtime", async () => {
+  const mod = await import("../src/bash-write-guard.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createBashWriteGuard"])
+})
+
+/**
+ * The prompt-admission module must expose exactly the concern factory at
+ * runtime (the state/flags interfaces are erased).
+ */
+test("prompt-admission.ts exposes only createPromptAdmission at runtime", async () => {
+  const mod = await import("../src/prompt-admission.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPromptAdmission"])
+})
