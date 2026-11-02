@@ -265,6 +265,29 @@ test("permission-evaluate.ts exposes the permission evaluate body", async () => 
 })
 
 /**
+ * The tool-policy-guards module must expose exactly the guards, telemetry,
+ * compilers, pure helpers, and gate texts at runtime (interfaces are erased).
+ */
+test("tool-policy-guards.ts exposes the guard creators and helpers", async () => {
+  const mod = await import("../src/tool-policy-guards.ts")
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "HANDSON_REQUIREMENT",
+    "LANDING_REQUIREMENT",
+    "compileCommitFormat",
+    "compileDenylist",
+    "createBashWriteGuards",
+    "createCommitGuard",
+    "createDenylistGuards",
+    "createHandsOnGuard",
+    "createLandingGuard",
+    "createTelemetry",
+    "describeCommitMismatch",
+    "gitInvocation",
+    "isPushLanding",
+  ])
+})
+
+/**
  * The event-stream-handlers module must expose exactly the handler-table
  * factory at runtime (the EventHandler type is erased).
  */
