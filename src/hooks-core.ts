@@ -7,28 +7,21 @@
  */
 
 import { evictTo } from "./bounded.ts"
-import { agentFromDispatchEvent, resolveChildStatus } from "./child-registration.ts"
+import { agentFromDispatchEvent } from "./child-registration.ts"
 import { spawnSync } from "node:child_process"
-import { formatConfigWarnings, formatObserveSummary, loadConfig } from "./config.ts"
+import { loadConfig } from "./config.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
   compileMarkerRegex,
   deltaWindowFloorChars,
-  parseGateMarkers,
   parseWaiverScope,
-  deTokenizeMarker,
   findMarkerNearMisses,
   formatNearMissDiagnostics,
   GATE_RE,
   VERDICT_RE,
 } from "./markers.ts"
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
-import {
-  decisionEntry,
-  observeEntry,
-  observeSummaryEntry,
-  wouldBlockEntry,
-} from "./gates-common.ts"
+import { decisionEntry, observeEntry, wouldBlockEntry } from "./gates-common.ts"
 import { waiverCovers } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import {
@@ -54,25 +47,20 @@ import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
 import { intentNudge, orchestratorPolicyFor, planImpactAdvisory } from "./policy.ts"
 import type { PlanImpact } from "./plan-scope.ts"
-import {
-  appendSystemText,
-  describeRequestDraft,
-  usableRequestDraft,
-  type UsableRequestDraft,
-} from "./generate-injection.ts"
+
 import { createLedger, type GateLedger } from "./ledger.ts"
+import { createContextSurface, type ContextSurfaceFlags } from "./context-surface.ts"
+import { createParentResolution } from "./parent-resolution.ts"
+import { createVerdictCapture } from "./verdict-capture.ts"
+import { createPlanVerdict } from "./plan-verdict.ts"
 import { worktreeFingerprint, shouldCarryGate } from "./fingerprint.ts"
-import { approvalResetsScope, keepsTaskScope } from "./task-scope.ts"
+import { keepsTaskScope } from "./task-scope.ts"
 import { isEmptyDiffPush } from "./empty-diff.ts"
 import {
   asSessionID,
   mutateDeliveryText,
   prependDeliveryText,
   promptTextOf,
-  readRecordString,
-  AGENT_KEYS,
-  DIRECTORY_KEYS,
-  PARENT_KEYS,
   type Delivery,
 } from "./delivery.ts"
 import type {
@@ -83,7 +71,6 @@ import type {
   MarkerNearMiss,
   GenerateDraft,
   PromptHookProperties,
-  SessionRecord,
   ToolHookEvent,
   TurnstileConfig,
   TurnstileOptions,
@@ -229,8 +216,6 @@ export interface TurnstileContext {
   // ── bounders ──────────────────────────────────────────────────────────────
   /** Evicts oldest parents from nearMissPending past the cap. */
   boundNearMissPending(): void
-  /** Evicts oldest entries from failedLookups past the cap. */
-  boundLookups(): void
   /** Evicts oldest entries from sessionDirs past the cap. */
   boundSessionDirs(): void
   /** Evicts oldest entries from deltaWindows past the cap. */
@@ -255,8 +240,6 @@ export interface TurnstileContext {
   boundHandsOnGateAsks(): void
   /** Evicts oldest keys from the intent-nudge dedupe set and pending map. */
   boundIntentNudges(): void
-  /** Evicts oldest entries from sessionAgents past the cap. */
-  boundSessionAgents(): void
   /** Evicts oldest keys from admittedIds past the cap. */
   boundAdmittedIds(): void
   /** Evicts oldest keys from summarizedSessions past the cap. */
@@ -301,7 +284,6 @@ export interface TurnstileContext {
   /** Returns the last verdict match in text for re. */
   lastMatch(text: string, re: RegExp): string
   /** Stamps a plan-reviewer verdict's approval against the plans dir. */
-  stampPlanApproval(s: GateState, result: string, projectDir: string, candidates: string[]): void
   /** Returns the optional identity/stamp fields a plan APPROVE journals. */
   planApprovalStampFields(s: GateState): {
     plan?: string
@@ -456,30 +438,16 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // sink); they are now also *surfaced* once into the model context by the
   // first tool delivery that carries string output (see
   // `surfaceConfigWarnings`), and never re-journaled here (that would
-  // double-write every entry).
-  // One-time config-warning surfacing: true while `configWarnings` still
-  // deserve a context block. Set at plugin build (no warnings ⇒ already
-  // surfaced, zero behavior change); consumed by the first execute.after
-  // delivery that carries string output — the same model-facing channel as
-  // the policy injection and the read-budget warning prefix.
-  let configWarningsPending = configWarnings.length > 0
-  // End-of-period observe summary: true while the once-per-load
-  // `[turnstile] observe:` block still deserves a context slot. Armed by the
-  // admission stamp that completes the observe period (see
-  // `stampObserveAdmission`) and re-armed at boot when the replayed journal
-  // tail shows a completed period whose summary never surfaced (the
-  // journaled `kind:"summary"` marker is the one-shot proof — a tail that
-  // holds it re-arms nothing). Consumed by the first tool delivery that
-  // carries string output (see `surfaceObserveSummary`); a default (off)
-  // period never arms it.
-  let observeSummaryPending = false
-  // One-per-boot generation-draft telemetry: the first context/generate fire
-  // journals a single bounded `generate-draft` row (spike-once); a descriptor
-  // build failure is journaled as `type:"error"` and never retried. Both
-  // latches are closure state so each surface degrades independently and
-  // exactly once per plugin load.
-  let draftDiagnosticDone = false
-  let draftShapeErrorJournaled = false
+  // double-write every entry). The once-per-load latches the context surfaces
+  // consume live on this shared flags object (see ContextSurfaceFlags): the
+  // boot replay and the admission stamp arm `observeSummaryPending`; the
+  // surfaces consume the latches one-shot.
+  const surfaceFlags: ContextSurfaceFlags = {
+    configWarningsPending: configWarnings.length > 0,
+    observeSummaryPending: false,
+    draftDiagnosticDone: false,
+    draftShapeErrorJournaled: false,
+  }
   // Surfaces unresolved config-validation warnings once per plugin load by
   // prepending a `[turnstile] config:` block to the first tool result with
   // string output — from any session, primary or child — the model-facing
@@ -488,178 +456,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // `{type:"config", surfaced:false}` and never blocks the tool; the journal
   // already carries every warning (loadConfig journaled them), so this entry
   // is a surface audit (surfaced/count), not a second copy of the warnings.
-  function surfaceConfigWarnings(event: ToolHookEvent): void {
-    if (!configWarningsPending) return
-    if (!event?.result || typeof event.result.output !== "string") return
-    const sessionID = asSessionID(event.sessionID)
-    try {
-      event.result.output =
-        formatConfigWarnings(configWarnings, journaler.journalPath) + "\n" + event.result.output
-      configWarningsPending = false
-      journaler.journal({
-        type: "config",
-        sessionID,
-        surfaced: true,
-        count: configWarnings.length,
-      })
-    } catch (e) {
-      journaler.journal({
-        type: "config",
-        sessionID,
-        surfaced: false,
-        error: String(e),
-      })
-    }
-  }
-  /**
-   * Surfaces the end-of-period observe summary once per plugin load by
-   * prepending a `[turnstile] observe:` block to the first tool result with
-   * string output — the same model-facing channel as the config-warning and
-   * read-budget blocks. Armed by the period-completing admission stamp and by
-   * boot replay of a completed period lacking its journaled summary marker
-   * (never armed by a default, off period). Fail-open: a throwing mutation
-   * journals `type:"error"` and never blocks the tool, and the block stays
-   * pending for a later delivery — the `kind:"summary"` marker is journaled
-   * only after a successful prepend, so a restart re-surfaces exactly once.
-   * @param event The host execute.after tool-hook payload (mutated in place).
-   */
-  function surfaceObserveSummary(event: ToolHookEvent): void {
-    if (!observeSummaryPending) return
-    if (!event?.result || typeof event.result.output !== "string") return
-    const sessionID = asSessionID(event.sessionID)
-    try {
-      const counts = ledger.observeCounts()
-      event.result.output =
-        formatObserveSummary(counts, journaler.journalPath) + "\n" + event.result.output
-      observeSummaryPending = false
-      journaler.journal(observeSummaryEntry(sessionID, counts.observed, counts.wouldBlocks))
-    } catch (e) {
-      journaler.journal({
-        type: "error",
-        sessionID,
-        error: `observe summary injection: ${e}`,
-      })
-    }
-  }
-
-  /**
-   * Journals the one-per-boot generation-draft telemetry row: a single
-   * bounded, content-free descriptor (`{type:"generate-draft", …}`) for the
-   * first context or generate fire, whichever comes first. Fail-open: a
-   * descriptor build that throws (a hostile draft with a throwing getter)
-   * journals `type:"error"` instead and never retries.
-   * @param surface Which generation hook fired ("context" or "generate").
-   * @param draft The host hook draft.
-   */
-  function observeRequestDraft(surface: "context" | "generate", draft: GenerateDraft): void {
-    if (draftDiagnosticDone) return
-    draftDiagnosticDone = true
-    try {
-      journaler.journal({ type: "generate-draft", ...describeRequestDraft(surface, draft) })
-    } catch (e) {
-      journaler.journal({ type: "error", error: `generate-draft describe: ${e}` })
-    }
-  }
-
-  /**
-   * Shape guard arm of the context injection: an unusable draft shape
-   * journals one error row per boot (with the shape descriptor) — the
-   * `execute.after` delivery channel stays armed as the fallback.
-   * @param draft The host context-hook draft.
-   * @returns True (narrowing the draft to the appendable shape) when the
-   *     draft's system array is usable.
-   */
-  function usableContextDraft(draft: GenerateDraft): draft is UsableRequestDraft {
-    if (usableRequestDraft(draft)) return true
-    if (!draftShapeErrorJournaled) {
-      draftShapeErrorJournaled = true
-      try {
-        journaler.journal({
-          type: "error",
-          error: "context hook: unusable draft shape",
-          shape: describeRequestDraft("context", draft),
-        })
-      } catch (e) {
-        journaler.journal({ type: "error", error: `context hook shape describe: ${e}` })
-      }
-    }
-    return false
-  }
-
-  /**
-   * Resolves the context draft's skip verdict against the parent-guard
-   * matrix: a config-known pipeline agent name on the draft (a pipeline
-   * agent's own primary turn), a registered child→parent edge, or an
-   * unresolvable session id each skips with a journaled, observable reason.
-   * @param draft The usable context-hook draft.
-   * @param sid The draft's resolved session id ("" when unresolvable).
-   * @returns The skip reason, or "" when injection may proceed.
-   */
-  function contextSkipReason(draft: UsableRequestDraft, sid: string): string {
-    const agent = typeof draft.agent === "string" ? draft.agent : ""
-    if (agent !== "" && subagentNames.has(agent)) return "context-agent"
-    if (ledger.childToParent.has(sid)) return "context-child"
-    if (sid === "") return "context-no-id"
-    return ""
-  }
-
-  /**
-   * Injects the policy head and any pending intent nudge into a primary-turn
-   * context draft's `system` array — the pre-first-model-call channel, so the
-   * model carries the governance prose before it can reason or act. The
-   * shared `policyInjected` latch dedupes against the `execute.after`
-   * prepend (whichever channel fires first wins), and the nudge is consumed
-   * one-shot from the same pending map the fallback channel reads. The head
-   * and the nudge are independent fail-open paths: a head failure keeps the
-   * nudge pending (its own fallback delivery), and a nudge append failure
-   * journals and leaves the head landed. Never throws.
-   * @param draft The host context-hook draft (mutated in place).
-   */
-  function injectContextPolicy(draft: GenerateDraft): void {
-    if (!usableContextDraft(draft)) return
-    const sid = asSessionID(draft.sessionID)
-    const skip = contextSkipReason(draft, sid)
-    if (skip !== "") {
-      journalPolicy(sid, false, { skipped: true, reason: skip })
-      return
-    }
-    // Dormant-until-engaged: a dormant session's context stays clean — the
-    // intent nudge remains the only turnstile prose. The `policyInjected`
-    // latch semantics are unchanged for engaged sessions.
-    if (!enforcementArmed(sid)) return
-    const st = ledger.state(sid)
-    if (!st.policyInjected) {
-      try {
-        appendSystemText(draft.system, policyText)
-        st.policyInjected = true
-        journalPolicy(sid, true, { surface: "context" })
-      } catch (e) {
-        journalPolicy(sid, false, { error: String(e), surface: "context" })
-        return
-      }
-    }
-    appendContextNudge(sid, draft)
-  }
-
-  /**
-   * Consumes the parent's pending intent nudge into a context draft's system
-   * array (one-shot, after a successful head-or-already-injected pass). The
-   * pending entry is consumed before the append, mirroring the read-channel
-   * delivery: a throwing append journals `type:"error"` and never throws or
-   * retries.
-   * @param sid The draft's resolved parent session id.
-   * @param draft The usable context-hook draft.
-   */
-  function appendContextNudge(sid: string, draft: UsableRequestDraft): void {
-    const kind = intentNudgePending.get(sid)
-    if (kind === undefined) return
-    intentNudgePending.delete(sid)
-    try {
-      appendSystemText(draft.system, intentNudge(kind))
-    } catch (e) {
-      journaler.journal({ type: "error", sessionID: sid, error: `intent nudge: ${e}` })
-    }
-  }
   const gateRe = compileMarkerRegex(config.gateMarker, GATE_RE, (cause) =>
     journaler.journal({
       type: "error",
@@ -722,7 +518,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   // re-arms the one-shot so the summary still lands on this load. A tail
   // that already holds the `kind:"summary"` marker re-arms nothing; a
   // default (off) period never completes, so this is a no-op there.
-  if (ledger.observeCounts().pendingSummary) observeSummaryPending = true
+  if (ledger.observeCounts().pendingSummary) surfaceFlags.observeSummaryPending = true
   // Near-miss marker diagnostics pending surfacing, keyed by parent session ID.
   // Hits are detected and journaled at prompt admission (see admitPrompt) and
   // parked here; the session's next string-output tool delivery surfaces them
@@ -804,10 +600,11 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   )
 
   // Host session API, bound at setup time (hooks already fire post-setup).
-  // Kept in factory scope so the shared `resolveParent` helper can call it
-  // without capturing the per-setup `h`; enables the plan-reviewer delivery
-  // path to await edge resolution via `session.get`.
-  let hostSession: Host["session"] | undefined = undefined
+  // Kept in a holder object so the parent-resolution concern (and the local
+  // retry/attribution helpers) read the live binding without capturing the
+  // per-setup `h`; enables the plan-reviewer delivery path to await edge
+  // resolution via `session.get`.
+  const hostSessionRef: { current: Host["session"] | undefined } = { current: undefined }
 
   // Parent-lookup bookkeeping, keyed by child session ID.
   // Values record how many lookups were attempted and why the record stayed
@@ -989,20 +786,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
   const markerRetries = new Map<string, number>()
 
   /**
-   * Bounds the failed-lookup map by evicting its oldest entries.
-   */
-  function boundLookups(): void {
-    evictTo(failedLookups, maxTrackedLookups)
-  }
-
-  /**
-   * Bounds the session-directory map by evicting its oldest entries.
-   */
-  function boundSessionDirs(): void {
-    evictTo(sessionDirs, maxTrackedSessionDirs)
-  }
-
-  /**
    * Per-session sliding window of streamed child text: a host may split one
    * marker across `session.text.delta` chunks, and a fragment-only parse silently
    * loses the gate flip. Each delta re-parses the window's tail; markers.ts dedup
@@ -1122,101 +905,85 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    */
   const sessionAgents = new Map<string, string>()
   const maxTrackedEmitters = 50
-  /**
-   * Bounds the emitter-authority cache by evicting its oldest entries.
-   */
-  function boundSessionAgents(): void {
-    evictTo(sessionAgents, maxTrackedEmitters)
-  }
-  /**
-   * Seeds (or refreshes) a child session's emitter agent. No-op when either
-   * argument is empty, so an unresolved record read ("") never clobbers a
-   * known agent. `markerKindAllowed` reads the cache lazily at parse time, so
-   * a seed arriving before the marker's parse still applies.
-   * @param sessionID The child session ID.
-   * @param agent The resolved agent name, or "" when unresolved.
-   */
-  function seedEmitter(sessionID: string, agent: string): void {
-    if (sessionID && agent) {
-      sessionAgents.set(sessionID, agent)
-      boundSessionAgents()
-    }
-  }
 
-  /**
-   * Rebuilds the post-reload child state from the journal tail (#225 defense
-   * in depth): the ledger re-applies the journaled `child-edge` rows to
-   * `childToParent` (a live executor/test-runner child is no longer gated as
-   * a parent on its next write after a plugin setup re-fire), the
-   * emitter-authority cache is re-seeded from each edge's journaled agent
-   * (one entry covers both re-seeds), and one `reseed` row records the
-   * edges-restored count so a post-reload parent-hands-on block is
-   * diagnosable as a re-seed failure, not a gate malfunction. Fail-open: a
-   * throwing re-seed journals an error and reports 0.
-   * @returns The number of child edges restored.
-   */
-  function reseedChildEdges(): number {
-    try {
-      const edges = ledger.reseedEdges()
-      for (const edge of edges) seedEmitter(edge.child, edge.agent)
-      journaler.journal({ type: "reseed", edges: edges.length })
-      return edges.length
-    } catch (e) {
-      journaler.journal({ type: "error", error: `reseed: ${e}` })
-      return 0
-    }
-  }
-
-  /**
-   * Reads the emitter-authority cache for a session: the resolved agent
-   * name, or "" when the session's agent was never resolved. Pure read
-   * (no LRU promotion); the delivery layer consults it as the fallback for
-   * a delivery whose dispatch input names no agent, and the authority gate
-   * and the suppressed-credit journal read it for the same decision.
-   * @param sessionID The session ID to read.
-   * @returns The resolved agent name, or "" when unresolved.
-   */
-  function emitterAgent(sessionID: string): string {
-    return sessionAgents.get(sessionID) ?? ""
-  }
-
-  /**
-   * Resolves a tool event session's registration status through the
-   * child-registration boundary: a non-empty event agent name in the
-   * configured pipeline set is authoritative (edge or not — parents never
-   * carry a subagent agent name); otherwise the child→parent edge plus the
-   * emitter-authority fallback decides; anything unresolved is `"unknown"`
-   * and gates like a parent (fail closed). Supersedes the former
-   * edge-required check, so a generic-subagent dispatch or a child whose
-   * edge was lost to a reload still exempts from its name.
-   * @param sid The tool event's session ID.
-   * @param agent The resolved agent name candidate from the event ("" when none).
-   * @returns The session's registration status at this boundary.
-   */
-  function childStatus(sid: string, agent: string): "child" | "parent" | "unknown" {
-    return resolveChildStatus(sid, agent, ledger, subagentNames, emitterAgent)
-  }
-
-  /**
-   * Emits a predicate answering whether a gate/verdict kind is authoritative
-   * for a session's emitter agent. A gate flips only for `test-runner`; a
-   * verdict only for `reviewer`/`plan-reviewer` — each also required to be in
-   * `bareOutput` (the aggregated marker-contracted set). Unseeded or unknown
-   * agents are denied: text observation mutates only for contracted emitters,
-   * and a legitimate child's markers always land authoritatively at
-   * `execute.after` delivery, which seeds the agent from dispatch input.
-   * @param sessionID The emitting session ID.
-   * @returns A per-kind authority predicate.
-   */
-  function markerKindAllowed(sessionID: string): (kind: "gate" | "verdict") => boolean {
-    const agent = emitterAgent(sessionID)
-    return (kind) => {
-      if (agent === "" || !config.agents.bareOutput.includes(agent)) return false
-      if (kind === "gate") return agent === config.agents.testRunner
-      return agent === config.agents.reviewer || agent === config.agents.planReviewer
-    }
-  }
-
+  // ── concern modules (10a) ─────────────────────────────────────────────────
+  // The context-surface, parent-resolution, verdict-capture, and plan-verdict
+  // concerns live in their own modules; each receives the shared per-setup
+  // state it needs as one typed state object. The destructured aliases below
+  // keep every existing call site (and the returned context literal)
+  // unchanged. Cross-concern helpers that stay local for now (10b scope) are
+  // threaded as function references; function declarations hoist, so the
+  // wiring order matches the state-block order, not the declaration order.
+  const contextSurface = createContextSurface({
+    journaler,
+    ledger,
+    subagentNames,
+    policyText,
+    configWarnings,
+    flags: surfaceFlags,
+    intentNudgePending,
+    journalPolicy,
+    enforcementArmed,
+  })
+  const { surfaceConfigWarnings, surfaceObserveSummary, observeRequestDraft, injectContextPolicy } =
+    contextSurface
+  const parentResolution = createParentResolution({
+    config,
+    journaler,
+    ledger,
+    subagentNames,
+    hostSessionRef,
+    sessionAgents,
+    maxTrackedEmitters,
+    failedLookups,
+    maxLookupAttempts,
+    maxTrackedLookups,
+    lookupReasonNotVisible: LOOKUP_REASON_NOT_VISIBLE,
+    lookupReasonNoParentId: LOOKUP_REASON_NO_PARENT_ID,
+    sessionDirs,
+    maxTrackedSessionDirs,
+    toolPolicy,
+    promoteOnEvidence,
+  })
+  const {
+    boundSessionDirs,
+    seedEmitter,
+    reseedChildEdges,
+    emitterAgent,
+    childStatus,
+    markerKindAllowed,
+    currentProjectDir,
+    resolveProjectDir,
+    resolveParent,
+  } = parentResolution
+  const verdictCapture = createVerdictCapture({
+    config,
+    journaler,
+    ledger,
+    gateRe,
+    verdictRe,
+    evidence,
+    taskWindows,
+    markerKindAllowed,
+    emitterAgent,
+    markTaskComplete,
+  })
+  const { parseMarkers, lastMatch } = verdictCapture
+  const planVerdict = createPlanVerdict({
+    journaler,
+    ledger,
+    gates,
+    planReviewTarget,
+    resolveProjectDir,
+    clearIntentNudge,
+    resetTaskScope,
+  })
+  const {
+    planApprovalStampFields,
+    recordDurablePlanApproval,
+    applyApprovalBinding,
+    journalPlanApproval,
+  } = planVerdict
   /**
    * Reads (and expires) the pending-landing-ask latch for a session: an arm
    * older than the TTL is dropped and reported as absent. Fail-toward-strict:
@@ -1257,108 +1024,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       return false
     }
     return true
-  }
-
-  /**
-   * Returns the last-known project directory for a session: the per-session
-   * cache (resolved via `session.get`), else `process.cwd()`. Called by the
-   * synchronous consumers (evaluate, continuation carry); each reads at most
-   * one dispatch behind a move, which converges once the next
-   * `execute.before` re-resolves.
-   * @param sessionID The session whose directory is read.
-   * @returns The last-known project directory.
-   */
-  function currentProjectDir(sessionID: string): string {
-    return sessionDirs.get(sessionID) ?? process.cwd()
-  }
-
-  /**
-   * Resolves the project directory for a dispatch from the host's session
-   * record, caching the result per session so the sync consumers can read it.
-   * A fresh `session.get` is awaited and its directory wins; on an absent API,
-   * a thrown lookup, or a record with no directory candidate the resolver
-   * falls back to the cache then `process.cwd()`, journaling nothing
-   * (fail-open; the exact `type:"error"` counts in the open-suite must stay
-   * stable). One journal exception: when the resolved directory differs from
-   * this session's cached one, a `session_move` telemetry entry
-   * (`reason:"re-resolved"`) is written — a move the `session_move` tool hook
-   * did not witness — so an enforced project switch is never silent.
-   * @param sessionID The dispatching session to resolve.
-   * @returns The resolved (or fallback) project directory.
-   */
-  async function resolveProjectDir(sessionID: string): Promise<string> {
-    const get = hostSession?.get
-    if (typeof get !== "function") return currentProjectDir(sessionID)
-    let rec: SessionRecord | undefined
-    try {
-      rec = await get({ sessionID })
-    } catch {
-      // lookup failure: retryable; fall back to the cache then process.cwd().
-      return currentProjectDir(sessionID)
-    }
-    const dir = readRecordString(rec, DIRECTORY_KEYS)
-    if (dir !== "") {
-      const prior = sessionDirs.get(sessionID)
-      if (prior !== undefined && prior !== dir) {
-        toolPolicy.observeSessionMove(sessionID, dir, "re-resolved")
-      }
-      sessionDirs.set(sessionID, dir)
-      boundSessionDirs()
-      return dir
-    }
-    return currentProjectDir(sessionID)
-  }
-
-  /**
-   * Resolves and caches the parent of a child session via the host API.
-   * Parent-less records are negatively cached (a stable signal: the session
-   * exists and has no parent edge); thrown lookups are retried up to
-   * `maxLookupAttempts` because the record may appear later. Each failure is
-   * recorded as `{ attempts, reason }`: `"not-visible"` when
-   * `session.get` threw, `"no-parent-id"` when the record has no parent edge;
-   * cleared on success.
-   * Without a usable edge the caller falls back to keying by the session
-   * itself. The parent-id read is delegated to `readRecordString`, the shared
-   * candidate-extraction helper also used by `resolveProjectDir`; the
-   * negative-cache and retry semantics are unchanged.
-   * @param sessionID Child session ID to resolve.
-   */
-  async function resolveParent(sessionID: string | undefined): Promise<void> {
-    if (!sessionID || ledger.childToParent.has(sessionID)) return
-    const attempts = failedLookups.get(sessionID)?.attempts ?? 0
-    if (attempts >= maxLookupAttempts) return
-    const get = hostSession?.get
-    if (typeof get !== "function") return
-    try {
-      const rec = await get({ sessionID })
-      const parentID = readRecordString(rec, PARENT_KEYS)
-      const agentName = readRecordString(rec, AGENT_KEYS)
-      // Redundant emitter seed: an agent resolved from the record would make
-      // streamed markers authoritative. resolveParent early-returns once the
-      // edge is set (session.created seeds the edge), so this only fires when
-      // the first resolve happens before the edge lands; `execute.after`
-      // delivery remains the always-firing seed (see seedEmitter).
-      seedEmitter(sessionID, agentName)
-      if (parentID !== "") {
-        ledger.setParent(sessionID, parentID, agentName)
-        // Back-fill: the edge may land after the claim and its evidence were
-        // recorded, so a pending unverified PASS verifies the moment it can.
-        promoteOnEvidence(parentID)
-        failedLookups.delete(sessionID)
-      } else {
-        // Record present but parent-less: negatively cached (a stable signal).
-        failedLookups.set(sessionID, {
-          attempts: maxLookupAttempts,
-          reason: LOOKUP_REASON_NO_PARENT_ID,
-        })
-        boundLookups()
-      }
-    } catch {
-      // lookup failure: retryable; fall back to keying by the session
-      // itself until the record becomes visible or attempts run out
-      failedLookups.set(sessionID, { attempts: attempts + 1, reason: LOOKUP_REASON_NOT_VISIBLE })
-      boundLookups()
-    }
   }
 
   /**
@@ -1522,89 +1187,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       }
       throw e
     }
-  }
-
-  /**
-   * Returns the last verdict match in `text` for `re` (last-match-wins, the
-   * same rule `parseGateMarkers` uses); "" when there is no match. Independent
-   * of `String.match`'s global-regex lastIndex state because `.match` resets it.
-   * @param text The text to scan.
-   * @param re The compiled verdict regex.
-   * @returns The last match text, or "" when `text` has no verdict match.
-   */
-  function lastMatch(text: string, re: RegExp): string {
-    return text.match(re)?.at(-1) ?? ""
-  }
-
-  /**
-   * Stamps a plan-reviewer verdict's approval against the current plans-dir
-   * signature so a later re-plan is detectable at dispatch time. An APPROVE
-   * against an unreadable dir stamps "" (unknown): the approval is accepted
-   * once and stamped on the next enforcing dispatch (fail-open). An APPROVE
-   * also binds the plan identity from the dispatch prompt's candidates: a
-   * unique existing mention sets `approvedPlan`/`approvedPlanKey` (per-plan
-   * staleness); an absent, ambiguous, or unreadable binding leaves the
-   * approval unbound (the dir-signature rule applies). A BLOCK clears the
-   * stamp and the identity (hygiene). Mutates `s` in place.
-   * @param s The session's gate state (mutated).
-   * @param result The verdict result ("APPROVE" or "BLOCK").
-   * @param projectDir The current project directory (for the plans-dir scan).
-   * @param candidates The plan names extracted from the dispatch prompt
-   *     (the round's binding candidates).
-   */
-  function stampPlanApproval(
-    s: GateState,
-    result: string,
-    projectDir: string,
-    candidates: string[],
-  ): void {
-    if (result === "APPROVE") {
-      s.plansSignature = gates.plansSignature(projectDir) ?? ""
-      const b = gates.planApprovalBinding(projectDir, candidates)
-      s.approvedPlan = b?.name ?? ""
-      s.approvedPlanKey = b?.key ?? ""
-    } else {
-      s.plansSignature = ""
-      s.approvedPlan = ""
-      s.approvedPlanKey = ""
-    }
-  }
-
-  /**
-   * The optional identity/stamp fields a plan APPROVE journals so replay can
-   * re-validate it: a bound approval carries its plan name + content key; a
-   * stamped approval carries the path-free plans-dir signature. An unbound or
-   * unstampable approval journals neither field, so legacy-shaped lines are
-   * unchanged. Pure read of `s`.
-   * @param s The session's gate state (already stamped by stampPlanApproval).
-   * @returns The spreadable fields to append to a `type:"plan"` APPROVE entry.
-   */
-  function planApprovalStampFields(s: GateState): {
-    plan?: string
-    planKey?: string
-    plansSig?: string
-  } {
-    return {
-      ...(s.approvedPlan !== "" ? { plan: s.approvedPlan, planKey: s.approvedPlanKey } : {}),
-      ...(s.plansSignature !== "" ? { plansSig: s.plansSignature } : {}),
-    }
-  }
-
-  /**
-   * The shared tail of the two plan-approval credit sites: records the bound
-   * plan identity (name + content key) durably under the project, outside the
-   * session bucket and the journal replay window, so the approval survives
-   * replay aging, a restart, and a task-scope reset. An unbound approval
-   * records nothing — a human prompt approval binds no plan identity, and a
-   * reviewer approval whose dispatch named no resolvable plan stays
-   * session-scoped. The ledger sanitizes its arguments and fails open, so
-   * this never throws.
-   * @param s The session's gate state (stamped by stampPlanApproval).
-   * @param projectDir The project directory the approval is recorded under.
-   */
-  function recordDurablePlanApproval(s: GateState, projectDir: string): void {
-    if (s.approvedPlan === "") return
-    ledger.recordPlanApprovalDurable(s.approvedPlan, s.approvedPlanKey, projectDir)
   }
 
   /**
@@ -2159,7 +1741,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       raw: child,
       decision: d.decision,
       deliveryIsParent: child === sid,
-      sessionApi: typeof hostSession?.get === "function",
+      sessionApi: typeof hostSessionRef.current?.get === "function",
       candidates: {
         edge: d.edgeCount,
         unresolved: d.unresolvedCount,
@@ -2168,64 +1750,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       unresolvedIDs: d.unresolvedIDs,
       lookup: lookupDiag(child, d.unresolvedIDs),
     }
-  }
-
-  /**
-   * The shared journal+trace pair for the two attributed arms of
-   * `attributePlanVerdict`: stamps the plan approval against the current
-   * plans dir (so replay re-validates it), sets the parent's plan-verdict
-   * flag, journals the `plan` entry keyed on the parent with `raw` = the
-   * attributed child, and traces the verdict. The stamp runs before the
-   * journal so the journaled line already carries the dir signature. (The
-   * human-prompt approval journal keeps its own position in prompt admission
-   * and does not route through this helper.)
-   * @param sid The parent session the `plan` entry is keyed on.
-   * @param raw The attributed child session ID for the entry's `raw` field.
-   * @param result The verdict result ("APPROVE" or "BLOCK").
-   * @param journalMarker The marker text to journal (each arm applies its own
-   *     "<none>" fallback; the attributed arm's marker is always non-empty).
-   * @param source The provenance label for the winning pipeline.
-   * @param traceMarker The marker text for the trace event (each arm applies
-   *     its own "<no verdict marker>" fallback).
-   */
-  async function journalPlanApproval(
-    sid: string,
-    raw: string,
-    result: "APPROVE" | "BLOCK",
-    journalMarker: string,
-    source: string,
-    traceMarker: string,
-  ): Promise<void> {
-    const candidates = planReviewTarget.get(sid) ?? []
-    const s = ledger.state(sid)
-    s.hasPlanVerdict = result === "APPROVE"
-    const projectDir = await resolveProjectDir(sid)
-    // APPROVE applies the reset-at-capture scope rule (a binding different
-    // from the bucket's activePlan rebuilds the task scope before the new
-    // identity is used); BLOCK only stamps the hygiene clear.
-    const approved =
-      result === "APPROVE" ? applyApprovalBinding(sid, projectDir, candidates, false) : s
-    if (result === "BLOCK") stampPlanApproval(s, result, projectDir, candidates)
-    journaler.journal({
-      type: "plan",
-      sessionID: sid,
-      raw,
-      result,
-      marker: journalMarker,
-      source,
-      // Bound identity (so replay restores it) and the stamped dir signature
-      // (so replay re-validates against the current plans dir); an unbound or
-      // unstampable approval spreads nothing (legacy lines unchanged).
-      ...planApprovalStampFields(approved),
-    })
-    journaler.traceEvent("plan-reviewer", "verdict", traceMarker, sid)
-    if (result === "APPROVE") {
-      // The attributed task has its plan: clear the intent-nudge latch exactly
-      // like the human-marker approval arm, so a later task's detected intents
-      // can nudge again.
-      clearIntentNudge(sid)
-    }
-    recordDurablePlanApproval(approved, projectDir)
   }
 
   /**
@@ -3303,251 +2827,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     return true
   }
 
-  /**
-   * Records a child's latest VERDICT from the text itself, before the parent
-   * edge is needed, so a child with an unresolved edge still records. Only
-   * non-task-result sources enter the store: task-result markers are handled
-   * by the delivery's own match during attribution, and keeping them out
-   * preserves "a marker-less task-result delivery keeps the gate red".
-   *
-   * Store-backed verdict observations: the store records the child's latest
-   * VERDICT (per (child, marker, source) first-sight) for the plan gate's
-   * attribution reads; the parent-bucket dedup (markers.ts) keys on
-   * (scope, marker), so identical re-delivery and a cross-source same-marker
-   * replay (a source change with an unchanged marker, e.g. delta→ended) are
-   * both silently suppressed; only a marker flip reaches the journal.
-   * Authority gate: only a marker-contracted emitter (see markerKindAllowed)
-   * may record or apply a verdict; a quoted/echoed verdict is denied here
-   * (never stored) and surfaces as a suppressed observation when the gate
-   * journals it.
-   * @param text The assistant text to scan.
-   * @param sessionID The raw (possibly child) session ID.
-   * @param source Provenance label for the text in journal entries.
-   */
-  function recordStreamedVerdict(text: string, sessionID: string, source: string): void {
-    const allowed = markerKindAllowed(sessionID)
-    if (sessionID && source !== "task-result" && allowed("verdict")) {
-      const m = lastMatch(text, verdictRe)
-      if (m) ledger.recordChildVerdict(sessionID, m, source)
-    }
-  }
-
-  /**
-   * Journals a marker observation denied by the authority gate: keyed on the
-   * EMITTER (not the parent) as a replay-inert type:"suppressed" audit
-   * entry. Nothing is applied — the event is never returned to the caller,
-   * so hasReviewApprove and own-match attribution cannot fire on it. Keyed
-   * on the emitter (not the parent) because nothing replays against a denied
-   * observation; this runs for every non-empty sessionID, including
-   * unresolved-edge ones (self-keyed).
-   * @param event The denied marker observation. The `reason` field names the
-   *   denial cause (unresolved emitter vs. kind not in the emitter's contract)
-   *   so journal forensics do not require source reading.
-   * @param sessionID The emitter (raw child) session ID.
-   * @param source Provenance label for the text.
-   */
-  function journalSuppressedObservation(
-    event: MarkerEvent,
-    sessionID: string,
-    source: string,
-  ): void {
-    const agent = emitterAgent(sessionID)
-    journaler.journal({
-      type: "suppressed",
-      sessionID,
-      raw: sessionID,
-      agent,
-      kind: event.kind,
-      marker: event.marker,
-      source,
-      reason: agent === "" ? "emitter agent unresolved" : "agent not contracted for kind",
-    })
-  }
-
-  /**
-   * Journals a first-sight `GATE:` observation: keyed by parent session so
-   * journal replay restores state where the reviewer gate looks it up; raw
-   * child ID kept for forensics. Spreads the evidence stamp (present only
-   * when the evidence mode is not "off"), the task fingerprint (only when
-   * the parent's bucket has stamped one, so replay can restore the carry
-   * identity), and the suppressed-match count (only when > 0), and carries
-   * the de-tokenized marker text for the compaction snapshot (the state
-   * boundary records it, this helper journals the event).
-   * @param event The gate marker observation (authority never "suppressed").
-   * @param suppressedCount The suppressed-match count spread, empty when 0.
-   * @param sid The parent session the `gate` entry is keyed on.
-   * @param sessionID The raw child session ID for the entry's `raw` field.
-   * @param source Provenance label for the text.
-   * @param s The parent's gate state (mutated: lastGateMarker).
-   */
-  function journalGateEvent(
-    event: MarkerEvent,
-    suppressedCount: { suppressed?: number },
-    sid: string,
-    sessionID: string,
-    source: string,
-    s: GateState,
-  ): void {
-    const evidenceStamp =
-      event.verified !== undefined ? { verified: event.verified, mode: event.mode } : {}
-    const fp = s.taskFingerprint !== "" ? { fp: s.taskFingerprint } : {}
-    journaler.journal({
-      type: "gate",
-      sessionID: sid,
-      raw: sessionID,
-      result: event.result,
-      source,
-      marker: event.marker,
-      ...evidenceStamp,
-      ...fp,
-      ...suppressedCount,
-    })
-    // A green gate flip is the task's completion boundary: a flipping PASS
-    // (an enforce-unverified claim never flipped) journals its task-complete
-    // companion row and stamps the retire, so the next admitted prompt
-    // starts a fresh scope.
-    const flipped = event.verified !== false || event.mode === "flag"
-    if (event.result === "PASS" && flipped) markTaskComplete(sid, s)
-    journaler.traceEvent("test-runner", "gate", event.marker, sid)
-    // Carry the de-tokenized marker text for the compaction snapshot; the
-    // state boundary records it, the caller journals the event.
-    s.lastGateMarker = deTokenizeMarker(event.marker)
-  }
-
-  /**
-   * Journals a first-sight `VERDICT:` observation: keyed by parent session
-   * with the raw child ID kept for forensics, the emitting agent (the
-   * authority-checked emitter — the same resolution `markerKindAllowed` used
-   * to authorize this event one synchronous step earlier — so replay
-   * attributes the verdict and credits only reviewer-attributed ones),
-   * spreading the suppressed-match count (only when > 0). Streaming verdict
-   * dedup is per (child, marker, source) via the store (a source change with
-   * an unchanged marker re-journals; identical re-delivery never emits an
-   * event here because the parent-bucket dedup on (scope, marker) suppresses
-   * it first). Gate-kind events are unaffected. Carries the de-tokenized
-   * marker text for the compaction snapshot.
-   * @param event The verdict marker observation (authority never "suppressed").
-   * @param suppressedCount The suppressed-match count spread, empty when 0.
-   * @param sid The parent session the `verdict` entry is keyed on.
-   * @param sessionID The raw child session ID for the entry's `raw` field.
-   * @param source Provenance label for the text.
-   * @param s The parent's gate state (mutated: lastVerdictMarker).
-   */
-  function journalVerdictEvent(
-    event: MarkerEvent,
-    suppressedCount: { suppressed?: number },
-    sid: string,
-    sessionID: string,
-    source: string,
-    s: GateState,
-  ): void {
-    journaler.journal({
-      type: "verdict",
-      sessionID: sid,
-      raw: sessionID,
-      agent: emitterAgent(sessionID),
-      marker: event.marker,
-      rounds: event.rounds,
-      source,
-      ...suppressedCount,
-    })
-    journaler.traceEvent("reviewer", "verdict", event.marker, sid)
-    s.lastVerdictMarker = deTokenizeMarker(event.marker)
-  }
-
-  /**
-   * Routes a first-sight marker observation to its kind-specific journal
-   * helper: an observation denied by the authority gate journals as
-   * suppressed and never falls through to the gate/verdict helpers.
-   * @param event The first-sight marker observation.
-   * @param sid The parent session gate/verdict entries are keyed on.
-   * @param sessionID The raw child (emitter) session ID.
-   * @param source Provenance label for the text.
-   * @param s The parent's gate state (mutated by the kind helpers).
-   */
-  function journalMarkerEvent(
-    event: MarkerEvent,
-    sid: string,
-    sessionID: string,
-    source: string,
-    s: GateState,
-  ): void {
-    if (event.authority === "suppressed") {
-      journalSuppressedObservation(event, sessionID, source)
-      return
-    }
-    // Every event that passes the authority check above carries a defined
-    // numeric `suppressed` count (denied events omit it); assert that shape
-    // to the type checker (it is not optional at runtime).
-    const suppressed = event.suppressed!
-    const suppressedCount = suppressed > 0 ? { suppressed } : {}
-    if (event.kind === "gate") {
-      journalGateEvent(event, suppressedCount, sid, sessionID, source, s)
-      return
-    }
-    journalVerdictEvent(event, suppressedCount, sid, sessionID, source, s)
-  }
-
-  /**
-   * Parses markers out of assistant text and journals first-sight events.
-   * @param text The assistant text to scan.
-   * @param sessionID The raw (possibly child) session ID.
-   * @param source Provenance label for the text in journal entries.
-   * @param dedupScope Key prefix partitioning the marker dedup set.
-   * @returns The first-sight events that were journaled (the caller uses
-   *     them to credit reviewer approvals); suppressed observations are
-   *     journaled but excluded.
-   */
-  function parseMarkers(
-    text: string,
-    sessionID: string,
-    source: string,
-    dedupScope = "",
-  ): MarkerEvent[] {
-    const events: MarkerEvent[] = []
-    if (!text) return events
-    recordStreamedVerdict(text, sessionID, source)
-    const sid = ledger.parentOf(sessionID)
-    if (!sid) return events
-    const s = ledger.state(sid)
-    // Evidence verdict computed here: the caller owns the tracker + config.
-    // Under "enforce" the flip switch is the observed correlation; under "flag"
-    // the flip switch is omitted (always flips) while the journal is stamped;
-    // under "off" neither the flip switch nor the stamp is passed, keeping
-    // events byte-identical to legacy output. The correlation is windowed at
-    // the parent's task-window stamp (the same bound the promotion join
-    // uses), so a keep-scope admission cannot verify a claim with exit-0
-    // hits that predate the prompt — the per-prompt anti-fabrication bound
-    // survives the task-long-lived scope. A parent that never admitted a
-    // prompt keeps the unbounded join (stamp 0).
-    const observed =
-      config.gateEvidence === "off" ? undefined : evidence.has(sid, taskWindows.get(sid) ?? 0)
-    const passVerified = config.gateEvidence === "enforce" ? observed : undefined
-    const stampVerified = observed
-    const stampMode = observed === undefined ? undefined : config.gateEvidence
-    // Thread the raw child session ID as `raw`: dedup provenance is per-child,
-    // so a dedup hit from a different child accounts as cross-child suppression
-    // while the same child's re-delivery stays silent.
-    for (const event of parseGateMarkers(
-      s,
-      text,
-      gateRe,
-      verdictRe,
-      dedupScope,
-      sessionID,
-      passVerified,
-      stampVerified,
-      stampMode,
-      markerKindAllowed(sessionID),
-    )) {
-      journalMarkerEvent(event, sid, sessionID, source, s)
-      // Collected for the caller: the execute.after reviewer branch uses these
-      // events to detect a first-sight verdict APPROVE and set hasReviewApprove.
-      // Suppressed observations are journaled above and excluded.
-      if (event.authority !== "suppressed") events.push(event)
-    }
-    return events
-  }
   // Prompt-channel waiver capture: the waiver must
   // provenance from the user's prompt, never the dispatch prompt. A counter
   // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
@@ -3783,64 +3062,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     // An undelivered plan-impact advisory belongs to the dropped task scope
     // the same way: it must not attach to a later task's deliveries.
     planImpactAdvisories.delete(sessionID)
-  }
-
-  /**
-   * Applies a plan-approval's binding and the pinned scope-transition rule:
-   * stamps the approval against the current plans dir FIRST (the binding name
-   * falls out of the stamp), then — when the bound name differs from the
-   * bucket's `activePlan` (including the first binding over the planless "")
-   * — resets the task scope with a clean (non-merge) rebuild — counters,
-   * waiver family, ask latches, evidence, dispatch targets — BEFORE the new
-   * scope is used, re-applying the saved stamp identity to the fresh bucket.
-   * The clean rebuild matters: `resetState`'s merge arm would carry the old
-   * scope's releases into the new one whenever the boot-replay grace is
-   * still armed (a reviewer verdict arriving with no parent prompt admitted
-   * since the restart). An unbound approval (`""`) is a no-op for scope: no
-   * reset, no `activePlan` write (an unbound stamp must not wipe the live
-   * identity — the planless fallback would silently revert to per-prompt
-   * resets). Either way the approved bucket gets `hasPlanVerdict` (plus
-   * `humanApproval` when the capture is human); a bound approval also sets
-   * `activePlan` to the bound name.
-   * @param sessionID The parent session the approval binds for.
-   * @param projectDir The current project directory (for the plans-dir scan).
-   * @param candidates The plan names the approval's dispatch prompt named.
-   * @param human True when the approval provenance is a human prompt marker.
-   * @returns The approved bucket (post-reset when the scope changed).
-   */
-  function applyApprovalBinding(
-    sessionID: string,
-    projectDir: string,
-    candidates: string[],
-    human: boolean,
-  ): GateState {
-    const s0 = ledger.state(sessionID)
-    const priorActive = s0.activePlan
-    let s = s0
-    stampPlanApproval(s, "APPROVE", projectDir, candidates)
-    const bound = s.approvedPlan
-    if (approvalResetsScope(priorActive, bound, s0.taskComplete)) {
-      // Reset-at-capture: snapshot the just-stamped identity, rebuild the
-      // task scope CLEAN (no grace merge — see the doc), and re-apply it to
-      // the fresh bucket.
-      const savedPlan = s.approvedPlan
-      const savedKey = s.approvedPlanKey
-      const savedSig = s.plansSignature
-      const savedFingerprint = s0.taskFingerprint
-      resetTaskScope(sessionID, false)
-      s = ledger.state(sessionID)
-      s.approvedPlan = savedPlan
-      s.approvedPlanKey = savedKey
-      s.plansSignature = savedSig
-      // The worktree identity is not task scope: the clean rebuild must not
-      // wipe the stamp, or a later interrupted-review recovery carry would
-      // find no fingerprint to match against.
-      s.taskFingerprint = savedFingerprint
-    }
-    s.hasPlanVerdict = true
-    if (human) s.humanApproval = true
-    if (bound !== "") s.activePlan = bound
-    return s
   }
 
   /**
@@ -4194,7 +3415,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
       const phase: "observe" | "enforce" = stamp.phase === "observe" ? "observe" : "enforce"
       const counts = ledger.observeCounts()
       journaler.journal(observeEntry(sessionID, phase, counts.observed, counts.wouldBlocks))
-      if (stamp.completed) observeSummaryPending = true
+      if (stamp.completed) surfaceFlags.observeSummaryPending = true
     } catch (e) {
       journaler.journal({ type: "error", sessionID, error: `observe admission stamp: ${e}` })
     }
@@ -4271,7 +3492,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
    * @param session The live host session API.
    */
   function bindHost(session: Host["session"]): void {
-    hostSession = session
+    hostSessionRef.current = session
   }
 
   /**
@@ -4307,7 +3528,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     if (config.agentMarkerRetry === 0) return false
     const used = markerRetries.get(child) ?? 0
     if (used >= config.agentMarkerRetry) return noteRetrySkipped(child, agent, used, "exhausted")
-    if (typeof hostSession?.prompt !== "function")
+    if (typeof hostSessionRef.current?.prompt !== "function")
       return noteRetrySkipped(child, agent, used, "skipped-no-api")
     journaler.journal({
       type: "marker-retry",
@@ -4319,7 +3540,7 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     markerRetries.set(child, used + 1)
     evictTo(markerRetries, MAX_TRACKED_MARKER_RETRIES)
     try {
-      await hostSession.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
+      await hostSessionRef.current.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
     } catch (e) {
       journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
       return false
@@ -4398,7 +3619,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     LOOKUP_REASON_NO_PARENT_ID,
     // bounders
     boundNearMissPending,
-    boundLookups,
     boundSessionDirs,
     boundDeltaWindows,
     boundDispatches,
@@ -4411,7 +3631,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     boundLandingGateAsks,
     boundHandsOnGateAsks,
     boundIntentNudges,
-    boundSessionAgents,
     boundAdmittedIds,
     boundSummarizedSessions,
     // services
@@ -4435,7 +3654,6 @@ export function createHooksCore(opts: TurnstileOptions): TurnstileContext {
     readBudgetKey,
     handleReadBudget,
     lastMatch,
-    stampPlanApproval,
     planApprovalStampFields,
     discoverCandidates,
     plausibleUnresolved,

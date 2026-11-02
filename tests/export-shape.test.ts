@@ -412,3 +412,39 @@ test("shell-parse.ts exposes the tokenizer pair, redirect scanner, and target pr
     "tokenizeWords",
   ])
 })
+
+/**
+ * The context-surface module must expose exactly the concern factory at
+ * runtime (the flags/state interfaces are erased).
+ */
+test("context-surface.ts exposes only createContextSurface at runtime", async () => {
+  const mod = await import("../src/context-surface.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createContextSurface"])
+})
+
+/**
+ * The parent-resolution module must expose exactly the concern factory at
+ * runtime (the state interface is erased).
+ */
+test("parent-resolution.ts exposes only createParentResolution at runtime", async () => {
+  const mod = await import("../src/parent-resolution.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createParentResolution"])
+})
+
+/**
+ * The verdict-capture module must expose exactly the concern factory at
+ * runtime (the state interface is erased).
+ */
+test("verdict-capture.ts exposes only createVerdictCapture at runtime", async () => {
+  const mod = await import("../src/verdict-capture.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createVerdictCapture"])
+})
+
+/**
+ * The plan-verdict module must expose exactly the concern factory at runtime
+ * (the state interface is erased).
+ */
+test("plan-verdict.ts exposes only createPlanVerdict at runtime", async () => {
+  const mod = await import("../src/plan-verdict.ts")
+  assert.deepEqual(Object.keys(mod).sort(), ["createPlanVerdict"])
+})
