@@ -203,6 +203,10 @@ the pause from your own prompt — `PLAN REVIEWED:` accepts the written plan
 (edit the plan file first if you wish; the edited file is what the reviewer
 reads), `PLAN REJECTED:` rejects it (the task scope is retired with no
 counted plan-reviewer dispatch; a new planner dispatch re-arms the pause).
+A pause armed by an earlier planner dispatch stays armed until you accept or
+reject, even if you switch to a plan you wrote yourself (`PLAN APPROVED:`) —
+the pending accept/reject literal is still required before the next
+plan-reviewer dispatch.
 The literals work only in your own prompt, waivers do not bypass the pause,
 and the pending state survives both a restart (journal replay) and the next
 prompt's task-scope boundary. `planReviewAcceptMarker` /

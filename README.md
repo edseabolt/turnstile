@@ -298,7 +298,10 @@ The literals work only in your own prompt (never in an agent's dispatch
 prompt), waivers do not bypass the pause, and the pending state survives both
 a restart (journal replay) and the next prompt's task-scope boundary — a
 prompt carrying neither literal leaves the pause armed, so a lost accept
-never dispatches an unreviewed plan. Config: `planReviewAcceptMarker` /
+never dispatches an unreviewed plan. A pause armed by an earlier planner
+dispatch stays armed until you accept or reject, even if you switch to a plan
+you wrote yourself (`PLAN APPROVED:`) — the pending accept/reject literal is
+still required before the next plan-reviewer dispatch. Config: `planReviewAcceptMarker` /
 `planReviewRejectMarker` rename the literals (defaults `PLAN REVIEWED:` /
 `PLAN REJECTED:`).
 

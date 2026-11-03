@@ -98,6 +98,12 @@ export interface PromptAdmissionState {
   clearIntentNudge(sessionID: string): void
   /** Marks the parent's active task retired (a flipping PASS boundary). */
   markTaskComplete(sessionID: string, s: GateState): void
+  /**
+   * Retires the parent's task unconditionally — the planless-tolerant retire
+   * used when no plan is bound; see {@link markTaskComplete} for the
+   * plan-bound form.
+   */
+  retireTask(sessionID: string, s: GateState): void
   /** Applies a plan approval's binding and the reset-at-capture scope rule. */
   applyApprovalBinding(
     sessionID: string,
@@ -538,16 +544,11 @@ function capturePlanReviewBody(
     }
     s.planReviewPending = false
     st.journaler.journal({ type: "plan-review", sessionID, action: "reject" })
-    // The reject retires the current scope. `markTaskComplete`'s plan-bound
-    // guard (`activePlan !== ""`) cannot fire here: the pause is planless by
-    // construction (the plan-reviewer has not run, so no plan is bound yet),
-    // so the retire is performed directly with the same journal contract.
-    s.taskComplete = true
-    if (s.engaged) {
-      s.engaged = false
-      st.journalEngagement(sessionID, false, "task-complete")
-    }
-    st.journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
+    // The reject retires the current scope via the planless-tolerant retire —
+    // the pause is planless by construction (the plan-reviewer has not run, so
+    // no plan is bound yet), so the plan-bound `markTaskComplete` guard cannot
+    // fire here. The shared helper keeps both retire paths in lockstep.
+    st.retireTask(sessionID, s)
   } catch (e) {
     // Fail-open: the plan-review capture never blocks a prompt.
     st.journaler.journal({ type: "error", sessionID, error: `plan-review capture: ${e}` })

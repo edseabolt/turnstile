@@ -123,6 +123,10 @@ export function shouldCarryGate(
   return (
     enabled &&
     prior !== undefined &&
+    // A pending user-review pause carries too: the accept/reject literals
+    // arrive in a later prompt than the planner dispatch that armed the
+    // pause, so without the carry the pause would die at the boundary and
+    // the plan-reviewer dispatch would run unreviewed.
     (prior.hasGatePass || prior.hasReviewApprove || prior.planReviewPending) &&
     prior.taskFingerprint !== "" &&
     prior.taskFingerprint === fingerprint &&

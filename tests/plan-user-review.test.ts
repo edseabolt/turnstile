@@ -208,6 +208,17 @@ test("planUserReview: the reject literal across the boundary retires the task", 
   ctx.admitPrompt("p1", { text: "plan it" }, "")
   await dispatchExpect(ctx, "p1", "planner", "plan it", false)
   ctx.admitPrompt("p1", { text: "chat" }, "")
+  // Arm the intent-nudge latch with a same-kind intent prompt (the
+  // task-scope retire test's pattern): the first read delivery carries the
+  // advisory nudge and latches the kind.
+  ctx.admitPrompt("p1", { text: "fix the bug #123" }, "")
+  const read1 = { sessionID: "p1", result: { output: "file contents" } }
+  ctx.prependIntentNudgeRead(read1)
+  assert.match(
+    String(read1.result?.output),
+    /\[turnstile\] Advisory reminder/,
+    "the first same-kind intent nudged",
+  )
   ctx.admitPrompt("p1", { text: `${REJECT} start over` }, "")
   assert.equal(ctx.ledger.state("p1").planReviewPending, false)
   assert.equal(ctx.ledger.state("p1").taskComplete, true, "the reject retires the task")
@@ -216,6 +227,16 @@ test("planUserReview: the reject literal across the boundary retires the task", 
     ["pause", "reject"],
   )
   assert.equal(entriesOf(metricsDir, "task-complete").length, 1, "the retire is journaled")
+  // The reject retire cleared the intent-nudge latch: the successor task's
+  // same-kind intent re-nudges instead of being deduped away.
+  ctx.admitPrompt("p1", { text: "fix the bug #123 again" }, "")
+  const read2 = { sessionID: "p1", result: { output: "more contents" } }
+  ctx.prependIntentNudgeRead(read2)
+  assert.match(
+    String(read2.result?.output),
+    /\[turnstile\] Advisory reminder/,
+    "the successor task's same-kind intent re-nudged after the reject retire",
+  )
   // No counted plan-reviewer dispatch happened: the next prompt starts fresh.
   ctx.admitPrompt("p1", { text: "new task" }, "")
   assert.equal(ctx.ledger.state("p1").taskComplete, false, "the next prompt starts fresh")

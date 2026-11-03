@@ -644,6 +644,12 @@ interface CoreState {
   bindToast(show: ToastShow | undefined): void
   /** See {@link markTaskComplete}. */
   markTaskComplete(sessionID: string, s: GateState): void
+  /**
+   * Retires the parent's task unconditionally — the planless-tolerant retire
+   * used when no plan is bound; see {@link markTaskComplete} for the
+   * plan-bound form.
+   */
+  retireTask(sessionID: string, s: GateState): void
   /** See {@link bindHost}. */
   bindHost(session: Host["session"]): void
   /** See {@link noteRetrySkipped}. */
@@ -1401,8 +1407,7 @@ function bindToast(st: CoreState, show: ToastShow | undefined): void {
       : undefined
 }
 
-function markTaskComplete(st: CoreState, sessionID: string, s: GateState): void {
-  if (s.taskComplete || s.activePlan === "") return
+function retireTaskBody(st: CoreState, sessionID: string, s: GateState): void {
   s.taskComplete = true
   // Dormant-until-engaged: a retired task sleeps the pipeline again.
   if (s.engaged) {
@@ -1410,10 +1415,16 @@ function markTaskComplete(st: CoreState, sessionID: string, s: GateState): void 
     st.journalEngagement(sessionID, false, "task-complete")
   }
   // The successor task must be able to nudge again: a retire clears the
-  // per-kind dedupe latch exactly like a plan approval does (both retire
-  // paths — the explicit marker and the gate flip — route here).
+  // per-kind dedupe latch exactly like a plan approval does (all retire
+  // paths — the explicit marker, the gate flip, and the plan-review
+  // reject — route here).
   st.clearIntentNudge(sessionID)
   st.journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
+}
+
+function markTaskComplete(st: CoreState, sessionID: string, s: GateState): void {
+  if (s.taskComplete || s.activePlan === "") return
+  retireTaskBody(st, sessionID, s)
 }
 
 function bindHost(st: CoreState, session: Host["session"]): void {
@@ -1940,6 +1951,7 @@ function bindCoreGuards(st: CoreState): void {
   st.armHandsOnAsk = armHandsOnAsk.bind(null, st)
   st.suspendBlock = suspendBlock.bind(null, st)
   st.markTaskComplete = markTaskComplete.bind(null, st)
+  st.retireTask = retireTaskBody.bind(null, st)
   st.bindToast = bindToast.bind(null, st)
   st.bindHost = bindHost.bind(null, st)
 }
