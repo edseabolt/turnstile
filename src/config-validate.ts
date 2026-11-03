@@ -141,7 +141,10 @@ function isValidNumberKey(key: keyof TurnstileConfig, value: unknown): boolean {
  * @returns true when the value has the right type for the key.
  */
 export function isValidScalar(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (isValidBooleanKey(key, value)) return true
+  // Boolean keys are terminal: a boolean key never falls through to the
+  // string/literal/numeric arms, so `trace: 1` is rejected even though 1 is
+  // a positive integer.
+  if (BOOLEAN_KEYS.includes(key)) return isValidBooleanKey(key, value)
   const stringResult = stringKeyResult(key, value)
   if (stringResult !== undefined) return stringResult
   const literalResult = isValidLiteralKey(key, value)
