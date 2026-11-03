@@ -442,6 +442,18 @@ the plugin is unloaded; a legacy contract block once written by hand into
 separately — see
 [architecture §9](architecture.md#9-policy-injection).
 
+### Retired paths
+
+The manifest also carries a `retired` list: destinations turnstile once
+installed but no longer ships (for example the old `turnstile-suspend` and
+`turnstile-setup` skills, or the command files from when `status` and `log`
+were slash commands). `init`, `check`, and `uninstall` sweep these paths on
+every run, so upgrading removes the stale installed copies automatically —
+repo-owned symlinks (including links whose repo target is gone) and
+ledger-owned copies are removed; anything unowned is reported and left
+alone. Between the upgrade and the next `init`, `check` (and
+`npm run install:check`) reports the drift and exits non-zero.
+
 ### From a clone
 
 This repo is the source of truth for what lands in `~/.config/opencode`:
