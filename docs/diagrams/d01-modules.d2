@@ -77,6 +77,7 @@ core: "src/ — one concern per boundary" {
   shellparse: "shell-parse.ts\nquote-aware command splitter + word\ntokenizer + redirect scanner (pure)"
   commitargs: "commit-args.ts\ngit commit -m message extraction +\nuninspectable-form detection (pure)"
   engagement: "engagement.ts\nshouldEngage predicate + engagement\njournal entry builder (pure)"
+  planscope: "plan-scope.ts\nplanScopeFiles + classifyPlanImpact\n(pure): advisory vs structural set,\nplan-impact classification — no fs"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
 }
 
@@ -119,6 +120,7 @@ core.bashwriteguard -> core.toolpolicy
 core.bashwriteguard -> core.bashwrite
 core.bashwriteguard -> core.scratch
 core.bashwriteguard -> core.emptydiff
+core.bashwriteguard -> core.planscope: "type-only"
 core.promptadmission -> core.engagement
 core.promptadmission -> core.fingerprint
 core.promptadmission -> core.taskscope
@@ -149,6 +151,7 @@ core.gatesplan -> core.plangateenforce
 core.gatesplan -> core.plangatestatus
 core.plangateenforce -> core.plansscan
 core.plangatestatus -> core.plansscan
+core.plangatestatus -> core.planscope
 core.gatesdispatch -> core.gatescommon
 core.gatesplan -> core.gatescommon
 core.setup -> core.hookssession
@@ -209,6 +212,7 @@ core.gates -> core.gatesplan
 core.gates -> core.ledger: "type-only"
 core.gates -> core.journal: "type-only"
 core.gates -> core.types: "type-only"
+core.gates -> core.planscope: "type-only"
 core.gatesdispatch -> core.gatescommon
 core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE"
 core.gatesdispatch -> core.ledger: "type-only"
