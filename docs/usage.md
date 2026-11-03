@@ -652,20 +652,19 @@ Shared caveats:
 
 ---
 
-### Vendored skills and commands
+### Vendored skills
 
-The full install ships five skills into `~/.config/opencode/skills/` and two
-slash commands into `~/.config/opencode/command/`:
+The full install ships seven skills into `~/.config/opencode/skills/`:
 
-| Skill / command      | What it does                                                                                             |
+| Skill                | What it does                                                                                             |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
 | `turnstile-init`     | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`). |
 | `turnstile-off`      | Compose a copy-ready suspend prompt for **you** to send (see below).                                     |
 | `turnstile-on`       | Compose a copy-ready resume prompt for **you** to send.                                                  |
 | `turnstile-evidence` | Publish or inspect an evidence bundle (`evidence`, §6).                                                  |
 | `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                             |
-| `/turnstile-status`  | Run `status` and present the result readably; forwards `$ARGUMENTS` (e.g. `--json`).                     |
-| `/turnstile-log`     | Tail the JSONL journal via `log` (default `--tail 50`); forwards `$ARGUMENTS`.                           |
+| `turnstile-status`   | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).           |
+| `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                 |
 
 The on/off skills never send the suspend/resume markers themselves — the
 markers are honored only from user-typed prompts, so an agent relaying one

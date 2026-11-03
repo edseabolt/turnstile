@@ -54,12 +54,12 @@
       "dest": "~/.config/opencode/skills/turnstile-config/SKILL.md"
     },
     {
-      "src": "commands/turnstile-status.md",
-      "dest": "~/.config/opencode/command/turnstile-status.md"
+      "src": "skills/turnstile-status/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-status/SKILL.md"
     },
     {
-      "src": "commands/turnstile-log.md",
-      "dest": "~/.config/opencode/command/turnstile-log.md"
+      "src": "skills/turnstile-log/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-log/SKILL.md"
     }
   ],
   "retired": [
@@ -71,6 +71,12 @@
     },
     {
       "dest": "~/.config/opencode/skills/turnstile-setup/SKILL.md"
+    },
+    {
+      "dest": "~/.config/opencode/command/turnstile-status.md"
+    },
+    {
+      "dest": "~/.config/opencode/command/turnstile-log.md"
     }
   ],
   "verify": ["~/.config/opencode/plugins/turnstile.ts"]
