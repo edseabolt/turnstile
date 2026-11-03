@@ -139,6 +139,32 @@ test("mergeConfig validates the loop-cap numeric keys", () => {
   assert.equal(ok.warnings.length, 0)
 })
 
+/** Boolean keys are terminal in scalar validation: a numeric value that
+ *  would pass the positive-integer arm (1, 2) must be rejected with a
+ *  keeping-default warning for every boolean key, never silently stored. */
+test("mergeConfig rejects numeric values for boolean keys and keeps the default", () => {
+  const base = defaultConfig({})
+  const booleanKeys = [
+    "trace",
+    "journalPerSession",
+    "continuationCarry",
+    "allowSuspend",
+    "intentNudge",
+    "alwaysEnforce",
+    "planImpactStrict",
+  ] as const
+  for (const key of booleanKeys) {
+    for (const value of [1, 2]) {
+      const { config, warnings } = mergeConfig(base, { [key]: value } as never)
+      assert.equal(config[key], base[key])
+      assert.deepEqual(warnings, [`config: invalid value for "${key}"; keeping default`])
+    }
+    const ok = mergeConfig(base, { [key]: true } as never)
+    assert.equal(ok.config[key], true)
+    assert.equal(ok.warnings.length, 0)
+  }
+})
+
 /** The journal rotation cadence runs the shared numeric scalar path: 0, a
  *  negative, and a non-number are each rejected with a keeping-default
  *  warning, and a valid override flips the digest. */

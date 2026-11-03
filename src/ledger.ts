@@ -24,7 +24,15 @@ import { evictTo } from "./bounded.ts"
 import { CANONICAL_REVIEWER_AGENT } from "./config.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now, REPLAY_SESSION_RE } from "./journal.ts"
-import { REVIEW_ENSEMBLE_SIZE, clearMeteringCounters, mergeAfterReplay, newState } from "./state.ts"
+import { REVIEW_ENSEMBLE_SIZE, mergeAfterReplay, newState } from "./state.ts"
+import {
+  cap,
+  createCreditTrace,
+  createLedgerRegistry,
+  promote,
+  type CreditTrace,
+  type LedgerRegistry,
+} from "./ledger-registry.ts"
 import type { StickyReleaseKind } from "./gates-common.ts"
 
 /**
@@ -873,7 +881,7 @@ function foldEnsemble(
  * @param entry The parsed `observe` or `would-block` entry.
  * @returns The validated counts, or `null` when either fails its shape.
  */
-function observeCountsOf(
+function validateObserveCounts(
   entry: Record<string, unknown>,
 ): { observed: number; wouldBlocks: number } | null {
   const { observed, wouldBlocks } = entry
@@ -914,7 +922,7 @@ function foldObserve(
   period: ObservePeriod,
   sessionID: string,
 ): ReplayDrop | null {
-  const counts = observeCountsOf(entry)
+  const counts = validateObserveCounts(entry)
   if (counts === null) return { reason: "count-invalid", sessionID }
   if (entry.kind === "summary") {
     period.summary = true
@@ -945,7 +953,7 @@ function foldWouldBlock(
   period: ObservePeriod,
   sessionID: string,
 ): ReplayDrop | null {
-  const counts = observeCountsOf(entry)
+  const counts = validateObserveCounts(entry)
   if (counts === null) return { reason: "count-invalid", sessionID }
   period.admitted.add(sessionID)
   period.observed = counts.observed
@@ -1105,6 +1113,72 @@ function foldChildEdge(
  * @returns The kind's drop record, or `null` when the entry folded (or is an
  *     inert sub-kind, which folds nothing and drops nothing).
  */
+/**
+ * One per-kind replay fold arm: folds a parsed journal entry of a known
+ * `type` into the last-wins maps / period state, returning the kind's drop
+ * record (or `null` when the entry folded).
+ */
+type ReplayFoldArm = (
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+  period: ObservePeriod,
+  suspended: Map<string, true>,
+) => ReplayDrop | null
+
+/** Folds an `engagement` row: last-wins boolean per session. */
+function foldEngagement(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  const engaged = entry.engaged
+  if (typeof engaged === "boolean") maps.lastEngagement.set(sessionID, engaged)
+  return null
+}
+
+/** Dispatch table for the replay fold: one arm per known entry `type`.
+ *  Unknown types (and the inert `plan-impact` rows) fall through to the
+ *  ensemble arm via the `foldReplayLine` fallback, matching the historical
+ *  if-chain's tail. */
+const REPLAY_FOLDS: Record<string, ReplayFoldArm> = {
+  gate: (entry, maps, sessionID) => {
+    foldGate(entry, maps.lastGateResult, maps.lastGateFp, sessionID)
+    return null
+  },
+  plan: (entry, maps, sessionID) => {
+    foldPlan(entry, maps, sessionID)
+    return null
+  },
+  verdict: (entry, maps, sessionID) =>
+    foldVerdict(entry, maps.lastReviewVerdict, maps.lastVerdictAgent, sessionID),
+  observe: (entry, _maps, sessionID, period) => foldObserve(entry, period, sessionID),
+  "would-block": (entry, _maps, sessionID, period) => foldWouldBlock(entry, period, sessionID),
+  suspended: (entry, _maps, sessionID, _period, suspended) =>
+    foldSuspended(entry, suspended, sessionID),
+  "child-edge": (entry, maps, sessionID) => foldChildEdge(entry, maps, sessionID),
+  permission: (entry, maps, sessionID) => foldStickyDecision(entry, maps, sessionID),
+  "task-complete": (_entry, maps, sessionID) => {
+    foldTaskComplete(maps, sessionID)
+    return null
+  },
+  engagement: (entry, maps, sessionID) => foldEngagement(entry, maps, sessionID),
+  "plan-impact": () => null,
+}
+
+/**
+ * Folds one parsed replay-typed journal entry into the replay state, by
+ * dispatching on `entry.type` through `REPLAY_FOLDS`; unknown types fall to
+ * the ensemble arm (the historical if-chain's fallback).
+ * @param entry The parsed replay-typed entry.
+ * @param maps The last-wins maps to fill.
+ * @param sessionID The validated session ID.
+ * @param period The observe-mode period state to fill (observe-mode kinds
+ *     only).
+ * @param suspended The suspended-session map to fill (`suspended` kind only).
+ * @returns The kind's drop record, or `null` when the entry folded (or is an
+ *     inert sub-kind, which folds nothing and drops nothing).
+ */
 function foldReplayLine(
   entry: Record<string, unknown>,
   maps: ReplayMaps,
@@ -1112,43 +1186,8 @@ function foldReplayLine(
   period: ObservePeriod,
   suspended: Map<string, true>,
 ): ReplayDrop | null {
-  const type = entry.type
-  if (type === "gate") {
-    foldGate(entry, maps.lastGateResult, maps.lastGateFp, sessionID)
-    return null
-  }
-  if (type === "plan") {
-    foldPlan(entry, maps, sessionID)
-    return null
-  }
-  if (type === "verdict") {
-    return foldVerdict(entry, maps.lastReviewVerdict, maps.lastVerdictAgent, sessionID)
-  }
-  if (type === "observe") {
-    return foldObserve(entry, period, sessionID)
-  }
-  if (type === "would-block") {
-    return foldWouldBlock(entry, period, sessionID)
-  }
-  if (type === "suspended") {
-    return foldSuspended(entry, suspended, sessionID)
-  }
-  if (type === "child-edge") {
-    return foldChildEdge(entry, maps, sessionID)
-  }
-  if (type === "permission") {
-    return foldStickyDecision(entry, maps, sessionID)
-  }
-  if (type === "task-complete") {
-    foldTaskComplete(maps, sessionID)
-    return null
-  }
-  if (type === "engagement") {
-    const engaged = entry.engaged
-    if (typeof engaged === "boolean") maps.lastEngagement.set(sessionID, engaged)
-    return null
-  }
-  if (type === "plan-impact") return null
+  const fold = REPLAY_FOLDS[entry.type as string]
+  if (fold) return fold(entry, maps, sessionID, period, suspended)
   return foldEnsemble(entry, maps.lastEnsemble, maps.lastRefusedApprove, sessionID)
 }
 
@@ -1752,6 +1791,745 @@ function replayGatePasses(
  *     (tests).
  * @returns A ledger bound to a fresh in-memory session map.
  */
+
+/**
+ * The maps and per-instance state one ledger owns: the session buckets, the
+ * child-verdict store, the observe-mode period, the suspension map, and the
+ * durable approved-plan sidecar (path + loaded store). The edge maps and the
+ * live-parent registry live in the registry (`src/ledger-registry.ts`); the
+ * credit trace map in its own creator.
+ */
+interface LedgerMaps {
+  /** The journal path (the edge rows' and persist errors' append target). */
+  journalPath: string
+  /** Session buckets, LRU-capped at `maxSessions`. */
+  states: Map<string, GateState>
+  /** Latest VERDICT marker observation per child session. */
+  childVerdicts: Map<string, ChildVerdict>
+  /** Observe-mode period state (see {@link ObservePeriod}). */
+  observePeriod: ObservePeriod
+  /** Sessions whose gate enforcement is suspended (parent → true). */
+  suspended: Map<string, true>
+  /** The durable approved-plan sidecar path. */
+  sidecarPath: string
+  /** The durable approved-plan store loaded from the sidecar at boot. */
+  approvedPlans: Map<string, ApprovalRecord>
+}
+
+/**
+ * Creates the maps and per-instance state one ledger owns. The sidecar path
+ * defaults beside the journal; the boot load is fail-open (a missing file is
+ * the fresh state; an unreadable one journals one error).
+ * @param journalPath The journal path (the sidecar's default sibling).
+ * @param approvalLedgerPath Optional explicit sidecar path override.
+ * @returns The ledger's maps and sidecar state (see {@link LedgerMaps}).
+ */
+function createLedgerMaps(journalPath: string, approvalLedgerPath?: string): LedgerMaps {
+  const states = new Map<string, GateState>()
+  // Latest VERDICT marker observation per child session (rationale at
+  // recordChildVerdict); the observe period and suspension map are restored
+  // last-wins by the boot replay (see ObservePeriod).
+  const childVerdicts = new Map<string, ChildVerdict>()
+  const observePeriod = newObservePeriod()
+  const suspended = new Map<string, true>()
+  // Durable approved-plan sidecar: a bounded store of bound plan approvals
+  // (name + content key + project scope) beside the journal, outside the
+  // session bucket and the replay window. The boot load is fail-open (a
+  // missing file is the fresh state; an unreadable one journals one error).
+  const sidecarPath =
+    approvalLedgerPath ?? path.join(path.dirname(journalPath), APPROVAL_LEDGER_FILE)
+  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath)
+  return {
+    journalPath,
+    states,
+    childVerdicts,
+    observePeriod,
+    suspended,
+    sidecarPath,
+    approvedPlans,
+  }
+}
+
+/**
+ * The state the observe-cap concern reads and mutates: the configured
+ * admission period and the period state it folds into.
+ */
+interface ObserveCapState {
+  /** The configured observe-mode admission period (0 disables). */
+  observeSessions: number
+  /** The period state (phases, dedup set, totals, summary probe). */
+  period: ObservePeriod
+}
+
+/**
+ * Returns the observe-mode admission phase for a session, stamping it for
+ * the first time this process sees it (see the interface doc for the
+ * journaled-dedup-set invariant). With a configured period of 0, or for an
+ * empty session ID, nothing is stamped and the phase is `off`. A session
+ * that already carries a stamped phase returns it unchanged (no re-stamp).
+ * A session restored as admitted from replay but lacking a phase stamp
+ * (its stamp line aged out of the tail, a surviving `would-block` kept it
+ * in the dedup set) restores its `observe` phase without re-incrementing —
+ * the double-count guard.
+ * @param st The observe-cap state.
+ * @param sessionID The parent session ID to look up or stamp.
+ * @returns The phase, whether this call stamped it, and whether the period
+ *     just completed on this stamp.
+ */
+function observePhaseOf(
+  st: ObserveCapState,
+  sessionID: string,
+): { phase: ObservePhase; isNew: boolean; completed: boolean } {
+  if (st.observeSessions === 0 || !sessionID)
+    return { phase: "off", isNew: false, completed: false }
+  const stamped = st.period.phases.get(sessionID)
+  if (stamped !== undefined) return { phase: stamped, isNew: false, completed: false }
+  if (st.period.admitted.has(sessionID)) {
+    // A suppression presupposes an observe-phase stamp; restore that phase
+    // without re-incrementing (the double-count guard).
+    st.period.phases.set(sessionID, "observe")
+    return { phase: "observe", isNew: false, completed: false }
+  }
+  const observed = (st.period.observed += 1)
+  const phase = observed <= st.observeSessions ? "observe" : "enforce"
+  st.period.phases.set(sessionID, phase)
+  st.period.admitted.add(sessionID)
+  return { phase, isNew: true, completed: observed === st.observeSessions + 1 }
+}
+
+/**
+ * Records one suppressed enforcement decision: increments the running
+ * would-block total, re-records the session in the admission dedup set (its
+ * suppression presupposes an observe-phase stamp, and re-recording keeps the
+ * set whole when the stamp's line ages out of the replay tail), and returns
+ * both running totals for the stamped `would-block` entry.
+ * @param st The observe-cap state.
+ * @param sessionID The session whose decision was suppressed.
+ * @returns The running `observed` and `wouldBlocks` totals.
+ */
+function noteWouldBlockIn(
+  st: ObserveCapState,
+  sessionID: string,
+): { observed: number; wouldBlocks: number } {
+  st.period.wouldBlocks += 1
+  if (sessionID) st.period.admitted.add(sessionID)
+  return { observed: st.period.observed, wouldBlocks: st.period.wouldBlocks }
+}
+
+/**
+ * Returns the running observe-mode totals plus `pendingSummary`: true once
+ * the `observed` total passes the configured period and no journaled
+ * end-of-period summary marker exists in the replayed tail (see the
+ * interface doc — the surfaced summary is journaled as a `kind:"summary"`
+ * marker, so it never re-fires after a restart). With a configured period of
+ * 0 the total never passes the period, so the probe is always false.
+ * @param st The observe-cap state.
+ * @returns The totals and the pending-summary probe.
+ */
+function observeCountsOf(st: ObserveCapState): {
+  observed: number
+  wouldBlocks: number
+  pendingSummary: boolean
+} {
+  return {
+    observed: st.period.observed,
+    wouldBlocks: st.period.wouldBlocks,
+    pendingSummary: st.period.observed > st.observeSessions && !st.period.summary,
+  }
+}
+
+/**
+ * Creates the observe-mode admission concern: the phase stamping, the
+ * would-block recording, and the totals probe, all folding into one period
+ * state.
+ * @param observeSessions The configured observe-mode admission period.
+ * @param observePeriod The period state the boot replay restored.
+ * @returns The `observePhase`, `noteWouldBlock`, and `observeCounts` methods.
+ */
+function createObserveCap(
+  observeSessions: number,
+  observePeriod: ObservePeriod,
+): Pick<GateLedger, "observePhase" | "noteWouldBlock" | "observeCounts"> {
+  const st: ObserveCapState = { observeSessions, period: observePeriod }
+  return {
+    observePhase: (sessionID) => observePhaseOf(st, sessionID),
+    noteWouldBlock: (sessionID) => noteWouldBlockIn(st, sessionID),
+    observeCounts: () => observeCountsOf(st),
+  }
+}
+
+/**
+ * The state the suspension concern reads and mutates: the LRU cap and the
+ * suspension map.
+ */
+interface SuspensionState {
+  /** The LRU cap for the suspension map. */
+  maxSessions: number
+  /** Sessions whose gate enforcement is suspended (parent → true). */
+  suspended: Map<string, true>
+}
+
+/**
+ * Sets (or clears) a parent session's gate suspension (see the interface
+ * doc). Setting is LRU-touched and capped at `maxSessions`; clearing just
+ * deletes. No-op on an empty id.
+ * @param st The suspension state.
+ * @param sessionID The parent session ID.
+ * @param on True to suspend, false to resume.
+ */
+function setSuspendedIn(st: SuspensionState, sessionID: string, on: boolean): void {
+  if (!sessionID) return
+  if (!on) {
+    st.suspended.delete(sessionID)
+    return
+  }
+  promote(st.suspended, sessionID)
+  st.suspended.set(sessionID, true)
+  cap(st.suspended, st.maxSessions)
+}
+
+/**
+ * Whether a parent session's gate enforcement is currently suspended, with
+ * LRU promotion (the map is LRU by use).
+ * @param st The suspension state.
+ * @param sessionID The parent session ID to test.
+ * @returns True when the session is suspended.
+ */
+function isSuspendedIn(st: SuspensionState, sessionID: string): boolean {
+  if (!st.suspended.has(sessionID)) return false
+  promote(st.suspended, sessionID)
+  return true
+}
+
+/**
+ * Creates the suspension concern: set/clear and probe over one suspension
+ * map, LRU-capped at `maxSessions` (only admitted parents set it, so no
+ * extra bound is needed). The bodies live at module level; the factory only
+ * builds the state object.
+ * @param maxSessions The LRU cap for the suspension map.
+ * @param suspended The suspension map the boot replay restored.
+ * @returns The `setSuspended` and `isSuspended` methods.
+ */
+function createSuspension(
+  maxSessions: number,
+  suspended: Map<string, true>,
+): Pick<GateLedger, "setSuspended" | "isSuspended"> {
+  const st: SuspensionState = { maxSessions, suspended }
+  return {
+    setSuspended: (sessionID, on) => setSuspendedIn(st, sessionID, on),
+    isSuspended: (sessionID) => isSuspendedIn(st, sessionID),
+  }
+}
+
+/**
+ * The state the bucket-store concern reads and mutates: the session buckets,
+ * their LRU cap, the registry's eviction-protection predicate, and the
+ * child-release sweep the resets trigger.
+ */
+interface BucketStoreState {
+  /** Session buckets, LRU-capped at `maxSessions`. */
+  states: Map<string, GateState>
+  /** The LRU cap for the bucket map. */
+  maxSessions: number
+  /** The registry's live-parent predicate (eviction protection). */
+  isParent: (sessionID: string) => boolean
+  /** The registry's child-release sweep (triggered by every reset). */
+  releaseChildren: (sessionID: string) => number
+}
+
+/**
+ * The shared body of `resetState`/`clearState`: deletes the session's
+ * bucket, rebuilds it (merging the restart-sticky flags when both the
+ * merge flag and the prior bucket's `replayGrace` are set), re-caps the
+ * LRU, and releases the parent's registered children. Written once so the
+ * two callers cannot drift.
+ * @param st The bucket-store state.
+ * @param sessionID The parent session ID to reset.
+ * @param merge Whether the rebuild may merge restart-sticky flags (only
+ *     when the prior bucket carries `replayGrace`).
+ * @returns The number of registered child buckets freed (0 for a no-op).
+ */
+function resetBucket(st: BucketStoreState, sessionID: string, merge: boolean): number {
+  const prior = st.states.get(sessionID)
+  st.states.delete(sessionID)
+  st.states.set(sessionID, merge && prior?.replayGrace ? mergeAfterReplay(prior) : newState())
+  cap(st.states, st.maxSessions, st.isParent)
+  return st.releaseChildren(sessionID)
+}
+
+/**
+ * Returns the gate state for a session, creating an empty one on first
+ * access, with LRU promotion and a re-cap on insertion.
+ * @param st The bucket-store state.
+ * @param sessionID The parent session ID.
+ * @returns The session's mutable gate state.
+ */
+function stateOf(st: BucketStoreState, sessionID: string): GateState {
+  promote(st.states, sessionID)
+  let s = st.states.get(sessionID)
+  if (!s) {
+    s = newState()
+    st.states.set(sessionID, s)
+    cap(st.states, st.maxSessions, st.isParent)
+  }
+  return s
+}
+
+/**
+ * Resets a session's gate state for a task-scope change. The
+ * restart-sticky merge arm carries the replayed flags through the first
+ * post-restart prompt (the one-prompt grace); an explicit `merge`
+ * argument overrides the armed-grace default (a reset-at-capture
+ * approval forces false — no old-scope carry).
+ * @param st The bucket-store state.
+ * @param sessionID The parent session ID to reset.
+ * @param merge Optional merge override (undefined keeps the armed default).
+ * @returns The number of registered child buckets freed (0 for a no-op).
+ */
+function resetStateIn(st: BucketStoreState, sessionID: string, merge?: boolean): number {
+  return resetBucket(st, sessionID, merge ?? st.states.get(sessionID)?.replayGrace ?? false)
+}
+
+/**
+ * Creates the session-bucket store: the get-or-create, the pure read, and
+ * the two reset shapes over one bucket map. The bodies live at module
+ * level; the factory only builds the state object.
+ * @param deps The bucket map, cap, protection predicate, and release sweep.
+ * @returns The `state`, `peek`, `resetState`, and `clearState` methods.
+ */
+function createBucketStore(
+  deps: BucketStoreState,
+): Pick<GateLedger, "state" | "peek" | "resetState" | "clearState"> {
+  const st = deps
+  return {
+    state: (sessionID) => stateOf(st, sessionID),
+    /**
+     * Returns the gate state for a session without creating one, for
+     * read-only checks that must not insert a fresh bucket into the LRU.
+     * Pure read: no insertion, no LRU reorder.
+     * @param sessionID The session ID to look up.
+     * @returns The session's mutable gate state, or `undefined` when none exists.
+     */
+    peek(sessionID: string): GateState | undefined {
+      return st.states.get(sessionID)
+    },
+    resetState: (sessionID, merge) => resetStateIn(st, sessionID, merge),
+    /**
+     * Fresh start: the same rebuild sequence with the merge arm disabled,
+     * so no credit (including the restart-sticky flags) rehydrates after a
+     * suspension or resume clear.
+     * @param sessionID The parent session ID to clear.
+     * @returns The number of registered child buckets freed (0 for a no-op).
+     */
+    clearState(sessionID: string): number {
+      return resetBucket(st, sessionID, false)
+    },
+  }
+}
+
+/**
+ * The state the verdict-store concern reads and mutates: the LRU cap and
+ * the verdict map.
+ */
+interface VerdictStoreState {
+  /** The LRU cap for the verdict map. */
+  maxSessions: number
+  /** Latest VERDICT marker observation per child session. */
+  childVerdicts: Map<string, ChildVerdict>
+}
+
+/**
+ * Records one VERDICT marker observation for a child session. `changed`
+ * = the marker or source actually moved; the setup layer journals a
+ * streamed verdict observation iff this is true (per (child, marker,
+ * source) first-sight dedup). LRU promotion + cap are unchanged; the
+ * recordedAt stamp refreshes on every re-observation (the plausibility
+ * join keeps a verdict plausible while its parent's task is live).
+ * @param st The verdict-store state.
+ * @param childID The child session ID.
+ * @param marker The observed VERDICT marker.
+ * @param source The observation source.
+ * @returns True when the marker or source changed (journal the entry).
+ */
+function recordChildVerdictIn(
+  st: VerdictStoreState,
+  childID: string,
+  marker: string,
+  source: string,
+): boolean {
+  const prev = st.childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
+  const changed = prev.marker !== marker || prev.source !== source
+  promote(st.childVerdicts, childID)
+  st.childVerdicts.set(childID, { marker, source, recordedAt: Date.now() })
+  cap(st.childVerdicts, st.maxSessions)
+  return changed
+}
+
+/**
+ * Returns a child session's latest verdict observation, with LRU
+ * promotion; the empty verdict when none is recorded.
+ * @param st The verdict-store state.
+ * @param childID The child session ID.
+ * @returns The child's verdict (empty when unrecorded).
+ */
+function childVerdictOf(st: VerdictStoreState, childID: string): ChildVerdict {
+  promote(st.childVerdicts, childID)
+  return st.childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
+}
+
+/**
+ * Snapshot of every recorded verdict carrying a marker: no LRU
+ * promotion, no cap (pure read for the attribution scan). Returns copies
+ * so callers cannot mutate the store in place.
+ * @param st The verdict-store state.
+ * @returns The `{ child, verdict }` records, insertion order.
+ */
+function evidencedChildrenOf(
+  st: VerdictStoreState,
+): Array<{ child: string; verdict: ChildVerdict }> {
+  const out: Array<{ child: string; verdict: ChildVerdict }> = []
+  for (const [child, v] of st.childVerdicts)
+    if (v.marker !== "") out.push({ child, verdict: { ...v } })
+  return out
+}
+
+/**
+ * Creates the child-verdict store: the record (with first-sight change
+ * detection), the promote-on-read lookup, and the attribution snapshot, over
+ * one LRU-capped map. The bodies live at module level; the factory only
+ * builds the state object.
+ * @param maxSessions The LRU cap for the verdict map.
+ * @param childVerdicts The verdict map (shared with the registry's release
+ *     sweep, which clears entries on a parent's task boundary).
+ * @returns The `recordChildVerdict`, `childVerdict`, and `evidencedChildren`
+ *     methods.
+ */
+function createVerdictStore(
+  maxSessions: number,
+  childVerdicts: Map<string, ChildVerdict>,
+): Pick<GateLedger, "recordChildVerdict" | "childVerdict" | "evidencedChildren"> {
+  const st: VerdictStoreState = { maxSessions, childVerdicts }
+  return {
+    recordChildVerdict: (childID, marker, source) =>
+      recordChildVerdictIn(st, childID, marker, source),
+    childVerdict: (childID) => childVerdictOf(st, childID),
+    evidencedChildren: () => evidencedChildrenOf(st),
+  }
+}
+
+/**
+ * The state the durable approval store reads and mutates: the sidecar path,
+ * the journal path (persist-error provenance), and the loaded store.
+ */
+interface ApprovalStoreState {
+  /** The durable approved-plan sidecar path. */
+  sidecarPath: string
+  /** The journal path the persist-error row appends to. */
+  journalPath: string
+  /** The durable approved-plan store (project:name → record). */
+  approvedPlans: Map<string, ApprovalRecord>
+}
+
+/**
+ * Persists the sidecar after a record: a plain append (the appended line is
+ * the store's most-recent entry) or, when an eviction just happened, a full
+ * compacted rewrite so the file holds exactly the bounded store. Creates the
+ * parent directory. Any fs failure journals one `approval ledger:` error and
+ * reports false — the record rolls its in-memory entry back (an unpersisted
+ * approval must not exempt in-process).
+ * @param st The approval-store state.
+ * @param record The just-recorded entry (the append payload).
+ * @param rewrite True when an eviction just happened (the file is rewritten).
+ * @returns True when the write landed.
+ */
+function persistApprovalStore(
+  st: ApprovalStoreState,
+  record: ApprovalRecord,
+  rewrite: boolean,
+): boolean {
+  try {
+    fs.mkdirSync(path.dirname(st.sidecarPath), { recursive: true })
+    if (rewrite) {
+      const lines = [...st.approvedPlans.values()].map((r) => JSON.stringify(r))
+      fs.writeFileSync(st.sidecarPath, `${lines.join("\n")}\n`)
+    } else {
+      fs.appendFileSync(st.sidecarPath, `${JSON.stringify(record)}\n`)
+    }
+    return true
+  } catch (e) {
+    journalApprovalLedgerError(st.journalPath, `persist failed: ${e}`)
+    return false
+  }
+}
+
+/**
+ * Re-keys a content-verified legacy (or untagged) approval record to the
+ * current spec scheme: replaces the in-memory entry (delete+set keeps the
+ * entry most-recent, like `recordPlanApprovalDurable`), appends the
+ * re-keyed record to the sidecar (the last-wins loader collapses the
+ * superseded line; the next eviction rewrite compacts), and journals one
+ * replay-inert `plan-rekey` row. A no-op when the record already carries
+ * the current scheme's key. Fail-open: a persist failure rolls the
+ * in-memory entry back to the legacy record — the content match was real,
+ * so the verdict stays live — and the next scan retries; the persist error
+ * itself is journaled by `persistApprovalStore`.
+ * @param st The approval-store state.
+ * @param record The matched record (legacy whole-file or untagged).
+ * @param key The plan's current spec-region sha256 key.
+ * @param sessionID The journal-row provenance; omitted (or failing the
+ *     replay ID shape) leaves the field off the row.
+ */
+function rekeyApprovalRecord(
+  st: ApprovalStoreState,
+  record: ApprovalRecord,
+  key: string,
+  sessionID?: string,
+): void {
+  if (record.key === key && record.scheme === "spec") return
+  const mapKey = `${record.project}:${record.name}`
+  const updated: ApprovalRecord = {
+    name: record.name,
+    key,
+    project: record.project,
+    scheme: "spec",
+  }
+  st.approvedPlans.delete(mapKey)
+  st.approvedPlans.set(mapKey, updated)
+  if (!persistApprovalStore(st, updated, false)) {
+    st.approvedPlans.set(mapKey, record)
+    return
+  }
+  const sid =
+    typeof sessionID === "string" && REPLAY_SESSION_RE.test(sessionID) ? sessionID : undefined
+  appendLine(
+    st.journalPath,
+    JSON.stringify({
+      ts: now(),
+      type: "plan-rekey",
+      ...(sid !== undefined ? { sessionID: sid } : {}),
+      plan: record.name,
+      reason: "durable-key-scheme",
+      from: record.key,
+      to: key,
+    }),
+  )
+}
+
+/**
+ * Probes the durable approval store for a plan: `absent` when the name
+ * or key is unusable or no record covers the project-scoped name,
+ * `stale-key` when a record exists but matches neither the spec-region
+ * key nor the legacy whole-file key, `live` otherwise — and a live
+ * legacy (or untagged) record is transparently re-keyed to the current
+ * scheme (see `rekeyApprovalRecord`).
+ * @param st The approval-store state.
+ * @param name The plan file name.
+ * @param key The plan's current spec-region sha256 key.
+ * @param wholeKey The plan's current whole-file sha256 key.
+ * @param projectDir The current project directory (the scope key).
+ * @param sessionID Optional journal-row provenance for the re-key.
+ * @returns The durable approval state for the plan.
+ */
+function planApprovalStateOf(
+  st: ApprovalStoreState,
+  name: string,
+  key: string,
+  wholeKey: string,
+  projectDir: string,
+  sessionID?: string,
+): DurablePlanApprovalState {
+  const n = sanitizePlanName(name)
+  const k = sanitizePlanKey(key)
+  if (n === "" || k === "") return "absent"
+  const record = st.approvedPlans.get(`${projectScope(projectDir)}:${n}`)
+  if (record === undefined) return "absent"
+  const whole = sanitizePlanKey(wholeKey)
+  if (record.key !== k && !(whole !== "" && record.key === whole)) return "stale-key"
+  rekeyApprovalRecord(st, record, k, sessionID)
+  return "live"
+}
+
+/**
+ * Records a durable, project-scoped plan approval in the sidecar store.
+ * delete+set keeps a re-record most-recent (a plain set would age the
+ * entry out on its first-insertion slot); an eviction triggers the
+ * compacted rewrite. An unpersisted record must not exempt in-process
+ * (fail toward the non-durable wall): the entry rolls back when the
+ * write failed.
+ * @param st The approval-store state.
+ * @param name The plan file name.
+ * @param key The plan's spec-region sha256 key.
+ * @param projectDir The current project directory (the scope key).
+ */
+function recordPlanApprovalDurableIn(
+  st: ApprovalStoreState,
+  name: string,
+  key: string,
+  projectDir: string,
+): void {
+  const n = sanitizePlanName(name)
+  const k = sanitizePlanKey(key)
+  if (n === "" || k === "") return
+  const record = { name: n, key: k, project: projectScope(projectDir), scheme: "spec" as const }
+  const mapKey = `${record.project}:${record.name}`
+  st.approvedPlans.delete(mapKey)
+  st.approvedPlans.set(mapKey, record)
+  const overCap = st.approvedPlans.size > MAX_APPROVAL_RECORDS
+  if (overCap) evictTo(st.approvedPlans, MAX_APPROVAL_RECORDS)
+  if (!persistApprovalStore(st, record, overCap)) st.approvedPlans.delete(mapKey)
+}
+
+/**
+ * Creates the durable approved-plan store: the project-scoped, content-
+ * verified probe (with transparent legacy re-keying) and the durable record.
+ * The bodies live at module level; the factory only builds the state object.
+ * @param deps The sidecar path, journal path, and loaded store.
+ * @returns The `planApprovalState` and `recordPlanApprovalDurable` methods.
+ */
+function createApprovalStore(
+  deps: ApprovalStoreState,
+): Pick<GateLedger, "planApprovalState" | "recordPlanApprovalDurable"> {
+  const st = deps
+  return {
+    planApprovalState: (name, key, wholeKey, projectDir, sessionID) =>
+      planApprovalStateOf(st, name, key, wholeKey, projectDir, sessionID),
+    recordPlanApprovalDurable: (name, key, projectDir) =>
+      recordPlanApprovalDurableIn(st, name, key, projectDir),
+  }
+}
+
+/**
+ * Runs the boot replay over the ledger's maps and applies the post-replay
+ * LRU caps. Replay runs before capping so the restored set honors the LRU
+ * cap too; the credit trace is capped once after replay (restore marks take
+ * a boot-time stamp, and the map is bounded like the other session maps).
+ * The observe period folds in online during the replay (see
+ * `replayGatePasses`), and the suspension map folds the same way (last-wins
+ * `action:"off"|"on"`).
+ * @param maps The ledger's maps and sidecar state.
+ * @param creditedApprovals The credit trace's provenance map.
+ * @param isParent The registry's live-parent predicate (eviction protection).
+ * @param reseededEdges The registry's replay-restored edge map (fold target).
+ * @param journalPath The journal path the replay tail reads.
+ * @param maxSessions The LRU cap for the session-keyed maps.
+ * @param replayTailLines How many tail lines of each generation the replay walks.
+ * @param reviewerAgent The canonical reviewer agent name for replay folds.
+ * @param sessionsDir The per-session journal sink directory.
+ */
+function replayLedgerMaps(
+  maps: LedgerMaps,
+  creditedApprovals: Map<string, number>,
+  isParent: (sessionID: string) => boolean,
+  reseededEdges: Map<string, { parent: string; agent: string }>,
+  journalPath: string,
+  maxSessions: number,
+  replayTailLines: number,
+  reviewerAgent: string,
+  sessionsDir: string,
+): void {
+  replayGatePasses(
+    maps.states,
+    journalPath,
+    sessionsDir,
+    replayTailLines,
+    creditedApprovals,
+    reviewerAgent,
+    maps.observePeriod,
+    maps.suspended,
+    reseededEdges,
+  )
+  cap(maps.states, maxSessions, isParent)
+  cap(creditedApprovals, maxSessions)
+  cap(maps.suspended, maxSessions)
+}
+
+/**
+ * Builds the ledger's parent-edge registry with the documented bound: 4× the
+ * states cap, floored at 256 so a small cap still tracks an active fleet of
+ * registered parents.
+ * @param maps The ledger's maps (the registry shares the bucket and verdict
+ *     maps for the child-release sweep).
+ * @param journalPath The journal path the `child-edge` rows append to.
+ * @param maxSessions The LRU cap for the session-keyed maps.
+ * @returns The registry capability (see {@link LedgerRegistry}).
+ */
+function bootLedgerRegistry(
+  maps: LedgerMaps,
+  journalPath: string,
+  maxSessions: number,
+): LedgerRegistry {
+  return createLedgerRegistry({
+    maxSessions,
+    maxTrackedParents: Math.max(256, maxSessions * 4),
+    journalPath,
+    states: maps.states,
+    childVerdicts: maps.childVerdicts,
+  })
+}
+
+/**
+ * Composes the live ledger object from the concern stores: the registry's
+ * edge surface, the bucket store, the verdict store, the durable approval
+ * store, the credit trace, and the observe/suspension concerns. Pure
+ * assembly — every method's behavior lives in its concern creator.
+ * @param maps The ledger's maps and sidecar state.
+ * @param registry The parent-edge registry capability.
+ * @param credit The credit-trace capability.
+ * @param maxSessions The LRU cap for the session-keyed maps.
+ * @param observeSessions The observe-mode admission period (0 disables).
+ * @returns The live gate ledger (see {@link GateLedger}).
+ */
+function composeLedger(
+  maps: LedgerMaps,
+  registry: LedgerRegistry,
+  credit: CreditTrace,
+  maxSessions: number,
+  observeSessions: number,
+): GateLedger {
+  const { childToParent, markParent, isParent, lastParent, parentOf, setParent, reseedEdges } =
+    registry
+  return {
+    childToParent,
+    ...createBucketStore({
+      states: maps.states,
+      maxSessions,
+      isParent,
+      releaseChildren: registry.releaseChildren,
+    }),
+    parentOf,
+    setParent,
+    reseedEdges,
+    markParent,
+    isParent,
+    lastParent,
+    ...createVerdictStore(maxSessions, maps.childVerdicts),
+    ...createApprovalStore({
+      sidecarPath: maps.sidecarPath,
+      journalPath: maps.journalPath,
+      approvedPlans: maps.approvedPlans,
+    }),
+    ...credit,
+    ...createObserveCap(observeSessions, maps.observePeriod),
+    ...createSuspension(maxSessions, maps.suspended),
+  }
+}
+
+/**
+ * Creates the live gate ledger: the session buckets, the parent-edge
+ * registry, the credit trace, and the observe/suspension/verdict/approval
+ * concern stores, restored from the journal replay before the LRU caps are
+ * applied.
+ * @param journalPath The journal path the replay tail and the edge rows read
+ *     and append.
+ * @param maxSessions The LRU cap for the session-keyed maps.
+ * @param replayTailLines How many tail lines of each journal generation the
+ *     boot replay walks.
+ * @param approvalLedgerPath Optional explicit sidecar path override.
+ * @param observeSessions The observe-mode admission period (0 disables).
+ * @param reviewerAgent The canonical reviewer agent name for replay folds.
+ * @param sessionsDir The per-session journal sink directory.
+ * @returns The live gate ledger (see {@link GateLedger}).
+ */
 export function createLedger(
   journalPath: string,
   maxSessions: number,
@@ -1761,546 +2539,19 @@ export function createLedger(
   reviewerAgent: string = CANONICAL_REVIEWER_AGENT,
   sessionsDir: string = path.join(path.dirname(journalPath), "sessions"),
 ): GateLedger {
-  const states = new Map<string, GateState>()
-  const childToParent = new Map<string, string>()
-  // The emitter agent last journaled per child edge (parallel to
-  // childToParent, same cap): the agent-upgrade part of the setParent dedupe.
-  const edgeAgents = new Map<string, string>()
-  // Child→parent edges restored by the boot replay's `child-edge` fold,
-  // pending the setup re-seed (reseedEdges applies them without journaling).
-  const reseededEdges = new Map<string, { parent: string; agent: string }>()
-  // Latest VERDICT marker observation per child session, LRU-capped and
-  // promote-on-touch like the other session maps. Verdict-kind only, keyed by
-  // child ID so it never leaks across children. A re-observation that changes
-  // marker/source re-journals its verdict entry (the store is the dedup
-  // ledger, not a deduplicator); eviction above maxSessions re-journals on a
-  // later re-observation — bounded and acceptable, documented at recordChildVerdict.
-  const childVerdicts = new Map<string, ChildVerdict>()
-  // Sessions registered as live parents (orchestrator/primary). LRU-touched
-  // like the other maps, bounded by `maxTrackedParents`; registration is the
-  // eviction-protection signal for the `states` cap.
-  const parents = new Map<string, true>()
-  // Credit-bearing reviewer APPROVE provenance (parent session -> mark stamp).
-  // Bucket-free and LRU-capped at `maxSessions`: the `hasReviewApprove` flag
-  // lives on the session bucket (rebuilt by a task-scope reset), but the
-  // journal-recorded credit outlives that reset, so the ledger carries this
-  // provenance outside the bucket to drive the landing gate's escalation.
-  // Refusal-stamped credits are never marked (replay honors the stamp before
-  // the mark). No eviction protection: an evicted trace just falls back to
-  // the ordinary first-block (fail-toward-strict, matching the other maps).
-  const creditedApprovals = new Map<string, number>()
-  // Observe-mode period state: per-session admission phases, the admitted
-  // session dedup set, the running totals, and the summary-marker probe.
-  // Restored last-wins by the boot replay (see ObservePeriod for why it is
-  // uncapped); mutated at runtime by the observe methods below.
-  const observePeriod = newObservePeriod()
-  // Sessions whose gate enforcement is suspended (parent → true). LRU-capped
-  // at `maxSessions` like the other session maps; only admitted parents set
-  // it, so no extra bound is needed. Restored last-wins by the boot replay
-  // (`action:"off"|"on"` entries); a mid-suspension restart replays the flag
-  // so enforcement does not silently resume.
-  const suspended = new Map<string, true>()
-  // Registry bound: 4× the states cap, floored at 256 so a small cap still
-  // tracks an active fleet of registered parents.
-  const maxTrackedParents = Math.max(256, maxSessions * 4)
-  // Durable approved-plan sidecar: a bounded store of bound plan approvals
-  // (name + content key + project scope) beside the journal, outside the
-  // session bucket and the replay window. The boot load is fail-open (a
-  // missing file is the fresh state; an unreadable one journals one error).
-  const sidecarPath =
-    approvalLedgerPath ?? path.join(path.dirname(journalPath), APPROVAL_LEDGER_FILE)
-  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath)
-
-  /**
-   * Promotes a key to most-recently-used in an insertion-ordered map.
-   * @param map The map to reorder.
-   * @param key The key to touch (no-op when absent).
-   */
-  function promote<K, V>(map: Map<K, V>, key: K): void {
-    const v = map.get(key)
-    if (v !== undefined) {
-      map.delete(key)
-      map.set(key, v)
-    }
-  }
-
-  /**
-   * Evicts least-recently-used entries until the map is within the cap,
-   * skipping any entry for which `protect` returns true. Scans insertion
-   * order for the first unprotected entry; when every remaining entry is
-   * protected, over-cap is tolerated (bounded by the registry bound).
-   * @param map The map to trim.
-   * @param protect Optional predicate on keys; a `true` result is never
-   *     evicted from this map.
-   */
-  function cap<K, V>(map: Map<K, V>, protect?: (key: K) => boolean): void {
-    while (map.size > maxSessions) {
-      let evicted = false
-      for (const key of map.keys()) {
-        // Insertion order: the first unprotected entry is the victim.
-        if (protect?.(key)) continue
-        map.delete(key)
-        evicted = true
-        break
-      }
-      // Every remaining entry is protected; over-cap is tolerated (bounded by
-      // the registry bound), so the scan-found-empty case stops the loop.
-      if (!evicted) break
-    }
-  }
-
-  /**
-   * Registers a session as a live parent: keep it MRU — promote +
-   * re-set — so an active parent re-registers long before the registry's LRU
-   * churn can evict it. No-op on an empty id. Bounded by `maxTrackedParents`.
-   * @param sessionID The parent session ID.
-   */
-  function markParent(sessionID: string): void {
-    if (!sessionID) return
-    promote(parents, sessionID)
-    parents.set(sessionID, true)
-    evictTo(parents, maxTrackedParents)
-  }
-
-  /**
-   * Whether a session is a currently-registered live parent, with LRU
-   * promotion (the registry is LRU by use).
-   * @param sessionID The session ID to test.
-   * @returns True when the session is a registered live parent.
-   */
-  function isParent(sessionID: string): boolean {
-    const known = parents.get(sessionID) === true
-    if (known) promote(parents, sessionID)
-    return known
-  }
-
-  /**
-   * Marks a parent session's reviewer APPROVE as credit-bearing on the
-   * bucket-free trace (see the interface doc). The `hasReviewApprove` flag is
-   * dropped by a task-scope reset but the journaled credit outlives it, so the
-   * ledger keeps this provenance outside the bucket; it is what the landing
-   * gate reads to escalate a credited session's first push. Re-marks refresh
-   * the stamp (idempotent); the map is LRU-capped at `maxSessions` with no
-   * eviction protection (an evicted trace falls back to the ordinary
-   * first-block, fail-toward-strict).
-   * @param sessionID The parent session ID the credit is bound to.
-   */
-  function markCreditedApproval(sessionID: string): void {
-    creditedApprovals.set(sessionID, Date.now())
-    promote(creditedApprovals, sessionID)
-    cap(creditedApprovals)
-  }
-
-  /**
-   * Whether a parent session carries a credit-bearing reviewer APPROVE mark
-   * (see the interface doc), with LRU promotion (the trace is LRU by use).
-   * Refusal-stamped credits are never marked, so this reports the journaled
-   * provenance, not the live bucket flag.
-   * @param sessionID The parent session ID to test.
-   * @returns True when the session carries an earned credit mark.
-   */
-  function hasCreditedApproval(sessionID: string): boolean {
-    if (!creditedApprovals.has(sessionID)) return false
-    promote(creditedApprovals, sessionID)
-    return true
-  }
-
-  /**
-   * Returns the most-recently-admitted live parent: the registry map is
-   * MRU-ordered (markParent promotes the key to the end on every admission),
-   * so the last key is the most-recently-admitted parent. "" when the registry
-   * is empty. Pure read — no LRU promotion — so a fallback lookup never
-   * disturbs the registry ordering.
-   * @returns The last admitted parent session ID, or "" when empty.
-   */
-  function lastParent(): string {
-    let last = ""
-    for (const p of parents.keys()) last = p
-    return last
-  }
-
-  /**
-   * Drops a parent's registered children's verdict evidence and clears their
-   * metering counters when the parent starts a new task. Scoped to the
-   * registered children of `sessionID` only, so a concurrent task on another
-   * parent keeps its own child-verdict evidence and counters intact. A child
-   * whose edge is registered but whose state bucket was never minted is
-   * skipped (the edge can precede the child's first metered dispatch). Earned
-   * credit on each child's bucket is preserved — only the counters that block
-   * re-dispatch are cleared.
-   * @param sessionID The parent session ID whose new task triggers the release.
-   * @returns The number of child buckets whose metering counters were
-   *     non-fresh before clearing (0 for a pure no-op release).
-   */
-  function releaseChildren(sessionID: string): number {
-    let freed = 0
-    for (const c of childToParent.keys()) {
-      if (childToParent.get(c) !== sessionID) continue
-      childVerdicts.delete(c)
-      const cs = states.get(c)
-      if (cs && clearMeteringCounters(cs)) freed++
-    }
-    return freed
-  }
-
-  /**
-   * Persists the sidecar after a record: a plain append (the appended line is
-   * the store's most-recent entry) or, when an eviction just happened, a full
-   * compacted rewrite so the file holds exactly the bounded store. Creates the
-   * parent directory. Any fs failure journals one `approval ledger:` error and
-   * reports false — the record rolls its in-memory entry back (an unpersisted
-   * approval must not exempt in-process).
-   * @param record The just-recorded entry (the append payload).
-   * @param rewrite True when an eviction just happened (the file is rewritten).
-   * @returns True when the write landed.
-   */
-  function persistApprovalStore(record: ApprovalRecord, rewrite: boolean): boolean {
-    try {
-      fs.mkdirSync(path.dirname(sidecarPath), { recursive: true })
-      if (rewrite) {
-        const lines = [...approvedPlans.values()].map((r) => JSON.stringify(r))
-        fs.writeFileSync(sidecarPath, `${lines.join("\n")}\n`)
-      } else {
-        fs.appendFileSync(sidecarPath, `${JSON.stringify(record)}\n`)
-      }
-      return true
-    } catch (e) {
-      journalApprovalLedgerError(journalPath, `persist failed: ${e}`)
-      return false
-    }
-  }
-
-  /**
-   * Re-keys a content-verified legacy (or untagged) approval record to the
-   * current spec scheme: replaces the in-memory entry (delete+set keeps the
-   * entry most-recent, like `recordPlanApprovalDurable`), appends the
-   * re-keyed record to the sidecar (the last-wins loader collapses the
-   * superseded line; the next eviction rewrite compacts), and journals one
-   * replay-inert `plan-rekey` row. A no-op when the record already carries
-   * the current scheme's key. Fail-open: a persist failure rolls the
-   * in-memory entry back to the legacy record — the content match was real,
-   * so the verdict stays live — and the next scan retries; the persist error
-   * itself is journaled by `persistApprovalStore`.
-   * @param record The matched record (legacy whole-file or untagged).
-   * @param key The plan's current spec-region sha256 key.
-   * @param sessionID The journal-row provenance; omitted (or failing the
-   *     replay ID shape) leaves the field off the row.
-   */
-  function rekeyApprovalRecord(record: ApprovalRecord, key: string, sessionID?: string): void {
-    if (record.key === key && record.scheme === "spec") return
-    const mapKey = `${record.project}:${record.name}`
-    const updated: ApprovalRecord = {
-      name: record.name,
-      key,
-      project: record.project,
-      scheme: "spec",
-    }
-    approvedPlans.delete(mapKey)
-    approvedPlans.set(mapKey, updated)
-    if (!persistApprovalStore(updated, false)) {
-      approvedPlans.set(mapKey, record)
-      return
-    }
-    const sid =
-      typeof sessionID === "string" && REPLAY_SESSION_RE.test(sessionID) ? sessionID : undefined
-    appendLine(
-      journalPath,
-      JSON.stringify({
-        ts: now(),
-        type: "plan-rekey",
-        ...(sid !== undefined ? { sessionID: sid } : {}),
-        plan: record.name,
-        reason: "durable-key-scheme",
-        from: record.key,
-        to: key,
-      }),
-    )
-  }
-
-  /**
-   * Returns the observe-mode admission phase for a session, stamping it for
-   * the first time this process sees it (see the interface doc for the
-   * journaled-dedup-set invariant). With a configured period of 0, or for an
-   * empty session ID, nothing is stamped and the phase is `off`. A session
-   * that already carries a stamped phase returns it unchanged (no re-stamp).
-   * A session restored as admitted from replay but lacking a phase stamp
-   * (its stamp line aged out of the tail, a surviving `would-block` kept it
-   * in the dedup set) restores its `observe` phase without re-incrementing —
-   * the double-count guard.
-   * @param sessionID The parent session ID to look up or stamp.
-   * @returns The phase, whether this call stamped it, and whether the period
-   *     just completed on this stamp.
-   */
-  function observePhase(sessionID: string): {
-    phase: ObservePhase
-    isNew: boolean
-    completed: boolean
-  } {
-    if (observeSessions === 0 || !sessionID) return { phase: "off", isNew: false, completed: false }
-    const stamped = observePeriod.phases.get(sessionID)
-    if (stamped !== undefined) return { phase: stamped, isNew: false, completed: false }
-    if (observePeriod.admitted.has(sessionID)) {
-      // A suppression presupposes an observe-phase stamp; restore that phase
-      // without re-incrementing (the double-count guard).
-      observePeriod.phases.set(sessionID, "observe")
-      return { phase: "observe", isNew: false, completed: false }
-    }
-    const observed = (observePeriod.observed += 1)
-    const phase = observed <= observeSessions ? "observe" : "enforce"
-    observePeriod.phases.set(sessionID, phase)
-    observePeriod.admitted.add(sessionID)
-    return { phase, isNew: true, completed: observed === observeSessions + 1 }
-  }
-
-  /**
-   * Records one suppressed enforcement decision: increments the running
-   * would-block total, re-records the session in the admission dedup set (its
-   * suppression presupposes an observe-phase stamp, and re-recording keeps the
-   * set whole when the stamp's line ages out of the replay tail), and returns
-   * both running totals for the stamped `would-block` entry.
-   * @param sessionID The session whose decision was suppressed.
-   * @returns The running `observed` and `wouldBlocks` totals.
-   */
-  function noteWouldBlock(sessionID: string): { observed: number; wouldBlocks: number } {
-    observePeriod.wouldBlocks += 1
-    if (sessionID) observePeriod.admitted.add(sessionID)
-    return { observed: observePeriod.observed, wouldBlocks: observePeriod.wouldBlocks }
-  }
-
-  /**
-   * Returns the running observe-mode totals plus `pendingSummary`: true once
-   * the `observed` total passes the configured period and no journaled
-   * end-of-period summary marker exists in the replayed tail (see the
-   * interface doc — the surfaced summary is journaled as a `kind:"summary"`
-   * marker, so it never re-fires after a restart). With a configured period of
-   * 0 the total never passes the period, so the probe is always false.
-   * @returns The totals and the pending-summary probe.
-   */
-  function observeCounts(): { observed: number; wouldBlocks: number; pendingSummary: boolean } {
-    return {
-      observed: observePeriod.observed,
-      wouldBlocks: observePeriod.wouldBlocks,
-      pendingSummary: observePeriod.observed > observeSessions && !observePeriod.summary,
-    }
-  }
-
-  /**
-   * The shared body of `resetState`/`clearState`: deletes the session's
-   * bucket, rebuilds it (merging the restart-sticky flags when both the
-   * merge flag and the prior bucket's `replayGrace` are set), re-caps the
-   * LRU, and releases the parent's registered children. Written once so the
-   * two callers cannot drift.
-   * @param sessionID The parent session ID to reset.
-   * @param merge Whether the rebuild may merge restart-sticky flags (only
-   *     when the prior bucket carries `replayGrace`).
-   * @returns The number of registered child buckets freed (0 for a no-op).
-   */
-  function resetBucket(sessionID: string, merge: boolean): number {
-    const prior = states.get(sessionID)
-    states.delete(sessionID)
-    states.set(sessionID, merge && prior?.replayGrace ? mergeAfterReplay(prior) : newState())
-    cap(states, isParent)
-    return releaseChildren(sessionID)
-  }
-
-  /**
-   * Sets (or clears) a parent session's gate suspension (see the interface
-   * doc). Setting is LRU-touched and capped at `maxSessions`; clearing just
-   * deletes. No-op on an empty id.
-   * @param sessionID The parent session ID.
-   * @param on True to suspend, false to resume.
-   */
-  function setSuspended(sessionID: string, on: boolean): void {
-    if (!sessionID) return
-    if (!on) {
-      suspended.delete(sessionID)
-      return
-    }
-    promote(suspended, sessionID)
-    suspended.set(sessionID, true)
-    cap(suspended)
-  }
-
-  /**
-   * Whether a parent session's gate enforcement is currently suspended, with
-   * LRU promotion (the map is LRU by use).
-   * @param sessionID The parent session ID to test.
-   * @returns True when the session is suspended.
-   */
-  function isSuspended(sessionID: string): boolean {
-    if (!suspended.has(sessionID)) return false
-    promote(suspended, sessionID)
-    return true
-  }
-
-  // Replay runs before capping so the restored set honors the LRU cap too; the
-  // credit trace is capped once after replay (restore marks take a boot-time
-  // stamp, and the map is bounded like the other session maps). The observe
-  // period folds in online during the replay (see replayGatePasses), and the
-  // suspension map folds the same way (last-wins `action:"off"|"on"`).
-  replayGatePasses(
-    states,
+  const maps = createLedgerMaps(journalPath, approvalLedgerPath)
+  const registry = bootLedgerRegistry(maps, journalPath, maxSessions)
+  const credit = createCreditTrace({ maxSessions })
+  replayLedgerMaps(
+    maps,
+    credit.creditedApprovals,
+    registry.isParent,
+    registry.reseededEdges,
     journalPath,
-    sessionsDir,
+    maxSessions,
     replayTailLines,
-    creditedApprovals,
     reviewerAgent,
-    observePeriod,
-    suspended,
-    reseededEdges,
+    sessionsDir,
   )
-  cap(states, isParent)
-  cap(creditedApprovals)
-  cap(suspended)
-
-  return {
-    childToParent,
-    markParent,
-    isParent,
-    lastParent,
-    markCreditedApproval,
-    hasCreditedApproval,
-    observePhase,
-    noteWouldBlock,
-    observeCounts,
-    state(sessionID: string): GateState {
-      promote(states, sessionID)
-      let s = states.get(sessionID)
-      if (!s) {
-        s = newState()
-        states.set(sessionID, s)
-        cap(states, isParent)
-      }
-      return s
-    },
-    peek(sessionID: string): GateState | undefined {
-      // Pure read: no insertion, no LRU reorder.
-      return states.get(sessionID)
-    },
-    resetState(sessionID: string, merge?: boolean): number {
-      // delete+set keeps the LRU MRU position and the cap, as a plain reset;
-      // the restart-sticky merge arm carries the replayed flags through the
-      // first post-restart prompt (the one-prompt grace). An explicit
-      // `merge` argument overrides the armed-grace default (a reset-at-
-      // capture approval forces false — no old-scope carry).
-      return resetBucket(sessionID, merge ?? states.get(sessionID)?.replayGrace ?? false)
-    },
-    clearState(sessionID: string): number {
-      // Fresh start: the same rebuild sequence with the merge arm disabled,
-      // so no credit (including the restart-sticky flags) rehydrates after a
-      // suspension or resume clear.
-      return resetBucket(sessionID, false)
-    },
-    setSuspended,
-    isSuspended,
-    parentOf(sessionID: string | undefined): string {
-      if (!sessionID) return ""
-      const parent = childToParent.get(sessionID)
-      if (parent !== undefined) {
-        promote(childToParent, sessionID)
-        return parent
-      }
-      return sessionID
-    },
-    setParent(sessionID: string, parentID: string, agent = ""): void {
-      // Journal only a new-or-changed edge: idempotent registrations
-      // (session.created plus resolveParent both firing) stay journaled once.
-      // An agent upgrade (a previously agent-less row gaining the resolved
-      // emitter agent) counts as changed — the journaled agent feeds the
-      // post-reload emitter re-seed, so an empty agent must not be frozen in.
-      // The journaled agent is tracked in a parallel map (same cap) because
-      // childToParent stores the parent only; a downgrade is never a change.
-      const changed =
-        childToParent.get(sessionID) !== parentID ||
-        (agent !== "" && edgeAgents.get(sessionID) !== agent)
-      childToParent.set(sessionID, parentID)
-      cap(childToParent)
-      if (changed) edgeAgents.set(sessionID, agent)
-      cap(edgeAgents)
-      if (changed) {
-        appendLine(
-          journalPath,
-          JSON.stringify({
-            ts: now(),
-            type: "child-edge",
-            sessionID,
-            parent: parentID,
-            ...(agent ? { agent } : {}),
-          }),
-        )
-      }
-      // Edge resolution marks the parent live: its `states` bucket
-      // is now protected from eviction until an unrelated parent churn evicts
-      // this registration from the registry.
-      markParent(parentID)
-    },
-    reseedEdges(): Array<{ child: string; parent: string; agent: string }> {
-      const out: Array<{ child: string; parent: string; agent: string }> = []
-      for (const [child, edge] of reseededEdges) {
-        childToParent.set(child, edge.parent)
-        cap(childToParent)
-        markParent(edge.parent)
-        out.push({ child, parent: edge.parent, agent: edge.agent })
-      }
-      return out
-    },
-    recordChildVerdict(childID: string, marker: string, source: string): boolean {
-      // changed = the marker or source actually moved; the setup layer journals
-      // a streamed verdict observation iff this is true (per (child, marker,
-      // source) first-sight dedup). LRU promotion + cap are unchanged; the
-      // recordedAt stamp refreshes on every re-observation (the plausibility
-      // join keeps a verdict plausible while its parent's task is live).
-      const prev = childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
-      const changed = prev.marker !== marker || prev.source !== source
-      promote(childVerdicts, childID)
-      childVerdicts.set(childID, { marker, source, recordedAt: Date.now() })
-      cap(childVerdicts)
-      return changed
-    },
-    childVerdict(childID: string): ChildVerdict {
-      promote(childVerdicts, childID)
-      return childVerdicts.get(childID) ?? { marker: "", source: "", recordedAt: 0 }
-    },
-    // Snapshot only: no LRU promotion, no cap (pure read for the attribution
-    // scan). Returns copies so callers cannot mutate the store in place.
-    evidencedChildren(): Array<{ child: string; verdict: ChildVerdict }> {
-      const out: Array<{ child: string; verdict: ChildVerdict }> = []
-      for (const [child, v] of childVerdicts)
-        if (v.marker !== "") out.push({ child, verdict: { ...v } })
-      return out
-    },
-    planApprovalState(
-      name: string,
-      key: string,
-      wholeKey: string,
-      projectDir: string,
-      sessionID?: string,
-    ): DurablePlanApprovalState {
-      const n = sanitizePlanName(name)
-      const k = sanitizePlanKey(key)
-      if (n === "" || k === "") return "absent"
-      const record = approvedPlans.get(`${projectScope(projectDir)}:${n}`)
-      if (record === undefined) return "absent"
-      const whole = sanitizePlanKey(wholeKey)
-      if (record.key !== k && !(whole !== "" && record.key === whole)) return "stale-key"
-      rekeyApprovalRecord(record, k, sessionID)
-      return "live"
-    },
-    recordPlanApprovalDurable(name: string, key: string, projectDir: string): void {
-      const n = sanitizePlanName(name)
-      const k = sanitizePlanKey(key)
-      if (n === "" || k === "") return
-      const record = { name: n, key: k, project: projectScope(projectDir), scheme: "spec" as const }
-      const mapKey = `${record.project}:${record.name}`
-      // delete+set keeps a re-record most-recent (a plain set would age the
-      // entry out on its first-insertion slot).
-      approvedPlans.delete(mapKey)
-      approvedPlans.set(mapKey, record)
-      const overCap = approvedPlans.size > MAX_APPROVAL_RECORDS
-      if (overCap) evictTo(approvedPlans, MAX_APPROVAL_RECORDS)
-      // An unpersisted record must not exempt in-process (fail toward the
-      // non-durable wall): roll the entry back when the write failed.
-      if (!persistApprovalStore(record, overCap)) approvedPlans.delete(mapKey)
-    },
-  }
+  return composeLedger(maps, registry, credit, maxSessions, observeSessions)
 }

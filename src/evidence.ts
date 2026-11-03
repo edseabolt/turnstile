@@ -11,13 +11,10 @@
  * rather than re-proving it. Pure w.r.t. journal/fs by design.
  */
 
-import { evictTo } from "./bounded.ts"
 import { DEFAULT_EVIDENCE_PATTERN } from "./config.ts"
+import { createEvidenceHits } from "./evidence-hits.ts"
 import type { Journaler } from "./journal.ts"
 import type { TurnstileConfig } from "./types.ts"
-
-/** Per-session hit cap: a ring buffer of exit-0 hit timestamps. */
-const MAX_HITS_PER_SESSION = 8
 
 /** Fallback pattern used when the configured `evidencePattern` fails to compile. */
 const FALLBACK_EVIDENCE_PATTERN = new RegExp(DEFAULT_EVIDENCE_PATTERN, "i")
@@ -111,87 +108,5 @@ export function createEvidenceTracker(
         error: `config evidencePattern: invalid regex, using default: ${String(cause)}`,
       }),
   )
-  // Raw session ID → ring of exit-0 hit timestamps; insertion-order LRU,
-  // capped at `config.maxSessions` (mirroring state.ts bookkeeping).
-  const hits = new Map<string, number[]>()
-
-  /**
-   * Promotes a key to most-recently-used in an insertion-ordered map.
-   * @param map The map to reorder.
-   * @param key The key to touch (no-op when absent).
-   */
-  function promote(map: Map<string, number[]>, key: string): void {
-    const v = map.get(key)
-    if (v !== undefined) {
-      map.delete(key)
-      map.set(key, v)
-    }
-  }
-
-  /**
-   * Evicts least-recently-used entries until within the cap.
-   * @param map The map to trim.
-   */
-  function cap(map: Map<string, number[]>): void {
-    evictTo(map, config.maxSessions)
-  }
-
-  function observe(raw: string, command: unknown, exit: unknown): boolean {
-    if (!raw) return false
-    if (exit !== 0) return false
-    if (!pattern.test(String(command ?? ""))) return false
-    const bucket = [...(hits.get(raw) ?? []), Date.now()]
-    if (bucket.length > MAX_HITS_PER_SESSION) bucket.length = MAX_HITS_PER_SESSION
-    hits.set(raw, bucket)
-    cap(hits)
-    return true
-  }
-
-  /**
-   * Whether a bucket's latest hit satisfies the window bound.
-   * @param bucket The bucket's hit timestamps (always non-empty).
-   * @param since The inclusive lower bound, or undefined for no bound.
-   * @returns True when the bucket qualifies.
-   */
-  function windowQualifies(bucket: number[], since: number | undefined): boolean {
-    if (since === undefined) return true
-    return bucket[bucket.length - 1]! >= since
-  }
-
-  function has(sid: string, since?: number): boolean {
-    if (!sid) return false
-    // Touch unconditionally: present keys reorder to MRU, absent keys no-op.
-    promote(hits, sid)
-    // A stale direct bucket falls through to the child scan: an in-window
-    // child hit still qualifies when the direct one predates the window.
-    // Without `since` this is byte-identical to the legacy direct-hit return.
-    if (hits.has(sid) && windowQualifies(hits.get(sid)!, since)) return true
-    for (const [child, bucket] of hits) {
-      if (parentOf(child) === sid && windowQualifies(bucket, since)) {
-        hits.delete(child)
-        hits.set(sid, bucket)
-        promote(hits, sid)
-        return true
-      }
-    }
-    return false
-  }
-
-  function snapshot(): Array<{ session: string; last: number }> {
-    const view: Array<{ session: string; last: number }> = []
-    for (const [session, bucket] of hits) {
-      view.push({ session, last: bucket[bucket.length - 1]! })
-    }
-    return view
-  }
-
-  function clear(sid: string): void {
-    if (!sid) return
-    hits.delete(sid)
-    for (const [child] of hits) {
-      if (parentOf(child) === sid) hits.delete(child)
-    }
-  }
-
-  return { observe, has, clear, snapshot }
+  return createEvidenceHits(config.maxSessions, pattern, parentOf)
 }
