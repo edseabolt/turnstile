@@ -1,6 +1,6 @@
 ---
 name: turnstile-off
-description: Suspend turnstile gate enforcement for this session by composing a copy-ready TURNSTILE OFF: prompt for the user to send themselves; use when the user asks to pause gate enforcement or turn turnstile off for the session.
+description: Suspend turnstile gate enforcement for this session by composing a copy-ready suspension prompt for the user to send themselves; use when the user asks to pause gate enforcement or turn turnstile off for the session.
 ---
 
 # Turnstile off (suspend enforcement)

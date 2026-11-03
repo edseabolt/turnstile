@@ -1,6 +1,6 @@
 ---
 name: turnstile-on
-description: Resume turnstile gate enforcement for this session by composing a copy-ready TURNSTILE ON: prompt for the user to send themselves; use when the user asks to resume enforcement or turn turnstile back on.
+description: Resume turnstile gate enforcement for this session by composing a copy-ready resume prompt for the user to send themselves; use when the user asks to resume enforcement or turn turnstile back on.
 ---
 
 # Turnstile on (resume enforcement)

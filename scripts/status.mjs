@@ -225,6 +225,16 @@ function planNameOf(plan) {
 }
 
 /**
+ * Resolves the config file path the config layer uses (env override → home
+ * default).
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {string} Absolute path to the turnstile config file.
+ */
+function resolveConfigPath(env) {
+  return env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
+}
+
+/**
  * Reads and parses the config file the config layer uses, silently tolerating
  * a missing or malformed file (fail-open). Returns `null` when nothing usable
  * is present.
@@ -232,8 +242,7 @@ function planNameOf(plan) {
  * @returns {Record<string, unknown> | null} The parsed config object, or null.
  */
 function loadConfigFile(env) {
-  const configPath =
-    env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
+  const configPath = resolveConfigPath(env)
   try {
     const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
     return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null
@@ -278,8 +287,7 @@ function resolveObserveSessions(value) {
  * @returns {{ allowSuspend: boolean, suspendMarker: string, resumeMarker: string, configPath: string, configFilePresent: boolean }} The suspension block.
  */
 function resolveSuspension(env) {
-  const configPath =
-    env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
+  const configPath = resolveConfigPath(env)
   const config = loadConfigFile(env)
   const marker = (v, dflt) => (typeof v === "string" && v ? v : dflt)
   return {

@@ -250,6 +250,34 @@ test("apply: removes a repo-owned retired leftover and leaves a foreign one", (t
   assert.equal(readlinkSync(retiredForeign), foreign)
 })
 
+/** A dangling repo-owned retired symlink (target deleted) is still removed; a dangling foreign one is left. */
+test("apply: removes a repo-owned dangling retired symlink and leaves a foreign dangling one", (t) => {
+  const home = freshScratch(t)
+  const retiredRepo = homePath(home, ".config/opencode/skills/old-skill/SKILL.md")
+  const retiredForeign = homePath(home, ".config/opencode/skills/stray-skill/SKILL.md")
+  mkdirSync(dirname(retiredRepo), { recursive: true })
+  mkdirSync(dirname(retiredForeign), { recursive: true })
+  // Targets no longer exist in the repo / anywhere: both links dangle.
+  symlinkSync(join(repoRoot, "skills/gone-skill/SKILL.md"), retiredRepo)
+  symlinkSync(homePath(home, "nowhere.txt"), retiredForeign)
+  const manifest = writeManifest(home, {
+    mode: "link",
+    ledger: "~/ledger.json",
+    retired: [
+      "~/.config/opencode/skills/old-skill/SKILL.md",
+      "~/.config/opencode/skills/stray-skill/SKILL.md",
+    ],
+  })
+  const res = spawnInstaller(["--manifest", manifest], { home })
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /install: removed retired .*old-skill\/SKILL\.md/)
+  assert.match(res.stdout, /install: retired .*stray-skill\/SKILL\.md — symlink not repo-owned/)
+  assert.equal(existsSync(retiredRepo), false)
+  assert.equal(existsSync(dirname(retiredRepo)), false, "the emptied skill dir must be removed")
+  assert.equal(readlinkSync(retiredForeign), homePath(home, "nowhere.txt"))
+  assert.ok(existsSync(dirname(retiredForeign)), "a non-empty leftover dir must stay")
+})
+
 /** A matching install checks OK; a ledger version older than the package is advisory and still OK. */
 test("--check: OK for a matching install; an older ledger version stays exit 0", (t) => {
   const home = freshScratch(t)
