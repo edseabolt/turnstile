@@ -1367,3 +1367,115 @@ test("status omits the autoaccept advisory when the host config is missing or ma
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ── suspension block (status --json `suspension`) ───────────────────────────
+
+/** The `--json` suspension block shape the suspension tests key off. */
+interface SuspensionJSON {
+  allowSuspend: boolean
+  suspendMarker: string
+  resumeMarker: string
+  configPath: string
+  configFilePresent: boolean
+}
+
+/**
+ * Reads the `suspension` block from a status `--json` document, failing the
+ * test loudly when the block is absent.
+ * @param stdout The raw status `--json` stdout.
+ * @returns The parsed suspension block.
+ */
+function suspensionOf(stdout: string): SuspensionJSON {
+  const obj = JSON.parse(stdout) as StatusJSON & { suspension?: SuspensionJSON }
+  const s = obj.suspension
+  if (s === undefined) throw new Error("suspension block absent from status output")
+  return s
+}
+
+/** The suspension block exposes the defaults when no config file exists. */
+test("status --json exposes the suspension block with defaults when no config file exists", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const res = runStatus(dir, ["--json"], { TURNSTILE_CONFIG: join(cfgDir, "absent.json") })
+    assert.equal(code(res), 0)
+    const s = suspensionOf(res.stdout)
+    assert.equal(s.allowSuspend, true)
+    assert.equal(s.suspendMarker, "TURNSTILE OFF:")
+    assert.equal(s.resumeMarker, "TURNSTILE ON:")
+    assert.equal(s.configFilePresent, false)
+    assert.equal(s.configPath, join(cfgDir, "absent.json"))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+/** A config file's suspension keys surface through the block, including the
+ *  `allowSuspend: false` kill-switch, with `configFilePresent` flipping true. */
+test("status --json surfaces configured markers and allowSuspend:false from the config file", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({ suspendMarker: "PAUSE:", resumeMarker: "RESUME:", allowSuspend: false }),
+    )
+    const res = runStatus(dir, ["--json"], { TURNSTILE_CONFIG: cfgPath })
+    assert.equal(code(res), 0)
+    const s = suspensionOf(res.stdout)
+    assert.equal(s.suspendMarker, "PAUSE:")
+    assert.equal(s.resumeMarker, "RESUME:")
+    assert.equal(s.allowSuspend, false, "the kill-switch surfaces as configured")
+    assert.equal(s.configFilePresent, true)
+    assert.equal(s.configPath, cfgPath)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+/** An explicit `allowSuspend: true` in the config file surfaces as true —
+ *  the kill-switch assertion's complement, configured-from-file. */
+test("status --json surfaces an explicit allowSuspend:true from the config file", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(cfgPath, JSON.stringify({ allowSuspend: true }))
+    const res = runStatus(dir, ["--json"], { TURNSTILE_CONFIG: cfgPath })
+    assert.equal(code(res), 0)
+    const s = suspensionOf(res.stdout)
+    assert.equal(s.allowSuspend, true)
+    assert.equal(s.configFilePresent, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+/** Junk suspension values in the config file fall back silently to the
+ *  defaults (fail-open): a non-string marker and a non-strict-false
+ *  `allowSuspend` are both rejected. */
+test("status --json falls back to defaults on junk suspension values", () => {
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({ suspendMarker: 42, resumeMarker: "", allowSuspend: "no" }),
+    )
+    const res = runStatus(dir, ["--json"], { TURNSTILE_CONFIG: cfgPath })
+    assert.equal(code(res), 0)
+    const s = suspensionOf(res.stdout)
+    assert.equal(s.suspendMarker, "TURNSTILE OFF:")
+    assert.equal(s.resumeMarker, "TURNSTILE ON:")
+    assert.equal(s.allowSuspend, true, "only a strict false disables suspension")
+    assert.equal(s.configFilePresent, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})

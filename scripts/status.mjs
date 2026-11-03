@@ -61,6 +61,16 @@ function defaultMetricsDir(env) {
  */
 const DEFAULT_REPLAY_TAIL_LINES = 2000
 
+/**
+ * Suspension-config defaults. These mirror the runtime config defaults in
+ * src/config.ts (this standalone script cannot import TS source — same
+ * precedent as DEFAULT_REPLAY_TAIL_LINES); a configured value in the config
+ * file overrides each one.
+ */
+const DEFAULT_SUSPEND_MARKER = "TURNSTILE OFF:"
+const DEFAULT_RESUME_MARKER = "TURNSTILE ON:"
+const DEFAULT_ALLOW_SUSPEND = true
+
 /** Age (ms) a cached update-check result stays fresh (24h). */
 const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -215,6 +225,16 @@ function planNameOf(plan) {
 }
 
 /**
+ * Resolves the config file path the config layer uses (env override → home
+ * default).
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {string} Absolute path to the turnstile config file.
+ */
+function resolveConfigPath(env) {
+  return env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
+}
+
+/**
  * Reads and parses the config file the config layer uses, silently tolerating
  * a missing or malformed file (fail-open). Returns `null` when nothing usable
  * is present.
@@ -222,8 +242,7 @@ function planNameOf(plan) {
  * @returns {Record<string, unknown> | null} The parsed config object, or null.
  */
 function loadConfigFile(env) {
-  const configPath =
-    env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
+  const configPath = resolveConfigPath(env)
   try {
     const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
     return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null
@@ -255,6 +274,29 @@ function resolveReplayTailLines(value) {
  */
 function resolveObserveSessions(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+/**
+ * Resolves the suspension block for the `--json` document: the resolved
+ * `allowSuspend` kill-switch, the suspend/resume markers, the config path
+ * consulted, and whether that file was present. Values come from the config
+ * file (env → file → default precedence via `loadConfigFile`); a non-empty
+ * string marker or a strictly-`false` `allowSuspend` overrides the defaults —
+ * junk values fall back silently (fail-open, same as the tail bound).
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {{ allowSuspend: boolean, suspendMarker: string, resumeMarker: string, configPath: string, configFilePresent: boolean }} The suspension block.
+ */
+function resolveSuspension(env) {
+  const configPath = resolveConfigPath(env)
+  const config = loadConfigFile(env)
+  const marker = (v, dflt) => (typeof v === "string" && v ? v : dflt)
+  return {
+    allowSuspend: config?.allowSuspend === false ? false : DEFAULT_ALLOW_SUSPEND,
+    suspendMarker: marker(config?.suspendMarker, DEFAULT_SUSPEND_MARKER),
+    resumeMarker: marker(config?.resumeMarker, DEFAULT_RESUME_MARKER),
+    configPath,
+    configFilePresent: fs.existsSync(configPath),
+  }
 }
 
 /**
@@ -856,6 +898,7 @@ async function main(argv) {
     journal: journalPath,
     files,
     noJournal: files.length === 0,
+    suspension: resolveSuspension(process.env),
     sessions: {},
   }
 
