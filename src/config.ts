@@ -131,12 +131,21 @@ function defaultReadScalars(): Pick<TurnstileConfig, "readWarn" | "readBlock" | 
  */
 function defaultMarkerScalars(): Pick<
   TurnstileConfig,
-  "waiverMarker" | "approvalMarker" | "plansDir" | "trace"
+  | "waiverMarker"
+  | "approvalMarker"
+  | "plansDir"
+  | "planReviewAcceptMarker"
+  | "planReviewRejectMarker"
+  | "trace"
 > {
   return {
     waiverMarker: "USER WAIVER:",
     approvalMarker: "PLAN APPROVED:",
     plansDir: path.join(".opencode", "plans"),
+    // User plan review (opt-in via planUserReview): the prompt literals that
+    // accept or reject the written plan. Config-controlled like taskDoneMarker.
+    planReviewAcceptMarker: "PLAN REVIEWED:",
+    planReviewRejectMarker: "PLAN REJECTED:",
     trace: true,
   }
 }
@@ -192,7 +201,7 @@ function defaultModeScalars(): Pick<
  */
 function defaultEnforcementScalars(): Pick<
   TurnstileConfig,
-  "intentNudge" | "alwaysEnforce" | "planImpactStrict"
+  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview"
 > {
   return {
     // Advisory intent nudge is on by default: an admitted prompt classified
@@ -215,6 +224,10 @@ function defaultEnforcementScalars(): Pick<
     // `planImpactStrict: true` restores blocking for structural overlap
     // (files or the ## Decomposition section named by the plan).
     planImpactStrict: false,
+    // User plan review (opt-in): when true, the plan-reviewer dispatch is
+    // blocked after a planner dispatch until the user's own prompt carries
+    // the accept or reject literal. Default false — fully-automated flow.
+    planUserReview: false,
   }
 }
 

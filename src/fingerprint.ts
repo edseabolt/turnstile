@@ -95,7 +95,11 @@ export function worktreeFingerprint(projectDir: string, exec: ExecFile = realExe
  * (the test gate `hasGatePass` or the landing approval `hasReviewApprove`),
  * so a continuation arriving before any `GATE: PASS` or reviewer
  * `VERDICT: APPROVE` resets fully rather than carrying a
- * freshly-earned-but-empty flag. Only `taskFingerprint` distinguishes a
+ * freshly-earned-but-empty flag. An armed user-review pause
+ * (`planReviewPending`) also carries: it is restart-sticky state that must
+ * survive the boundary until the user resolves it (the accept/reject
+ * literals act only while it is pending). Only `taskFingerprint`
+ * distinguishes a
  * same-branch continuation from a genuinely new task, so a fingerprint
  * mismatch never carries. A retired bucket (`taskComplete`) carries only in
  * the interrupted-review case (`isInterruptedReview`): a green gate, no
@@ -119,7 +123,7 @@ export function shouldCarryGate(
   return (
     enabled &&
     prior !== undefined &&
-    (prior.hasGatePass || prior.hasReviewApprove) &&
+    (prior.hasGatePass || prior.hasReviewApprove || prior.planReviewPending) &&
     prior.taskFingerprint !== "" &&
     prior.taskFingerprint === fingerprint &&
     (!prior.taskComplete || isInterruptedReview(prior))

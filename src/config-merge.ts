@@ -135,6 +135,9 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "intentNudge") config.intentNudge = value as boolean
   else if (key === "alwaysEnforce") config.alwaysEnforce = value as boolean
   else if (key === "planImpactStrict") config.planImpactStrict = value as boolean
+  else if (key === "planUserReview") config.planUserReview = value as boolean
+  else if (key === "planReviewAcceptMarker") config.planReviewAcceptMarker = value as string
+  else if (key === "planReviewRejectMarker") config.planReviewRejectMarker = value as string
   else if (key === "observeSessions") config.observeSessions = value as number
   else if (key === "agentMarkerRetry") config.agentMarkerRetry = value as number
   else config[key as keyof TurnstileConfig] = value as never

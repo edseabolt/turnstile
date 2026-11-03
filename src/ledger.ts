@@ -431,6 +431,8 @@ interface ReplayMaps {
   lastRefusedApprove: Map<string, boolean>
   /** Last-wins engagement value per session (the `engagement` entry kind). */
   lastEngagement: Map<string, boolean>
+  /** Last-wins `plan-review` action per session (`pause`/`accept`/`reject`). */
+  lastPlanReview: Map<string, string>
   /** Restored child→parent edges (last-wins per child), for the setup re-seed. */
   childEdges: Map<string, { parent: string; agent: string }>
   /** Ordered per-session task-scope fold (see {@link ScopeFold}). */
@@ -547,6 +549,7 @@ function newReplayMaps(): ReplayMaps {
     lastEnsemble: new Map(),
     lastRefusedApprove: new Map(),
     lastEngagement: new Map(),
+    lastPlanReview: new Map(),
     childEdges: new Map(),
     scopeFolds: new Map(),
   }
@@ -688,7 +691,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "permission" &&
     entry.type !== "task-complete" &&
     entry.type !== "engagement" &&
-    entry.type !== "plan-impact"
+    entry.type !== "plan-impact" &&
+    entry.type !== "plan-review"
   ) {
     return null
   }
@@ -1137,6 +1141,28 @@ function foldEngagement(
   return null
 }
 
+/**
+ * Folds a `plan-review` row: last-wins action per session, recorded only for
+ * the three lifecycle literals (`pause`/`accept`/`reject`); a hostile or
+ * unknown action drops the record (fold-inert, like a non-boolean
+ * engagement field).
+ * @param entry The parsed `plan-review` entry.
+ * @param maps The replay maps holding the last-wins plan-review map.
+ * @param sessionID The validated session ID.
+ * @returns Always null (the row folds or is inert; never dropped).
+ */
+function foldPlanReview(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  const action = entry.action
+  if (action === "pause" || action === "accept" || action === "reject") {
+    maps.lastPlanReview.set(sessionID, action)
+  }
+  return null
+}
+
 /** Dispatch table for the replay fold: one arm per known entry `type`.
  *  Unknown types (and the inert `plan-impact` rows) fall through to the
  *  ensemble arm via the `foldReplayLine` fallback, matching the historical
@@ -1163,6 +1189,7 @@ const REPLAY_FOLDS: Record<string, ReplayFoldArm> = {
     return null
   },
   engagement: (entry, maps, sessionID) => foldEngagement(entry, maps, sessionID),
+  "plan-review": (entry, maps, sessionID) => foldPlanReview(entry, maps, sessionID),
   "plan-impact": () => null,
 }
 
@@ -1440,8 +1467,26 @@ function restoreEngagement(
 }
 
 /**
+ * Restores the last-wins `plan-review` action per session: `pause` re-arms
+ * the user-review pending flag; `accept` and `reject` restore it cleared (a
+ * reject also journaled `task-complete`, whose scope fold retires the task —
+ * mergeAfterReplay then returns a fresh bucket, so the retired task never
+ * carries the flag).
+ * @param states The session→state map to populate.
+ * @param lastPlanReview The replayed last-wins plan-review actions.
+ */
+function restorePlanReview(
+  states: Map<string, GateState>,
+  lastPlanReview: Map<string, string>,
+): void {
+  for (const [sessionID, action] of lastPlanReview) {
+    graceBucket(states, sessionID).planReviewPending = action === "pause"
+  }
+}
+
+/**
  * Runs the restore loops in order (gate, plan, verdict, human-grant,
- * scope fold, ensemble, engagement) over the replayed maps.
+ * scope fold, ensemble, engagement, plan-review) over the replayed maps.
  * @param states The session→state map to populate.
  * @param maps The filled replay maps.
  * @param reviewerAgent The configured reviewer agent name a credited verdict
@@ -1469,6 +1514,7 @@ function restoreBuckets(
   restoreScopeFolds(states, maps, creditedApprovals)
   restoreEnsembleCounts(states, maps.lastEnsemble)
   restoreEngagement(states, maps.lastEngagement)
+  restorePlanReview(states, maps.lastPlanReview)
 }
 
 /**

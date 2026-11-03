@@ -526,6 +526,54 @@ function dormantDispatchArm(
 }
 
 /**
+ * Arms the user-review pause at planner-dispatch admit time: a planner
+ * dispatch is the moment a plan-writing round begins, so the pause survives
+ * the next prompt boundary regardless of task-scope reset (the flag is in
+ * the `carryStickyFlags` set). Inert unless `planUserReview` is on; a
+ * re-plan re-arms naturally (an already-pending flag journals nothing).
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ */
+function armPlanReviewBody(st: DispatchGuardState, sessionID: string): void {
+  if (!st.config.planUserReview) return
+  const s = st.ledger.state(sessionID)
+  if (s.planReviewPending) return
+  s.planReviewPending = true
+  st.journaler.journal({ type: "plan-review", sessionID, action: "pause" })
+}
+
+/**
+ * The user-review pause arm for a plan-reviewer dispatch: while the pending
+ * flag holds (and `planUserReview` is on), the dispatch is blocked with a
+ * deliberate `BLOCKED by turnstile:` error naming the plans dir and both
+ * literals — fail-toward-strict, consistent with the plan-approval gate it
+ * precedes. Returns without throwing when the feature is off or nothing is
+ * pending; otherwise journals the blocked row and throws (never returns
+ * normally while pending).
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ */
+function planReviewPendingBlockBody(st: DispatchGuardState, sessionID: string): void {
+  if (!st.config.planUserReview) return
+  if (!st.ledger.state(sessionID).planReviewPending) return
+  st.journaler.journal({
+    type: "blocked",
+    sessionID,
+    agent: st.config.agents.planReviewer,
+    reason: "plan-review-pending",
+  })
+  throw new BlockError(
+    `BLOCKED by turnstile: user plan review is enabled (planUserReview) and the planner ` +
+      `wrote a plan for this task. Present the plan file(s) under ${st.config.plansDir} to ` +
+      `the user for review and edits; dispatch this ${st.config.agents.planReviewer} only ` +
+      `after the user's OWN prompt contains ${st.config.planReviewAcceptMarker} (accept — ` +
+      `the edited file is what the reviewer reads), or ${st.config.planReviewRejectMarker} ` +
+      `to abort/regenerate without a reviewer round. Do not fabricate or relay these markers.`,
+    "plan-gate",
+  )
+}
+
+/**
  * Guard-and-meter-and-journal section of a task dispatch: the budget guard,
  * the reviewer evidence guard, and the executor branch — then the counters
  * advance and the dispatch entry is recorded at the admitted exit (a blocked
@@ -549,6 +597,21 @@ async function guardedTaskDispatchBody(
     if (dormantDispatchArm(st, sessionID, agent, description)) return
     waived = dispatchBudgetBody(st, sessionID, agent)
     if (agent === st.config.agents.reviewer) reviewerDecisionRecheckBody(st, sessionID)
+    // The user-review pause sits after the reviewer recheck and before the
+    // executor branch. It is unreachable while dormant: arming implies
+    // engagement (the planner dispatch that armed the pause ran the full
+    // chain and engaged the pipeline), so a dormant session never has the
+    // pending flag set. The pending read is wrapped fail-open: an internal
+    // error journals and falls through (dispatch allowed) — only the
+    // deliberate block throws.
+    if (agent === st.config.agents.planReviewer) {
+      try {
+        planReviewPendingBlockBody(st, sessionID)
+      } catch (e) {
+        if (e instanceof BlockError) throw e
+        st.journaler.journal({ type: "error", sessionID, error: `plan-review gate: ${e}` })
+      }
+    }
     if (agent === st.config.agents.executor) {
       const admitted = await guardExecutorDispatch(
         st,
@@ -559,6 +622,13 @@ async function guardedTaskDispatchBody(
         waived,
       )
       if (admitted) return
+    }
+    if (agent === st.config.agents.planner) {
+      try {
+        armPlanReviewBody(st, sessionID)
+      } catch (e) {
+        st.journaler.journal({ type: "error", sessionID, error: `plan-review arm: ${e}` })
+      }
     }
     allowDispatchBody(st, sessionID, agent, description, waived)
   } catch (e) {

@@ -633,6 +633,14 @@ export interface GateState {
    * that replay restores last-wins.
    */
   engaged: boolean
+  /**
+   * A planner dispatch was admitted and the user has not yet accepted or
+   * rejected the written plan. Restart-sticky: carried across task-scope
+   * resets via `carryStickyFlags` and restored by the `plan-review` journal
+   * fold. Cleared only by the accept capture or the reject retire. Consulted
+   * only while `planUserReview` is on.
+   */
+  planReviewPending: boolean
 }
 
 /** One first-sight marker observation returned by the marker parser. */
@@ -900,6 +908,27 @@ export interface TurnstileConfig {
    * false.
    */
   planImpactStrict: boolean
+  /**
+   * When true, block the plan-reviewer dispatch after a planner dispatch
+   * until the user accepts or rejects the written plan via their own prompt
+   * (the configured `planReviewAcceptMarker` / `planReviewRejectMarker`
+   * literals). Default false — the fully-automated flow.
+   */
+  planUserReview: boolean
+  /**
+   * Literal marker that, appearing in the user's own prompt, accepts the
+   * written plan and unblocks the plan-reviewer dispatch (the edited file is
+   * what the reviewer reads). Only consulted while `planUserReview` is on.
+   * Default `PLAN REVIEWED:`.
+   */
+  planReviewAcceptMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, rejects the
+   * written plan: retires the task scope without a counted plan-reviewer
+   * dispatch. Only consulted while `planUserReview` is on. Default
+   * `PLAN REJECTED:`.
+   */
+  planReviewRejectMarker: string
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */
