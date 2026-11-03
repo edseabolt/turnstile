@@ -1,9 +1,9 @@
 ---
-name: turnstile-setup
-description: Install the turnstile plugin and pipeline agents into the user's ~/.config/opencode and verify sync. Use when the user asks to set up turnstile, run the pipeline gates, add pipeline gates to a session, or after changing marker syntax in this repo. The plugin injects the orchestrator policy at runtime (primarily via the session.context channel, with the execute.after hook as the fallback re-supply); it does not write a contract block into AGENTS.md.
+name: turnstile-init
+description: Install the turnstile plugin and pipeline agents into the user's ~/.config/opencode and verify sync. Use when the user asks to set up turnstile, init or check the install, uninstall it, or check status of the turnstile install, or after changing marker syntax in this repo. The plugin injects the orchestrator policy at runtime (primarily via the session.context channel, with the execute.after hook as the fallback re-supply); it does not write a contract block into AGENTS.md.
 ---
 
-# Turnstile setup
+# Turnstile init
 
 Install the turnstile plugin and the pipeline agent definitions into the
 user's `~/.config/opencode` and verify the install. The orchestrator policy

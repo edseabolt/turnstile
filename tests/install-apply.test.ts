@@ -328,13 +328,13 @@ test("apply copy: a directory entry copies all files and ledger-records each", (
   })
   const res = spawnInstaller(["--manifest", manifest], { home })
   assert.equal(res.status, 0, res.stderr)
-  const leaf = homePath(home, ".config/opencode/skills/tree/turnstile-setup/SKILL.md")
+  const leaf = homePath(home, ".config/opencode/skills/tree/turnstile-init/SKILL.md")
   assert.equal(
     readFileSync(leaf, "utf8"),
-    readFileSync(join(repoRoot, "skills/turnstile-setup/SKILL.md"), "utf8"),
+    readFileSync(join(repoRoot, "skills/turnstile-init/SKILL.md"), "utf8"),
   )
   const record = readLedger(ledgerOf(home))?.[leaf]
-  assert.equal(record?.src, "skills/turnstile-setup/SKILL.md")
+  assert.equal(record?.src, "skills/turnstile-init/SKILL.md")
 })
 
 /** A directory entry links per file in link mode; uninstall removes them all. */
@@ -346,8 +346,8 @@ test("apply link + uninstall: a directory entry links each file and removes them
     links: [{ src: "skills", dest: "~/.config/opencode/skills/tree" }],
   })
   assert.equal(spawnInstaller(["--manifest", manifest], { home }).status, 0)
-  const leaf = homePath(home, ".config/opencode/skills/tree/turnstile-setup/SKILL.md")
-  assert.equal(realpathSync(leaf), join(repoRoot, "skills/turnstile-setup/SKILL.md"))
+  const leaf = homePath(home, ".config/opencode/skills/tree/turnstile-init/SKILL.md")
+  assert.equal(realpathSync(leaf), join(repoRoot, "skills/turnstile-init/SKILL.md"))
   const res = spawnInstaller(["--manifest", manifest, "--uninstall"], { home })
   assert.equal(res.status, 0, res.stderr)
   assert.equal(existsSync(leaf), false)

@@ -652,6 +652,49 @@ Shared caveats:
 
 ---
 
+### Vendored skills and commands
+
+The full install ships five skills into `~/.config/opencode/skills/` and two
+slash commands into `~/.config/opencode/command/`:
+
+| Skill / command      | What it does                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
+| `turnstile-init`     | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`). |
+| `turnstile-off`      | Compose a copy-ready suspend prompt for **you** to send (see below).                                     |
+| `turnstile-on`       | Compose a copy-ready resume prompt for **you** to send.                                                  |
+| `turnstile-evidence` | Publish or inspect an evidence bundle (`evidence`, §6).                                                  |
+| `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                             |
+| `/turnstile-status`  | Run `status` and present the result readably; forwards `$ARGUMENTS` (e.g. `--json`).                     |
+| `/turnstile-log`     | Tail the JSONL journal via `log` (default `--tail 50`); forwards `$ARGUMENTS`.                           |
+
+The on/off skills never send the suspend/resume markers themselves — the
+markers are honored only from user-typed prompts, so an agent relaying one
+does nothing. Instead the skill reads the resolved suspension config from
+`status --json`'s `suspension` block:
+
+```json
+"suspension": {
+  "allowSuspend": true,
+  "suspendMarker": "TURNSTILE OFF:",
+  "resumeMarker": "TURNSTILE ON:",
+  "configPath": "~/.config/opencode/turnstile.json",
+  "configFilePresent": true
+}
+```
+
+A worked `turnstile-off` flow: the skill runs `status --json`, reads
+`suspendMarker` and `allowSuspend` from the block, and hands you a
+copy-ready prompt — "Send this yourself (do not let the agent send it):
+`<suspendMarker> <your reason>`". If your config sets `allowSuspend: false`
+(the kill switch), the skill says so and stops — it does not compose a
+prompt that would be refused. A renamed marker (`suspendMarker` in §4's
+table) is picked up automatically because the value always comes from the
+CLI, never from the skill text. All five skills and both commands forward
+any options you name to the CLI verbatim and surface usage errors instead
+of retrying.
+
+---
+
 ## 4. Configuration
 
 Defaults live in code (`src/config.ts`); override via
@@ -849,7 +892,10 @@ documented gap, not a silence: the entries are written, they are just not
 rendered by status yet. The journal reflects the last prompt-cycle;
 in-memory state can be fresher (a session that has prompted since is newer
 than the journal records), so treat status as the durable state of the
-previous cycle rather than a live snapshot.
+previous cycle rather than a live snapshot. The `--json` document also
+carries a top-level `suspension` block (the resolved `allowSuspend`,
+`suspendMarker`/`resumeMarker`, config path, and file presence) — the
+surface the `turnstile-off`/`turnstile-on` skills read (§3).
 
 ### Sharing the evidence
 

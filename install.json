@@ -34,17 +34,43 @@
       "dest": "~/.config/opencode/agents/debugger.md"
     },
     {
-      "src": "skills/turnstile-setup/SKILL.md",
-      "dest": "~/.config/opencode/skills/turnstile-setup/SKILL.md"
+      "src": "skills/turnstile-init/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-init/SKILL.md"
     },
     {
-      "src": "skills/turnstile-suspend/SKILL.md",
-      "dest": "~/.config/opencode/skills/turnstile-suspend/SKILL.md"
+      "src": "skills/turnstile-on/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-on/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-off/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-off/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-evidence/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-evidence/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-config/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-config/SKILL.md"
+    },
+    {
+      "src": "commands/turnstile-status.md",
+      "dest": "~/.config/opencode/command/turnstile-status.md"
+    },
+    {
+      "src": "commands/turnstile-log.md",
+      "dest": "~/.config/opencode/command/turnstile-log.md"
     }
   ],
   "retired": [
     {
       "dest": "~/.config/opencode/plugin/turnstile.ts"
+    },
+    {
+      "dest": "~/.config/opencode/skills/turnstile-suspend/SKILL.md"
+    },
+    {
+      "dest": "~/.config/opencode/skills/turnstile-setup/SKILL.md"
     }
   ],
   "verify": ["~/.config/opencode/plugins/turnstile.ts"]
