@@ -43,6 +43,16 @@ engaged -> engaged: "continuation carry keeps it\n(replay restores last-wins)" {
 
 start -> fresh
 fresh -> planning: "planner dispatch\ncap 3, budget 16 total"
+pause: "User plan review pending\n(planUserReview: true)\nplan-reviewer dispatch BLOCKED" {
+  shape: oval
+  style.stroke: "#c33"
+}
+planning -> pause: "planner dispatch admitted arms\nplanReviewPending (plan-review pause row)"
+pause -> planning: "PLAN REVIEWED: in the user's own prompt\n(accept — the edited file is what the reviewer reads)"
+pause -> end: "PLAN REJECTED: in the user's own prompt\n(reject — task retired, no reviewer round;\na new planner dispatch re-arms the pause)"
+pause -> pause: "survives restart (plan-review replay fold,\nlast-wins) and the prompt boundary\n(carryStickyFlags)" {
+  style.stroke-dash: 4
+}
 planning -> planok: "plan-reviewer APPROVE | PLAN APPROVED: | permission 'always'"
 planning -> planning: "BLOCK → revise → re-review\n(round-scoped attribution)\n[observe period: suppressed —\nwould-block journaled, the call\nproceeds metered]" {
   style.stroke-dash: 4

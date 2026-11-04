@@ -67,8 +67,10 @@ import {
   symlink,
   unlink,
   rename,
+  rmdir,
   copyFile,
   lstat,
+  readlink,
   realpath,
   realpathSync,
 } from "node:fs"
@@ -85,6 +87,8 @@ const renameP = promisify(rename)
 const copyFileP = promisify(copyFile)
 const lstatP = promisify(lstat)
 const realpathP = promisify(realpath)
+const readlinkP = promisify(readlink)
+const rmdirP = promisify(rmdir)
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const defaultLedger = "~/.config/opencode/.turnstile-install.json"
@@ -485,13 +489,29 @@ async function kindAt(dest) {
 }
 
 /**
- * Returns a symlink's resolved target, or null when unavailable.
+ * Returns a symlink's resolved target, or null when unavailable (including a
+ * dangling link, whose realpath throws).
  * @param {string} dest Destination path.
  * @returns {Promise<string|null>} Resolved link target or null.
  */
 async function linkTarget(dest) {
   try {
     return await realpathP(dest)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolves a symlink's raw target against its directory without requiring the
+ * target to exist. Used as a fallback when realpath fails on a dangling link.
+ * @param {string} dest Destination path.
+ * @returns {Promise<string|null>} Absolute unresolved target path, or null.
+ */
+async function rawLinkTarget(dest) {
+  try {
+    const raw = await readlinkP(dest)
+    return isAbsolute(raw) ? raw : resolve(dirname(dest), raw)
   } catch {
     return null
   }
@@ -733,7 +753,13 @@ async function removeEntry(dest, mode, ledger) {
   if (kind === "missing") return { acted: false }
   if (kind === "link") {
     const target = await linkTarget(dest)
-    if (!ownedByRepo(target)) return { acted: false, note: `symlink not repo-owned (${target})` }
+    const owned =
+      ownedByRepo(target) ||
+      // A dangling link's realpath throws; fall back to the raw target so a
+      // repo-owned link whose source was deleted is still removable.
+      (target === null && ownedByRepo(await rawLinkTarget(dest)))
+    if (!owned)
+      return { acted: false, note: `symlink not repo-owned (${target ?? "unresolvable"})` }
     if (!mode.write) return { acted: true, note: "link still present" }
     await unlinkP(dest)
     return { acted: true }
@@ -746,6 +772,16 @@ async function removeEntry(dest, mode, ledger) {
     return { acted: true }
   }
   return { acted: false, note: `left alone (${kind})` }
+}
+
+/**
+ * Removes a retired entry's now-empty parent directory, ignoring failures
+ * (a non-empty or already-gone directory is fine to leave).
+ * @param {string} dest Destination path whose parent may be an empty leftover.
+ * @returns {Promise<void>} Resolves when the cleanup attempt is done.
+ */
+async function removeEmptyParentDir(dest) {
+  await rmdirP(dirname(dest)).catch(() => {})
 }
 
 /**
@@ -788,6 +824,9 @@ async function apply(manifest, args) {
     for (const dest of manifest.retired) {
       try {
         const result = await removeEntry(dest, { write: true }, ledger)
+        // Also drop a parent directory the retired entry left empty (or had
+        // already emptied on a previous run); a no-op when absent/non-empty.
+        await removeEmptyParentDir(dest)
         if (result.acted) {
           changed = true
           console.log(`install: removed retired ${dest}`)
@@ -825,6 +864,9 @@ async function apply(manifest, args) {
   if (!(await reportVerifyProbes(manifest.verify, "install", true))) ok = false
   for (const dest of manifest.retired) {
     const result = await removeEntry(dest, { write: true }, ledger)
+    // Also drop a parent directory the retired entry left empty (or had
+    // already emptied on a previous run); a no-op when absent/non-empty.
+    await removeEmptyParentDir(dest)
     if (result.acted) {
       changed = true
       console.log(`install: removed retired ${dest}`)

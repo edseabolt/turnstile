@@ -137,6 +137,18 @@
       "type": "boolean",
       "description": "Plan-impact advisory: parent edit/write/write-shaped bash calls that overlap the bound active plan's scope are allowed with a journaled plan-impact classification instead of the parent-hands-on block. true restores blocking for structural overlap (files or the ## Decomposition section named by the plan) (default false)."
     },
+    "planUserReview": {
+      "type": "boolean",
+      "description": "When true, block the plan-reviewer dispatch after a planner dispatch until the user accepts or rejects the written plan via their own prompt (the planReviewAcceptMarker / planReviewRejectMarker literals). The pause survives restarts and prompt boundaries; default false — the fully-automated flow."
+    },
+    "planReviewAcceptMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, accepts the written plan and unblocks the plan-reviewer dispatch (the edited file is what the reviewer reads). Only consulted while planUserReview is on (default PLAN REVIEWED:)."
+    },
+    "planReviewRejectMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, rejects the written plan: retires the task scope without a counted plan-reviewer dispatch. Only consulted while planUserReview is on (default PLAN REJECTED:)."
+    },
     "escalation": {
       "type": "string",
       "enum": ["block", "ask"],

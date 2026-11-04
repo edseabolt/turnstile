@@ -27,6 +27,10 @@ export type PolicyConfig = Pick<
   | "maxTotalDispatches"
   | "waiverMarker"
   | "approvalMarker"
+  | "plansDir"
+  | "planUserReview"
+  | "planReviewAcceptMarker"
+  | "planReviewRejectMarker"
   | "metricsDir"
 >
 
@@ -208,6 +212,27 @@ export function planImpactAdvisory(plan: string, impact: "advisory" | "structura
 }
 
 /**
+ * User plan-review line: present the planner's plan to the user and stop
+ * until they accept or reject via their own prompt. Appended only when
+ * `planUserReview` is on, so the default policy text stays byte-identical.
+ * The literals are deliberately written WITHOUT backticks so the line can
+ * never be mistaken for (or trip) a marker template in the marker-drift
+ * check.
+ * @param c The resolved config slice (plans dir and the two literals).
+ * @returns The user plan-review line.
+ */
+function planUserReviewSection(c: PolicyConfig): string {
+  return (
+    `User plan review: after the planner writes the plan, present the plan file path ` +
+    `(and a short summary) to the user and STOP — the plan-reviewer dispatch is blocked ` +
+    `until the user's own prompt contains ${c.planReviewAcceptMarker} (accept: edit the ` +
+    `plan file first if they wish; the edited file is what the reviewer reads) or ` +
+    `${c.planReviewRejectMarker} (abort/regenerate). These literals work only in the ` +
+    `user's own prompt; waivers do not bypass this pause.`
+  )
+}
+
+/**
  * Builds the orchestrator policy injected into the parent session per task.
  *
  * One line per concern: the injected block is prepended to the model-facing
@@ -235,6 +260,7 @@ export function orchestratorPolicyFor(c: PolicyConfig): string {
       worktreeCommitSection(),
       traceSection(c),
       verificationSection(),
+      ...(c.planUserReview ? [planUserReviewSection(c)] : []),
     ].join("\n"),
   ].join("\n\n")
 }

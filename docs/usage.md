@@ -193,6 +193,26 @@ prompt surfaces the existing one-time advisory nudge. Every engagement
 transition journals a `type:"engagement"` row, and a restart restores the
 last journaled value.
 
+### User plan review (opt-in)
+
+Set `"planUserReview": true` in `~/.config/opencode/turnstile.json` to insert
+a human checkpoint between the planner and the plan-reviewer: after the
+planner dispatch is admitted, the plan-reviewer dispatch is blocked with a
+`BLOCKED by turnstile:` message naming the plans directory, and you resolve
+the pause from your own prompt — `PLAN REVIEWED:` accepts the written plan
+(edit the plan file first if you wish; the edited file is what the reviewer
+reads), `PLAN REJECTED:` rejects it (the task scope is retired with no
+counted plan-reviewer dispatch; a new planner dispatch re-arms the pause).
+A pause armed by an earlier planner dispatch stays armed until you accept or
+reject, even if you switch to a plan you wrote yourself (`PLAN APPROVED:`) —
+the pending accept/reject literal is still required before the next
+plan-reviewer dispatch.
+The literals work only in your own prompt, waivers do not bypass the pause,
+and the pending state survives both a restart (journal replay) and the next
+prompt's task-scope boundary. `planReviewAcceptMarker` /
+`planReviewRejectMarker` rename the literals (defaults `PLAN REVIEWED:` /
+`PLAN REJECTED:`).
+
 ---
 
 ## 2. Waivers and approvals
@@ -442,6 +462,18 @@ the plugin is unloaded; a legacy contract block once written by hand into
 separately — see
 [architecture §9](architecture.md#9-policy-injection).
 
+### Retired paths
+
+The manifest also carries a `retired` list: destinations turnstile once
+installed but no longer ships (for example the old `turnstile-suspend` and
+`turnstile-setup` skills, or the command files from when `status` and `log`
+were slash commands). `init`, `check`, and `uninstall` sweep these paths on
+every run, so upgrading removes the stale installed copies automatically —
+repo-owned symlinks (including links whose repo target is gone) and
+ledger-owned copies are removed; anything unowned is reported and left
+alone. Between the upgrade and the next `init`, `check` (and
+`npm run install:check`) reports the drift and exits non-zero.
+
 ### From a clone
 
 This repo is the source of truth for what lands in `~/.config/opencode`:
@@ -652,6 +684,48 @@ Shared caveats:
 
 ---
 
+### Vendored skills
+
+The full install ships seven skills into `~/.config/opencode/skills/`:
+
+| Skill                | What it does                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
+| `turnstile-init`     | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`). |
+| `turnstile-off`      | Compose a copy-ready suspend prompt for **you** to send (see below).                                     |
+| `turnstile-on`       | Compose a copy-ready resume prompt for **you** to send.                                                  |
+| `turnstile-evidence` | Publish or inspect an evidence bundle (`evidence`, §6).                                                  |
+| `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                             |
+| `turnstile-status`   | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).           |
+| `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                 |
+
+The on/off skills never send the suspend/resume markers themselves — the
+markers are honored only from user-typed prompts, so an agent relaying one
+does nothing. Instead the skill reads the resolved suspension config from
+`status --json`'s `suspension` block:
+
+```json
+"suspension": {
+  "allowSuspend": true,
+  "suspendMarker": "TURNSTILE OFF:",
+  "resumeMarker": "TURNSTILE ON:",
+  "configPath": "~/.config/opencode/turnstile.json",
+  "configFilePresent": true
+}
+```
+
+A worked `turnstile-off` flow: the skill runs `status --json`, reads
+`suspendMarker` and `allowSuspend` from the block, and hands you a
+copy-ready prompt — "Send this yourself (do not let the agent send it):
+`<suspendMarker> <your reason>`". If your config sets `allowSuspend: false`
+(the kill switch), the skill says so and stops — it does not compose a
+prompt that would be refused. A renamed marker (`suspendMarker` in §4's
+table) is picked up automatically because the value always comes from the
+CLI, never from the skill text. All five skills and both commands forward
+any options you name to the CLI verbatim and surface usage errors instead
+of retrying.
+
+---
+
 ## 4. Configuration
 
 Defaults live in code (`src/config.ts`); override via
@@ -687,9 +761,10 @@ installed package's schema file):
 ```
 
 The `$schema` key is ignored at load when it is a string (a non-string
-warns; it is not a turnstile key), and validation itself stays in
-`mergeConfig` — the schema is an editor and documentation artifact, not a
-runtime validator.
+warns; it is not a turnstile key), and validation itself runs inside
+`mergeConfig` (per-key merge arms in `src/config-merge.ts`, the value rules
+and resolved invariants in `src/config-validate.ts`) — the schema is an
+editor and documentation artifact, not a runtime validator.
 
 Precedence: defaults < config file < env. The plugin reads config once, at
 setup; restart sessions to apply. Invalid keys are ignored, journaled, and
@@ -724,6 +799,8 @@ journal (fail-open); a malformed config file never breaks the host.
 | `allowSuspend`                                                                                                             | `true`                                                                                                                                                                       | whether the suspend/resume markers are honored; `false` refuses both the OFF and ON markers (journaled `refused:true` + surfaced diagnostic) with no state change                                                                                                                                                                                                                                                              |
 | `intentNudge`                                                                                                              | `true`                                                                                                                                                                       | advisory intent nudge: a prompt classified as implementation intent (work verb at code, gh issue reference, plan-file reference, or plan-dispatch request) with no plan approval journals `{type:"intent"}` and prepends one advisory pipeline-entry nudge to the next tool delivery; `false` is a full no-op                                                                                                                  |
 | `alwaysEnforce`                                                                                                            | `false`                                                                                                                                                                      | `true` restores the legacy always-armed behavior (enforcement from the first prompt); the default `false` is dormant-until-engaged — enforcement arms when the user provides a plan (a `PLAN APPROVED:` marker or a plan-file reference) or asks to run the planner/pipeline, and sleeps again on task completion, `TURNSTILE OFF:`, or a prompt with no continuation credit; the user-configured denylists enforce regardless |
+| `planUserReview`                                                                                                           | `false`                                                                                                                                                                      | pause the pipeline after the planner writes a plan: the plan-reviewer dispatch is blocked until the user's own prompt carries the accept or reject literal; the pending state survives restarts and prompt boundaries (see the README's User plan review section)                                                                                                                                                              |
+| `planReviewAcceptMarker` / `planReviewRejectMarker`                                                                        | `PLAN REVIEWED:` / `PLAN REJECTED:`                                                                                                                                          | the prompt literals that accept the written plan (unblocks the plan-reviewer dispatch; the edited file is what the reviewer reads) or reject it (retires the task scope with no counted plan-reviewer dispatch); only consulted while `planUserReview` is on                                                                                                                                                                   |
 | `sessionSummary`                                                                                                           | `quiet`                                                                                                                                                                      | session-end summary surface: `quiet` prints one recap line at session.idle for sessions that did something (silent for zero-activity sessions); `on` also prints an all-gates-green line for zero-activity sessions; `off` disables the surface                                                                                                                                                                                |
 | `agents.reviewer` / `agents.planReviewer` / `agents.executor` / `agents.testRunner` / `agents.debugger` / `agents.planner` | `reviewer` / `plan-reviewer` / `executor` / `test-runner` / `debugger` / `planner`                                                                                           | agent names recognized in dispatches                                                                                                                                                                                                                                                                                                                                                                                           |
 | `agents.bareOutput`                                                                                                        | `["test-runner", "reviewer", "plan-reviewer"]`                                                                                                                               | agents whose marker-less output is a violation; derived from the configured test-runner, reviewer, and plan-reviewer names when the key is absent or the list is empty (JSON has no way to write the code's "unset" sentinel, so the shipped example carries [] and the loader treats an empty list as unset)                                                                                                                  |
@@ -848,7 +925,10 @@ documented gap, not a silence: the entries are written, they are just not
 rendered by status yet. The journal reflects the last prompt-cycle;
 in-memory state can be fresher (a session that has prompted since is newer
 than the journal records), so treat status as the durable state of the
-previous cycle rather than a live snapshot.
+previous cycle rather than a live snapshot. The `--json` document also
+carries a top-level `suspension` block (the resolved `allowSuspend`,
+`suspendMarker`/`resumeMarker`, config path, and file presence) — the
+surface the `turnstile-off`/`turnstile-on` skills read (§3).
 
 ### Sharing the evidence
 

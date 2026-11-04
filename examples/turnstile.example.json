@@ -28,6 +28,9 @@
   "intentNudge": true,
   "alwaysEnforce": false,
   "planImpactStrict": false,
+  "planUserReview": false,
+  "planReviewAcceptMarker": "PLAN REVIEWED:",
+  "planReviewRejectMarker": "PLAN REJECTED:",
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",

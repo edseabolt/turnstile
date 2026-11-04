@@ -17,36 +17,67 @@ entry: "turnstile.ts\n{ id:'turnstile', server, setup }\nthin factory — contra
 core: "src/ — one concern per boundary" {
   setup: "setup.ts\nwiring only: hook registration, heartbeat,\nlifecycle/disposal"
   hostcompat: "host-compat.ts\nhost version guard: semver parse/compare,\nshipped range, verdict"
-  hookscore: "hooks-core.ts\nshared hook state + services:\nTurnstileContext (config, journaler, gates,\nledger, admission, marker parsing,\nverdict attribution)"
-  hookssession: "hooks-session.ts\nprompt · generate · compaction bodies"
-  hookspermission: "hooks-permission.ts\nevaluate body (plan/landing arms)"
-  hookstool: "hooks-tool.ts\nexecute.before / after bodies"
-  hooksevents: "hooks-events.ts\nevent surface: consume + supervise\n(throw-only restart budget)"
+  hookscore: "hooks-core.ts\ncomposition: CoreState builders + concern\nwiring + coreContext — no hook bodies"
+  hookssession: "hooks-session.ts\nsession-surface registration (bodies in\nhooks-session-bodies.ts)"
+  hookspermission: "hooks-permission.ts\npermission-surface registration\n(arms in permission-evaluate.ts)"
+  hookstool: "hooks-tool.ts\ntool-surface registration (bodies in\ntool-hooks-before/after.ts)"
+  hooksevents: "hooks-events.ts\nevent stream loop + supervision\n(handlers in event-stream-handlers.ts)"
   delivery: "delivery.ts\nhost payload delivery: shape ladder,\ntext mutation, key tables, ask prefixes"
-  config: "config.ts\n4-layer config (defaults ⊕ file ⊕ env ⊕ opts),\nvalidation, configDigest"
-  state: "state.ts — GateState shape\nnewState, counters, snapshot + pipeline\nrendering, replay-merge"
-  ledger: "ledger.ts — GateLedger\nbuckets (LRU), child→parent edges,\nverdict store, journal replay"
-  markers: "markers.ts\npure GATE:/VERDICT: parsing, dedup, suppression"
+  config: "config.ts\n4-layer config composition\n(merge in config-merge.ts, validation in\nconfig-validate.ts), configDigest"
+  state: "state.ts — GateState shape\ncounters, snapshot + pipeline rendering\n(bucket/carry in state-carry.ts)"
+  ledger: "ledger.ts — GateLedger\nbuckets (LRU), verdict store, journal replay\n(edges/registry in ledger-registry.ts)"
+  markers: "markers.ts\nmarker regexes (canonical), dedup,\nsuppression (parse arms in\ngate-markers-parse.ts)"
   childreg: "child-registration.ts\npipeline-child resolution: agent-name\nprecedence, edge + emitter fallback,\nfail-closed unknown"
   gates: "gates.ts\ncomposition: createGates + the Gates interface"
-  gatesdispatch: "gates-dispatch.ts\nreviewer gate, loop caps, read horizon,\nensemble completeness"
-  gatesplan: "gates-plan.ts\nplan-approval gate, decomposition gate,\nplans-dir scan + cache (spec-region keys)"
+  gatesdispatch: "gates-dispatch.ts\ncomposition (budget in dispatch-budget.ts,\nreview gate in dispatch-review-gate.ts,\nmessages in gate-messages.ts)"
+  gatesplan: "gates-plan.ts\ncomposition (scan in plans-scan.ts,\nenforcement in plan-gate-enforce.ts,\nstatus mirror in plan-gate-status.ts)"
   planregion: "plan-region.ts\nplanSpecRegion: spec-slice extractor —\nProgress section excluded from the\nhashed approval key"
   maintenance: "maintenance.ts\nmaintenance-dispatch rules: declaration,\nnon-src diff eligibility, marker guard"
   gatescommon: "gates-common.ts\nBlockError + waiver coverage semantics"
-  toolpolicy: "tool-policy.ts\nbash denylist, commit lint, landing gate,\nhands-on gate (write/edit + bash write)"
-  bashwrite: "bash-write.ts\nwrite-shape classifier (classifyBashWrite)\n+ shell tokenizer (splitCommands/tokenizeWords)"
+  toolpolicy: "tool-policy.ts\ncomposition (guards + telemetry in\ntool-policy-guards.ts)"
+  bashwrite: "bash-write.ts\nwrite-shape classifier (classifyBashWrite)\n(parser in shell-parse.ts)"
   emptydiff: "empty-diff.ts\nempty-diff probe: planPushRefs (static)\n+ ref-equality check (exec seam)"
-  evidence: "evidence.ts\ncorrelates GATE: PASS with exit-0 test executions"
+  evidence: "evidence.ts\nevidence tracker factory (hits map in\nevidence-hits.ts)"
   fingerprint: "fingerprint.ts\nworktree fingerprint, continuation-carry predicate"
   bounded: "bounded.ts\nbounded-map FIFO eviction"
-  journal: "journal.ts\nturnstile.jsonl + trace, rotation, fail-open appends,\nfail-open journal reader (readJournalEntries)"
+  journal: "journal.ts\njournaler factory + fail-open reader\n(sinks/rotation in journal-sinks.ts)"
   summary: "summary.ts\nsession-end summary counting + one-line\nformatting over parsed entries (pure)"
   policy: "policy.ts\norchestratorPolicyFor prose\nbuilt from resolved config"
   scratch: "scratch.ts\nisScratchTarget: temp-dir write/edit\nexemption predicate (zero-governance)"
   intent: "intent.ts\nclassifyIntent: implementation-intent\nsignals vs deliberate non-intent"
   generateinjection: "generate-injection.ts\nrequest-draft primitives: usableRequestDraft,\nappendSystemText, describeRequestDraft"
   taskscope: "task-scope.ts\nkeepsTaskScope, isInterruptedReview,\napprovalResetsScope (pure predicates)"
+  // hooks-core concern modules (one per concern, state threaded via CoreState)
+  contextsurface: "context-surface.ts\nonce-per-load injections: config warnings,\nobserve summary, draft telemetry,\ncontext policy head"
+  parentresolution: "parent-resolution.ts\nparent edge + project dir resolution,\nemitter authority, boot re-seed"
+  verdictcapture: "verdict-capture.ts\nmarker parsing + first-sight journaling,\nstreamed verdict recording, lastMatch"
+  planverdict: "plan-verdict.ts\nplan-verdict attribution + approval\nbinding + durable plan identity"
+  dispatchguard: "dispatch-guard.ts\ntask/subagent dispatch prologue +\nguard-and-meter chain + admit exit"
+  bashwriteguard: "bash-write-guard.ts\nbash/shell + write/edit execute.before\nguards, telemetry, exemptions, ladders"
+  promptadmission: "prompt-admission.ts\nprompt admission body, task-scope\nreset/carry, prompt-channel captures"
+  hookssessionbodies: "hooks-session-bodies.ts\nsession-surface bodies: admission count,\ndecoding clamps, context body, compaction"
+  permissionevaluate: "permission-evaluate.ts\nevaluate arms: plan-gate, landing-gate,\nhands-on-gate escalations"
+  toolhooksbefore: "tool-hooks-before.ts\nexecute.before router: dispatch, read\nbudget, denylist guards, session_move"
+  toolhooksafter: "tool-hooks-after.ts\nexecute.after body: surface blocks +\nper-tool delivery bodies"
+  eventstreamhandlers: "event-stream-handlers.ts\nper-event dispatch table: edges, marker\nparsing, ask/reply bookkeeping, inbox"
+  configmerge: "config-merge.ts\nper-section patch merging for mergeConfig"
+  configvalidate: "config-validate.ts\nscalar patch validation + resolved\nconfig invariants"
+  statecarry: "state-carry.ts\nnewState bucket factory + replay/\ncontinuation carry merge"
+  ledgerregistry: "ledger-registry.ts\nchild→parent edge maps, live-parent\nregistry, credit-bearing APPROVE trace"
+  gatemarkersparse: "gate-markers-parse.ts\nGATE/VERDICT parse arms (pure; caller\njournals the events)"
+  evidencehits: "evidence-hits.ts\nhits-map ops behind the evidence tracker\n(record, correlate, snapshot, clear)"
+  journalsinks: "journal-sinks.ts\nappend/rotate primitives, sink resolution,\nrotation locking, trace formatting"
+  toolpolicyguards: "tool-policy-guards.ts\ndenylist guards, commit lint, landing +\nhands-on gates, telemetry observers"
+  dispatchbudget: "dispatch-budget.ts\nper-leg loop caps, total-dispatch budget,\nread horizon"
+  dispatchreviewgate: "dispatch-review-gate.ts\nreviewer round-cap + gate-evidence gate,\nwaiver consumption, ensemble credit"
+  gatemessages: "gate-messages.ts\nshared cap-block + gate-unverified\nrefusal message composers"
+  plansscan: "plans-scan.ts\ncached plans-dir scan: names, spec-region\nkeys, Decomposition set"
+  plangateenforce: "plan-gate-enforce.ts\nplan-approval + decomposition enforcement"
+  plangatestatus: "plan-gate-status.ts\nplan-gate status mirror, plan preview/\nsummary, scope resolution"
+  shellparse: "shell-parse.ts\nquote-aware command splitter + word\ntokenizer + redirect scanner (pure)"
+  commitargs: "commit-args.ts\ngit commit -m message extraction +\nuninspectable-form detection (pure)"
+  engagement: "engagement.ts\nshouldEngage predicate + engagement\njournal entry builder (pure)"
+  planscope: "plan-scope.ts\nplanScopeFiles + classifyPlanImpact\n(pure): advisory vs structural set,\nplan-impact classification — no fs"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
 }
 
@@ -67,6 +98,62 @@ entry -> core.setup
 host -> core.setup: "app.version"
 core.setup -> core.hostcompat
 core.setup -> core.hookscore
+core.hookscore -> core.contextsurface
+core.hookscore -> core.parentresolution
+core.hookscore -> core.verdictcapture
+core.hookscore -> core.planverdict
+core.hookscore -> core.dispatchguard
+core.hookscore -> core.bashwriteguard
+core.hookscore -> core.promptadmission
+core.contextsurface -> core.generateinjection
+core.contextsurface -> core.policy
+core.parentresolution -> core.childreg
+core.verdictcapture -> core.gatemarkersparse
+core.verdictcapture -> core.markers
+core.planverdict -> core.plangatestatus
+core.dispatchguard -> core.dispatchbudget
+core.dispatchguard -> core.dispatchreviewgate
+core.dispatchguard -> core.gatemessages
+core.dispatchguard -> core.maintenance
+core.dispatchguard -> core.childreg
+core.bashwriteguard -> core.toolpolicy
+core.bashwriteguard -> core.bashwrite
+core.bashwriteguard -> core.scratch
+core.bashwriteguard -> core.emptydiff
+core.bashwriteguard -> core.planscope: "type-only"
+core.promptadmission -> core.engagement
+core.promptadmission -> core.fingerprint
+core.promptadmission -> core.taskscope
+core.hookssession -> core.hookssessionbodies
+core.hookspermission -> core.permissionevaluate
+core.hookstool -> core.toolhooksbefore
+core.hookstool -> core.toolhooksafter
+core.toolhooksbefore -> core.dispatchguard
+core.toolhooksbefore -> core.bashwriteguard
+core.toolhooksafter -> core.verdictcapture
+core.hooksevents -> core.eventstreamhandlers
+core.eventstreamhandlers -> core.verdictcapture
+core.config -> core.configmerge
+core.config -> core.configvalidate
+core.state -> core.statecarry
+core.ledger -> core.ledgerregistry
+core.evidence -> core.evidencehits
+core.journal -> core.journalsinks
+core.toolpolicy -> core.toolpolicyguards
+core.toolpolicyguards -> core.shellparse
+core.toolpolicyguards -> core.commitargs
+core.bashwrite -> core.shellparse
+core.gatesdispatch -> core.dispatchbudget
+core.gatesdispatch -> core.dispatchreviewgate
+core.gatesdispatch -> core.gatemessages
+core.gatesplan -> core.plansscan
+core.gatesplan -> core.plangateenforce
+core.gatesplan -> core.plangatestatus
+core.plangateenforce -> core.plansscan
+core.plangatestatus -> core.plansscan
+core.plangatestatus -> core.planscope
+core.gatesdispatch -> core.gatescommon
+core.gatesplan -> core.gatescommon
 core.setup -> core.hookssession
 core.setup -> core.hookspermission
 core.setup -> core.hookstool
@@ -125,6 +212,7 @@ core.gates -> core.gatesplan
 core.gates -> core.ledger: "type-only"
 core.gates -> core.journal: "type-only"
 core.gates -> core.types: "type-only"
+core.gates -> core.planscope: "type-only"
 core.gatesdispatch -> core.gatescommon
 core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE"
 core.gatesdispatch -> core.ledger: "type-only"
