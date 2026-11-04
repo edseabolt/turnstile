@@ -46,12 +46,27 @@ const PLAN_BODY = [
  * A temp project directory OUTSIDE `os.tmpdir()`: the scratch exemption
  * resolves any target under the platform temp dir to zero-governance scratch
  * before the plan-impact classifier runs, so a tmpdir-based project would
- * mask the advisory. The host reports absolute write/edit targets, and the
- * classifier relativizes them against this project dir.
+ * mask the advisory. The parent lives under the user's cache dir (honoring
+ * `XDG_CACHE_HOME`), which keeps the project outside `os.tmpdir()` while
+ * never littering `$HOME` itself. The host reports absolute write/edit
+ * targets, and the classifier relativizes them against this project dir.
  * @returns The absolute path of the created project directory.
  */
 function projectDir(): string {
-  return fs.mkdtempSync(path.join(os.homedir(), "turnstile-proj-"))
+  const parent = path.join(
+    process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"),
+    "turnstile-tests",
+  )
+  fs.mkdirSync(parent, { recursive: true })
+  return fs.mkdtempSync(path.join(parent, "turnstile-proj-"))
+}
+
+/**
+ * Removes a temp project directory tree, ignoring a missing path.
+ * @param dir The absolute path of the project directory to remove.
+ */
+function removeProject(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true })
 }
 
 /**
@@ -62,7 +77,8 @@ function projectDir(): string {
  * @param opts Boot options: `planBody` ("" seeds no plan file), `strict`
  *     sets `planImpactStrict: true`, `alwaysEnforce` arms from the first
  *     prompt (default true), `bindPlan` pre-seeds the bound approval.
- * @returns The host tables, metrics dir, project dir, and a restoring disposer.
+ * @returns The host tables, metrics dir, project dir, and a restoring
+ *     disposer that also removes the temp project directory.
  */
 async function bootImpact(
   opts: {
@@ -117,6 +133,7 @@ async function bootImpact(
     restore: (): void => {
       dispose()
       process.chdir(prev)
+      removeProject(project)
     },
   }
 }
@@ -426,9 +443,10 @@ test("plan-impact: replay folds the row inertly", () => {
  * Fail-open: a classification error (the gate service throwing) journals the
  * error row and falls through to the hands-on ladder — never a silent allow.
  */
-test("plan-impact: a throwing classification journals and proceeds to the hands-on ladder", () => {
+test("plan-impact: a throwing classification journals and proceeds to the hands-on ladder", (t) => {
   const metricsDir = tmpDir()
   const project = projectDir()
+  t.after(() => removeProject(project))
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), PLAN_BODY)
   fs.writeFileSync(
@@ -512,9 +530,10 @@ test("plan-impact: a throwing advisory prepend journals and never throws", async
  * plan file each classify "none" (the unreadable case journaling the fs
  * error).
  */
-test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, and an unreadable plan", () => {
+test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, and an unreadable plan", (t) => {
   const metricsDir = tmpDir()
   const project = projectDir()
+  t.after(() => removeProject(project))
   const plansDir = path.join(project, ".opencode", "plans")
   fs.mkdirSync(plansDir, { recursive: true })
   fs.writeFileSync(path.join(plansDir, "plan.md"), PLAN_BODY)
@@ -552,9 +571,10 @@ test("plan-impact: planImpactFor fails open on an empty plan, a missing plan, an
  * project dir classifies `uninspectable` (the hook layer maps it to the
  * hands-on ladder).
  */
-test("plan-impact: absolute targets relativize against the project dir", () => {
+test("plan-impact: absolute targets relativize against the project dir", (t) => {
   const metricsDir = tmpDir()
   const project = projectDir()
+  t.after(() => removeProject(project))
   const plansDir = path.join(project, ".opencode", "plans")
   fs.mkdirSync(plansDir, { recursive: true })
   fs.writeFileSync(path.join(plansDir, "plan.md"), PLAN_BODY)
@@ -590,9 +610,10 @@ test("plan-impact: absolute targets relativize against the project dir", () => {
  * file elsewhere in the repo does not (no bare-name trailing-segment
  * false positive).
  */
-test("plan-impact: the plan-file-self rule matches the plans-dir-relative path only", () => {
+test("plan-impact: the plan-file-self rule matches the plans-dir-relative path only", (t) => {
   const metricsDir = tmpDir()
   const project = projectDir()
+  t.after(() => removeProject(project))
   const plansDir = path.join(project, ".opencode", "plans")
   fs.mkdirSync(plansDir, { recursive: true })
   fs.writeFileSync(path.join(plansDir, "plan.md"), PLAN_BODY)
@@ -622,9 +643,10 @@ test("plan-impact: the plan-file-self rule matches the plans-dir-relative path o
  * (the second call hits the per-file sha256 key), and a plan edit rebuilds
  * it — the reclassification reflects the new scope.
  */
-test("plan-impact: the scope cache reuses an unchanged plan and rebuilds on edit", () => {
+test("plan-impact: the scope cache reuses an unchanged plan and rebuilds on edit", (t) => {
   const metricsDir = tmpDir()
   const project = projectDir()
+  t.after(() => removeProject(project))
   const plansDir = path.join(project, ".opencode", "plans")
   fs.mkdirSync(plansDir, { recursive: true })
   const planPath = path.join(plansDir, "plan.md")
