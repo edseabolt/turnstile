@@ -98,6 +98,12 @@ export interface PromptAdmissionState {
   clearIntentNudge(sessionID: string): void
   /** Marks the parent's active task retired (a flipping PASS boundary). */
   markTaskComplete(sessionID: string, s: GateState): void
+  /**
+   * Retires the parent's task unconditionally — the planless-tolerant retire
+   * used when no plan is bound; see {@link markTaskComplete} for the
+   * plan-bound form.
+   */
+  retireTask(sessionID: string, s: GateState): void
   /** Applies a plan approval's binding and the reset-at-capture scope rule. */
   applyApprovalBinding(
     sessionID: string,
@@ -498,6 +504,58 @@ function captureTaskDoneBody(
 }
 
 /**
+ * User plan-review capture (prompt channel): scans the user's own prompt for
+ * the configured accept/reject literals and resolves the pending pause.
+ * Inert unless `planUserReview` is on. When both literals appear, the
+ * last-occurring one wins (same last-wins rule as the suspend capture). An
+ * accept or reject acts only while `planReviewPending` holds — a prompt can
+ * never silently forge credit when nothing is pending. Accept clears the
+ * pending flag and journals the accept row; reject clears the flag, journals
+ * the reject row, and retires the task scope directly (the retire is real
+ * here because the pending flag survived the prompt boundary via
+ * `carryStickyFlags`; the `task-complete` row makes it replay-safe). Runs
+ * after `captureTaskDoneBody` and before `captureSuspendBody`, so a
+ * co-present suspend literal still wipes the capture with the fresh-start
+ * clear (the clear-is-authoritative contract). Fail-open: a coercion that
+ * throws is journaled under the "plan-review capture" key and swallowed.
+ * @param st The prompt-admission state.
+ * @param sessionID The parent session the markers are captured for.
+ * @param properties The prompt payload to scan.
+ */
+function capturePlanReviewBody(
+  st: PromptAdmissionState,
+  sessionID: string,
+  properties: PromptHookProperties,
+): void {
+  try {
+    if (!st.config.planUserReview) return
+    const text = promptTextOf(properties)
+    const atAccept = text.indexOf(st.config.planReviewAcceptMarker)
+    const atReject = text.indexOf(st.config.planReviewRejectMarker)
+    if (atAccept === -1 && atReject === -1) return
+    // Last-wins: the marker occurring later in the prompt decides.
+    const accept = atAccept !== -1 && (atReject === -1 || atAccept > atReject)
+    const s = st.ledger.state(sessionID)
+    if (!s.planReviewPending) return
+    if (accept) {
+      s.planReviewPending = false
+      st.journaler.journal({ type: "plan-review", sessionID, action: "accept" })
+      return
+    }
+    s.planReviewPending = false
+    st.journaler.journal({ type: "plan-review", sessionID, action: "reject" })
+    // The reject retires the current scope via the planless-tolerant retire —
+    // the pause is planless by construction (the plan-reviewer has not run, so
+    // no plan is bound yet), so the plan-bound `markTaskComplete` guard cannot
+    // fire here. The shared helper keeps both retire paths in lockstep.
+    st.retireTask(sessionID, s)
+  } catch (e) {
+    // Fail-open: the plan-review capture never blocks a prompt.
+    st.journaler.journal({ type: "error", sessionID, error: `plan-review capture: ${e}` })
+  }
+}
+
+/**
  * Refuses a suspend/resume marker under `allowSuspend:false`: journals the
  * refused entry (`refused:true`) and parks the marker-style near-miss
  * diagnostic for surfacing (the same diagnostic shape and channel as the
@@ -820,6 +878,7 @@ function admitPromptBody(
   captureEngagementBody(st, sessionID, properties)
   captureWaiverBody(st, sessionID, properties)
   captureTaskDoneBody(st, sessionID, properties)
+  capturePlanReviewBody(st, sessionID, properties)
   captureSuspendBody(st, sessionID, properties)
   scanNearMissesBody(st, sessionID, properties)
   surfaceKeylessPromptBody(st, sessionID, properties)

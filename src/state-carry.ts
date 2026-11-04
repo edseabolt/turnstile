@@ -20,6 +20,7 @@ function freshFlags(): Pick<
   | "hasPlanVerdict"
   | "hasReviewApprove"
   | "humanApproval"
+  | "planReviewPending"
   | "policyInjected"
   | "suppressedPending"
   | "readWarned"
@@ -34,6 +35,10 @@ function freshFlags(): Pick<
     hasPlanVerdict: false,
     hasReviewApprove: false,
     humanApproval: false,
+    // User-review pause: fresh false; armed at planner-dispatch admit, cleared
+    // by the accept capture or the reject retire. Restart-sticky (see
+    // carryStickyFlags).
+    planReviewPending: false,
     policyInjected: false,
     suppressedPending: 0,
     readWarned: false,
@@ -239,6 +244,11 @@ function carryStickyFlags(s: GateState, prior: GateState): void {
   // dispatches and the credited review must agree across a restart, so the grace
   // prompt carries the carried-together count too.
   s.reviewerDispatches = prior.reviewerDispatches
+  // The user-review pause is restart-sticky like the reviewer-dispatch count:
+  // armed at planner admit, it survives the grace prompt until the user
+  // resolves it. A completed task (reject retire) never carries it —
+  // mergeAfterReplay returns a fresh bucket before this runs.
+  s.planReviewPending = prior.planReviewPending
 }
 
 /**

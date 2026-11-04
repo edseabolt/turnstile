@@ -35,6 +35,7 @@ const BOOLEAN_KEYS: readonly (keyof TurnstileConfig)[] = [
   "intentNudge",
   "alwaysEnforce",
   "planImpactStrict",
+  "planUserReview",
 ]
 
 /** Config keys whose valid value is a non-empty string. */
@@ -44,6 +45,8 @@ const NON_EMPTY_STRING_KEYS: readonly (keyof TurnstileConfig)[] = [
   "suspendMarker",
   "resumeMarker",
   "taskDoneMarker",
+  "planReviewAcceptMarker",
+  "planReviewRejectMarker",
   "plansDir",
 ]
 
