@@ -242,6 +242,26 @@ test("without a sessionID, every session's prov rows are shown", () => {
   }
 })
 
+test("a prov row present in both sinks renders once", () => {
+  const dir = metricsDir()
+  try {
+    // A parent-keyed row also present in the shared journal (routing changed
+    // mid-session, or a legacy journalPerSession:false layout) must not
+    // double-count: journal writes are append-only, so the duplicate is a
+    // byte-identical line in the other sink.
+    const row = { ts: "2026-01-01T10:00:05Z", type: "prov:stated", sessionID: "ses1", text: "once" }
+    writeSessionJournal(dir, "ses1", [row])
+    writeSharedJournal(dir, [row])
+    const r = runProv(dir, [])
+    assert.equal(code(r), 0)
+    const lines = r.stdout.trim().split("\n")
+    assert.equal(lines.length, 1, `expected one rendered row, got: ${r.stdout}`)
+    assert.match(lines[0]!, /once/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("rotated generations are read and ts-ordered", () => {
   const dir = metricsDir()
   try {
