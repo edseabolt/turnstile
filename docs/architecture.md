@@ -87,6 +87,8 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 | `src/dispatch-guard.ts`        | Dispatch-guard concern: the `task`/`subagent` execute.before path — the dispatch prologue (agent resolution, parent pinning, delta age-out, plan-reviewer round bookkeeping), the guard-and-meter chain, and the single admitted-dispatch exit                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `src/bash-write-guard.ts`      | Bash/write-guard concern: the `bash`/`shell` and `write`/`edit` execute.before paths — denylist guards, commit lint, landing and bash-write telemetry, scratch/pipeline-child exemptions, the plan-impact advisory, the hands-on and landing ladders, `session_move` telemetry                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `src/prompt-admission.ts`      | Prompt-admission concern: the single admission body for a user-authored prompt (dedupe, dead-channel telemetry, task-scope decision, capture sequence), the task-scope reset/carry machinery, and the prompt-channel captures (waiver, approval, task-done, suspend/resume, near-miss, observe stamp)                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `src/provenance.ts`            | Pure `prov:*` entry builders for the decision-provenance ledger (`provStatedEntry`, `provDeniedEntry`, and the designed-but-unwired `provWaiverEntry`): redact-then-truncate shaping, no I/O, no classification; payloads stay canonically serializable (stable key order, no non-JSON values) so a later hash chain needs no row migration                                                                                                                                                                                                                                                                                                                                                                            |
+| `src/provenance-redact.ts`     | Pure secret redaction (`redactSecrets`) over a fixed, ordered pattern list (`SECRET_PATTERNS` — API keys, AWS access keys, bearer/authorization headers, GitHub tokens, key/token assignments, private-key blocks), replacing each match with `[REDACTED]`; not user-configurable in v1, never throws                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `src/hooks-session.ts`         | Session-surface registration: binds the prompt/generate/context/compaction hooks to the bodies in `hooks-session-bodies.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `src/hooks-session-bodies.ts`  | Session-surface hook bodies: prompt-admission counting (the dead-channel telemetry key), the pipeline-agent decoding clamps shared by the generate and context hooks, the primary-turn context body, and the compaction snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `src/generate-injection.ts`    | Request-draft surface primitives: the usable-shape guard (`usableRequestDraft`), the in-place `appendSystemText` mutation, and the bounded content-free draft descriptor (`describeRequestDraft`) — pure, consumed by `context-surface.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -202,7 +204,16 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   parent's own read delivery (`prependIntentNudge` / `prependIntentNudgeRead`
   in `hooks-core.ts`'s delivery helpers, text from `intentNudge` in `src/policy.ts`). Advisory
   only: nothing gates, a throw in classification journals `type:"error"` and
-  never propagates from the prompt path.
+  never propagates from the prompt path. Admission also captures the prompt
+  into the decision-provenance ledger: `captureProvenanceBody`
+  (`src/prompt-admission.ts`), placed after the dedupe check and after the
+  approval/waiver capture sequence, journals one `prov:stated` entry per
+  admitted parent prompt — verbatim after redaction, capped at 2000 chars,
+  no relevance filtering ("continue" included); pipeline-child dispatch
+  prompts are skipped, and the capture is gated on `provenance.enabled`
+  (default `true`, §7). Because it lives inside the single deduped admission
+  body, both transport paths (the prompt hook and the inbox stream) capture
+  exactly once.
 - **`generate`** → decoding clamps (`applyClamps`): reviewer/plan-reviewer
   temperature forced to 0; executor/test-runner/debugger clamped ≤ 0.2 — plus
   one-per-boot draft telemetry (`observeRequestDraft`, a bounded
@@ -333,7 +344,11 @@ parsing from streamed child text (`message.part.updated`,
 observation is applied only when the emitting session's agent holds the marker
 contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
 `reviewer` / `plan-reviewer`), and a denied observation is journaled
-`suppressed` rather than flipping state, permission ask/reply bookkeeping,
+`suppressed` rather than flipping state, permission ask/reply bookkeeping
+(whose three human-reject sites — the plan, landing, and hands-on ask
+replies — each journal one `prov:denied` entry via `journalProvDenied`
+(`src/event-stream-handlers.ts`), carrying the ask `kind`; gated on
+`provenance.enabled`, replay-inert),
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29 — an
 additive channel the host publishes immediately after the prompt hook fires,
 deduped against the hook path on the shared host message id), the
@@ -569,7 +584,7 @@ bypass the pause; a prompt carrying neither literal leaves the pause armed
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (37 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (40 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
@@ -578,7 +593,20 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
   `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
   `task-complete`, `engagement`, `plan-rekey`, `marker-retry`, `plan-impact`,
-  `plan-review`). A
+  `plan-review`, `prov:stated`, `prov:denied`, `prov:waiver`). A
+  `prov:stated` entry records one admitted parent-session human prompt into
+  the decision-provenance ledger:
+  `{type:"prov:stated", sessionID, text, truncated}` — `text` is the prompt
+  verbatim after mechanical secret redaction (`redactSecrets`) and capped at
+  2000 chars (`truncated` marks the cap), with no relevance filtering; a
+  `prov:denied` entry records one human permission denial at the plan,
+  landing, or hands-on reject sites:
+  `{type:"prov:denied", sessionID, kind}` with `kind` the ask kind. Both are
+  additive and replay-inert (unknown types fold nothing at replay), gated on
+  `provenance.enabled` (default `true`), and queryable via
+  `opencode-turnstile prov`. The `prov:waiver` shape
+  (`{type:"prov:waiver", sessionID, stages}`) is designed and shipped in
+  `src/provenance.ts` but unwired — waiver wiring is post-MVP. A
   `plan-review` entry records one user plan-review lifecycle event (§5's
   opt-in pause): `{type:"plan-review", sessionID, action}` with `action` one
   of `pause` (a planner dispatch was admitted while `planUserReview` is on —
@@ -929,6 +957,7 @@ warned. Highlights:
 | Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `escalation`, `plansDir`, `allowSuspend`, `intentNudge`, `alwaysEnforce`, `planImpactStrict`, `planUserReview`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `block`, `.opencode/plans`, `true`, `true`, `false`, `false`, `false`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers; `intentNudge:false` disables the advisory intent nudge entirely; `alwaysEnforce:true` restores the legacy always-armed behavior — the default `false` is dormant-until-engaged, §5; `planImpactStrict:true` restores the parent-hands-on block for structural plan overlap — the default `false` allows overlapping parent write/edit/write-shaped bash calls with a journaled `plan-impact` classification and an advisory, §3; `planUserReview:true` pauses the pipeline after the planner until the user accepts or rejects the written plan via their own prompt, §5) |
 | Tool policy | `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`, `toolPolicy.bashWriteGate`                                                                                                                                                    | both denylists default empty — the empty lists are the off switch; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking; `bashWriteGate` (default `true`) gates confident file-writing bash commands through the hands-on ladder (`false` opts out; write-shaped commands always journal `handsOn` telemetry)                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Git gates   | `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`, `gitGates.commitRetryThreshold` (default 3), `gitGates.commitRetryWindowMs` (default 60000)                                                          | `commitMessages` and `landingGate` default `true` (enforced); `false` is the per-feature opt-out; the retry knobs escalate the commit-lint block with a canonical example after `commitRetryThreshold` same-session failures within `commitRetryWindowMs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Provenance  | `provenance.enabled`                                                                                                                                                                                                                                         | `true` — the observe-only decision ledger: every admitted parent prompt journals a redacted `prov:stated` entry and each human permission denial journals `prov:denied` (§6); `false` disables all `prov:*` journaling with no other behavior change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically
