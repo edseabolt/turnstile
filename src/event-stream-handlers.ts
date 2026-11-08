@@ -20,6 +20,7 @@ import {
 } from "./delivery.ts"
 import { decisionEntry, reviewerEnsembleEntry } from "./gates-common.ts"
 import { readJournalEntries } from "./journal.ts"
+import { provDeniedEntry, type ProvDeniedKind } from "./provenance.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import {
   countSessionActivity,
@@ -340,6 +341,25 @@ function noteFastReply(
 }
 
 /**
+ * Journals one `prov:denied` decision-provenance row for a human permission
+ * denial. Additive to the existing `decisionEntry` row (which replay folds
+ * on and which stays untouched). Fail-open: a builder error journals an
+ * `error` row and never throws.
+ * @param ctx The shared per-setup context.
+ * @param sessionID The parent session the denial occurred in.
+ * @param kind The ask kind that was denied.
+ */
+function journalProvDenied(ctx: TurnstileContext, sessionID: string, kind: ProvDeniedKind): void {
+  try {
+    ctx.journaler.journal(
+      provDeniedEntry({ sessionID, kind }) as unknown as Record<string, unknown>,
+    )
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", sessionID, error: `prov: denied capture: ${e}` })
+  }
+}
+
+/**
  * Applies a human reply to a RECORDED plan-gate ask (the dispatcher's
  * falsy-record guard guarantees the record exists): "always" releases
  * the plan gate for the rest of the task and records provenance; "once"
@@ -375,6 +395,7 @@ function applyPlanGrant(ctx: TurnstileContext, rid: string, reply: unknown): voi
     // reject (or any non-allow reply) leaves the gate red: the
     // next execute.before dispatch re-blocks.
     ctx.journaler.journal(decisionEntry(parent, "reject"))
+    journalProvDenied(ctx, parent, "plan")
   }
 }
 
@@ -446,6 +467,7 @@ function applyLandingGrant(ctx: TurnstileContext, rid: string, reply: unknown): 
     // reject (or any non-allow reply) leaves the gate red: the
     // next execute.before push re-blocks and re-arms the ask.
     ctx.journaler.journal(decisionEntry(parent, "reject"))
+    journalProvDenied(ctx, parent, "landing")
   }
 }
 
@@ -482,6 +504,7 @@ function applyHandsOnGrant(ctx: TurnstileContext, rid: string, reply: unknown): 
     // reject (or any non-allow reply) leaves the gate red: the next
     // parent edit re-blocks and re-arms the ask.
     ctx.journaler.journal(decisionEntry(parent, "reject"))
+    journalProvDenied(ctx, parent, "hands-on")
   }
 }
 
