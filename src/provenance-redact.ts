@@ -21,11 +21,14 @@ export const REDACTION_SENTINEL = "[REDACTED]"
 const OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{20,}\b/g
 
 /**
- * AWS access key IDs: the literal `AKIA` prefix followed by exactly 16
- * uppercase alphanumeric characters (the fixed AWS key-ID shape), so a
- * truncated or prose `AKIA` mention does not match.
+ * AWS access key IDs: the literal `AKIA` prefix followed by 16 or more
+ * uppercase alphanumeric characters (the AWS key-ID shape), so a truncated
+ * or prose `AKIA` mention does not match, while a key ID embedded in a
+ * longer uppercase run (concatenated tokens, minified env output) still
+ * redacts. `{16,}` with the trailing word boundary backtracks correctly;
+ * a fixed `{16}` would drop the whole match when the run continues.
  */
-const AWS_ACCESS_KEY_RE = /\bAKIA[0-9A-Z]{16}\b/g
+const AWS_ACCESS_KEY_RE = /\bAKIA[0-9A-Z]{16,}\b/g
 
 /**
  * Bearer tokens in authorization headers: a `Bearer` scheme keyword followed

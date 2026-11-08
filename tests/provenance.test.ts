@@ -28,12 +28,24 @@ test("provStatedEntry: shapes a plain prompt with truncated false", () => {
 })
 
 test("provStatedEntry: redacts secrets before capping", () => {
+  // The raw secret straddles the cap boundary (raw positions CAP-20..CAP+5)
+  // while trailing filler pushes the redacted text just over the cap, so the
+  // sentinel lands fully inside the prefix. If redaction ever ran after
+  // truncation, the raw `sk-` prefix would survive inside the cap and this
+  // test would fail; with cap-length filler before the secret the assertion
+  // was vacuous because the secret sat entirely past the slice point.
   const secret = "sk-abc123DEF456ghi789JKLmno"
-  const filler = "x".repeat(PROVENANCE_TEXT_CAP)
-  const entry = provStatedEntry({ sessionID: "ses_1", text: `${filler} ${secret}` })
+  const entry = provStatedEntry({
+    sessionID: "ses_1",
+    text: `${"x".repeat(PROVENANCE_TEXT_CAP - 21)} ${secret} ${"x".repeat(30)}`,
+  })
   assert.equal(entry.truncated, true)
   assert.equal(entry.text.length, PROVENANCE_TEXT_CAP)
-  assert.ok(!entry.text.includes("sk-"), "a secret straddling the cap must be masked first")
+  assert.ok(
+    entry.text.includes("[REDACTED]"),
+    "the sentinel sits fully inside the prefix, proving redaction ran first",
+  )
+  assert.ok(!entry.text.includes("sk-"), "no raw secret may survive truncation")
 })
 
 test("provStatedEntry: text exactly at the cap is not truncated", () => {

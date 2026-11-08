@@ -83,6 +83,13 @@ test("redactSecrets: an AKIA id shorter than 16 trailing characters does not mat
   assert.equal(redactSecrets(text), text)
 })
 
+test("redactSecrets: an AKIA id embedded in a longer uppercase run still matches", () => {
+  // A fixed {16} would drop the whole match when the uppercase run continues
+  // past the key shape (concatenated tokens, minified env output).
+  const entry = redactSecrets("deploy AKIAIOSFODNN7EXAMPLEX now")
+  assert.equal(entry, "deploy [REDACTED] now")
+})
+
 // ── overlap convergence ──────────────────────────────────────────────────────
 
 test("redactSecrets: a bearer header wrapping an sk- key converges to one sentinel", () => {
