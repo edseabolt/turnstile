@@ -345,7 +345,7 @@ mechanical secret redaction) and `prov:denied` (human permission denials) —
 interleaved in journal order. An observe-only decision ledger; capture is
 dumb, derivation is offline. Read-only; never writes or blocks.
 
-    opencode-turnstile prov                 # most recent session
+    opencode-turnstile prov                 # every session, interleaved
     opencode-turnstile prov <sessionID>     # a specific session
     opencode-turnstile prov --json          # machine-readable output
     opencode-turnstile prov --tail 100      # last 100 events
