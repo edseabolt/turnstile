@@ -350,6 +350,7 @@ function noteFastReply(
  * @param kind The ask kind that was denied.
  */
 function journalProvDenied(ctx: TurnstileContext, sessionID: string, kind: ProvDeniedKind): void {
+  if (!ctx.config.provenance.enabled) return
   try {
     ctx.journaler.journal(
       provDeniedEntry({ sessionID, kind }) as unknown as Record<string, unknown>,

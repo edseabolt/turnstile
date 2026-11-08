@@ -249,6 +249,19 @@ function defaultMarkerSources(): Pick<
 }
 
 /**
+ * Builds the decision-ledger defaults.
+ * @returns The provenance-shaped default fields.
+ */
+function defaultProvenanceScalars(): Pick<TurnstileConfig, "provenance"> {
+  return {
+    // Default on: the ledger is observe-only (no gate reads `prov:*` rows),
+    // so capture costs journal volume only; `provenance.enabled: false`
+    // silences every `prov:*` write.
+    provenance: { enabled: true },
+  }
+}
+
+/**
  * Builds the code defaults for every config key.
  * @param env Environment consulted for XDG_DATA_HOME only.
  * @returns The default TurnstileConfig matching the historical hardcoded
@@ -265,6 +278,7 @@ export function defaultConfig(
     ...defaultMarkerScalars(),
     ...defaultModeScalars(),
     ...defaultEnforcementScalars(),
+    ...defaultProvenanceScalars(),
     agents: defaultAgents(),
     ...defaultMarkerSources(),
     toolPolicy: defaultToolPolicy(),
@@ -292,6 +306,7 @@ export function mergeConfig(
     agents: { ...base.agents },
     toolPolicy: { ...base.toolPolicy },
     gitGates: { ...base.gitGates },
+    provenance: { ...base.provenance },
   }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {

@@ -260,6 +260,17 @@
           "description": "Window in milliseconds for commitRetryThreshold burst counting (default 60000)."
         }
       }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Observe-only decision-ledger configuration (enabled default true).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether decision-provenance capture is on: human prompts journal prov:stated and human permission denials journal prov:denied; false disables all prov:* journaling with no other behavior change (default true)."
+        }
+      }
     }
   }
 }

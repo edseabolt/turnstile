@@ -220,6 +220,7 @@ test("config-merge.ts exposes the default sub-object builders and merge dispatch
     "mergeAgentsPatch",
     "mergeConfigKey",
     "mergeGitGatesPatch",
+    "mergeProvenancePatch",
     "mergeScalarKey",
     "mergeToolPolicyPatch",
   ])

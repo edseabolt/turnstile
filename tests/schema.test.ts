@@ -84,6 +84,11 @@ test("schema property names match the defaultConfig key sets exactly", () => {
     Object.keys(cfg.gitGates).sort(),
     "gitGates key set",
   )
+  assert.deepEqual(
+    Object.keys(schema.properties.provenance!.properties!).sort(),
+    Object.keys(cfg.provenance).sort(),
+    "provenance key set",
+  )
 })
 
 /** (10) Each property's declared JSON type matches `typeof` the runtime

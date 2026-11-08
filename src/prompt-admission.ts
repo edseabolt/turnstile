@@ -866,6 +866,7 @@ function captureProvenanceBody(
   sessionID: string,
   properties: PromptHookProperties,
 ): void {
+  if (!st.config.provenance.enabled) return
   try {
     if (isPipelineChildPrompt(st, sessionID)) return
     st.journaler.journal(

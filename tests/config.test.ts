@@ -603,6 +603,38 @@ test("defaultConfig ships the gitGates defaults (lint and landing on)", () => {
   assert.equal(cfg.gitGates.emptyDiffExempt, true)
 })
 
+/** provenance defaults: the observe-only decision ledger is on. */
+test("defaultConfig ships provenance enabled", () => {
+  assert.deepEqual(defaultConfig({}).provenance, { enabled: true })
+})
+
+/** A non-object provenance keeps every default and warns once. */
+test("mergeConfig rejects a non-object provenance and keeps defaults", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { provenance: "nope" as unknown })
+  assert.deepEqual(config.provenance, base.provenance)
+  assert.deepEqual(warnings, ["config: provenance must be an object; keeping defaults"])
+})
+
+/** A valid provenance override is applied; an invalid sub-key type keeps the
+ *  default with a journaled warning. */
+test("mergeConfig applies a valid provenance override and rejects a non-boolean enabled", () => {
+  const off = mergeConfig(defaultConfig({}), { provenance: { enabled: false } })
+  assert.deepEqual(off.config.provenance, { enabled: false })
+  assert.deepEqual(off.warnings, [])
+  const bad = mergeConfig(defaultConfig({}), { provenance: { enabled: "yes" } })
+  assert.deepEqual(bad.config.provenance, { enabled: true })
+  assert.deepEqual(bad.warnings, ["config: provenance.enabled must be a boolean; keeping default"])
+})
+
+/** Unknown provenance sub-keys are ignored with a warning. */
+test("mergeConfig ignores unknown provenance sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { provenance: { bogus: 1 } })
+  assert.deepEqual(config.provenance, base.provenance)
+  assert.deepEqual(warnings, ['config: unknown provenance key "bogus" ignored'])
+})
+
 /** The default commitFormat compiles as a `^…$` + `"s"` pattern. */
 test("defaultConfig commitFormat compiles as a conventional-commit regex", () => {
   const re = new RegExp(`^${DEFAULT_COMMIT_FORMAT}$`, "s")

@@ -145,6 +145,23 @@ test("each deny site journals prov:denied with its kind", () => {
   ])
 })
 
+/** With `provenance.enabled: false` every MVP capture surface is silent:
+ *  admitted prompts journal no `prov:stated` row and deny replies journal no
+ *  `prov:denied` row (the deny reply itself still applies). */
+test("provenance disabled silences all MVP capture surfaces", () => {
+  const { ctx, metricsDir } = coreWith({ provenance: { enabled: false } })
+  ctx.admitPrompt("p1", { text: "not captured" }, "")
+  ctx.planGateAsks.set("r1", { sessionID: "p1", recordedAt: 0 })
+  const handlers = createEventHandlers(ctx)
+  handlers["permission.replied"]!({ sessionID: "p1", requestID: "r1", reply: "reject" })
+  assert.deepEqual(provEntriesOf(metricsDir), [])
+  assert.deepEqual(provErrorEntriesOf(metricsDir), [])
+  assert.ok(
+    journalEntries(metricsDir).some((e) => e.type === "permission" && e.decision === "reject"),
+    "the deny reply still journals its own decision row",
+  )
+})
+
 /** A capture failure is fail-open: the error is journaled as an `error`
  *  row and the admission completes without throwing. The journaler is
  *  swapped for one that throws only on `prov:` rows, so the fail-open
