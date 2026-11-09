@@ -87,13 +87,16 @@ test("provWaiverEntry: shapes the covered stages", () => {
 // ── prov:override ────────────────────────────────────────────────────────────
 
 test("provOverrideEntry: shapes the override row with keys in construction order", () => {
-  assert.deepEqual(provOverrideEntry({ sessionID: "p1", tool: "edit", path: "/r/a.ts", child: "c1" }), {
-    type: "prov:override",
-    sessionID: "p1",
-    tool: "edit",
-    path: "/r/a.ts",
-    child: "c1",
-  })
+  assert.deepEqual(
+    provOverrideEntry({ sessionID: "p1", tool: "edit", path: "/r/a.ts", child: "c1" }),
+    {
+      type: "prov:override",
+      sessionID: "p1",
+      tool: "edit",
+      path: "/r/a.ts",
+      child: "c1",
+    },
+  )
 })
 
 test("provOverrideEntry: redacts secrets in the path", () => {

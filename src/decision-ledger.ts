@@ -156,5 +156,11 @@ export interface ProvOverrideInput {
 export function provOverrideEntry(input: ProvOverrideInput): ProvOverrideEntry {
   const redacted = redactSecrets(input.path)
   const path = redacted.slice(0, LEDGER_PATH_CAP)
-  return { type: "prov:override", sessionID: input.sessionID, tool: input.tool, path, child: input.child }
+  return {
+    type: "prov:override",
+    sessionID: input.sessionID,
+    tool: input.tool,
+    path,
+    child: input.child,
+  }
 }

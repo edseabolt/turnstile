@@ -368,3 +368,158 @@ test("a waiver-capture failure journals an error row and never throws", () => {
     },
   ])
 })
+
+// ── prov:override wiring ─────────────────────────────────────────────────────
+
+import { toolHooksAfter } from "../src/tool-hooks-after.ts"
+
+/** The `childWrite` telemetry rows of a metrics dir with `ts` stripped.
+ *  @param metricsDir The metrics dir to read.
+ *  @returns The matching entries with `ts: undefined`. */
+function childWriteRowsOf(metricsDir: string): Array<Record<string, any>> {
+  return journalEntries(metricsDir)
+    .filter((e) => e.type === "tool" && e.childWrite === true)
+    .map((e) => ({ ...e, ts: undefined }))
+}
+
+/** The `prov:override` rows of a metrics dir with `ts` stripped.
+ *  @param metricsDir The metrics dir to read.
+ *  @returns The matching entries with `ts: undefined`. */
+function provOverridesOf(metricsDir: string): Array<Record<string, any>> {
+  return provEntriesOf(metricsDir).filter((e) => e.type === "prov:override")
+}
+
+/** Drives a write/edit through the before-guard and the after-surface.
+ *  @param ctx The hooks-core context.
+ *  @param tool The tool name (`write` or `edit`).
+ *  @param sessionID The acting session.
+ *  @param filePath The target path.
+ *  @param agent Optional event agent name. */
+async function driveWriteEdit(
+  ctx: TurnstileContext,
+  tool: "write" | "edit",
+  sessionID: string,
+  filePath: string,
+  agent?: string,
+): Promise<void> {
+  const event = {
+    tool,
+    sessionID,
+    ...(agent !== undefined ? { agent } : {}),
+    input: { filePath },
+  }
+  ctx.handleWriteEditDispatch(event as any, tool)
+  await toolHooksAfter(ctx, event as any)
+}
+
+/** A pipeline-child write followed by a parent edit to the same path
+ *  journals exactly one `prov:override` row plus one `childWrite`
+ *  telemetry row. Enforcement is disarmed so the parent edit passes the
+ *  hands-on ladder (the capture is orthogonal to gating). */
+test("child write then parent edit to the same path journals prov:override", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  await driveWriteEdit(ctx, "edit", "p1", "/r/a.ts")
+  assert.deepEqual(provOverridesOf(metricsDir), [
+    {
+      ts: undefined,
+      type: "prov:override",
+      sessionID: "p1",
+      tool: "edit",
+      path: "/r/a.ts",
+      child: "c1",
+    },
+  ])
+  assert.deepEqual(childWriteRowsOf(metricsDir), [
+    {
+      ts: undefined,
+      type: "tool",
+      sessionID: "c1",
+      tool: "write",
+      childWrite: true,
+      path: "/r/a.ts",
+    },
+  ])
+})
+
+/** A parent edit of a path no pipeline child wrote journals no
+ *  `prov:override` row (the new-file false positive is suppressed by the
+ *  same-path match). */
+test("parent edit of a path no child wrote journals no prov:override", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  await driveWriteEdit(ctx, "write", "p1", "/r/fresh.ts")
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+  assert.deepEqual(childWriteRowsOf(metricsDir), [])
+})
+
+/** Repeated parent edits to the same path inside the window journal one
+ *  `prov:override` row per completed edit (window-persistent, never
+ *  consume-on-match). */
+test("repeated parent edits journal one prov:override row each", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  await driveWriteEdit(ctx, "edit", "p1", "/r/a.ts")
+  await driveWriteEdit(ctx, "edit", "p1", "/r/a.ts")
+  assert.equal(provOverridesOf(metricsDir).length, 2)
+})
+
+/** The child arm of the after-surface skips the capture (child writes were
+ *  recorded at dispatch), so a child's own completed write never produces a
+ *  duplicate `prov:override` row. */
+test("a child's own after-event journals no duplicate prov:override", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+})
+
+/** With `decisionLedger.enabled: false` neither the child-write telemetry
+ *  row nor the `prov:override` row journals. */
+test("decisionLedger disabled silences override capture and child telemetry", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false, decisionLedger: { enabled: false } })
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  await driveWriteEdit(ctx, "edit", "p1", "/r/a.ts")
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+  assert.deepEqual(childWriteRowsOf(metricsDir), [])
+})
+
+/** An override-capture failure is fail-open: the error is journaled as an
+ *  `error` row and nothing throws. */
+test("an override-capture failure journals an error row and never throws", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  const original = ctx.journaler.journal.bind(ctx.journaler)
+  ;(ctx.journaler as { journal: (entry: Record<string, unknown>) => void }).journal = (entry) => {
+    if (String(entry.type).startsWith("prov:")) throw new Error("disk full")
+    original(entry)
+  }
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  await driveWriteEdit(ctx, "edit", "p1", "/r/a.ts")
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+  assert.deepEqual(provErrorEntriesOf(metricsDir), [
+    {
+      ts: undefined,
+      type: "error",
+      sessionID: "p1",
+      error: "prov: override capture: Error: disk full",
+    },
+  ])
+})
+
+/** A parent write/edit blocked in the before-guard (the hands-on ladder)
+ *  never completes, so no `prov:override` row journals for it. */
+test("a hands-on-blocked parent write journals no prov:override", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  assert.throws(() =>
+    ctx.handleWriteEditDispatch(
+      { tool: "edit", sessionID: "p1", input: { filePath: "/r/a.ts" } } as any,
+      "edit",
+    ),
+  )
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+})

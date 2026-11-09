@@ -22,6 +22,7 @@ import {
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
 import { wouldBlockEntry } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
+import { createOverrideAdjacency, type OverrideAdjacency } from "./override-adjacency.ts"
 import { createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
@@ -106,6 +107,10 @@ export interface TurnstileContext {
   toolPolicy: ToolPolicy
   /** Evidence tracker for plan-approval stamps. */
   evidence: EvidenceTracker
+  /** In-memory child-write adjacency for prov:override capture; not persisted. */
+  overrideAdjacency: OverrideAdjacency
+  /** Resolves a session's registration status (pipeline-child exemption). */
+  childStatus: ReturnType<typeof createParentResolution>["childStatus"]
   /** Set of known subagent names (name-guard skips). */
   subagentNames: Set<string>
   // ── maps ──────────────────────────────────────────────────────────────────
@@ -398,6 +403,7 @@ interface CoreState {
   gates: Gates
   toolPolicy: ToolPolicy
   evidence: EvidenceTracker
+  overrideAdjacency: OverrideAdjacency
   subagentNames: Set<string>
   failedLookups: Map<string, { attempts: number; reason: string }>
   lookupReasonNotVisible: string
@@ -1569,6 +1575,9 @@ function buildCoreLedger(opts: TurnstileOptions, st: CoreState): void {
   // bash/shell test executions attributed to the parent. Owns only the
   // *evidence* dimension; marker authority is separate.
   st.evidence = createEvidenceTracker(st.config, (raw) => st.ledger.parentOf(raw), st.journaler)
+  // Child-write adjacency for prov:override capture: in-process only, never
+  // persisted; the journaled childWrite telemetry rows are the durable trail.
+  st.overrideAdjacency = createOverrideAdjacency()
   if (st.ledger.observeCounts().pendingSummary) st.surfaceFlags.observeSummaryPending = true
 }
 
@@ -2073,6 +2082,8 @@ function coreDeps(
   | "gates"
   | "toolPolicy"
   | "evidence"
+  | "overrideAdjacency"
+  | "childStatus"
   | "subagentNames"
 > {
   return {
@@ -2084,6 +2095,8 @@ function coreDeps(
     gates: st.gates,
     toolPolicy: st.toolPolicy,
     evidence: st.evidence,
+    overrideAdjacency: st.overrideAdjacency,
+    childStatus: st.childStatus,
     subagentNames: st.subagentNames,
   }
 }
