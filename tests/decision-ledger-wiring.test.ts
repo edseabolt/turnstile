@@ -443,6 +443,75 @@ test("child write then parent edit to the same path journals prov:override", asy
   ])
 })
 
+/** A parent `write` whose event carries the `input.path` spelling (the
+ *  alternate payload key the before-guard also accepts) captures the same
+ *  way: the row's `tool` is `write` and the path resolves from `path`. */
+test("parent write via the input.path spelling journals prov:override with tool=write", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  const event = { tool: "write", sessionID: "p1", input: { path: "/r/a.ts" } }
+  ctx.handleWriteEditDispatch(event as any, "write")
+  await toolHooksAfter(ctx, event as any)
+  assert.deepEqual(provOverridesOf(metricsDir), [
+    {
+      ts: undefined,
+      type: "prov:override",
+      sessionID: "p1",
+      tool: "write",
+      path: "/r/a.ts",
+      child: "c1",
+    },
+  ])
+})
+
+/** A child write whose event carries no usable path records nothing: no
+ *  telemetry row and no adjacency record (an empty path can never match). */
+test("a child write with no path journals no telemetry row", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  const event = { tool: "write", sessionID: "c1", agent: "executor", input: {} }
+  ctx.handleWriteEditDispatch(event as any, "write")
+  await toolHooksAfter(ctx, event as any)
+  assert.deepEqual(childWriteRowsOf(metricsDir), [])
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+})
+
+/** A telemetry failure at the child-exempt arm is fail-open: the error is
+ *  journaled as an `error` row and the exempt dispatch still allows. */
+test("a child-write telemetry failure journals an error row and never throws", () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  const original = ctx.journaler.journal.bind(ctx.journaler)
+  ;(ctx.journaler as { journal: (entry: Record<string, unknown>) => void }).journal = (entry) => {
+    if (entry.type === "tool") throw new Error("disk full")
+    original(entry)
+  }
+  ctx.handleWriteEditDispatch(
+    { tool: "write", sessionID: "c1", agent: "executor", input: { filePath: "/r/a.ts" } } as any,
+    "write",
+  )
+  assert.deepEqual(childWriteRowsOf(metricsDir), [])
+  assert.ok(
+    journalEntries(metricsDir).some(
+      (e) => e.type === "error" && String(e.error).startsWith("child-write telemetry:"),
+    ),
+    "the fail-open error row lands",
+  )
+})
+
+/** A parent edit whose event carries no usable path never matches (the
+ *  empty path is skipped on both sides of the heuristic). */
+test("a parent edit with no path journals no prov:override", async () => {
+  const { ctx, metricsDir } = coreWith({ alwaysEnforce: false })
+  ctx.ledger.childToParent.set("c1", "p1")
+  await driveWriteEdit(ctx, "write", "c1", "/r/a.ts", "executor")
+  const event = { tool: "edit", sessionID: "p1", input: {} }
+  ctx.handleWriteEditDispatch(event as any, "edit")
+  await toolHooksAfter(ctx, event as any)
+  assert.deepEqual(provOverridesOf(metricsDir), [])
+})
+
 /** A parent edit of a path no pipeline child wrote journals no
  *  `prov:override` row (the new-file false positive is suppressed by the
  *  same-path match). */

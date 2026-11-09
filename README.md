@@ -340,8 +340,11 @@ and waiver counts, final gate state). Read-only; never writes or blocks.
 
 Prints the decision-provenance ledger: the human decision events turnstile
 observed — `prov:stated` (every admitted parent prompt, verbatim after
-mechanical secret redaction), `prov:denied` (human permission denials), and
-`prov:waiver` (human gate waivers, with the covered stages) —
+mechanical secret redaction), `prov:denied` (human permission denials),
+`prov:waiver` (human gate waivers, with the covered stages), and
+`prov:override` (a parent write/edit that follows a pipeline-child write to
+the same path within a 15-minute window — a human-side correction of
+pipeline work) —
 interleaved in journal order. An observe-only decision ledger; capture is
 dumb, derivation is offline. Read-only; never writes or blocks.
 
