@@ -698,6 +698,10 @@ The full install ships eight skills into `~/.config/opencode/skills/`:
 | `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                                       |
 | `turnstile-prov`     | Report the decision ledger via `prov` (`prov:stated` prompts, `prov:denied` denials, `prov:waiver` waivers); forwards options. |
 
+Derived views (origin labels, noise rate, taste-drift) are available offline
+via `opencode-turnstile prov-views`; they read the same `prov:*` rows and
+never mutate them.
+
 The on/off skills never send the suspend/resume markers themselves — the
 markers are honored only from user-typed prompts, so an agent relaying one
 does nothing. Instead the skill reads the resolved suspension config from

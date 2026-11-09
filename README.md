@@ -356,6 +356,21 @@ dumb, derivation is offline. Read-only; never writes or blocks.
 Capture is gated on `decisionLedger.enabled` (default `true`; `false` disables
 all `prov:*` journaling).
 
+### `opencode-turnstile prov-views`
+
+Offline derived views over the decision ledger — the "derivation is smart"
+half of "capture is dumb, derivation is smart". Classifies `prov:stated`
+prompts by origin (direct instruction, pipeline chatter, waiver-carried
+directive), computes the chatter noise rate, and aggregates taste-drift
+signals (denied ask kinds, parent overrides of pipeline-child writes) across
+sessions and days. Purely read-time: journal rows are never rewritten, and
+no derived value feeds gates or capture. Read-only; never writes or blocks.
+
+    opencode-turnstile prov-views                 # every session
+    opencode-turnstile prov-views <sessionID>     # a specific session
+    opencode-turnstile prov-views --json          # machine-readable output
+    opencode-turnstile prov-views --tail 100      # bound the row walk
+
 ## Markers
 
 Subagents must emit these as the first line of their output. These examples
