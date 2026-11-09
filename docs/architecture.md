@@ -1002,9 +1002,11 @@ probe; a disjoint custom syntax stays silent).
   (`signature-mismatch`). Restart grace survives exactly one prompt
   (`replayGrace`).
 - **Marker drift is mechanically checked.** The marker regexes in
-  `src/markers.ts`, the examples in `README.md` and `agents/*.md`, and the
-  policy prose in `src/policy.ts` are validated together by
-  `scripts/check-markers.mjs` (wired into `npm run ci`).
+  `src/markers.ts`, the examples in `README.md`, `docs/usage.md`, and
+  `agents/*.md`, the policy prose in `src/policy.ts`, and
+  `scripts/evidence.mjs`'s MARKER_OK copy are validated together by
+  `scripts/check-markers.mjs` (wired into `npm run ci`), including negative
+  probes that reject near-miss marker text.
 
 ---
 
