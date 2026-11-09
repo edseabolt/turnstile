@@ -29,11 +29,12 @@ tool: "tool.hook (hooks-tool.ts)" {
 before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nreviewer gate ▸ once-grant short-circuit ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit\n▸ waiver-covered dispatch → journalProvWaiver →\nprov:waiver (decisionLedger.enabled)"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ bash write gate\n(guardBashWrite, default-on) ▸ landing gate"
-before-write: "write/edit: path denylist ▸ hands-on gate\n(parent sessions only — a registered pipeline\nchild's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
+before-write: "write/edit: path denylist ▸ pipeline-child\nexempt (child write → childWrite telemetry row\n+ override-adjacency record) or scratch exempt ▸\nhands-on gate (parent sessions only — a registered\npipeline child's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
 
 after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ PIPELINE status append\n(per delivery) ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
 after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE PASS"
+after-write: "write/edit: prov:override capture —\nparent edit matching a pipeline-child write\nto the same path within 15 min → provOverrideEntry\n(decisionLedger.enabled; window-persistent)"
 
 eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart budget)" {
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
@@ -55,6 +56,7 @@ tool.before -> before-write
 tool.after -> after-task
 tool.after -> after-read
 tool.after -> after-bash
+tool.after -> after-write
 eventloop.inbox -> admit: "same admission path"
 permission.plan-arm -> admit: "reply 'always' → PLAN APPROVED state"
 permission.landing-arm -> tool.before-bash: "consume pendingOnceGrant.landing"

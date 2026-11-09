@@ -29,6 +29,7 @@ import { waiverCovers } from "./gates-common.ts"
 import { isPushLanding } from "./tool-policy.ts"
 import { planImpactAdvisory } from "./policy.ts"
 import { asSessionID } from "./delivery.ts"
+import type { OverrideAdjacency } from "./override-adjacency.ts"
 
 /**
  * The state the bash/write-guard concern reads and mutates: the shared deps
@@ -61,6 +62,8 @@ export interface BashWriteGuardState {
   boundIntentNudges(): void
   /** Parent → pending plan-impact advisory text awaiting the next delivery. */
   planImpactAdvisories: Map<string, string>
+  /** In-memory child-write adjacency for prov:override capture; shared with the tool after-surface. */
+  overrideAdjacency: OverrideAdjacency
 }
 
 /**
@@ -174,6 +177,42 @@ function handleBashDispatchBody(
 }
 
 /**
+ * The child-write telemetry for `prov:override` capture: when the decision
+ * ledger is enabled and the target path is a non-empty string, records the
+ * write into the in-memory adjacency tracker (shared with the tool
+ * after-surface) and journals one bounded `{type:"tool", childWrite:true}`
+ * telemetry row — the audit trail is the point, so recording is
+ * unconditional once the ledger gate passes. Fail-open: an internal error
+ * journals `type:"error"` and never blocks the exempt dispatch.
+ * @param st The bash-write-guard state.
+ * @param sid The child session ID.
+ * @param tool The narrowed tool name (`"write"` or `"edit"`).
+ * @param filePath The raw target-path value.
+ */
+function observeChildWrite(
+  st: BashWriteGuardState,
+  sid: string,
+  tool: "write" | "edit",
+  filePath: unknown,
+): void {
+  if (!st.config.decisionLedger.enabled) return
+  const path = typeof filePath === "string" ? filePath : ""
+  if (path === "") return
+  try {
+    st.overrideAdjacency.recordChildWrite(st.ledger.parentOf(sid), sid, path, Date.now())
+    st.journaler.journal({
+      type: "tool",
+      sessionID: sid,
+      tool,
+      childWrite: true,
+      path: path.slice(0, 200),
+    })
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID: sid, error: `child-write telemetry: ${e}` })
+  }
+}
+
+/**
  * The exemption half of a write/edit dispatch: a registered pipeline child's
  * own write/edit is the executor's work and never gates (a non-empty event
  * agent name in the configured pipeline set is authoritative evidence — edge
@@ -200,6 +239,7 @@ function writeEditExempt(
   // pipeline child's own write/edit (the executor's work) is exempt
   // (agent-name precedence first, then the edge + emitter fallback).
   if (st.childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") {
+    observeChildWrite(st, sid, tool, filePath)
     return true
   }
   if (isScratchTarget(filePath)) {

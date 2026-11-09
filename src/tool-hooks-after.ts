@@ -11,6 +11,7 @@
 
 import { agentFromDeliveryEvent } from "./child-registration.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
+import { provOverrideEntry } from "./decision-ledger.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import type { MarkerEvent, ToolHookEvent, ToolResult } from "./types.ts"
 
@@ -339,6 +340,45 @@ function afterBash(ctx: TurnstileContext, event: ToolHookEvent): void {
 }
 
 /**
+ * The write/edit delivery body: captures a `prov:override` when the
+ * completed parent write/edit targets a path a pipeline child wrote within
+ * the adjacency window. Child writes were recorded at dispatch (the
+ * before-guard's exempt arm), so a child-keyed event is skipped here to
+ * avoid a duplicate row; non-pipeline-subagent sessions (`"unknown"`) reach
+ * this too — they are parent-keyed by `parentOf` and an adjacency hit is
+ * still a human-surface correction. Gated on `decisionLedger.enabled`;
+ * fail-open: a capture failure journals `type:"error"` and never throws.
+ * @param ctx The shared per-setup context.
+ * @param event The host execute.after tool-hook payload.
+ */
+function afterWriteEdit(ctx: TurnstileContext, event: ToolHookEvent): void {
+  const sid = asSessionID(event?.sessionID)
+  const agent = typeof event?.agent === "string" ? event.agent : ""
+  if (ctx.childStatus(sid, agent) === "child") return
+  if (!ctx.config.decisionLedger.enabled) return
+  const filePath = event.input?.filePath ?? event.input?.path
+  const path = typeof filePath === "string" ? filePath : ""
+  const child = ctx.overrideAdjacency.findOverride(ctx.ledger.parentOf(sid), path, Date.now())
+  if (child === "") return
+  try {
+    ctx.journaler.journal(
+      provOverrideEntry({
+        sessionID: ctx.ledger.parentOf(sid),
+        tool: event.tool === "edit" ? "edit" : "write",
+        path,
+        child,
+      }) as unknown as Record<string, unknown>,
+    )
+  } catch (e) {
+    ctx.journaler.journal({
+      type: "error",
+      sessionID: sid,
+      error: `prov: override capture: ${e}`,
+    })
+  }
+}
+
+/**
  * execute.after body: surfaces the once-per-scope blocks FIRST — the
  * end-of-period observe summary, the once-per-plugin-load config block, and
  * the once-per-prompt near-miss diagnostics (ordering invariant documented at
@@ -366,6 +406,10 @@ export async function toolHooksAfter(ctx: TurnstileContext, event: ToolHookEvent
     }
     if (event?.tool === "bash" || event?.tool === "shell") {
       afterBash(ctx, event)
+      return
+    }
+    if (event?.tool === "write" || event?.tool === "edit") {
+      afterWriteEdit(ctx, event)
       return
     }
   } catch (e) {

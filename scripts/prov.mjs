@@ -4,8 +4,9 @@
 //
 // This is the `turnstile prov` surface: it renders the journaled human
 // decision events — `prov:stated` (captured prompts, redacted at write
-// time), `prov:denied` (human permission denials), and `prov:waiver`
-// (human gate waivers; the row shape exists, wiring is post-MVP) —
+// time), `prov:denied` (human permission denials), `prov:waiver`
+// (human gate waivers; the row shape exists, wiring is post-MVP), and
+// `prov:override` (parent overrides of pipeline-child writes) —
 // oldest-first. It never writes anything and never blocks. Like
 // scripts/log.mjs it is a plain ESM script outside the 100% coverage gate
 // (bin/ and scripts/ never are), exercised by tests/prov-cli.test.ts via
@@ -27,7 +28,8 @@ import * as path from "node:path"
 const USAGE = `Usage: opencode-turnstile prov [sessionID] [--json] [--tail <n>]
 
 Prints the decision-provenance ledger: the journaled human decision events
-(prompts stated, permission denials, gate waivers) for one session, or for
+(prompts stated, permission denials, gate waivers, parent overrides of
+pipeline-child writes) for one session, or for
 every session when no sessionID is given. Read-only: nothing is written.
 
 Options:
@@ -386,6 +388,19 @@ function renderWaiver(e) {
 }
 
 /**
+ * Renders one `prov:override` row: the parent-side tool, the overridden
+ * child session, and the (capped) target path.
+ * @param {Record<string, unknown>} e The parsed entry.
+ * @returns {string} The rendered line.
+ */
+function renderOverride(e) {
+  const tool = typeof e.tool === "string" ? e.tool : "?"
+  const child = typeof e.child === "string" ? e.child : "?"
+  const path = typeof e.path === "string" ? e.path : "?"
+  return `override  tool=${tool} child=${child} path=${truncateField(path, STATED_RENDER_CAP)}`
+}
+
+/**
  * Renders one prov entry to its ledger line; an unrecognized `prov:*` type
  * renders its raw type so future journal types never break the surface.
  * @param {Record<string, unknown>} e The parsed entry.
@@ -396,6 +411,7 @@ function renderProv(e) {
   if (type === "prov:stated") return renderStated(e)
   if (type === "prov:denied") return renderDenied(e)
   if (type === "prov:waiver") return renderWaiver(e)
+  if (type === "prov:override") return renderOverride(e)
   return `${type}  (unrecognized)`
 }
 
