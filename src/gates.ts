@@ -67,6 +67,17 @@ export interface Gates {
    */
   reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
   /**
+   * Counts one reviewer dispatch toward the landing ensemble: advances
+   * `reviewerDispatches` and journals the plain `{type:"ensemble"}` count
+   * entry (restart-sticky, and — replay-side — clears a prior refusal
+   * stamp). Used by the dormant arm's admit path, which bypasses
+   * `guardReviewerDispatch` and would otherwise leave the count at zero
+   * when the reviewers' APPROVE arrives.
+   * @param sessionID The parent session ID whose ensemble is counted.
+   * @param ledger The gate ledger to read and mutate state from.
+   */
+  countReviewerEnsemble(sessionID: string, ledger: GateLedger): void
+  /**
    * Enforces the per-leg loop caps and the per-task total-dispatch budget for
    * a pending `task` dispatch of any leg (planner, plan-reviewer, test-runner,
    * executor, debugger, reviewer, unknown): the dispatcher's leg cap

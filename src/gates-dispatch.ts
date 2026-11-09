@@ -28,6 +28,7 @@ export type { EvidenceSearch } from "./gate-messages.ts"
 interface DispatchGates {
   guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
   reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
+  countReviewerEnsemble(sessionID: string, ledger: GateLedger): void
   guardDispatchBudget(sessionID: string, ledger: GateLedger, agent: string): boolean
   countDispatch(sessionID: string, ledger: GateLedger, agent: string, waived: boolean): void
   guardReadLimit(sessionID: string, ledger: GateLedger): void
