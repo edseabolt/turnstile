@@ -15,7 +15,7 @@ import * as fs from "node:fs"
 import type { Journaler } from "./journal.ts"
 import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
-import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
+import { BlockError, journalProvWaiver, waiverCovers, waiverStateNote } from "./gates-common.ts"
 import type { PlanGateRed } from "./plan-gate-status.ts"
 import { decompFallback, planGateStages, referencedPlans } from "./plan-gate-status.ts"
 import { journalPlansUnreadable, type PlansScan } from "./plans-scan.ts"
@@ -57,12 +57,14 @@ function resolveDecompTarget(
  * Provenance: the waiver opened the gate from the user prompt, not a
  * dispatch prompt. The waiver quote carries raw prompt context and is
  * already trace-gated by the prompt-hook capture (SECURITY.md redaction
- * contract).
- * @param journaler The telemetry writer.
+ * contract). The decision-ledger row carries only the covered stages
+ * (no waiver text).
+ * @param st The plan-gate enforcement state (journaler, config, stages).
  * @param sessionID The parent session ID.
  * @param s The gate state carrying the live waiver.
  */
-function journalPlanWaiver(journaler: Journaler, sessionID: string, s: GateState): void {
+function journalPlanWaiver(st: PlanGateEnforceState, sessionID: string, s: GateState): void {
+  const { journaler } = st
   journaler.journal({
     type: "plan",
     sessionID,
@@ -71,6 +73,7 @@ function journalPlanWaiver(journaler: Journaler, sessionID: string, s: GateState
     waiver: s.userWaiver,
   })
   journaler.traceEvent("user", "plan-waiver", s.userWaiver, sessionID)
+  journalProvWaiver(st.journaler, st.config, sessionID, st.stages)
 }
 
 /**
@@ -278,7 +281,7 @@ function enforcePlanApproval(
 ): void {
   const s = ledger.state(sessionID)
   if (waiverCovers(s, st.stages)) {
-    journalPlanWaiver(st.journaler, sessionID, s)
+    journalPlanWaiver(st, sessionID, s)
     return
   }
   const gateStatus = st.status.planGateStatus(projectDir, ledger, sessionID, prompt)

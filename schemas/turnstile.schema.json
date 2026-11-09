@@ -268,7 +268,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Whether decision-ledger capture is on: human prompts journal prov:stated and human permission denials journal prov:denied; false disables all prov:* journaling with no other behavior change (default true)."
+          "description": "Whether decision-ledger capture is on: human prompts journal prov:stated, human permission denials journal prov:denied, and human gate waivers journal prov:waiver; false disables all prov:* journaling with no other behavior change (default true)."
         }
       }
     }

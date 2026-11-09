@@ -1,17 +1,33 @@
 /**
  * @fileoverview Decision-ledger wiring tests: the `prov:stated` capture
  * inside the single deduped prompt-admission body (both transport paths,
- * dedupe, child exclusion, fail-open) and the `prov:denied` capture at the
- * three human permission-deny sites (plan, landing, hands-on).
+ * dedupe, child exclusion, fail-open), the `prov:denied` capture at the
+ * three human permission-deny sites (plan, landing, hands-on), and the
+ * `prov:waiver` capture at the two human gate-waiver sites (plan gate,
+ * reviewer gate).
  */
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
 import { createEventHandlers } from "../src/event-stream-handlers.ts"
+import { journalProvWaiver } from "../src/gates-common.ts"
+import { defaultAgents } from "../src/config-merge.ts"
+import { planGateStages } from "../src/plan-gate-status.ts"
+import { turnstile } from "../turnstile.ts"
 import type { TurnstileConfig } from "../src/types.ts"
-import { isolatedEnv, journalEntries, tmpDir } from "./helpers.ts"
+import {
+  callSession,
+  callTool,
+  isolatedEnv,
+  journalEntries,
+  makeFakeHost,
+  tmpDir,
+  type FakeHost,
+} from "./helpers.ts"
 
 /** Creates a fresh hooks-core context over an isolated env and a temp
  *  metrics dir, so neither config resolution nor journaling touches the
@@ -208,6 +224,147 @@ test("a denial-capture failure journals an error row and never throws", () => {
       type: "error",
       sessionID: "p1",
       error: "prov: denied capture: Error: disk full",
+    },
+  ])
+})
+
+/** Boots the plugin over a fake host in a temp project dir containing a plan
+ *  file (the plan gate needs a resolvable plan to reach the waiver branch).
+ *  @returns The fake host, the dispose callback, and the metrics dir. */
+async function bootWithPlan(): Promise<{
+  h: FakeHost
+  dispose: () => void
+  metricsDir: string
+}> {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  return {
+    h,
+    dispose: (): void => {
+      dispose()
+      process.chdir(prev)
+    },
+    metricsDir,
+  }
+}
+
+/** The `prov:waiver` rows of a metrics dir with `ts` stamps stripped.
+ *  @param metricsDir The metrics dir to read.
+ *  @returns The matching entries with `ts: undefined`. */
+function provWaiversOf(metricsDir: string): Array<Record<string, any>> {
+  return provEntriesOf(metricsDir).filter((e) => e.type === "prov:waiver")
+}
+
+/** A waiver-covered executor dispatch journals exactly one `prov:waiver`
+ *  row whose stages are the plan gate's covered stage group. */
+test("a waiver-covered executor dispatch journals prov:waiver with the plan-gate stages", async () => {
+  const { h, dispose, metricsDir } = await bootWithPlan()
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: ship it" })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    assert.deepEqual(provWaiversOf(metricsDir), [
+      {
+        ts: undefined,
+        type: "prov:waiver",
+        sessionID: "p1",
+        stages: planGateStages({ agents: defaultAgents() } as TurnstileConfig),
+      },
+    ])
+  } finally {
+    dispose()
+  }
+})
+
+/** A waiver-covered reviewer dispatch journals exactly one `prov:waiver`
+ *  row whose stages name the configured reviewer agent. */
+test("a waiver-covered reviewer dispatch journals prov:waiver with the reviewer stage", async () => {
+  const { h, dispose, metricsDir } = await bootWithPlan()
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: ship it" })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "review it" },
+    })
+    assert.deepEqual(provWaiversOf(metricsDir), [
+      {
+        ts: undefined,
+        type: "prov:waiver",
+        sessionID: "p1",
+        stages: [defaultAgents().reviewer],
+      },
+    ])
+  } finally {
+    dispose()
+  }
+})
+
+/** With `decisionLedger.enabled: false` a waiver-covered dispatch journals
+ *  no `prov:waiver` row (the WAIVED gate entry itself still lands). */
+test("decisionLedger disabled silences waiver capture too", async () => {
+  const project = tmpDir()
+  fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
+  fs.writeFileSync(path.join(project, ".opencode", "plans", "plan.md"), "# P\n")
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const prev = process.cwd()
+  process.chdir(project)
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true, decisionLedger: { enabled: false } },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: "USER WAIVER: ship it" })
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor", prompt: "do the work" },
+    })
+    assert.deepEqual(provEntriesOf(metricsDir), [])
+    assert.ok(
+      journalEntries(metricsDir).some((e) => e.type === "plan" && e.result === "WAIVED"),
+      "the plan gate still journals its own WAIVED entry",
+    )
+  } finally {
+    dispose()
+    process.chdir(prev)
+  }
+})
+
+/** A waiver-capture failure is fail-open: the error is journaled as an
+ *  `error` row and nothing throws. The journaler is swapped for one that
+ *  throws only on `prov:` rows, so the fail-open error row itself still
+ *  lands. */
+test("a waiver-capture failure journals an error row and never throws", () => {
+  const { ctx, metricsDir } = coreWith({})
+  const original = ctx.journaler.journal.bind(ctx.journaler)
+  ;(ctx.journaler as { journal: (entry: Record<string, unknown>) => void }).journal = (entry) => {
+    if (String(entry.type).startsWith("prov:")) throw new Error("disk full")
+    original(entry)
+  }
+  journalProvWaiver(ctx.journaler, ctx.config, "p1", ["executor"])
+  assert.deepEqual(provWaiversOf(metricsDir), [])
+  assert.deepEqual(provErrorEntriesOf(metricsDir), [
+    {
+      ts: undefined,
+      type: "error",
+      sessionID: "p1",
+      error: "prov: waiver capture: Error: disk full",
     },
   ])
 })

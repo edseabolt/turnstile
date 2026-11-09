@@ -1,11 +1,14 @@
 /**
  * @fileoverview Shared enforcement semantics for the per-gate modules: the
  * deliberate block error both gate families throw, and the live-waiver
- * coverage/rendering rules both families read from. Leaf boundary — depends
- * only on `types.ts`.
+ * coverage/rendering rules both families read from, and the shared
+ * decision-ledger waiver capture. Depends on `types.ts`, `journal.ts`
+ * (type only), and the pure `decision-ledger.ts` builders.
  */
 
-import type { GateState } from "./types.ts"
+import { provWaiverEntry } from "./decision-ledger.ts"
+import type { Journaler } from "./journal.ts"
+import type { GateState, TurnstileConfig } from "./types.ts"
 
 /**
  * The only error type turnstile deliberately throws at the host: an
@@ -197,4 +200,33 @@ export function wouldBlockEntry(
   wouldBlocks: number,
 ): Record<string, unknown> {
   return { type: "would-block", sessionID, cause: cause.slice(0, 200), observed, wouldBlocks }
+}
+
+/**
+ * Journals one `prov:waiver` decision-provenance row for a human gate
+ * waiver, at the gate site that admitted a waiver-covered dispatch. The
+ * waiver quote text is deliberately not carried: it is already redacted
+ * upstream (the trace-gated `s.userWaiver`), so the row carries only the
+ * covered stages. Gated on `config.decisionLedger.enabled`; fail-open per
+ * the capture convention — a builder or journal error journals an `error`
+ * row and never throws.
+ * @param journaler The telemetry writer.
+ * @param config The resolved plugin configuration (the decisionLedger gate).
+ * @param sessionID The parent session the waiver was granted in.
+ * @param stages The gate stages the waiver's coverage opened.
+ */
+export function journalProvWaiver(
+  journaler: Journaler,
+  config: TurnstileConfig,
+  sessionID: string,
+  stages: readonly string[],
+): void {
+  if (!config.decisionLedger.enabled) return
+  try {
+    journaler.journal(
+      provWaiverEntry({ sessionID, stages: [...stages] }) as unknown as Record<string, unknown>,
+    )
+  } catch (e) {
+    journaler.journal({ type: "error", sessionID, error: `prov: waiver capture: ${e}` })
+  }
 }

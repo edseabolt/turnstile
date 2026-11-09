@@ -13,7 +13,13 @@ import type { Journaler } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE } from "./state.ts"
 import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
-import { BlockError, reviewerEnsembleEntry, waiverCovers, waiverStateNote } from "./gates-common.ts"
+import {
+  BlockError,
+  journalProvWaiver,
+  reviewerEnsembleEntry,
+  waiverCovers,
+  waiverStateNote,
+} from "./gates-common.ts"
 import {
   capBlockMessage,
   searchedSessionIds,
@@ -38,12 +44,14 @@ export interface DispatchGateState {
  * unscoped entry stays byte-identical to the legacy shape. Provenance: the
  * waiver opened the gate from the user prompt, not a dispatch prompt. The
  * waiver quote carries raw prompt context and is already trace-gated by
- * the prompt-hook capture (SECURITY.md redaction contract).
- * @param journaler The telemetry writer.
+ * the prompt-hook capture (SECURITY.md redaction contract). The
+ * decision-ledger row carries only the covered stages (no waiver text).
+ * @param st The dispatch gate state (journaler, config).
  * @param sessionID The parent session ID.
  * @param s The gate state carrying the live waiver.
  */
-function journalReviewerWaiver(journaler: Journaler, sessionID: string, s: GateState): void {
+function journalReviewerWaiver(st: DispatchGateState, sessionID: string, s: GateState): void {
+  const { journaler } = st
   journaler.journal({
     type: "gate",
     sessionID,
@@ -60,6 +68,7 @@ function journalReviewerWaiver(journaler: Journaler, sessionID: string, s: GateS
     ...(s.userWaiverScope.length > 0 ? { scope: s.userWaiverScope.join(", ") } : {}),
   })
   journaler.traceEvent("user", "waiver", s.userWaiver, sessionID)
+  journalProvWaiver(st.journaler, st.config, sessionID, [st.config.agents.reviewer])
 }
 
 /**
@@ -353,7 +362,7 @@ function guardReviewerDispatch(
   // Journal the WAIVED transition only after the allowance checks admit
   // the dispatch: a dispatch refused on the cap must not record a waived
   // gate transition that never happened.
-  if (covered) journalReviewerWaiver(st.journaler, sessionID, s)
+  if (covered) journalReviewerWaiver(st, sessionID, s)
   if (!s.hasGatePass && !covered) {
     // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
     // unverifiedPass set: the gate is genuinely not green, so the block names

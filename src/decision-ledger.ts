@@ -99,9 +99,11 @@ export interface ProvWaiverInput {
 }
 
 /**
- * Build a `prov:waiver` entry for a human gate waiver. Shipped unwired:
- * the waiver quote text is already redacted upstream, so the entry carries
- * only the covered stages; wiring lands post-MVP.
+ * Build a `prov:waiver` entry for a human gate waiver. Journaled at the
+ * plan-gate and reviewer-gate waiver sites (`journalPlanWaiver` /
+ * `journalReviewerWaiver`), gated on `decisionLedger.enabled`; the waiver
+ * quote text is already redacted upstream, so the entry carries only the
+ * covered stages.
  *
  * @param input - The session ID and the covered gate stages.
  * @returns The entry with keys in construction order.

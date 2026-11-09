@@ -60,6 +60,7 @@ test("gates-common.ts exposes the block error, waiver helpers, and composers", a
   assert.deepEqual(Object.keys(mod).sort(), [
     "BlockError",
     "decisionEntry",
+    "journalProvWaiver",
     "observeEntry",
     "observeSummaryEntry",
     "reviewerEnsembleEntry",
