@@ -129,7 +129,7 @@ export interface GateLedger {
    * Records a resolved child→parent edge. The edge is journaled as a
    * `child-edge` row (carrying the child's resolved emitter agent when one
    * is supplied) whenever it is new or changed — the data the setup re-seed
-   * replays after a plugin reload wipes the in-memory map (#225). An
+   * replays after a plugin reload wipes the in-memory map (the re-seed path). An
    * unchanged re-set is silent (idempotent registrations stay journaled
    * once). An agent upgrade (a previously agent-less row gaining a resolved
    * agent, or an agent change) re-journals — the journaled agent feeds the
@@ -223,7 +223,8 @@ export interface GateLedger {
    * Whether — and why — a plan identity lacks a durable approval recorded for
    * this project. The store holds records keyed by project scope, plan name,
    * and content key under a key scheme: the current scheme hashes the plan's
-   * spec region (`"spec"` tag); the legacy scheme (pre-chunk-3.5, untagged)
+   * spec region (`"spec"` tag); the legacy scheme (untagged, written before
+   * per-record scheme tags existed)
    * hashed the whole file. A record is `live` when its key equals the plan's
    * spec-region key (the current scheme) or its whole-file key (the legacy
    * scheme — a whole-file match proves the approved bytes are byte-identical,
@@ -522,7 +523,7 @@ interface ApprovalRecord {
   /** The project scope token (16 hex chars; see `projectScope`). */
   project: string
   /** Key scheme: "spec" = spec-region sha256 (current); absent = legacy
-   *  whole-file sha256 (pre-chunk-3.5) or an unknown-scheme record. */
+   *  whole-file sha256 (legacy untagged form) or an unknown-scheme record. */
   scheme?: "spec"
 }
 

@@ -96,7 +96,7 @@ export interface TurnstileContext {
   /**
    * Re-applies the boot replay's restored child→parent edges and re-seeds
    * the emitter-authority cache from them, journaling the `reseed` row;
-   * called once per setup before hooks register (#225 re-seed).
+   * called once per setup before hooks register (re-seed telemetry).
    * @returns The number of child edges restored.
    */
   reseedChildEdges(): number
@@ -834,7 +834,7 @@ function promoteOnEvidence(st: CoreState, parent: string): void {
       mode: st.config.gateEvidence,
       ...(ps.taskFingerprint !== "" ? { fp: ps.taskFingerprint } : {}),
     })
-    // The gate's green flip is the task's completion boundary (Phase 3):
+    // The gate's green flip is the task's completion boundary:
     // the flip journals its task-complete companion row and stamps the
     // retire, so the next admitted prompt starts a fresh scope.
     st.markTaskComplete(parent, ps)

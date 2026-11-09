@@ -248,7 +248,7 @@ async function registerHostHook(
  * @param hooksCount The number of successfully registered hooks.
  * @param edgesRestored The number of child edges restored by the setup
  *     re-seed (stamped only when non-zero, so a post-reload parent-hands-on
- *     block is diagnosable as a re-seed failure — issue #225 telemetry).
+ *     block is diagnosable as a re-seed failure telemetry).
  */
 function writeSetupHeartbeat(
   ctx: TurnstileContext,
@@ -444,7 +444,7 @@ async function runSetup(
   const cleanups: Array<() => void> = []
   // Child-edge re-seed BEFORE any hook registers: a live pipeline child from
   // before the reload must resolve through its restored edge (and emitter
-  // agent) on the first post-reload write — the #225 re-seed window is
+  // agent) on the first post-reload write — the post-reload re-seed window is
   // exactly the gap between setup and the child's next tool call.
   const edgesRestored = ctx.reseedChildEdges()
   // Load heartbeat: one entry per host-session boot, emitted after every

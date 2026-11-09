@@ -58,7 +58,7 @@ function freshReleaseFlags(): Pick<
     // ask. Fresh false on every task-scope reset; restart-restored by the
     // sticky-decision replay (a replayed `always` hands-on decision row
     // re-stamps it) and carried through mergeAfterReplay like the other
-    // standing releases — a restart mid-task keeps the release (#228.2).
+    // standing releases — a restart mid-task keeps the release.
     handsOnRelease: false,
     // Task-scoped standing human release provenance (waiver captured through
     // the sticky decision-row family, or restored by replay). Fresh false;
