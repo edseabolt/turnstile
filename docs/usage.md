@@ -686,7 +686,7 @@ Shared caveats:
 
 ### Vendored skills
 
-The full install ships seven skills into `~/.config/opencode/skills/`:
+The full install ships eight skills into `~/.config/opencode/skills/`:
 
 | Skill                | What it does                                                                                             |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -697,6 +697,7 @@ The full install ships seven skills into `~/.config/opencode/skills/`:
 | `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                             |
 | `turnstile-status`   | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).           |
 | `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                 |
+| `turnstile-prov`     | Report the decision ledger via `prov` (`prov:stated` prompts, `prov:denied` denials); forwards options.  |
 
 The on/off skills never send the suspend/resume markers themselves — the
 markers are honored only from user-typed prompts, so an agent relaying one
@@ -720,7 +721,7 @@ copy-ready prompt — "Send this yourself (do not let the agent send it):
 (the kill switch), the skill says so and stops — it does not compose a
 prompt that would be refused. A renamed marker (`suspendMarker` in §4's
 table) is picked up automatically because the value always comes from the
-CLI, never from the skill text. All five skills and both commands forward
+CLI, never from the skill text. All eight skills and both commands forward
 any options you name to the CLI verbatim and surface usage errors instead
 of retrying.
 
