@@ -26,6 +26,12 @@ The test suite requires Node ≥ 22.8 (`--experimental-test-isolation` shipped i
 floor even though `src/`, `bin/`, and `scripts/` use no API newer than
 Node 18.
 
+`npm run test:differential` is the required check for any change claimed to
+be behavior-preserving: it diffs HEAD against a reference commit scenario by
+scenario outside the `npm run ci` chain. See the README's dev loop for the
+scenario list, the `SKIPPED (absent in ref)` drift-tolerance rule, and how
+to re-point `--ref` after a deliberate behavior change.
+
 ## Repo rules
 
 1. **Marker drift:** the regex literals in `src/markers.ts` and the marker

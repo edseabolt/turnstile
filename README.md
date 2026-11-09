@@ -428,6 +428,29 @@ npm run ci            # lint, format:check, typecheck, check:markers, test gate 
 npm run ci:installed  # install:check — run after `npm run init` on a machine with artifacts
 ```
 
+**Differential characterization harness** — `npm run test:differential`
+compares HEAD against a reference commit
+(`--ref <git-ref>`, default `138c809^`) scenario by scenario:
+`config`, `markers`, `replay`, `dispatch`, `journal`, `prov`. It is
+required for any change claimed to be behavior-preserving and is not
+part of `npm run ci`. Scenarios whose modules do not exist in the
+reference tree report `SKIPPED (absent in ref)`; for `prov` and
+recovery/replay cells use a reference at or after `687270b` (the first
+commit with the full decision ledger — partial-ledger merge-window refs
+fail with a driver error rather than a structured skip). Deliberate
+behavior changes re-point `--ref` at the commit that introduced them.
+
+**Self-host smoke** — `npm run init && npm run ci:installed`, start a
+fresh OpenCode session with the plugin loaded, and run one
+planner→plan-reviewer→executor→test-runner→reviewer cycle on a trivial
+task. Verify the journal shows the expected entry sequence and
+`opencode-turnstile status` reads correctly. Decision-ledger checks:
+one parent prompt → a `prov:stated` row; one denied permission → a
+`prov:denied` row with the correct `kind`; one parent override of a
+pipeline-child write → a `prov:override` row with the
+adjacency-matched `child`; then `opencode-turnstile prov` derived
+views read all three back.
+
 ## Configuration
 
 Defaults live in code (`src/config.ts`); override via
