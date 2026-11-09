@@ -353,9 +353,11 @@ function classifyParentPlanImpact(
  * The stateful hands-on-gate capability handed to `toolPolicy.guardHandsOn`
  * (mirrors landingGateHandles): only a shaped capability crosses the
  * boundary. `escalate` arms the pending-hands-on-ask latch (the evaluate
- * handler forces the human ask off it) and is called by guardHandsOn only
- * under `escalation: "ask"` on a repeat attempt (no release, >= 1 prior
- * block); it returns whether the ask row must be journaled (within-TTL
+ * handler forces the human ask off it) and is called by guardHandsOn on a
+ * repeat attempt (no release, >= 1 prior block) in both escalation modes —
+ * the ask-first ladder arms the one-shot ask latch; the mode only governs
+ * non-latch side effects (under `"ask"` a red plan gate forces the dispatch
+ * permission ask); it returns whether the ask row must be journaled (within-TTL
  * duplicate arms return false); fail-toward-strict — a host reject leaves
  * the gate red, so the next attempt re-blocks.
  * @param st The bash-write-guard state.
@@ -406,10 +408,12 @@ function bashWriteGateHandles(
  * only a shaped capability crosses the boundary, so the stateful ledger
  * never enters the pure tool-policy module. `recordBlock`/`escalate` are its
  * only mutators; `escalate` arms the pending-landing-ask latch (the evaluate
- * handler forces the human ask off it) and is called by guardLanding only
- * under `escalation: "ask"` on an armed attempt (a repeat attempt, or a
- * credited first attempt); it returns whether the ask row must be journaled
- * (within-TTL duplicate arms return false); fail-toward-strict — a host
+ * handler forces the human ask off it) and is called by guardLanding on an
+ * armed attempt (a repeat attempt, or a credited first attempt) in both
+ * escalation modes — the ask-first ladder arms the one-shot ask latch; the
+ * mode only governs non-latch side effects (under `"ask"` a red plan gate
+ * forces the dispatch permission ask); it returns whether the ask row must
+ * be journaled (within-TTL duplicate arms return false); fail-toward-strict — a host
  * reject leaves approval absent, so the next attempt re-blocks.
  * `hasCreditedApproval` is a read of the ledger's bucket-free credit trace
  * (a journaled, non-refused reviewer APPROVE that a prompt reset dropped the

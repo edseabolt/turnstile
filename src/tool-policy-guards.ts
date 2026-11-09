@@ -522,8 +522,8 @@ interface LadderTail {
  * is the FALLBACK, not the default: it fires when the escalation is not
  * armed (first attempt) or the latch cannot be armed (within-TTL
  * duplicate arm — the ask is already live for this gate). This holds in
- * BOTH `escalation` modes since the Phase 2 ask-first change: the mode
- * no longer selects block-vs-ask on armed attempts, because an
+ * BOTH `escalation` modes: the mode does not select block-vs-ask on
+ * armed attempts, because an
  * interactive host can surface the ask in either and the throw only
  * serves the no-human-attached fallback. Fail-toward-strict: a reject
  * leaves the gate red and the next attempt re-blocks. One source for the

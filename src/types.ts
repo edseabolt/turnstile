@@ -841,7 +841,7 @@ export interface TurnstileConfig {
   sessionSummary: "on" | "quiet" | "off"
   /**
    * Repeat-attempt escalation mode for the landing and hands-on gates.
-   * Both modes are ask-first since Phase 2 (chunk-3): an armed repeat
+   * Both modes are ask-first: an armed repeat
    * attempt arms the one-shot ask latch and forces the host permission ask
    * (the block-throw fires only when the latch cannot be armed — a
    * within-window duplicate arm — or the host never surfaces the ask). The
