@@ -20,8 +20,19 @@
 //   opencode-turnstile log [sessionID] [--json] [--tail <n>]
 //   opencode-turnstile log --help       This usage. Unknown flags exit 2.
 
+import {
+  clockOf,
+  dedupeSinks,
+  parseLine,
+  parseTailValue,
+  readFileGenerations,
+  REPLAY_SESSION_RE,
+  requireSessionShape,
+  resolveConfig,
+  truncateField,
+  tsKey,
+} from "./journal-read.mjs"
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
 
 const USAGE = `Usage: opencode-turnstile log [sessionID] [--json] [--tail <n>]
@@ -38,130 +49,10 @@ Options:
   --help      Show this help`
 
 /**
- * Host session-ID alphabet, length-capped. Standalone-script copy of the
- * canonical constant in src/journal-sinks.ts (this script cannot import TS
- * source; src/ledger.ts re-imports the same constant).
- */
-const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
-
-/**
- * Dedupes raw journal lines that appear in more than one sink. A row is
- * parent-keyed into `sessions/<id>.jsonl` while `journalPerSession` routing
- * is active but may also exist in the shared `turnstile.jsonl` (routing
- * changed mid-session, or a legacy layout), so a row present in both sinks
- * must render once. Identity is the row's full JSON text — journal writes
- * are append-only and unmodified, so two copies of one row serialize
- * identically, while two genuinely distinct events never do.
- * @param {string[]} lines Raw journal lines from all walked sinks.
- * @returns {string[]} The lines with cross-sink duplicates removed,
- *     first occurrence kept (sink order is oldest-generation first).
- */
-function dedupeSinks(lines) {
-  const seen = new Set()
-  return lines.filter((line) => {
-    if (seen.has(line)) return false
-    seen.add(line)
-    return true
-  })
-}
-
-/** The default replay tail bound (lines); mirrors the runtime config default. */
-const DEFAULT_REPLAY_TAIL_LINES = 2000
-
-/**
  * Marker length bound for credited verdicts; mirrors the replay fold's
  * MAX_REPLAY_MARKER_LEN in src/ledger.ts (a longer marker is a shape drop).
  */
 const MAX_REPLAY_MARKER_LEN = 512
-
-/**
- * Canonical default reviewer agent name; mirrors CANONICAL_REVIEWER_AGENT in
- * src/config.ts (the `agents.reviewer` default).
- */
-const DEFAULT_REVIEWER_AGENT = "reviewer"
-
-/**
- * Resolves the default metrics directory (standalone copy of the journaler
- * default; honors an absolute XDG_DATA_HOME or HOME).
- * @param {Record<string, string | undefined>} env Environment to consult.
- * @returns {string} The absolute default metrics directory.
- */
-function defaultMetricsDir(env) {
-  const abs = (v) => (typeof v === "string" && path.isAbsolute(v) ? v : undefined)
-  const home = abs(env.HOME) ?? os.homedir()
-  const base = abs(env.XDG_DATA_HOME) ?? path.join(home, ".local/share")
-  return path.join(base, "opencode", "metrics")
-}
-
-/**
- * Reads and parses the config file the config layer uses, silently tolerating
- * a missing or malformed file (fail-open). Standalone copy of status.mjs's
- * loader (this script cannot import TS source).
- * @param {NodeJS.ProcessEnv} env The process environment.
- * @returns {Record<string, unknown> | null} The parsed config object, or null.
- */
-function loadConfigFile(env) {
-  const configPath =
-    env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
-    return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null
-  } catch {
-    return null // missing/unreadable/malformed config: fall through to the default.
-  }
-}
-
-/**
- * Validates a configured or flagged tail bound. Only a finite positive
- * integer is accepted; anything else falls back to the default.
- * @param {unknown} value The raw tail value.
- * @returns {number} The validated tail bound.
- */
-function resolveReplayTailLines(value) {
-  return Number.isInteger(value) && value > 0 ? value : DEFAULT_REPLAY_TAIL_LINES
-}
-
-/**
- * Reads the file-configured reviewer agent name (the `agents.reviewer` key),
- * tolerating a missing or malformed `agents` block (fail-open).
- * @param {Record<string, unknown> | null} config The parsed config file, or null.
- * @returns {string} The configured reviewer name, or "" when unset.
- */
-function fileReviewerOf(config) {
-  const agents =
-    config &&
-    typeof config.agents === "object" &&
-    config.agents !== null &&
-    !Array.isArray(config.agents)
-      ? config.agents
-      : {}
-  return typeof agents.reviewer === "string" && agents.reviewer ? agents.reviewer : ""
-}
-
-/**
- * Resolves the metrics directory, tail bound, and reviewer agent name
- * (precedence env → file → default, mirroring config.ts). Standalone copy of
- * status.mjs's resolver, extended with the `agents.reviewer` key the credited
- * approval fold needs.
- * @param {NodeJS.ProcessEnv} env The process environment.
- * @param {number | null} tailFlag The `--tail` override, or null.
- * @returns {{ metricsDir: string, tailLines: number, reviewerAgent: string }}
- *     The resolved values.
- */
-function resolveConfig(env, tailFlag) {
-  const config = loadConfigFile(env)
-  const envDir =
-    typeof env.TURNSTILE_METRICS_DIR === "string" && env.TURNSTILE_METRICS_DIR
-      ? env.TURNSTILE_METRICS_DIR
-      : ""
-  const fileDir =
-    config && typeof config.metricsDir === "string" && config.metricsDir ? config.metricsDir : ""
-  return {
-    metricsDir: envDir || fileDir || defaultMetricsDir(env),
-    tailLines: tailFlag ?? resolveReplayTailLines(config?.replayTailLines),
-    reviewerAgent: fileReviewerOf(config) || DEFAULT_REVIEWER_AGENT,
-  }
-}
 
 /**
  * Parses the log arguments. Recognizes one optional positional sessionID,
@@ -183,31 +74,6 @@ function parseArgs(argv) {
     else throw new Error(`unexpected extra argument "${a}"`)
   }
   return out
-}
-
-/**
- * Parses the `--tail` value. A missing or non-positive-integer value is a
- * usage error (exit 2), unlike the config-file path which silently falls
- * back — an explicit flag is a deliberate request.
- * @param {string | undefined} raw The raw flag value.
- * @returns {number} The validated tail bound.
- */
-function parseTailValue(raw) {
-  const n = Number(raw)
-  if (raw === undefined || !Number.isInteger(n) || n <= 0) {
-    throw new Error(`--tail expects a positive integer, got "${raw ?? ""}"`)
-  }
-  return n
-}
-
-/**
- * Validates a positional session ID against the host session-ID shape.
- * @param {string} id The raw positional argument.
- * @returns {string} The validated ID.
- */
-function requireSessionShape(id) {
-  if (!REPLAY_SESSION_RE.test(id)) throw new Error(`unknown or malformed session id "${id}"`)
-  return id
 }
 
 /**
@@ -284,62 +150,6 @@ function lastSharedSessionID(journalPath, tailLines) {
 }
 
 /**
- * Reads one journal file family (current file plus rotated generations) as
- * oldest-first blocks: a newest-first walk stopping at the first missing
- * generation, silently tolerating missing files. Standalone copy of
- * status.mjs's reader (this script cannot import TS source).
- * @param {string} file Absolute path of the current journal file.
- * @param {number} tailLines The per-file tail bound in lines to keep.
- * @returns {{ name: string, lines: string[] }[]} The blocks, oldest-first.
- */
-function readFileGenerations(file, tailLines) {
-  const blocks = []
-  let generation = fs.existsSync(file) ? 0 : 1
-  for (;;) {
-    const gen = generation === 0 ? file : `${file}.${generation}`
-    if (!fs.existsSync(gen)) break
-    blocks.unshift({
-      name: path.basename(gen),
-      lines: fs.readFileSync(gen, "utf8").split("\n").filter(Boolean),
-    })
-    if (blocks.reduce((total, b) => total + b.lines.length, 0) >= tailLines) break
-    generation++
-  }
-  return blocks
-}
-
-/**
- * Extracts a lexicographic sort key from a journal line's `ts` field; a
- * missing or unparseable `ts` sorts oldest. Standalone copy of status.mjs's
- * key function.
- * @param {string} line A raw JSONL journal line.
- * @returns {string} The sort key.
- */
-function tsKey(line) {
-  try {
-    const ts = JSON.parse(line).ts
-    return typeof ts === "string" && !Number.isNaN(Date.parse(ts)) ? ts : ""
-  } catch {
-    return ""
-  }
-}
-
-/**
- * Parses one journal line into an entry, or null when malformed or not a
- * plain object (fail-open, status parity).
- * @param {string} line A raw JSONL journal line.
- * @returns {Record<string, unknown> | null} The parsed entry, or null.
- */
-function parseLine(line) {
-  try {
-    const e = JSON.parse(line)
-    return e && typeof e === "object" && !Array.isArray(e) ? e : null
-  } catch {
-    return null
-  }
-}
-
-/**
  * Collects the child session IDs of one parent from `child-edge` rows in the
  * given entries (child-keyed rows such as `marker-retry` carry the child
  * session ID, so the shared-file filter must admit them too).
@@ -396,17 +206,6 @@ function readSessionLines(metricsDir, sessionID, tailLines) {
     files: [...sessionBlocks, ...sharedBlocks].map((b) => b.name),
     entries: lines.slice(-tailLines).map(parseLine).filter(Boolean),
   }
-}
-
-/**
- * Renders a timestamp as HH:MM:SS (UTC-less, verbatim from the ISO string;
- * an unparseable ts renders as `--:--:--`).
- * @param {unknown} ts The raw `ts` field.
- * @returns {string} The clock text.
- */
-function clockOf(ts) {
-  if (typeof ts !== "string" || Number.isNaN(Date.parse(ts))) return "--:--:--"
-  return ts.slice(11, 19)
 }
 
 /**
@@ -506,17 +305,6 @@ function renderAudit(e) {
   if (typeof e.reason === "string" && e.reason) parts.push(`reason=${e.reason}`)
   if (typeof e.agent === "string" && e.agent) parts.push(`agent=${e.agent}`)
   return `${e.type}  ${parts.join("  ")}`.trimEnd()
-}
-
-/**
- * Truncates one rendered field value to a bounded length so a long command
- * or path cannot blow out the timeline row.
- * @param {string} value The raw field value.
- * @param {number} max The maximum rendered length.
- * @returns {string} The value, ellipsized when over the bound.
- */
-function truncateField(value, max) {
-  return value.length <= max ? value : `${value.slice(0, max)}…`
 }
 
 /**
