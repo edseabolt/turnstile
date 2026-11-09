@@ -171,11 +171,12 @@ function defaultModeScalars(): Pick<
     // also prints an all-gates-green line for zero-activity sessions; "off"
     // restores pre-summary behavior exactly.
     sessionSummary: "quiet",
-    // Escalation ladder: "block" (default) re-throws the block on a retried
-    // landing/hands-on attempt and never raises a permission ask, so an
-    // auto-accepting host cannot silently collapse the ask tier into an
-    // allow; release is waiver/approval-marker or earned reviewer verdict
-    // only. "ask" restores the interactive permission-ask ladder verbatim.
+    // Escalation ladder: on a retried landing/hands-on attempt BOTH modes
+    // arm the one-shot ask latch and raise the permission ask; the
+    // block-throw is only the no-human fallback, so an auto-accepting host
+    // can silently collapse the ask tier into an allow (one reason the
+    // default is "block"). Release is also waiver/approval-marker or earned
+    // reviewer verdict. The plan-gate escalation is the only mode-gated one.
     escalation: "block",
     // Continuation carry is on by default: a reviewer-approved landing prompt
     // re-arms earned credit when the worktree/branch is unchanged; set

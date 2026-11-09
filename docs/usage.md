@@ -139,12 +139,11 @@ a fully waived review leaves the landing gate red regardless of the verdict.
 
 **Landing.** With a credited reviewer approval held, the landing gate
 releases `git push` and it goes through. A push without approval is
-refused (`"reason":"no-landing-approval"`) and, under the default
-`escalation: "block"`, every retry blocks again (no permission ask — the
-agent is instructed to stop and report, and the gate releases only on your
-explicit `PLAN APPROVED:` prompt marker or an earned reviewer
-verdict); `escalation: "ask"` restores the interactive human permission ask
-on the repeat. Commit subjects are linted as conventional
+refused (`"reason":"no-landing-approval"`) and a repeat attempt arms the
+one-shot ask latch and forces the interactive human permission ask in BOTH
+`escalation` modes (the block-throw is only the no-human fallback); the
+gate also releases on your explicit `PLAN APPROVED:` prompt marker or an
+earned reviewer verdict. Commit subjects are linted as conventional
 commits (`gitGates.commitMessages: true`, the default): `git commit -m` must
 match `<type>(<scope>)?: <subject>` — type one of
 `feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`, an optional
@@ -289,21 +288,22 @@ replays across restart like a reviewer verdict.
 Repeat-attempt escalation of the landing and hands-on gates is controlled by
 `escalation` (`"block"`, the default, or `"ask"`):
 
-- **`block` (default) — waiver-only.** A blocked-and-retried landing push or
-  parent edit stays blocked: the agent is told to stop and report, no
-  permission ask is raised, and no `effect: "ask"` is set. The gate releases
-  only via a user-authored prompt marker (`USER WAIVER:` for hands-on /
-  dispatch gates, `PLAN APPROVED:` for the plan gate) or an earned reviewer
-  `VERDICT: APPROVE` (landing). Release paths that ride on replies to asks
-  (`always`/`once` grants) are naturally inert under this mode — no ask is
-  ever raised to reply to.
-- **`ask` — interactive ladder.** The repeat attempt arms a one-shot latch
-  and forces the host permission ask: reply `always` (released for the
-  task), `once` (one dispatch/edit), or `reject` (gate stays red).
-  Parallel tool batches that escalate together collapse into one ask row
-  (same-tick dedupe) — a re-arm inside the ask-latch TTL journals no second
-  ask row and re-blocks instead, while the already-armed latch still forces
-  the ask.
+- **`block` (default) — ask-first with block fallback.** The repeat attempt
+  arms the same one-shot latch and forces the host permission ask exactly as
+  under `"ask"`: reply `always` (released for the task), `once` (one
+  dispatch/edit), or `reject` (gate stays red). The block-throw with the
+  stop-and-report instruction is only the fallback for the no-human cases:
+  when no one answers the ask, or when a re-arm inside the ask-latch TTL
+  journals no second ask row (same-tick dedupe collapses parallel tool
+  batches that escalate together into one ask row) and re-blocks instead,
+  while the already-armed latch still forces the ask. Release also flows via
+  a user-authored prompt marker (`USER WAIVER:` for hands-on / dispatch
+  gates, `PLAN APPROVED:` for the plan gate) or an earned reviewer
+  `VERDICT: APPROVE` (landing).
+- **`ask` — interactive ladder.** Identical ask-first behavior: the repeat
+  attempt arms a one-shot latch and forces the host permission ask with the
+  same `always`/`once`/`reject` replies, with the same TTL dedupe and
+  block fallback.
 
 The plan-gate escalation (the first executor dispatch when no plan approval
 holds) follows the `escalation` mode: under `"block"` (the default) the
@@ -313,10 +313,10 @@ prompt. It is not part of the landing/hands-on ladder.
 
 > **Warning — auto-accept voids the human decision point.** If the host
 > answers permission asks automatically (`session.permissions:
-"autoaccept"` in `~/.config/opencode/cli.json`), the `escalation: "ask"`
-> ladder and the ensemble's human release are all
-> answered without you: the landing gate degrades to a
-> two-push delay and, under `"ask"`, the plan gate degrades to a one-block
+"autoaccept"` in `~/.config/opencode/cli.json`), the landing/hands-on
+> ask latches (both `escalation` modes) and the ensemble's human release
+> are all answered without you: the landing gate degrades to a two-push
+> delay and, under `"ask"`, the plan gate degrades to a one-block
 > delay. Turnstile
 > assumes a human actually answers; this is one reason the default is
 > `"block"`. `opencode-turnstile status` prints an
@@ -330,15 +330,14 @@ work. If the parent session (the one you type into) tries a `write` or
 
 - The **first** parent edit of a task is refused with
   `BLOCKED by turnstile: parent-session write/edit requires the pipeline…`.
-- Under the default `escalation: "block"`, every retry blocks again — the
-  gate releases only on a `USER WAIVER:` (below) or a hands-on release
-  carried from a prior `escalation: "ask"` session.
-- Under `escalation: "ask"`, the **repeat** attempt escalates to an
-  interactive permission ask through OpenCode's permission surface. Reply
+- The **repeat** attempt arms a one-shot ask latch and escalates to an
+  interactive permission ask through OpenCode's permission surface in BOTH
+  `escalation` modes (the block-throw is only the no-human fallback). Reply
   `always` to release the gate for the rest of the task, `once` to release
   exactly the one edit in flight, or `reject` to keep the gate red — the
   next attempt re-blocks (a within-window re-arm after a reject throws
-  instead of re-asking).
+  instead of re-asking). The gate also releases on a `USER WAIVER:` (below)
+  or a hands-on release carried from a prior session.
 - A `USER WAIVER:` in your prompt whose scope covers the `executor` stage
   also releases the gate. Plan approval does **not** — approving the plan
   tells turnstile the executor may start, not that the parent may edit.
@@ -818,8 +817,8 @@ journal (fail-open); a malformed config file never breaks the host.
 | `toolPolicy.bashWriteGate`                                                                                                 | `true`                                                                                                                                                                       | gate confident file-writing bash commands (redirects from writer commands, `tee`, `sed -i`/`--in-place`, `cp`/`mv`/`dd`/`truncate`/`touch`) through the parent hands-on ladder; write-shaped commands always journal `handsOn` telemetry                                                                                                                                                                                       |
 | `gitGates.commitMessages`                                                                                                  | `true`                                                                                                                                                                       | validate `git commit -m` subjects as conventional commits and block invalid ones; `false` disables commit lint                                                                                                                                                                                                                                                                                                                 |
 | `gitGates.commitFormat`                                                                                                    | a conventional-commits regex source                                                                                                                                          | conventional-commits regex source (compiled `^...$`) matched against each subject; a bad source is dropped and journaled                                                                                                                                                                                                                                                                                                       |
-| `gitGates.landingGate`                                                                                                     | `true`                                                                                                                                                                       | gate `git push` on this task reviewer `VERDICT: APPROVE` — blocks; under `escalation: "ask"` a repeat attempt escalates to the human ask; `false` disables the gate                                                                                                                                                                                                                                                            |
-| `escalation`                                                                                                               | `block`                                                                                                                                                                      | repeat-attempt escalation mode for the landing and hands-on gates: `block` (default) re-throws the block with no permission ask — release is waiver/approval-marker or earned reviewer verdict only; `ask` arms a one-shot latch and forces the host permission ask (collapses to allow under auto-accepting hosts)                                                                                                            |
+| `gitGates.landingGate`                                                                                                     | `true`                                                                                                                                                                       | gate `git push` on this task reviewer `VERDICT: APPROVE` — blocks; a repeat attempt escalates to the human ask in BOTH `escalation` modes (the block-throw is only the no-human fallback); `false` disables the gate                                                                                                                                                                                                           |
+| `escalation`                                                                                                               | `block`                                                                                                                                                                      | repeat-attempt escalation mode for the landing and hands-on gates: both modes arm a one-shot latch and force the host permission ask on a repeat attempt (the block-throw is only the no-human fallback; collapses to allow under auto-accepting hosts); the plan-gate escalation is mode-gated (`block` blocks, `ask` prompts)                                                                                                |
 | `gitGates.emptyDiffExempt`                                                                                                 | `true`                                                                                                                                                                       | exempt a statically-resolvable `git push` whose every refspec's branch resolves to the same commit as its upstream (ref equality); journals `exempt:"empty-diff"`; every ambiguous shape — force flags included — still gates; `false` is the strict opt-out                                                                                                                                                                   |
 | `gitGates.commitRetryThreshold`                                                                                            | 3                                                                                                                                                                            | blind-retry escalation: failed `invalid-commit-message` attempts for the same session within `commitRetryWindowMs` before the block message appends a full canonical example                                                                                                                                                                                                                                                   |
 | `gitGates.commitRetryWindowMs`                                                                                             | 60000                                                                                                                                                                        | window in milliseconds for `commitRetryThreshold` burst counting                                                                                                                                                                                                                                                                                                                                                               |

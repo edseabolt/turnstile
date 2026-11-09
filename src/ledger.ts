@@ -75,7 +75,7 @@ export interface GateLedger {
    * (`userWaiver`, `userWaiverScope`, `userWaiverConsumed`,
    * `reviewWaiverRounds`), and the plan identity fields (`plansSignature`,
    * `approvedPlan`/`approvedPlanKey`, `activePlan`) carried while
-   * `hasPlanVerdict` holds. `mergeAfterReplay` in `src/state.ts` is the
+   * `hasPlanVerdict` holds. `mergeAfterReplay` in `src/state-carry.ts` is the
    * authority for the exact carry set. Every other reset is a full
    * reset (fresh flags; `reviewRounds`/`plannerRounds`/
    * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/
@@ -129,7 +129,7 @@ export interface GateLedger {
    * Records a resolved child→parent edge. The edge is journaled as a
    * `child-edge` row (carrying the child's resolved emitter agent when one
    * is supplied) whenever it is new or changed — the data the setup re-seed
-   * replays after a plugin reload wipes the in-memory map (#225). An
+   * replays after a plugin reload wipes the in-memory map (the re-seed path). An
    * unchanged re-set is silent (idempotent registrations stay journaled
    * once). An agent upgrade (a previously agent-less row gaining a resolved
    * agent, or an agent change) re-journals — the journaled agent feeds the
@@ -223,7 +223,8 @@ export interface GateLedger {
    * Whether — and why — a plan identity lacks a durable approval recorded for
    * this project. The store holds records keyed by project scope, plan name,
    * and content key under a key scheme: the current scheme hashes the plan's
-   * spec region (`"spec"` tag); the legacy scheme (pre-chunk-3.5, untagged)
+   * spec region (`"spec"` tag); the legacy scheme (untagged, written before
+   * per-record scheme tags existed)
    * hashed the whole file. A record is `live` when its key equals the plan's
    * spec-region key (the current scheme) or its whole-file key (the legacy
    * scheme — a whole-file match proves the approved bytes are byte-identical,
@@ -522,7 +523,7 @@ interface ApprovalRecord {
   /** The project scope token (16 hex chars; see `projectScope`). */
   project: string
   /** Key scheme: "spec" = spec-region sha256 (current); absent = legacy
-   *  whole-file sha256 (pre-chunk-3.5) or an unknown-scheme record. */
+   *  whole-file sha256 (legacy untagged form) or an unknown-scheme record. */
   scheme?: "spec"
 }
 
@@ -1107,16 +1108,6 @@ function foldChildEdge(
   return null
 }
 
-/**
- * Dispatches a replay-typed entry to its per-kind fold.
- * @param entry The parsed replay-typed entry.
- * @param maps The last-wins maps to fill.
- * @param sessionID The validated session ID.
- * @param period The observe-mode period state to fill (observe-mode kinds
- *     only).
- * @returns The kind's drop record, or `null` when the entry folded (or is an
- *     inert sub-kind, which folds nothing and drops nothing).
- */
 /**
  * One per-kind replay fold arm: folds a parsed journal entry of a known
  * `type` into the last-wins maps / period state, returning the kind's drop
@@ -1804,39 +1795,6 @@ function replayGatePasses(
   for (const [child, edge] of maps.childEdges) childEdges.set(child, edge)
   journalReplayDrops(journalPath, drops)
 }
-
-/**
- * Creates the gate ledger and replays prior gate passes from the journal.
- * Both session maps are LRU-capped at `maxSessions` (promote-on-touch);
- * beyond the cap the least-recently-used entry is evicted. A replayed bucket
- * evicted before its grace prompt loses the one-prompt survival (fail-toward-
- * strict); without the tag the next prompt is an ordinary full reset.
- * Live parents register via `markParent` (per prompt, guarded dispatch, task
- * delivery, edge resolution, and root-session event). A registered parent is
- * never evicted from `states` while it stays in the bounded registry — leaked child buckets now only evict each other. Protection never
- * creates a bucket (minting is unchanged) and boot replay stays strict (the
- * registry is empty at replay, so the `replayGrace` loss behavior is
- * unchanged).
- * @param journalPath Absolute path of the JSONL journal to replay.
- * @param maxSessions LRU cap for tracked sessions (states + parent map).
- * @param replayTailLines Replay tail window in lines for the boot replay
- *     (see `replayGatePasses`).
- * @param approvalLedgerPath Optional absolute path of the durable approved-plan
- *     sidecar; defaults to `approved-plans.jsonl` beside the journal (the
- *     metrics dir). Injected to redirect the sidecar (tests, fail-open drills).
- * @param observeSessions The configured observe-mode period length (number of
- *     admitted parent sessions that observe before enforcement switches on);
- *     0 (the default) disables observe mode entirely.
- * @param reviewerAgent The configured reviewer agent name a restored
- *     reviewer-approval credit must be attributed to (defaults to the
- *     canonical reviewer name; the wiring passes `config.agents.reviewer` so
- *     a renamed reviewer works).
- * @param sessionsDir Optional absolute path of the per-session journal
- *     directory replayed alongside the shared file; defaults to `sessions`
- *     beside the journal (the metrics dir). Injected to redirect the sinks
- *     (tests).
- * @returns A ledger bound to a fresh in-memory session map.
- */
 
 /**
  * The maps and per-instance state one ledger owns: the session buckets, the
@@ -2564,7 +2522,17 @@ function composeLedger(
  * Creates the live gate ledger: the session buckets, the parent-edge
  * registry, the credit trace, and the observe/suspension/verdict/approval
  * concern stores, restored from the journal replay before the LRU caps are
- * applied.
+ * applied. Both session maps are LRU-capped at `maxSessions`
+ * (promote-on-touch); beyond the cap the least-recently-used entry is
+ * evicted. A replayed bucket evicted before its grace prompt loses the
+ * one-prompt survival (fail-toward-strict); without the tag the next prompt
+ * is an ordinary full reset. Live parents register via `markParent` (per
+ * prompt, guarded dispatch, task delivery, edge resolution, and
+ * root-session event); a registered parent is never evicted from `states`
+ * while it stays in the bounded registry — leaked child buckets only evict
+ * each other. Protection never creates a bucket (minting is unchanged) and
+ * boot replay stays strict (the registry is empty at replay, so the
+ * `replayGrace` loss behavior is unchanged).
  * @param journalPath The journal path the replay tail and the edge rows read
  *     and append.
  * @param maxSessions The LRU cap for the session-keyed maps.

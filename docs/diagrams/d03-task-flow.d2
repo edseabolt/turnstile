@@ -20,12 +20,12 @@ flow: {
     style.stroke-dash: 4
   }
   agents -> hooks: "planner output (numbered AC-n / chunk-N)"
-  hooks -> journal: "parseMarkers — verdict store update"
+  hooks -> journal: "planner result journaled (no marker: parseMarkers matches nothing here)"
 
   orch -> hooks: "dispatch plan-reviewer"
   hooks -> hooks: "planReviewerDispatch map updated\n(in-memory, round-scoped attribution)"
   agents -> hooks: "VERDICT: APPROVE crit=…"
-  hooks -> journal: "plan entry — plansSignature stamped on APPROVE"
+  hooks -> journal: "plan entry — APPROVE journals plansSignature\nplus bound plan/planKey"
 
   orch -> hooks: "dispatch executor"
   hooks -> hooks: "maintenance dispatch? prompt declares scope +\ndiff only non-src surfaces → skip plan gates,\njournal {type:maintenance}, cap 4/plan"
