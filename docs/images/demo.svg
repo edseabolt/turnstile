@@ -115,5 +115,6 @@
 
   <!-- ======== footer: the journal ======== -->
   <line x1="196" y1="986" x2="1668" y2="986" stroke="#CBA6F7" stroke-opacity="0.3" stroke-width="1.5"/>
-  <text x="932" y="1030" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="600" fill="#CBA6F7">every decision → turnstile.jsonl · replayed by opencode-turnstile status · push waits for the verdict</text>
+  <text x="932" y="1022" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="600" fill="#CBA6F7">every decision → turnstile.jsonl · replayed by opencode-turnstile status · push waits for the verdict</text>
+  <text x="932" y="1056" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" fill="#A6E3A1" opacity="0.9">your prompts and denials are the record — opencode-turnstile prov</text>
 </svg>
