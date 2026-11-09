@@ -288,21 +288,22 @@ replays across restart like a reviewer verdict.
 Repeat-attempt escalation of the landing and hands-on gates is controlled by
 `escalation` (`"block"`, the default, or `"ask"`):
 
-- **`block` (default) — waiver-only.** A blocked-and-retried landing push or
-  parent edit stays blocked: the agent is told to stop and report, no
-  permission ask is raised, and no `effect: "ask"` is set. The gate releases
-  only via a user-authored prompt marker (`USER WAIVER:` for hands-on /
-  dispatch gates, `PLAN APPROVED:` for the plan gate) or an earned reviewer
-  `VERDICT: APPROVE` (landing). Release paths that ride on replies to asks
-  (`always`/`once` grants) are naturally inert under this mode — no ask is
-  ever raised to reply to.
-- **`ask` — interactive ladder.** The repeat attempt arms a one-shot latch
-  and forces the host permission ask: reply `always` (released for the
-  task), `once` (one dispatch/edit), or `reject` (gate stays red).
-  Parallel tool batches that escalate together collapse into one ask row
-  (same-tick dedupe) — a re-arm inside the ask-latch TTL journals no second
-  ask row and re-blocks instead, while the already-armed latch still forces
-  the ask.
+- **`block` (default) — ask-first with block fallback.** The repeat attempt
+  arms the same one-shot latch and forces the host permission ask exactly as
+  under `"ask"`: reply `always` (released for the task), `once` (one
+  dispatch/edit), or `reject` (gate stays red). The block-throw with the
+  stop-and-report instruction is only the fallback for the no-human cases:
+  when no one answers the ask, or when a re-arm inside the ask-latch TTL
+  journals no second ask row (same-tick dedupe collapses parallel tool
+  batches that escalate together into one ask row) and re-blocks instead,
+  while the already-armed latch still forces the ask. Release also flows via
+  a user-authored prompt marker (`USER WAIVER:` for hands-on / dispatch
+  gates, `PLAN APPROVED:` for the plan gate) or an earned reviewer
+  `VERDICT: APPROVE` (landing).
+- **`ask` — interactive ladder.** Identical ask-first behavior: the repeat
+  attempt arms a one-shot latch and forces the host permission ask with the
+  same `always`/`once`/`reject` replies, with the same TTL dedupe and
+  block fallback.
 
 The plan-gate escalation (the first executor dispatch when no plan approval
 holds) follows the `escalation` mode: under `"block"` (the default) the
@@ -312,10 +313,10 @@ prompt. It is not part of the landing/hands-on ladder.
 
 > **Warning — auto-accept voids the human decision point.** If the host
 > answers permission asks automatically (`session.permissions:
-"autoaccept"` in `~/.config/opencode/cli.json`), the `escalation: "ask"`
-> ladder and the ensemble's human release are all
-> answered without you: the landing gate degrades to a
-> two-push delay and, under `"ask"`, the plan gate degrades to a one-block
+"autoaccept"` in `~/.config/opencode/cli.json`), the landing/hands-on
+> ask latches (both `escalation` modes) and the ensemble's human release
+> are all answered without you: the landing gate degrades to a two-push
+> delay and, under `"ask"`, the plan gate degrades to a one-block
 > delay. Turnstile
 > assumes a human actually answers; this is one reason the default is
 > `"block"`. `opencode-turnstile status` prints an
