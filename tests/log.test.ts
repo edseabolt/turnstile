@@ -840,6 +840,31 @@ test("filters the shared journal by sessionID and admits child-keyed rows via ch
   }
 })
 
+test("a row present in both the session sink and the shared journal renders once", () => {
+  const dir = metricsDir()
+  try {
+    // A parent-keyed row can exist in both sinks (routing changed
+    // mid-session, or a legacy journalPerSession:false layout); the
+    // timeline must not double-count it.
+    const row = {
+      ts: "2026-01-01T10:00:00Z",
+      type: "gate",
+      sessionID: "ses1",
+      result: "PASS",
+      tests: 1,
+      verified: true,
+    }
+    mkdirSync(join(dir, "sessions"), { recursive: true })
+    writeSessionJournal(dir, "ses1", [row])
+    writeSharedJournal(dir, [row])
+    const r = runLog(dir, ["ses1"])
+    const hits = r.stdout.split("\n").filter((line) => /gate {2}PASS\s+tests=1/.test(line))
+    assert.equal(hits.length, 1, `expected one rendered row, got: ${r.stdout}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("includes rotated generations ts-ordered with the current file", () => {
   const dir = metricsDir()
   try {

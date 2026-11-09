@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Thin argv router for the opencode-turnstile package. Maps the five
+// Thin argv router for the opencode-turnstile package. Maps the seven
 // subcommands onto the installer scripts (spawned, not imported, so each
 // keeps its own process.exit and stdio) or prints the package version. Paths
 // are resolved against this file, not cwd, so `npx opencode-turnstile` works
@@ -10,6 +10,7 @@
 //   opencode-turnstile uninstall  Remove installed artifacts (manifest artifacts)
 //   opencode-turnstile status     Report gate/plan state from the JSONL journal
 //   opencode-turnstile log        Render a session's turnstile timeline from the JSONL journal
+//   opencode-turnstile prov       Render the decision-provenance ledger (prov:* rows) from the JSONL journal
 //   opencode-turnstile evidence   Emit a shareable evidence summary for one task
 //   opencode-turnstile version    Print the installed package version
 //
@@ -30,6 +31,7 @@ const installScript = join(repoRoot, "scripts/install.mjs")
 const statusScript = join(repoRoot, "scripts/status.mjs")
 const evidenceScript = join(repoRoot, "scripts/evidence.mjs")
 const logScript = join(repoRoot, "scripts/log.mjs")
+const provScript = join(repoRoot, "scripts/prov.mjs")
 
 const USAGE = `Usage: opencode-turnstile <command>
 
@@ -51,6 +53,9 @@ Commands:
   log       Print a chronological timeline of one session's journaled events
             (read-only; log [sessionID] defaults to the most recent session;
              --json prints machine-readable output)
+  prov      Print the decision-provenance ledger: journaled human decision
+            events (prov:* rows) for one session, or every session
+            (read-only; prov [sessionID]; --json prints the raw rows)
   version   Print the installed package version
 
 init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
@@ -136,6 +141,13 @@ async function main() {
       // as the status case).
       const logPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
       return process.exit(await spawnInstaller(logScript, logPassthrough))
+    }
+    case "prov": {
+      // Read-only provenance-ledger surface over the JSONL journal (writes
+      // nothing): spawn scripts/prov.mjs with passthrough args (same
+      // leading-"--" strip as the status case).
+      const provPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      return process.exit(await spawnInstaller(provScript, provPassthrough))
     }
     default:
       console.log(USAGE)
