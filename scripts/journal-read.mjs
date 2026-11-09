@@ -253,6 +253,57 @@ export function provEntriesOf(lines, tailLines) {
 }
 
 /**
+ * Reads the `prov:*` lines for one explicit session: its per-session sink
+ * family plus the shared file filtered to that session. Fail-open:
+ * unreadable files contribute nothing.
+ * @param {string} metricsDir The metrics directory.
+ * @param {string} sessionID The requested session ID.
+ * @param {number} tailLines The tail bound in lines.
+ * @returns {{ files: string[], lines: string[] }} The files read
+ *     (oldest-first basenames) and the raw matching lines.
+ */
+export function readSessionProvLines(metricsDir, sessionID, tailLines) {
+  const sessionBlocks = readFileGenerations(
+    path.join(metricsDir, "sessions", `${sessionID}.jsonl`),
+    tailLines,
+  )
+  const sharedBlocks = readFileGenerations(path.join(metricsDir, "turnstile.jsonl"), tailLines)
+  const sharedLines = sharedBlocks
+    .flatMap((b) => b.lines)
+    .filter((line) => {
+      const e = parseLine(line)
+      return e !== null && e.sessionID === sessionID
+    })
+  return {
+    files: [...sessionBlocks, ...sharedBlocks].map((b) => b.name),
+    lines: [...sessionBlocks.flatMap((b) => b.lines), ...sharedLines],
+  }
+}
+
+/**
+ * Reads the `prov:*` lines across every per-session sink plus the shared
+ * file (the no-sessionID walk). Fail-open: unreadable files contribute
+ * nothing.
+ * @param {string} metricsDir The metrics directory.
+ * @param {number} tailLines The tail bound in lines.
+ * @returns {{ files: string[], lines: string[] }} The files read
+ *     (oldest-first basenames) and the raw matching lines.
+ */
+export function readAllProvLines(metricsDir, tailLines) {
+  const files = []
+  const lines = []
+  for (const sink of sessionSinkPaths(metricsDir)) {
+    const blocks = readFileGenerations(sink, tailLines)
+    files.push(...blocks.map((b) => b.name))
+    lines.push(...blocks.flatMap((b) => b.lines))
+  }
+  const sharedBlocks = readFileGenerations(path.join(metricsDir, "turnstile.jsonl"), tailLines)
+  files.push(...sharedBlocks.map((b) => b.name))
+  lines.push(...sharedBlocks.flatMap((b) => b.lines))
+  return { files, lines }
+}
+
+/**
  * Renders a timestamp as HH:MM:SS (UTC-less, verbatim from the ISO string;
  * an unparseable ts renders as `--:--:--`).
  * @param {unknown} ts The raw `ts` field.

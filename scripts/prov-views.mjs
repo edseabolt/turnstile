@@ -22,16 +22,14 @@
 //   opencode-turnstile prov-views --help   This usage. Unknown flags exit 2.
 
 import { createHash } from "node:crypto"
-import * as fs from "node:fs"
-import * as os from "node:os"
-import * as path from "node:path"
 import {
+  loadConfigFile,
   parseTailValue,
   provEntriesOf,
-  readFileGenerations,
+  readAllProvLines,
+  readSessionProvLines,
   requireSessionShape,
   resolveConfig,
-  sessionSinkPaths,
 } from "./journal-read.mjs"
 
 const USAGE = `Usage: opencode-turnstile prov-views [sessionID] [--json] [--tail <n>]
@@ -96,100 +94,17 @@ function parseArgs(argv) {
 }
 
 /**
- * Reads the `prov:*` lines for one explicit session: its per-session sink
- * family plus the shared file filtered to that session. Fail-open:
- * unreadable files contribute nothing.
- * @param {string} metricsDir The metrics directory.
- * @param {string} sessionID The requested session ID.
- * @param {number} tailLines The tail bound in lines.
- * @returns {{ files: string[], lines: string[] }} The files read
- *     (oldest-first basenames) and the raw matching lines.
- */
-function readSessionProvLines(metricsDir, sessionID, tailLines) {
-  const sessionBlocks = readFileGenerations(
-    path.join(metricsDir, "sessions", `${sessionID}.jsonl`),
-    tailLines,
-  )
-  const sharedBlocks = readFileGenerations(path.join(metricsDir, "turnstile.jsonl"), tailLines)
-  const sharedLines = sharedBlocks
-    .flatMap((b) => b.lines)
-    .filter((line) => {
-      const e = parseLine(line)
-      return e !== null && e.sessionID === sessionID
-    })
-  return {
-    files: [...sessionBlocks, ...sharedBlocks].map((b) => b.name),
-    lines: [...sessionBlocks.flatMap((b) => b.lines), ...sharedLines],
-  }
-}
-
-/**
- * Reads the `prov:*` lines across every per-session sink plus the shared
- * file (the no-sessionID walk). Fail-open: unreadable files contribute
- * nothing.
- * @param {string} metricsDir The metrics directory.
- * @param {number} tailLines The tail bound in lines.
- * @returns {{ files: string[], lines: string[] }} The files read
- *     (oldest-first basenames) and the raw matching lines.
- */
-function readAllProvLines(metricsDir, tailLines) {
-  const files = []
-  const lines = []
-  for (const sink of sessionSinkPaths(metricsDir)) {
-    const blocks = readFileGenerations(sink, tailLines)
-    files.push(...blocks.map((b) => b.name))
-    lines.push(...blocks.flatMap((b) => b.lines))
-  }
-  const sharedBlocks = readFileGenerations(path.join(metricsDir, "turnstile.jsonl"), tailLines)
-  files.push(...sharedBlocks.map((b) => b.name))
-  lines.push(...sharedBlocks.flatMap((b) => b.lines))
-  return { files, lines }
-}
-
-/**
- * Parses one raw journal line (shared-module re-export shape kept local so
- * the views module owns its parse failures explicitly).
- * @param {string} line A raw JSONL journal line.
- * @returns {Record<string, unknown> | null} The parsed entry, or null.
- */
-function parseLine(line) {
-  try {
-    const e = JSON.parse(line)
-    return e && typeof e === "object" && !Array.isArray(e) ? e : null
-  } catch {
-    return null
-  }
-}
-
-/**
  * Resolves the origin markers: the config file's `waiverMarker` /
  * `approvalMarker` values when set, the code defaults otherwise.
  * @param {NodeJS.ProcessEnv} env The process environment.
  * @returns {{ waiverMarker: string, approvalMarker: string }} The markers.
  */
 function markersOf(env) {
-  const config = readConfigFile(env)
+  const config = loadConfigFile(env)
   const str = (v, fallback) => (typeof v === "string" && v ? v : fallback)
   return {
     waiverMarker: str(config?.waiverMarker, DEFAULT_WAIVER_MARKER),
     approvalMarker: str(config?.approvalMarker, DEFAULT_APPROVAL_MARKER),
-  }
-}
-
-/**
- * Reads the config file the config layer uses, tolerating a missing or
- * malformed file (fail-open).
- * @param {NodeJS.ProcessEnv} env The process environment.
- * @returns {Record<string, unknown> | null} The parsed config object, or null.
- */
-function readConfigFile(env) {
-  const configPath =
-    env.TURNSTILE_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "turnstile.json")
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"))
-    return cfg && typeof cfg === "object" && !Array.isArray(cfg) ? cfg : null
-  } catch {
-    return null
   }
 }
 
@@ -235,7 +150,7 @@ function noiseRate(origins) {
  */
 function dayOf(e) {
   const ts = typeof e.ts === "string" ? e.ts : ""
-  return Number.isNaN(Date.parse(ts)) ? "" : ts.slice(0, 10)
+  return Number.isNaN(Date.parse(ts)) ? "" : new Date(ts).toISOString().slice(0, 10)
 }
 
 /**
