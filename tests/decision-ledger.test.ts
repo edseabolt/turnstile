@@ -9,8 +9,10 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  LEDGER_PATH_CAP,
   LEDGER_TEXT_CAP,
   provDeniedEntry,
+  provOverrideEntry,
   provStatedEntry,
   provWaiverEntry,
 } from "../src/decision-ledger.ts"
@@ -82,6 +84,39 @@ test("provWaiverEntry: shapes the covered stages", () => {
   })
 })
 
+// ── prov:override ────────────────────────────────────────────────────────────
+
+test("provOverrideEntry: shapes the override row with keys in construction order", () => {
+  assert.deepEqual(provOverrideEntry({ sessionID: "p1", tool: "edit", path: "/r/a.ts", child: "c1" }), {
+    type: "prov:override",
+    sessionID: "p1",
+    tool: "edit",
+    path: "/r/a.ts",
+    child: "c1",
+  })
+})
+
+test("provOverrideEntry: redacts secrets in the path", () => {
+  const entry = provOverrideEntry({
+    sessionID: "p1",
+    tool: "write",
+    path: "/r/sk-abc123DEF456ghi789JKLmno/a.ts",
+    child: "c1",
+  })
+  assert.ok(entry.path.includes("[REDACTED]"), "the secret must be masked")
+  assert.ok(!entry.path.includes("sk-"), "no raw secret may survive")
+})
+
+test("provOverrideEntry: caps the path at LEDGER_PATH_CAP", () => {
+  const entry = provOverrideEntry({
+    sessionID: "p1",
+    tool: "edit",
+    path: `/r/${"a".repeat(LEDGER_PATH_CAP)}/b.ts`,
+    child: "c1",
+  })
+  assert.equal(entry.path.length, LEDGER_PATH_CAP)
+})
+
 // ── canonical serializability ────────────────────────────────────────────────
 
 test("every builder round-trips JSON byte-identically with construction-order keys", () => {
@@ -89,6 +124,7 @@ test("every builder round-trips JSON byte-identically with construction-order ke
     provStatedEntry({ sessionID: "ses_1", text: "continue" }),
     provDeniedEntry({ sessionID: "ses_2", kind: "plan" }),
     provWaiverEntry({ sessionID: "ses_3", stages: ["plan"] }),
+    provOverrideEntry({ sessionID: "p1", tool: "edit", path: "/r/a.ts", child: "c1" }),
   ]
   for (const entry of entries) {
     const serialized = JSON.stringify(entry)
