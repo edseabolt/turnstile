@@ -22,6 +22,7 @@ import { parseWaiverScope, findMarkerNearMisses } from "./markers.ts"
 import { classifyIntent } from "./intent.ts"
 import { shouldEngage } from "./engagement.ts"
 import { promptTextOf } from "./delivery.ts"
+import { provStatedEntry } from "./decision-ledger.ts"
 import { keepsTaskScope } from "./task-scope.ts"
 import { shouldCarryGate, worktreeFingerprint } from "./fingerprint.ts"
 
@@ -837,6 +838,49 @@ function admitPromptDedupe(
 }
 
 /**
+ * Answers whether an admitted prompt belongs to a pipeline-child dispatch
+ * session. A prompt payload carries no agent name, so the child→parent
+ * edge — the read shape the child-registration boundary exposes — is the
+ * only registration evidence available at admission; a session holding an
+ * edge is a dispatch child and its prompt is excluded from the ledger.
+ * @param st The prompt-admission state.
+ * @param sessionID The session the prompt is admitted for.
+ * @returns True when the session is a registered pipeline child.
+ */
+function isPipelineChildPrompt(st: PromptAdmissionState, sessionID: string): boolean {
+  return st.ledger.childToParent.has(sessionID)
+}
+
+/**
+ * Captures one admitted parent prompt into the decision ledger:
+ * the prompt text is redacted and capped by the entry builder and journaled
+ * as `prov:stated` — no relevance filtering (capture is dumb, derivation is
+ * smart). Pipeline-child dispatch prompts are skipped entirely. Fail-open:
+ * a redaction or builder error journals an `error` row and never throws.
+ * @param st The prompt-admission state.
+ * @param sessionID The session the prompt is admitted for.
+ * @param properties The prompt payload.
+ */
+function captureLedgerBody(
+  st: PromptAdmissionState,
+  sessionID: string,
+  properties: PromptHookProperties,
+): void {
+  if (!st.config.decisionLedger.enabled) return
+  try {
+    if (isPipelineChildPrompt(st, sessionID)) return
+    st.journaler.journal(
+      provStatedEntry({ sessionID, text: promptTextOf(properties) }) as unknown as Record<
+        string,
+        unknown
+      >,
+    )
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID, error: `prov: stated capture: ${e}` })
+  }
+}
+
+/**
  * Admits one user-authored prompt: dedupes by the shared host message id,
  * surfaces the dead-channel telemetry once, then resets prior task scope
  * (carrying restart-sticky flags when continuation carry is armed), drops
@@ -882,6 +926,7 @@ function admitPromptBody(
   captureSuspendBody(st, sessionID, properties)
   scanNearMissesBody(st, sessionID, properties)
   surfaceKeylessPromptBody(st, sessionID, properties)
+  captureLedgerBody(st, sessionID, properties)
   st.handlePromptIntent(sessionID, properties)
 }
 

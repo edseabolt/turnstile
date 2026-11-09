@@ -603,6 +603,49 @@ test("defaultConfig ships the gitGates defaults (lint and landing on)", () => {
   assert.equal(cfg.gitGates.emptyDiffExempt, true)
 })
 
+/** decisionLedger defaults: the observe-only decision ledger is on. */
+test("defaultConfig ships decisionLedger enabled", () => {
+  assert.deepEqual(defaultConfig({}).decisionLedger, { enabled: true })
+})
+
+/** A non-object decisionLedger keeps every default and warns once. */
+test("mergeConfig rejects a non-object decisionLedger and keeps defaults", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { decisionLedger: "nope" as unknown })
+  assert.deepEqual(config.decisionLedger, base.decisionLedger)
+  assert.deepEqual(warnings, ["config: decisionLedger must be an object; keeping defaults"])
+})
+
+/** A valid decisionLedger override is applied; an invalid sub-key type keeps the
+ *  default with a journaled warning. */
+test("mergeConfig applies a valid decisionLedger override and rejects a non-boolean enabled", () => {
+  const off = mergeConfig(defaultConfig({}), { decisionLedger: { enabled: false } })
+  assert.deepEqual(off.config.decisionLedger, { enabled: false })
+  assert.deepEqual(off.warnings, [])
+  const bad = mergeConfig(defaultConfig({}), { decisionLedger: { enabled: "yes" } })
+  assert.deepEqual(bad.config.decisionLedger, { enabled: true })
+  assert.deepEqual(bad.warnings, [
+    "config: decisionLedger.enabled must be a boolean; keeping default",
+  ])
+})
+
+/** The pre-rename `provenance` key is a hard break: it routes through the
+ *  generic unknown-key arm, warns, and the flag is dropped. */
+test("mergeConfig drops the legacy provenance key with the generic unknown-key warning", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { provenance: { enabled: false } })
+  assert.deepEqual(config.decisionLedger, { enabled: true })
+  assert.deepEqual(warnings, ['config: unknown key "provenance" ignored'])
+})
+
+/** Unknown decisionLedger sub-keys are ignored with a warning. */
+test("mergeConfig ignores unknown decisionLedger sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { decisionLedger: { bogus: 1 } })
+  assert.deepEqual(config.decisionLedger, base.decisionLedger)
+  assert.deepEqual(warnings, ['config: unknown decisionLedger key "bogus" ignored'])
+})
+
 /** The default commitFormat compiles as a `^…$` + `"s"` pattern. */
 test("defaultConfig commitFormat compiles as a conventional-commit regex", () => {
   const re = new RegExp(`^${DEFAULT_COMMIT_FORMAT}$`, "s")

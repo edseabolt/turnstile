@@ -39,9 +39,31 @@ Options:
 
 /**
  * Host session-ID alphabet, length-capped. Standalone-script copy of the
- * canonical constant in src/ledger.ts (this script cannot import TS source).
+ * canonical constant in src/journal-sinks.ts (this script cannot import TS
+ * source; src/ledger.ts re-imports the same constant).
  */
 const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
+
+/**
+ * Dedupes raw journal lines that appear in more than one sink. A row is
+ * parent-keyed into `sessions/<id>.jsonl` while `journalPerSession` routing
+ * is active but may also exist in the shared `turnstile.jsonl` (routing
+ * changed mid-session, or a legacy layout), so a row present in both sinks
+ * must render once. Identity is the row's full JSON text — journal writes
+ * are append-only and unmodified, so two copies of one row serialize
+ * identically, while two genuinely distinct events never do.
+ * @param {string[]} lines Raw journal lines from all walked sinks.
+ * @returns {string[]} The lines with cross-sink duplicates removed,
+ *     first occurrence kept (sink order is oldest-generation first).
+ */
+function dedupeSinks(lines) {
+  const seen = new Set()
+  return lines.filter((line) => {
+    if (seen.has(line)) return false
+    seen.add(line)
+    return true
+  })
+}
 
 /** The default replay tail bound (lines); mirrors the runtime config default. */
 const DEFAULT_REPLAY_TAIL_LINES = 2000
@@ -364,7 +386,7 @@ function readSessionLines(metricsDir, sessionID, tailLines) {
       const e = parseLine(line)
       return e !== null && keep.has(e.sessionID)
     })
-  const lines = [...sessionBlocks.flatMap((b) => b.lines), ...sharedLines]
+  const lines = dedupeSinks([...sessionBlocks.flatMap((b) => b.lines), ...sharedLines])
   lines.sort((a, b) => {
     const ka = tsKey(a)
     const kb = tsKey(b)
