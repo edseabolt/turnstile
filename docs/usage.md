@@ -687,16 +687,16 @@ Shared caveats:
 
 The full install ships eight skills into `~/.config/opencode/skills/`:
 
-| Skill                | What it does                                                                                             |
-| -------------------- | -------------------------------------------------------------------------------------------------------- |
-| `turnstile-init`     | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`). |
-| `turnstile-off`      | Compose a copy-ready suspend prompt for **you** to send (see below).                                     |
-| `turnstile-on`       | Compose a copy-ready resume prompt for **you** to send.                                                  |
-| `turnstile-evidence` | Publish or inspect an evidence bundle (`evidence`, §6).                                                  |
-| `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                             |
-| `turnstile-status`   | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).           |
-| `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                 |
-| `turnstile-prov`     | Report the decision ledger via `prov` (`prov:stated` prompts, `prov:denied` denials); forwards options.  |
+| Skill                | What it does                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `turnstile-init`     | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`).                       |
+| `turnstile-off`      | Compose a copy-ready suspend prompt for **you** to send (see below).                                                           |
+| `turnstile-on`       | Compose a copy-ready resume prompt for **you** to send.                                                                        |
+| `turnstile-evidence` | Publish or inspect an evidence bundle (`evidence`, §6).                                                                        |
+| `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                                                   |
+| `turnstile-status`   | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).                                 |
+| `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                                       |
+| `turnstile-prov`     | Report the decision ledger via `prov` (`prov:stated` prompts, `prov:denied` denials, `prov:waiver` waivers); forwards options. |
 
 The on/off skills never send the suspend/resume markers themselves — the
 markers are honored only from user-typed prompts, so an agent relaying one
@@ -822,7 +822,7 @@ journal (fail-open); a malformed config file never breaks the host.
 | `gitGates.emptyDiffExempt`                                                                                                 | `true`                                                                                                                                                                       | exempt a statically-resolvable `git push` whose every refspec's branch resolves to the same commit as its upstream (ref equality); journals `exempt:"empty-diff"`; every ambiguous shape — force flags included — still gates; `false` is the strict opt-out                                                                                                                                                                   |
 | `gitGates.commitRetryThreshold`                                                                                            | 3                                                                                                                                                                            | blind-retry escalation: failed `invalid-commit-message` attempts for the same session within `commitRetryWindowMs` before the block message appends a full canonical example                                                                                                                                                                                                                                                   |
 | `gitGates.commitRetryWindowMs`                                                                                             | 60000                                                                                                                                                                        | window in milliseconds for `commitRetryThreshold` burst counting                                                                                                                                                                                                                                                                                                                                                               |
-| `decisionLedger.enabled`                                                                                                   | `true`                                                                                                                                                                       | observe-only decision ledger: every admitted parent prompt journals a redacted, capped `prov:stated` entry and each human permission denial (plan/landing/hands-on reject) journals `prov:denied`; query with `opencode-turnstile prov`. `false` disables all `prov:*` journaling with no other behavior change                                                                                                                |
+| `decisionLedger.enabled`                                                                                                   | `true`                                                                                                                                                                       | observe-only decision ledger: every admitted parent prompt journals a redacted, capped `prov:stated` entry, each human permission denial (plan/landing/hands-on reject) journals `prov:denied`, and each human gate waiver (plan/reviewer `WAIVED`) journals `prov:waiver`; query with `opencode-turnstile prov`. `false` disables all `prov:*` journaling with no other behavior change                                       |
 
 Environment variables (override the file):
 

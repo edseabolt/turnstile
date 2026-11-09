@@ -1,6 +1,6 @@
 ---
 name: turnstile-prov
-description: Report the decisions recorded in the turnstile decision ledger (human prompts journaled as prov:stated and human permission denials as prov:denied) via the turnstile CLI. Use when the user asks what decisions were made, to see the decision ledger or provenance record, or to review human judgment captured during a session.
+description: Report the decisions recorded in the turnstile decision ledger (human prompts journaled as prov:stated, human permission denials as prov:denied, and human gate waivers as prov:waiver) via the turnstile CLI. Use when the user asks what decisions were made, to see the decision ledger or provenance record, or to review human judgment captured during a session.
 ---
 
 # Turnstile prov
@@ -28,6 +28,7 @@ never modify config or journals from this skill.
      source of truth, so note how many were skipped.
    - `prov:denied` — a human permission denial: report the ask kind
      (plan / landing / hands-on) as a decision the human made.
+   - `prov:waiver` — a human gate waiver: report the covered stages.
 4. Summarize what the record shows about judgment in the loop: what the
    human directed, what they refused, and any gap (e.g. a session missing
    from the ledger) — but do not editorialize beyond what the rows say.
