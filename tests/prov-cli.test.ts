@@ -102,14 +102,23 @@ test("renders only prov rows from a sink seeded with prov and gate rows", () => 
         sessionID: "ses1",
         stages: ["plan", "review"],
       },
+      {
+        ts: "2026-01-01T10:00:20Z",
+        type: "prov:override",
+        sessionID: "ses1",
+        tool: "edit",
+        path: "/r/a.ts",
+        child: "c1",
+      },
     ])
     const r = runProv(dir, ["ses1"])
     assert.equal(code(r), 0)
     const lines = r.stdout.trim().split("\n")
-    assert.equal(lines.length, 3)
+    assert.equal(lines.length, 4)
     assert.match(lines[0]!, /10:00:05 {2}stated {2}add \[REDACTED\] to env$/)
     assert.match(lines[1]!, /10:00:10 {2}denied {2}kind=plan/)
     assert.match(lines[2]!, /10:00:15 {2}waiver {2}stages=plan,review/)
+    assert.match(lines[3]!, /10:00:20 {2}override {2}tool=edit child=c1 path=\/r\/a\.ts/)
     assert.doesNotMatch(r.stdout, /gate/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -128,16 +137,27 @@ test("--json prints the raw rows with types preserved", () => {
         truncated: false,
       },
       { ts: "2026-01-01T10:00:10Z", type: "prov:denied", sessionID: "ses1", kind: "landing" },
+      {
+        ts: "2026-01-01T10:00:15Z",
+        type: "prov:override",
+        sessionID: "ses1",
+        tool: "write",
+        path: "/r/b.ts",
+        child: "c2",
+      },
     ])
     const r = runProv(dir, ["ses1", "--json"])
     assert.equal(code(r), 0)
     const rows = JSON.parse(r.stdout) as Entry[]
-    assert.equal(rows.length, 2)
+    assert.equal(rows.length, 3)
     assert.equal(rows[0]!.type, "prov:stated")
     assert.equal(rows[0]!.text, "ship it")
     assert.equal(rows[0]!.truncated, false)
     assert.equal(rows[1]!.type, "prov:denied")
     assert.equal(rows[1]!.kind, "landing")
+    assert.equal(rows[2]!.type, "prov:override")
+    assert.equal(rows[2]!.tool, "write")
+    assert.equal(rows[2]!.child, "c2")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
