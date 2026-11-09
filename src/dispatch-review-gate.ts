@@ -288,6 +288,26 @@ function blockNoGatePass(st: DispatchGateState, sessionID: string, s: GateState)
 }
 
 /**
+ * Counts one unwaived reviewer dispatch toward the ensemble: advances
+ * `reviewerDispatches` and journals the plain count entry (restart-sticky,
+ * and — replay-side — clears a prior refusal stamp). Shared by the engaged
+ * path (`applyReviewerMutation`) and the dormant arm's admit path.
+ * @param st The shared dispatch-gate state.
+ * @param sessionID The parent session ID.
+ * @param s The caller's resolved gate state to mutate.
+ */
+export function countReviewerEnsemble(
+  st: DispatchGateState,
+  sessionID: string,
+  s: GateState,
+): void {
+  s.reviewerDispatches++
+  st.journaler.journal(
+    reviewerEnsembleEntry(sessionID, st.config.agents.reviewer, s.reviewerDispatches),
+  )
+}
+
+/**
  * Applies the reviewer dispatch's final state mutation: an unwaived
  * dispatch advances the ordinary cap and the ensemble count (counted
  * toward the landing gate's ensemble and journaled so the count is
@@ -308,11 +328,10 @@ function applyReviewerMutation(
   scoped: boolean,
 ): void {
   if (!covered) {
+    // Engaged-path-only: the round cap is not consumed while dormant (the
+    // dormant arm counts the ensemble without advancing reviewRounds).
     s.reviewRounds++
-    s.reviewerDispatches++
-    st.journaler.journal(
-      reviewerEnsembleEntry(sessionID, st.config.agents.reviewer, s.reviewerDispatches),
-    )
+    countReviewerEnsemble(st, sessionID, s)
   } else if (scoped) {
     s.reviewWaiverRounds++
   } else {
@@ -458,11 +477,14 @@ export function createReviewGate(
 ): {
   guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
   reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
+  countReviewerEnsemble(sessionID: string, ledger: GateLedger): void
 } {
   const st: DispatchGateState = { config, journaler }
   return {
     guardReviewerDispatch: (sessionID, ledger, search) =>
       guardReviewerDispatch(st, sessionID, ledger, search),
     reviewEnsembleComplete: (sessionID, ledger) => reviewEnsembleComplete(st, sessionID, ledger),
+    countReviewerEnsemble: (sessionID, ledger) =>
+      countReviewerEnsemble(st, sessionID, ledger.state(sessionID)),
   }
 }

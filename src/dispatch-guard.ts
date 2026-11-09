@@ -522,6 +522,13 @@ function dormantDispatchArm(
     return false
   }
   allowDispatchBody(st, sessionID, agent, description, false)
+  if (agent === st.config.agents.reviewer) {
+    // Symmetry with the engaged path: the ensemble counter and its journal
+    // entry live outside countDispatch, so the dormant arm must count the
+    // reviewer leg explicitly or a mid-task engagement drop wedges the
+    // landing gate (reviewerDispatches stays 0 at APPROVE time).
+    st.gates.countReviewerEnsemble(sessionID, st.ledger)
+  }
   return true
 }
 

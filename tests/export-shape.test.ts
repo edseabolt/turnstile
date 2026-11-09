@@ -91,7 +91,11 @@ test("gate-messages.ts exposes the shared gate-message builders", async () => {
  */
 test("dispatch-review-gate.ts exposes the review gate factory", async () => {
   const mod = await import("../src/dispatch-review-gate.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["blockWithEscalation", "createReviewGate"])
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "blockWithEscalation",
+    "countReviewerEnsemble",
+    "createReviewGate",
+  ])
 })
 
 /**
