@@ -10,7 +10,7 @@ import type {
   TurnstileAgents,
   TurnstileConfig,
   TurnstileGitGates,
-  TurnstileProvenance,
+  TurnstileDecisionLedger,
   TurnstileToolPolicy,
 } from "./types.ts"
 
@@ -484,53 +484,53 @@ export function mergeGitGatesPatch(
 }
 
 /**
- * Merges one `provenance` sub-key into the block being built. The only key is
+ * Merges one `decisionLedger` sub-key into the block being built. The only key is
  * the `enabled` boolean; unknown sub-keys warn like the other sections.
- * @param merged The provenance block being built.
+ * @param merged The decisionLedger block being built.
  * @param pk The sub-key name.
  * @param pv The candidate sub-key value.
  * @param warnings The warning list to append to.
  */
-function mergeProvenanceKey(
-  merged: TurnstileProvenance,
+function mergeDecisionLedgerKey(
+  merged: TurnstileDecisionLedger,
   pk: string,
   pv: unknown,
   warnings: string[],
 ): void {
   if (pk !== "enabled") {
-    warnings.push(`config: unknown provenance key "${pk}" ignored`)
+    warnings.push(`config: unknown decisionLedger key "${pk}" ignored`)
     return
   }
   if (typeof pv === "boolean") {
     merged.enabled = pv
   } else {
-    warnings.push("config: provenance.enabled must be a boolean; keeping default")
+    warnings.push("config: decisionLedger.enabled must be a boolean; keeping default")
   }
 }
 
 /**
- * Merges the `provenance` patch section one level deep like `toolPolicy` and
+ * Merges the `decisionLedger` patch section one level deep like `toolPolicy` and
  * `gitGates`. A non-object keeps all defaults; each known sub-key is
  * validated individually with a journaled warning so a config typo is
  * visible, never silent.
  * @param config The config to mutate.
- * @param value The `provenance` patch value.
+ * @param value The `decisionLedger` patch value.
  * @param warnings The warning list to append to.
  */
-export function mergeProvenancePatch(
+export function mergeDecisionLedgerPatch(
   config: TurnstileConfig,
   value: unknown,
   warnings: string[],
 ): void {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    warnings.push("config: provenance must be an object; keeping defaults")
+    warnings.push("config: decisionLedger must be an object; keeping defaults")
     return
   }
-  const merged: TurnstileProvenance = { ...config.provenance }
+  const merged: TurnstileDecisionLedger = { ...config.decisionLedger }
   for (const [pk, pv] of Object.entries(value as Record<string, unknown>)) {
-    mergeProvenanceKey(merged, pk, pv, warnings)
+    mergeDecisionLedgerKey(merged, pk, pv, warnings)
   }
-  config.provenance = merged
+  config.decisionLedger = merged
 }
 
 /**
@@ -551,7 +551,7 @@ export function mergeConfigKey(
   if (key === "agents") return mergeAgentsPatch(config, value, warnings)
   if (key === "toolPolicy") return mergeToolPolicyPatch(config, value, warnings)
   if (key === "gitGates") return mergeGitGatesPatch(config, value, warnings)
-  if (key === "provenance") return mergeProvenancePatch(config, value, warnings)
+  if (key === "decisionLedger") return mergeDecisionLedgerPatch(config, value, warnings)
   if (key === "$schema") return mergeSchemaKey(value, warnings)
   if (key === "handsOnGate") {
     // Legacy key from the removed hands-on meta-mode: dropped, never honored,

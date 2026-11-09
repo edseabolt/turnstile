@@ -1,5 +1,5 @@
 /**
- * @fileoverview Pure event-shape builders for the decision-provenance ledger:
+ * @fileoverview Pure event-shape builders for the decision ledger:
  * the `prov:*` journal entry constructors for human decision surfaces. No
  * I/O, no journaling, no classification — the builders shape and redact,
  * period; origin/relevance classification is exclusively an offline
@@ -9,10 +9,10 @@
  * later RFC 8785 hash chain needs no migration of existing row shapes.
  */
 
-import { redactSecrets } from "./provenance-redact.ts"
+import { redactSecrets } from "./decision-ledger-redact.ts"
 
 /** Hard cap on `prov:stated` prompt text, keeping journal rows bounded. */
-export const PROVENANCE_TEXT_CAP = 2000
+export const LEDGER_TEXT_CAP = 2000
 
 /** One journaled human prompt, verbatim after redaction and capping. */
 export interface ProvStatedEntry {
@@ -20,7 +20,7 @@ export interface ProvStatedEntry {
   type: "prov:stated"
   /** The parent session the prompt was admitted in. */
   sessionID: string
-  /** The prompt text, redacted first, then capped at `PROVENANCE_TEXT_CAP`. */
+  /** The prompt text, redacted first, then capped at `LEDGER_TEXT_CAP`. */
   text: string
   /** Whether the cap was applied to `text`. */
   truncated: boolean
@@ -67,8 +67,8 @@ export interface ProvStatedInput {
  */
 export function provStatedEntry(input: ProvStatedInput): ProvStatedEntry {
   const redacted = redactSecrets(input.text)
-  const truncated = redacted.length > PROVENANCE_TEXT_CAP
-  const text = truncated ? redacted.slice(0, PROVENANCE_TEXT_CAP) : redacted
+  const truncated = redacted.length > LEDGER_TEXT_CAP
+  const text = truncated ? redacted.slice(0, LEDGER_TEXT_CAP) : redacted
   return { type: "prov:stated", sessionID: input.sessionID, text, truncated }
 }
 

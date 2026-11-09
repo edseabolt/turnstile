@@ -1,5 +1,5 @@
 /**
- * @fileoverview The pure secret-redaction module `src/provenance-redact.ts`:
+ * @fileoverview The pure secret-redaction module `src/decision-ledger-redact.ts`:
  * table-driven pattern coverage (a positive and a near-miss negative per
  * pattern), overlapping-pattern convergence, and a bounded-time
  * pathological-input guard for the repeat-application loop.
@@ -8,7 +8,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { REDACTION_SENTINEL, SECRET_PATTERNS, redactSecrets } from "../src/provenance-redact.ts"
+import {
+  REDACTION_SENTINEL,
+  SECRET_PATTERNS,
+  redactSecrets,
+} from "../src/decision-ledger-redact.ts"
 
 // ── pattern table: positive + near-miss negative per pattern ─────────────────
 

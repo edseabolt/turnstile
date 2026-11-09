@@ -85,9 +85,9 @@ test("schema property names match the defaultConfig key sets exactly", () => {
     "gitGates key set",
   )
   assert.deepEqual(
-    Object.keys(schema.properties.provenance!.properties!).sort(),
-    Object.keys(cfg.provenance).sort(),
-    "provenance key set",
+    Object.keys(schema.properties.decisionLedger!.properties!).sort(),
+    Object.keys(cfg.decisionLedger).sort(),
+    "decisionLedger key set",
   )
 })
 

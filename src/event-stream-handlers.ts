@@ -20,7 +20,7 @@ import {
 } from "./delivery.ts"
 import { decisionEntry, reviewerEnsembleEntry } from "./gates-common.ts"
 import { readJournalEntries } from "./journal.ts"
-import { provDeniedEntry, type ProvDeniedKind } from "./provenance.ts"
+import { provDeniedEntry, type ProvDeniedKind } from "./decision-ledger.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import {
   countSessionActivity,
@@ -350,7 +350,7 @@ function noteFastReply(
  * @param kind The ask kind that was denied.
  */
 function journalProvDenied(ctx: TurnstileContext, sessionID: string, kind: ProvDeniedKind): void {
-  if (!ctx.config.provenance.enabled) return
+  if (!ctx.config.decisionLedger.enabled) return
   try {
     ctx.journaler.journal(
       provDeniedEntry({ sessionID, kind }) as unknown as Record<string, unknown>,

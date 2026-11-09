@@ -7,7 +7,7 @@ session: "session.hook ×4 (hooks-session.ts)" {
   compaction: "compaction"
 }
 
-admit: "admitPrompt (prompt-admission.ts):\ndedupe by message id ▸ markParent ▸ resetState\n(+continuation carry) ▸ capture\nUSER WAIVER: / PLAN APPROVED: ▸\ncaptureProvenanceBody → prov:stated\n(redacted + capped, provenance.enabled)"
+admit: "admitPrompt (prompt-admission.ts):\ndedupe by message id ▸ markParent ▸ resetState\n(+continuation carry) ▸ capture\nUSER WAIVER: / PLAN APPROVED: ▸\ncaptureLedgerBody → prov:stated\n(redacted + capped, decisionLedger.enabled)"
 
 clamp: "clamp temperature:\nreviewer/plan-reviewer → 0,\nexecutor/test-runner/debugger ≤ 0.2"
 
@@ -38,7 +38,7 @@ after-bash: "bash exit-0: evidence.observe →\npromote unverifiedPass → GATE 
 eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart budget)" {
   created: "session.created → child→parent edge;\nroot seeds per-session dir cache"
   text: "message.part.updated /\nsession.text.ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
-  permbook: "permission.asked / replied\n→ plan, landing & hands-on\nask bookkeeping; human rejects\n→ journalProvDenied → prov:denied\n(provenance.enabled)"
+  permbook: "permission.asked / replied\n→ plan, landing & hands-on\nask bookkeeping; human rejects\n→ journalProvDenied → prov:denied\n(decisionLedger.enabled)"
   inbox: "session.inbox.enqueued\n→ prompt admission (≥ 2.0.29)"
   idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"
   errors: "session.error → telemetry"

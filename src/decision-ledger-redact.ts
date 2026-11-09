@@ -1,5 +1,5 @@
 /**
- * @fileoverview Pure secret-redaction for the decision-provenance ledger:
+ * @fileoverview Pure secret-redaction for the decision ledger:
  * a fixed, ordered pattern list plus `redactSecrets`, which replaces every
  * match with the fixed `[REDACTED]` sentinel. No fs, no host access, no
  * configuration, no throwing — pure string in, string out — so capture-time
@@ -72,7 +72,7 @@ const PRIVATE_KEY_BLOCK_RE =
 
 /**
  * The ordered redaction pattern list — the canonical source of what the
- * provenance capture layer masks. Order matters: broader spans (headers,
+ * ledger capture layer masks. Order matters: broader spans (headers,
  * blocks) precede narrower token shapes so overlapping matches converge onto
  * the widest span. Frozen: consumers must not mutate it.
  */

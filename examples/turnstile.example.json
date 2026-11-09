@@ -59,7 +59,7 @@
     "commitRetryThreshold": 3,
     "commitRetryWindowMs": 60000
   },
-  "provenance": {
+  "decisionLedger": {
     "enabled": true
   }
 }

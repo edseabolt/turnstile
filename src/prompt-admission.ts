@@ -22,7 +22,7 @@ import { parseWaiverScope, findMarkerNearMisses } from "./markers.ts"
 import { classifyIntent } from "./intent.ts"
 import { shouldEngage } from "./engagement.ts"
 import { promptTextOf } from "./delivery.ts"
-import { provStatedEntry } from "./provenance.ts"
+import { provStatedEntry } from "./decision-ledger.ts"
 import { keepsTaskScope } from "./task-scope.ts"
 import { shouldCarryGate, worktreeFingerprint } from "./fingerprint.ts"
 
@@ -852,7 +852,7 @@ function isPipelineChildPrompt(st: PromptAdmissionState, sessionID: string): boo
 }
 
 /**
- * Captures one admitted parent prompt into the decision-provenance ledger:
+ * Captures one admitted parent prompt into the decision ledger:
  * the prompt text is redacted and capped by the entry builder and journaled
  * as `prov:stated` — no relevance filtering (capture is dumb, derivation is
  * smart). Pipeline-child dispatch prompts are skipped entirely. Fail-open:
@@ -861,12 +861,12 @@ function isPipelineChildPrompt(st: PromptAdmissionState, sessionID: string): boo
  * @param sessionID The session the prompt is admitted for.
  * @param properties The prompt payload.
  */
-function captureProvenanceBody(
+function captureLedgerBody(
   st: PromptAdmissionState,
   sessionID: string,
   properties: PromptHookProperties,
 ): void {
-  if (!st.config.provenance.enabled) return
+  if (!st.config.decisionLedger.enabled) return
   try {
     if (isPipelineChildPrompt(st, sessionID)) return
     st.journaler.journal(
@@ -926,7 +926,7 @@ function admitPromptBody(
   captureSuspendBody(st, sessionID, properties)
   scanNearMissesBody(st, sessionID, properties)
   surfaceKeylessPromptBody(st, sessionID, properties)
-  captureProvenanceBody(st, sessionID, properties)
+  captureLedgerBody(st, sessionID, properties)
   st.handlePromptIntent(sessionID, properties)
 }
 

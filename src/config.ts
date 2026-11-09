@@ -250,14 +250,14 @@ function defaultMarkerSources(): Pick<
 
 /**
  * Builds the decision-ledger defaults.
- * @returns The provenance-shaped default fields.
+ * @returns The decision-ledger-shaped default fields.
  */
-function defaultProvenanceScalars(): Pick<TurnstileConfig, "provenance"> {
+function defaultDecisionLedgerScalars(): Pick<TurnstileConfig, "decisionLedger"> {
   return {
     // Default on: the ledger is observe-only (no gate reads `prov:*` rows),
-    // so capture costs journal volume only; `provenance.enabled: false`
+    // so capture costs journal volume only; `decisionLedger.enabled: false`
     // silences every `prov:*` write.
-    provenance: { enabled: true },
+    decisionLedger: { enabled: true },
   }
 }
 
@@ -278,7 +278,7 @@ export function defaultConfig(
     ...defaultMarkerScalars(),
     ...defaultModeScalars(),
     ...defaultEnforcementScalars(),
-    ...defaultProvenanceScalars(),
+    ...defaultDecisionLedgerScalars(),
     agents: defaultAgents(),
     ...defaultMarkerSources(),
     toolPolicy: defaultToolPolicy(),
@@ -306,7 +306,7 @@ export function mergeConfig(
     agents: { ...base.agents },
     toolPolicy: { ...base.toolPolicy },
     gitGates: { ...base.gitGates },
-    provenance: { ...base.provenance },
+    decisionLedger: { ...base.decisionLedger },
   }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {

@@ -1,5 +1,5 @@
 /**
- * @fileoverview The pure provenance entry builders in `src/provenance.ts`:
+ * @fileoverview The pure decision-ledger entry builders in `src/decision-ledger.ts`:
  * shape tests, the redact-then-truncate ordering and cap boundary, and the
  * JSON-round-trip stability constraint (canonical serializability for the
  * deferred tamper-evidence design).
@@ -9,11 +9,11 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import {
-  PROVENANCE_TEXT_CAP,
+  LEDGER_TEXT_CAP,
   provDeniedEntry,
   provStatedEntry,
   provWaiverEntry,
-} from "../src/provenance.ts"
+} from "../src/decision-ledger.ts"
 
 // ── prov:stated ──────────────────────────────────────────────────────────────
 
@@ -37,10 +37,10 @@ test("provStatedEntry: redacts secrets before capping", () => {
   const secret = "sk-abc123DEF456ghi789JKLmno"
   const entry = provStatedEntry({
     sessionID: "ses_1",
-    text: `${"x".repeat(PROVENANCE_TEXT_CAP - 21)} ${secret} ${"x".repeat(30)}`,
+    text: `${"x".repeat(LEDGER_TEXT_CAP - 21)} ${secret} ${"x".repeat(30)}`,
   })
   assert.equal(entry.truncated, true)
-  assert.equal(entry.text.length, PROVENANCE_TEXT_CAP)
+  assert.equal(entry.text.length, LEDGER_TEXT_CAP)
   assert.ok(
     entry.text.includes("[REDACTED]"),
     "the sentinel sits fully inside the prefix, proving redaction ran first",
@@ -49,15 +49,15 @@ test("provStatedEntry: redacts secrets before capping", () => {
 })
 
 test("provStatedEntry: text exactly at the cap is not truncated", () => {
-  const entry = provStatedEntry({ sessionID: "ses_1", text: "a".repeat(PROVENANCE_TEXT_CAP) })
+  const entry = provStatedEntry({ sessionID: "ses_1", text: "a".repeat(LEDGER_TEXT_CAP) })
   assert.equal(entry.truncated, false)
-  assert.equal(entry.text.length, PROVENANCE_TEXT_CAP)
+  assert.equal(entry.text.length, LEDGER_TEXT_CAP)
 })
 
 test("provStatedEntry: text one over the cap is truncated to the cap", () => {
-  const entry = provStatedEntry({ sessionID: "ses_1", text: "a".repeat(PROVENANCE_TEXT_CAP + 1) })
+  const entry = provStatedEntry({ sessionID: "ses_1", text: "a".repeat(LEDGER_TEXT_CAP + 1) })
   assert.equal(entry.truncated, true)
-  assert.equal(entry.text.length, PROVENANCE_TEXT_CAP)
+  assert.equal(entry.text.length, LEDGER_TEXT_CAP)
 })
 
 // ── prov:denied ──────────────────────────────────────────────────────────────

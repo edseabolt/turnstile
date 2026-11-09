@@ -314,13 +314,13 @@ export interface TurnstileGitGates {
 
 /**
  * Observe-only decision-ledger configuration backing the `prov:*` journal
- * capture in `src/provenance.ts`. There is no enforcement surface: the ledger
+ * capture in `src/decision-ledger.ts`. There is no enforcement surface: the ledger
  * only records; `enabled: false` silences every `prov:*` journal write and
  * changes no other behavior.
  */
-export interface TurnstileProvenance {
+export interface TurnstileDecisionLedger {
   /**
-   * Whether decision-provenance capture is on (default true): parent-session
+   * Whether decision-ledger capture is on (default true): parent-session
    * human prompts journal `prov:stated` and human permission denials journal
    * `prov:denied`. `false` disables all `prov:*` journaling; no other
    * behavior changes.
@@ -992,12 +992,12 @@ export interface TurnstileConfig {
    */
   gitGates: TurnstileGitGates
   /**
-   * Observe-only decision-ledger configuration: `provenance.enabled` (default
+   * Observe-only decision-ledger configuration: `decisionLedger.enabled` (default
    * true) gates every `prov:*` journal write (human prompts, human permission
    * denials); `false` silences the ledger without changing any other
-   * behavior. See `src/provenance.ts`.
+   * behavior. See `src/decision-ledger.ts`.
    */
-  provenance: TurnstileProvenance
+  decisionLedger: TurnstileDecisionLedger
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */

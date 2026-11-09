@@ -1,5 +1,5 @@
 /**
- * @fileoverview Decision-provenance wiring tests: the `prov:stated` capture
+ * @fileoverview Decision-ledger wiring tests: the `prov:stated` capture
  * inside the single deduped prompt-admission body (both transport paths,
  * dedupe, child exclusion, fail-open) and the `prov:denied` capture at the
  * three human permission-deny sites (plan, landing, hands-on).
@@ -145,11 +145,11 @@ test("each deny site journals prov:denied with its kind", () => {
   ])
 })
 
-/** With `provenance.enabled: false` every MVP capture surface is silent:
+/** With `decisionLedger.enabled: false` every MVP capture surface is silent:
  *  admitted prompts journal no `prov:stated` row and deny replies journal no
  *  `prov:denied` row (the deny reply itself still applies). */
-test("provenance disabled silences all MVP capture surfaces", () => {
-  const { ctx, metricsDir } = coreWith({ provenance: { enabled: false } })
+test("decisionLedger disabled silences all MVP capture surfaces", () => {
+  const { ctx, metricsDir } = coreWith({ decisionLedger: { enabled: false } })
   ctx.admitPrompt("p1", { text: "not captured" }, "")
   ctx.planGateAsks.set("r1", { sessionID: "p1", recordedAt: 0 })
   const handlers = createEventHandlers(ctx)
@@ -166,7 +166,7 @@ test("provenance disabled silences all MVP capture surfaces", () => {
  *  row and the admission completes without throwing. The journaler is
  *  swapped for one that throws only on `prov:` rows, so the fail-open
  *  error row itself still lands. */
-test("a provenance capture failure journals an error row and never throws", () => {
+test("a decision-ledger capture failure journals an error row and never throws", () => {
   const { ctx, metricsDir } = coreWith({})
   const original = ctx.journaler.journal.bind(ctx.journaler)
   ;(ctx.journaler as { journal: (entry: Record<string, unknown>) => void }).journal = (entry) => {
