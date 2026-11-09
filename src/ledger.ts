@@ -75,7 +75,7 @@ export interface GateLedger {
    * (`userWaiver`, `userWaiverScope`, `userWaiverConsumed`,
    * `reviewWaiverRounds`), and the plan identity fields (`plansSignature`,
    * `approvedPlan`/`approvedPlanKey`, `activePlan`) carried while
-   * `hasPlanVerdict` holds. `mergeAfterReplay` in `src/state.ts` is the
+   * `hasPlanVerdict` holds. `mergeAfterReplay` in `src/state-carry.ts` is the
    * authority for the exact carry set. Every other reset is a full
    * reset (fresh flags; `reviewRounds`/`plannerRounds`/
    * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/

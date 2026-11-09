@@ -101,7 +101,7 @@ export function defaultGitGates(): TurnstileGitGates {
     emptyDiffExempt: true,
     // Blind-retry escalation for the commit lint: after this many failed
     // attempts for the same session within the window, the block message
-    // appends a full canonical example (see src/tool-policy.ts).
+    // appends a full canonical example (see src/tool-policy-guards.ts).
     commitRetryThreshold: 3,
     commitRetryWindowMs: 60_000,
   }

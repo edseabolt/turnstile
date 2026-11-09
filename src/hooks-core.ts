@@ -262,7 +262,6 @@ export interface TurnstileContext {
   handleReadBudget(key: string): void
   /** Returns the last verdict match in text for re. */
   lastMatch(text: string, re: RegExp): string
-  /** Stamps a plan-reviewer verdict's approval against the plans dir. */
   /** Returns the optional identity/stamp fields a plan APPROVE journals. */
   planApprovalStampFields(s: GateState): {
     plan?: string
