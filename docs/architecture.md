@@ -324,9 +324,10 @@ a task dispatch, the task arm's behavior follows `escalation`: under `"ask"` it 
 parent carries a live `pendingLandingAsk` latch; the write/edit arm does the
 same for the hands-on gate: a
 parent `write`/`edit` with a live `pendingHandsOnAsk` latch (each armed by the
-guard only under `escalation: "ask"` — under the default `"block"` the repeat
-attempt re-blocks and no latch is ever armed, so both arms stay inert by
-construction) is forced to `ask`. Replies are matched to recorded ask request-IDs only:
+guard in BOTH `escalation` modes — the ask-first ladder arms the one-shot ask
+latch on the armed repeat attempt; the block-throw is only the no-human
+fallback, so both arms fire the ask whenever the latch is live) is forced to
+`ask`. Replies are matched to recorded ask request-IDs only:
 `always` stands a verdict/approval, `once` releases exactly one dispatch/push/edit,
 `reject` keeps the gate red. Both arms are inert while the parent's gate
 enforcement is suspended (§5's suspension overlay): the task arm returns

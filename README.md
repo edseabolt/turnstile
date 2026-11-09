@@ -509,7 +509,7 @@ tools remain unguarded. The full threat model:
 On an incompatible host turnstile toasts the upgrade instruction and
 registers no hooks (a full no-op — fail-open):
 
-> turnstile 0.9.x expects opencode >=2.0.22,<3.0.0; you're on 3.1.0 —
+> turnstile 0.12.x expects opencode >=2.0.22,<3.0.0; you're on 3.1.0 —
 > upgrade turnstile (npm i opencode-turnstile@latest) or pin opencode
 
 `npx opencode-turnstile status --check-updates` (opt-in, network, cached 24 h)
