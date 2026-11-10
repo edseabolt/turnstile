@@ -314,7 +314,7 @@ function carryWaiverFamily(s: GateState, prior: GateState): void {
  * `pendingOnceGrant` must not outlive its single dispatch, `policyInjected`
  * is per-task policy re-supply, the loop-cap counters (`reviewRounds`,
  * `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`,
- * `totalDispatches`, `landingBlocks`, `handsOnBlocks`) intentionally re-arm
+ * `requirementsRounds`, `totalDispatches`, `landingBlocks`, `handsOnBlocks`) intentionally re-arm
  * on every task-scope reset, and the dedup/telemetry/fingerprint fields
  * (`seenFrom`, `suppressedPending`, `reads`, `readWarned`, `seen`,
  * `replayGrace`, `taskFingerprint`) are intrinsic to this bucket —
