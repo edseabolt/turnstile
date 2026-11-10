@@ -1776,6 +1776,34 @@ function replayGatePasses(
 ): void {
   const maps = newReplayMaps()
   const drops: ReplayDrop[] = []
+  replayJournalTail(maps, journalPath, sessionsDir, tailLines, observePeriod, suspended, drops)
+  restoreBuckets(states, maps, reviewerAgent, creditedApprovals)
+  for (const [child, edge] of maps.childEdges) childEdges.set(child, edge)
+  journalReplayDrops(journalPath, drops)
+}
+
+/**
+ * Walks the replay tail (journal + per-session sinks) and folds every
+ * well-formed entry into the replay maps; malformed lines and entries with
+ * unusable session IDs are collected as replay drops for the caller to
+ * journal.
+ * @param maps The replay maps the entries fold into.
+ * @param journalPath The main journal path.
+ * @param sessionsDir The per-session sink directory.
+ * @param tailLines How many newest lines to walk.
+ * @param observePeriod The observe-mode period state.
+ * @param suspended The suspension map (fold target).
+ * @param drops The accumulator the dropped lines are pushed to.
+ */
+function replayJournalTail(
+  maps: ReturnType<typeof newReplayMaps>,
+  journalPath: string,
+  sessionsDir: string,
+  tailLines: number,
+  observePeriod: ObservePeriod,
+  suspended: Map<string, true>,
+  drops: ReplayDrop[],
+): void {
   for (const line of readReplayLines(journalPath, sessionsDir, tailLines)) {
     const entry = parseReplayLine(line)
     if (entry === null) continue
@@ -1791,9 +1819,6 @@ function replayGatePasses(
     const drop = foldReplayLine(entry, maps, sessionID, observePeriod, suspended)
     if (drop) drops.push(drop)
   }
-  restoreBuckets(states, maps, reviewerAgent, creditedApprovals)
-  for (const [child, edge] of maps.childEdges) childEdges.set(child, edge)
-  journalReplayDrops(journalPath, drops)
 }
 
 /**
@@ -2303,6 +2328,25 @@ function rekeyApprovalRecord(
     st.approvedPlans.set(mapKey, record)
     return
   }
+  journalPlanRekey(st, record, key, sessionID)
+}
+
+/**
+ * Appends the `plan-rekey` journal row for a transparently re-keyed durable
+ * approval record; the row's `sessionID` is omitted when the caller's
+ * provenance ID is missing or fails the replay ID shape.
+ * @param st The approval-store state.
+ * @param record The original (pre-rekey) record.
+ * @param key The plan's current spec-region sha256 key.
+ * @param sessionID The journal-row provenance; omitted (or failing the
+ *     replay ID shape) leaves the field off the row.
+ */
+function journalPlanRekey(
+  st: ApprovalStoreState,
+  record: ApprovalRecord,
+  key: string,
+  sessionID?: string,
+): void {
   const sid =
     typeof sessionID === "string" && REPLAY_SESSION_RE.test(sessionID) ? sessionID : undefined
   appendLine(
@@ -2490,22 +2534,14 @@ function composeLedger(
   maxSessions: number,
   observeSessions: number,
 ): GateLedger {
-  const { childToParent, markParent, isParent, lastParent, parentOf, setParent, reseedEdges } =
-    registry
   return {
-    childToParent,
+    ...ledgerEdgeViews(registry),
     ...createBucketStore({
       states: maps.states,
       maxSessions,
-      isParent,
+      isParent: registry.isParent,
       releaseChildren: registry.releaseChildren,
     }),
-    parentOf,
-    setParent,
-    reseedEdges,
-    markParent,
-    isParent,
-    lastParent,
     ...createVerdictStore(maxSessions, maps.childVerdicts),
     ...createApprovalStore({
       sidecarPath: maps.sidecarPath,
@@ -2516,6 +2552,29 @@ function composeLedger(
     ...createObserveCap(observeSessions, maps.observePeriod),
     ...createSuspension(maxSessions, maps.suspended),
   }
+}
+
+/**
+ * The parent-edge registry views re-exposed on the ledger: edge resolution,
+ * parent marking/lookup, and the setup re-seed hook.
+ * @param registry The parent-edge registry capability.
+ * @returns The registry's edge views as a ledger-shaped partial.
+ */
+function ledgerEdgeViews(
+  registry: LedgerRegistry,
+): Pick<
+  GateLedger,
+  | "childToParent"
+  | "parentOf"
+  | "setParent"
+  | "reseedEdges"
+  | "markParent"
+  | "isParent"
+  | "lastParent"
+> {
+  const { childToParent, markParent, isParent, lastParent, parentOf, setParent, reseedEdges } =
+    registry
+  return { childToParent, parentOf, setParent, reseedEdges, markParent, isParent, lastParent }
 }
 
 /**

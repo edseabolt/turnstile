@@ -259,6 +259,20 @@ function applyVerdictMarker(
  *     same text re-delivered stays silent).
  * @returns Marker events observed for the first time in this text.
  */
+/**
+ * Finds the last match of a marker regex in a text and counts its
+ * occurrences: the pair fed to the per-kind apply helpers (the last
+ * observation wins; the count feeds the dedup/journal stamps).
+ * @param text The text scanned for markers.
+ * @param re The marker regex.
+ * @returns The last match (null when the text carries none) and the total
+ *     match count.
+ */
+function lastMarkerMatches(text: string, re: RegExp): { match: string | null; count: number } {
+  const matches = text.match(re) ?? []
+  return { match: matches[matches.length - 1] ?? null, count: matches.length }
+}
+
 export function parseGateMarkers(
   state: GateState,
   text: string,
@@ -273,15 +287,54 @@ export function parseGateMarkers(
 ): MarkerEvent[] {
   const events: MarkerEvent[] = []
   if (!text) return events
-  const gates = text.match(gateRe) ?? []
-  const verdicts = text.match(verdictRe) ?? []
-  const gate = gates[gates.length - 1] ?? null
-  const verdict = verdicts[verdicts.length - 1] ?? null
-  if (gate) {
+  const gate = lastMarkerMatches(text, gateRe)
+  const verdict = lastMarkerMatches(text, verdictRe)
+  applyLastMarkers(
+    state,
+    gate,
+    verdict,
+    dedupScope,
+    raw,
+    passVerified,
+    stampVerified,
+    stampMode,
+    kindAllowed,
+    events,
+  )
+  return events
+}
+
+/**
+ * Applies the last-observed gate and verdict markers (when present) to the
+ * state and collects their first-sight events for the caller.
+ * @param state The gate state the markers mutate.
+ * @param gate The last gate marker match + count.
+ * @param verdict The last verdict marker match + count.
+ * @param dedupScope Dedup scope shared by both kinds.
+ * @param raw The raw child session ID (provenance).
+ * @param passVerified Journal stamp for the PASS event, or undefined.
+ * @param stampVerified Journal stamp for the verdict event, or undefined.
+ * @param stampMode Evidence mode at stamp time.
+ * @param kindAllowed Optional kind-authority predicate.
+ * @param events The accumulator the first-sight events are pushed to.
+ */
+function applyLastMarkers(
+  state: GateState,
+  gate: { match: string | null; count: number },
+  verdict: { match: string | null; count: number },
+  dedupScope: string,
+  raw: string,
+  passVerified: boolean | undefined,
+  stampVerified: boolean | undefined,
+  stampMode: GateEvidenceMode | undefined,
+  kindAllowed: ((kind: "gate" | "verdict") => boolean) | undefined,
+  events: MarkerEvent[],
+): void {
+  if (gate.match) {
     applyGateMarker(
       state,
-      gate,
-      gates.length,
+      gate.match,
+      gate.count,
       dedupScope,
       raw,
       passVerified,
@@ -291,8 +344,7 @@ export function parseGateMarkers(
       events,
     )
   }
-  if (verdict) {
-    applyVerdictMarker(state, verdict, verdicts.length, dedupScope, raw, kindAllowed, events)
+  if (verdict.match) {
+    applyVerdictMarker(state, verdict.match, verdict.count, dedupScope, raw, kindAllowed, events)
   }
-  return events
 }

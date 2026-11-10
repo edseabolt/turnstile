@@ -16,8 +16,21 @@ import { blockWithEscalation, type DispatchGateState } from "./dispatch-review-g
 import type { Journaler } from "./journal.ts"
 
 /**
- * Resolves the dispatch leg for an agent, or null when the agent is not one
- * of the three capped legs (planner, plan-reviewer, test-runner) — executor,
+ * A resolved per-leg dispatch budget line: the leg's journal label, state
+ * counter, config cap key, and cap value.
+ */
+interface ResolvedDispatchLeg {
+  label: "planner" | "planReviewer" | "testRunner"
+  countKey: "plannerRounds" | "planReviewerRounds" | "testRunnerRounds"
+  capKey: "maxPlannerRounds" | "maxPlanReviewerRounds" | "maxTestRunnerRounds"
+  cap: number
+}
+
+type DispatchLeg = NonNullable<ReturnType<typeof resolveDispatchLeg>>
+
+/**
+ * Resolves the dispatched agent's capped budget leg, if any: the leg of the
+ * three capped legs (planner, plan-reviewer, test-runner) — executor,
  * debugger, reviewer, and unknown names all resolve to null and only draw
  * down the total budget. First match wins on agent-name collisions (a
  * pathological config; documented, not defended).
@@ -25,15 +38,7 @@ import type { Journaler } from "./journal.ts"
  * @param agent The dispatched agent name.
  * @returns The matching leg, or null.
  */
-function resolveDispatchLeg(
-  config: TurnstileConfig,
-  agent: string,
-): {
-  label: "planner" | "planReviewer" | "testRunner"
-  countKey: "plannerRounds" | "planReviewerRounds" | "testRunnerRounds"
-  capKey: "maxPlannerRounds" | "maxPlanReviewerRounds" | "maxTestRunnerRounds"
-  cap: number
-} | null {
+function resolveDispatchLeg(config: TurnstileConfig, agent: string): ResolvedDispatchLeg | null {
   if (agent === config.agents.planner)
     return {
       label: "planner",
@@ -57,12 +62,6 @@ function resolveDispatchLeg(
     }
   return null
 }
-
-/**
- * A resolved per-leg dispatch budget line: the leg's journal label, state
- * counter, config cap key, and cap value.
- */
-type DispatchLeg = NonNullable<ReturnType<typeof resolveDispatchLeg>>
 
 /**
  * Journals the per-leg `loop-cap` `blocked` + `escalation` entries and

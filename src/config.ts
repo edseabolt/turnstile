@@ -155,7 +155,8 @@ function defaultMarkerScalars(): Pick<
  * defaults.
  * @returns The mode-shaped default fields.
  */
-function defaultModeScalars(): Pick<
+/** The `defaultModeScalars` shape: mode-shaped default config fields. */
+type DefaultModeScalars = Pick<
   TurnstileConfig,
   | "sessionSummary"
   | "escalation"
@@ -164,7 +165,9 @@ function defaultModeScalars(): Pick<
   | "resumeMarker"
   | "taskDoneMarker"
   | "allowSuspend"
-> {
+>
+
+function defaultModeScalars(): DefaultModeScalars {
   return {
     // Session-end summary: "quiet" prints one recap line at session.idle for
     // sessions that did something (silent for zero-activity sessions); "on"
@@ -200,10 +203,13 @@ function defaultModeScalars(): Pick<
  * Builds the enforcement-arming defaults.
  * @returns The enforcement-shaped default fields.
  */
-function defaultEnforcementScalars(): Pick<
+/** The `defaultEnforcementScalars` shape: enforcement-arming default fields. */
+type DefaultEnforcementScalars = Pick<
   TurnstileConfig,
   "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview"
-> {
+>
+
+function defaultEnforcementScalars(): DefaultEnforcementScalars {
   return {
     // Advisory intent nudge is on by default: an admitted prompt classified
     // as implementation intent with no plan approval journals `{type:"intent"}`
