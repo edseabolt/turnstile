@@ -438,7 +438,9 @@ reference tree report `SKIPPED (absent in ref)`; for `prov` and
 recovery/replay cells use a reference at or after `687270b` (the first
 commit with the full decision ledger — partial-ledger merge-window refs
 fail with a driver error rather than a structured skip). Deliberate
-behavior changes re-point `--ref` at the commit that introduced them.
+behavior changes re-point `--ref` at the commit that introduced them. A
+captured run with a line-by-line explaining of the output is in
+[`docs/usage.md`](docs/usage.md#8-differential-characterization-harness--worked-example).
 
 **Self-host smoke** — `npm run init && npm run ci:installed`, start a
 fresh OpenCode session with the plugin loaded, and run one
