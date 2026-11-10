@@ -7,7 +7,7 @@
  */
 
 import type { GateEvidenceMode, GateState, MarkerEvent } from "./types.ts"
-import { GATE_RE, VERDICT_RE } from "./markers.ts"
+import { GATE_RE, VERDICT_RE, gateResultOf } from "./markers.ts"
 
 /**
  * Records first-sight provenance for a dedup key and accounts for a
@@ -104,6 +104,7 @@ function applyGatePass(
  * rejection).
  * @param state Mutable gate state for the parent session.
  * @param gate The matched gate marker text.
+ * @param gateRe The gate marker regex that produced the marker.
  * @param gateCount Number of gate matches in the text.
  * @param passVerified PASS flip switch (see `applyGatePass`).
  * @param stampVerified Journal stamp for the PASS event, or undefined.
@@ -113,13 +114,14 @@ function applyGatePass(
 function applyGateResult(
   state: GateState,
   gate: string,
+  gateRe: RegExp,
   gateCount: number,
   passVerified: boolean | undefined,
   stampVerified: boolean | undefined,
   stampMode: GateEvidenceMode | undefined,
   events: MarkerEvent[],
 ): void {
-  const result: "PASS" | "FAIL" = gate.includes("PASS") ? "PASS" : "FAIL"
+  const result: "PASS" | "FAIL" = gateResultOf(gate, gateRe)
   if (result === "PASS") {
     applyGatePass(state, gate, gateCount, passVerified, stampVerified, stampMode, events)
     return
@@ -142,6 +144,7 @@ function applyGateResult(
  * audit), then the result arm.
  * @param state Mutable gate state for the parent session.
  * @param gate The matched gate marker text.
+ * @param gateRe The gate marker regex that produced the marker.
  * @param gateCount Number of gate matches in the text.
  * @param dedupScope Key prefix partitioning the dedup set.
  * @param raw Raw session ID that produced the marker.
@@ -155,6 +158,7 @@ function applyGateResult(
 function applyGateMarker(
   state: GateState,
   gate: string,
+  gateRe: RegExp,
   gateCount: number,
   dedupScope: string,
   raw: string,
@@ -170,7 +174,7 @@ function applyGateMarker(
     events.push({ kind: "gate", marker: gate, authority: "suppressed" })
     return
   }
-  applyGateResult(state, gate, gateCount, passVerified, stampVerified, stampMode, events)
+  applyGateResult(state, gate, gateRe, gateCount, passVerified, stampVerified, stampMode, events)
 }
 
 /**
@@ -278,6 +282,7 @@ export function parseGateMarkers(
   applyLastMarkers(
     state,
     gate,
+    gateRe,
     verdict,
     dedupScope,
     raw,
@@ -309,6 +314,7 @@ function lastMarkerMatches(text: string, re: RegExp): { match: string | null; co
  * state and collects their first-sight events for the caller.
  * @param state The gate state the markers mutate.
  * @param gate The last gate marker match + count.
+ * @param gateRe The gate marker regex that produced the gate match.
  * @param verdict The last verdict marker match + count.
  * @param dedupScope Dedup scope shared by both kinds.
  * @param raw The raw child session ID (provenance).
@@ -321,6 +327,7 @@ function lastMarkerMatches(text: string, re: RegExp): { match: string | null; co
 function applyLastMarkers(
   state: GateState,
   gate: { match: string | null; count: number },
+  gateRe: RegExp,
   verdict: { match: string | null; count: number },
   dedupScope: string,
   raw: string,
@@ -334,6 +341,7 @@ function applyLastMarkers(
     applyGateMarker(
       state,
       gate.match,
+      gateRe,
       gate.count,
       dedupScope,
       raw,
