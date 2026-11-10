@@ -126,6 +126,7 @@ function freshCounters(): Pick<
   | "plannerRounds"
   | "planReviewerRounds"
   | "testRunnerRounds"
+  | "requirementsRounds"
   | "totalDispatches"
   | "landingBlocks"
   | "handsOnBlocks"
@@ -143,6 +144,7 @@ function freshCounters(): Pick<
     plannerRounds: 0,
     planReviewerRounds: 0,
     testRunnerRounds: 0,
+    requirementsRounds: 0,
     totalDispatches: 0,
     // Task-scoped landing-gate block counter: fresh 0 on every task-scope reset.
     // Restored by journal replay across a restart.

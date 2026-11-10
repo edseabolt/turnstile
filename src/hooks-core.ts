@@ -1602,9 +1602,17 @@ function buildCoreDeliveryMaps(st: CoreState): void {
   // rather than injected self-keyed. Same config.agents keys the dispatch
   // guards read, so a renamed agent is excluded by name exactly as before.
   st.subagentNames = new Set(
-    (["reviewer", "planReviewer", "executor", "testRunner", "debugger", "planner"] as const).map(
-      (name) => st.config.agents[name],
-    ),
+    (
+      [
+        "reviewer",
+        "planReviewer",
+        "executor",
+        "testRunner",
+        "debugger",
+        "planner",
+        "requirements",
+      ] as const
+    ).map((name) => st.config.agents[name]),
   )
 
   // Host session API, bound at setup time (hooks already fire post-setup).

@@ -59,6 +59,11 @@
       "minimum": 1,
       "description": "Max test-runner dispatches per task (default 4)."
     },
+    "maxRequirementsRounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max requirements-phase dispatches per task; consulted only while requirementsPhase is on (default 2)."
+    },
     "maxTotalDispatches": {
       "type": "integer",
       "minimum": 1,
@@ -141,6 +146,10 @@
       "type": "boolean",
       "description": "When true, block the plan-reviewer dispatch after a planner dispatch until the user accepts or rejects the written plan via their own prompt (the planReviewAcceptMarker / planReviewRejectMarker literals). The pause survives restarts and prompt boundaries; default false — the fully-automated flow."
     },
+    "requirementsPhase": {
+      "type": "boolean",
+      "description": "Requirements phase (opt-in): when true, non-trivial tasks dispatch the requirements subagent before the planner; the orchestrator relays the spec's Open Questions to the user and passes the finalized spec verbatim into the planner dispatch. Soft and ungated: the leg is loop-capped via maxRequirementsRounds but emits no marker and no gate (default false — the pipeline is byte-identical when off)."
+    },
     "planReviewAcceptMarker": {
       "type": "string",
       "description": "Literal marker that, appearing in the user's own prompt, accepts the written plan and unblocks the plan-reviewer dispatch (the edited file is what the reviewer reads). Only consulted while planUserReview is on (default PLAN REVIEWED:)."
@@ -176,6 +185,10 @@
           "description": "Test-runner agent name (default test-runner)."
         },
         "debugger": { "type": "string", "description": "Debugger agent name (default debugger)." },
+        "requirements": {
+          "type": "string",
+          "description": "Requirements-phase agent name (default requirements)."
+        },
         "bareOutput": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },

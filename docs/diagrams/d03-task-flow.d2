@@ -5,7 +5,7 @@ flow: {
   }
   orch: "Orchestrator\n(parent session)"
   hooks: "Turnstile hooks"
-  agents: "Child subagents\n(planner → plan-reviewer → executor →\ntest-runner → reviewer)"
+  agents: "Child subagents\n(requirements → planner → plan-reviewer →\nexecutor → test-runner → reviewer)"
   journal: "Journal\n(turnstile.jsonl)" {
     shape: cylinder
   }
@@ -13,6 +13,13 @@ flow: {
   user -> hooks: "prompt (may carry USER WAIVER: / PLAN APPROVED:)"
   hooks -> journal: "admitPrompt — resetState (+continuation carry), capture waiver/approval"
   user -> orch: "task request"
+
+  orch -> hooks: "dispatch requirements (requirementsPhase: true,\nnon-trivial tasks only; config-gated, ungated)"
+  hooks -> hooks: "loop cap maxRequirementsRounds (2);\nno marker, no gate — metered in the\ntotal dispatch budget only"
+  agents -> hooks: "requirements spec (AC-1…AC-n, Open Questions)"
+  hooks -> orch: "relay Open Questions to the user; fold answers in;\npass the finalized spec verbatim into the planner dispatch" {
+    style.stroke-dash: 4
+  }
 
   orch -> hooks: "dispatch planner"
   hooks -> journal: "dispatch journaled at guard exit; blocked:true when a guard rejects"
