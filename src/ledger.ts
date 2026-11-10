@@ -24,6 +24,7 @@ import { evictTo } from "./bounded.ts"
 import { CANONICAL_REVIEWER_AGENT } from "./config.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now, REPLAY_SESSION_RE } from "./journal.ts"
+import { verdictResultOf } from "./markers.ts"
 import { REVIEW_ENSEMBLE_SIZE, mergeAfterReplay, newState } from "./state.ts"
 import {
   cap,
@@ -842,7 +843,7 @@ function foldVerdict(
   if (typeof marker !== "string" || marker.length > MAX_REPLAY_MARKER_LEN) {
     return { reason: "entry-shape", sessionID }
   }
-  lastReviewVerdict.set(sessionID, marker.includes("APPROVE") ? "APPROVE" : "BLOCK")
+  lastReviewVerdict.set(sessionID, verdictResultOf(marker))
   lastVerdictAgent.set(sessionID, sanitizeReplayAgent(entry.agent))
   return null
 }
