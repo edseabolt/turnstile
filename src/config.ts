@@ -91,6 +91,7 @@ function defaultLoopCaps(): Pick<
   | "maxPlannerRounds"
   | "maxPlanReviewerRounds"
   | "maxTestRunnerRounds"
+  | "maxRequirementsRounds"
   | "maxTotalDispatches"
   | "maxSessions"
   | "agentMarkerRetry"
@@ -104,6 +105,7 @@ function defaultLoopCaps(): Pick<
     maxPlannerRounds: 3,
     maxPlanReviewerRounds: 3,
     maxTestRunnerRounds: 4,
+    maxRequirementsRounds: 2,
     maxTotalDispatches: 16,
     maxSessions: 64,
     // Compliance retry: a marker-less bare-output delivery is re-prompted
@@ -206,7 +208,7 @@ function defaultModeScalars(): DefaultModeScalars {
 /** The `defaultEnforcementScalars` shape: enforcement-arming default fields. */
 type DefaultEnforcementScalars = Pick<
   TurnstileConfig,
-  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview"
+  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview" | "requirementsPhase"
 >
 
 function defaultEnforcementScalars(): DefaultEnforcementScalars {
@@ -235,6 +237,12 @@ function defaultEnforcementScalars(): DefaultEnforcementScalars {
     // blocked after a planner dispatch until the user's own prompt carries
     // the accept or reject literal. Default false — fully-automated flow.
     planUserReview: false,
+    // Requirements phase (opt-in): when true, non-trivial tasks dispatch the
+    // requirements subagent before the planner; the orchestrator relays the
+    // spec's Open Questions to the user and passes the finalized spec verbatim
+    // into the planner dispatch. Soft and ungated: the leg is loop-capped via
+    // maxRequirementsRounds but emits no marker and no gate.
+    requirementsPhase: false,
   }
 }
 

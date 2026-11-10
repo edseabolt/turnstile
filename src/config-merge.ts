@@ -53,6 +53,7 @@ export function defaultAgents(): TurnstileAgents {
     executor: "executor",
     testRunner: "test-runner",
     debugger: "debugger",
+    requirements: "requirements",
     bareOutput: BARE_OUTPUT_UNSET,
   }
 }
@@ -137,6 +138,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "alwaysEnforce") config.alwaysEnforce = value as boolean
   else if (key === "planImpactStrict") config.planImpactStrict = value as boolean
   else if (key === "planUserReview") config.planUserReview = value as boolean
+  else if (key === "requirementsPhase") config.requirementsPhase = value as boolean
   else if (key === "planReviewAcceptMarker") config.planReviewAcceptMarker = value as string
   else if (key === "planReviewRejectMarker") config.planReviewRejectMarker = value as string
   else if (key === "observeSessions") config.observeSessions = value as number
@@ -217,7 +219,8 @@ export function mergeAgentsPatch(
       continue
     }
     if (typeof agentValue === "string" && agentValue.trim().length > 0) {
-      const name = agentKey as "reviewer" | "planReviewer" | "executor" | "testRunner" | "debugger"
+      const name = agentKey as
+        "reviewer" | "planReviewer" | "executor" | "testRunner" | "debugger" | "requirements"
       config.agents[name] = agentValue
     } else {
       warnings.push(`config: agents.${agentKey} must be a non-empty string; keeping default`)

@@ -14,7 +14,7 @@ export { mergeAfterReplay, newState } from "./state-carry.ts"
  * Clears the metering counters on a gate state bucket so its dispatches are
  * re-admitted: the round and dispatch counters (`reviewRounds`,
  * `reviewWaiverRounds`, `plannerRounds`, `planReviewerRounds`,
- * `testRunnerRounds`, `totalDispatches`, `landingBlocks`, `handsOnBlocks`,
+ * `testRunnerRounds`, `requirementsRounds`, `totalDispatches`, `landingBlocks`, `handsOnBlocks`,
  * `reads`), the read warning flag, and any pending unverified gate-refusal
  * claim. Earned credit
  * (the gate/plan/review flags, the ensemble dispatch count, approvals, and
@@ -33,6 +33,7 @@ export function clearMeteringCounters(s: GateState): boolean {
     s.plannerRounds !== 0 ||
     s.planReviewerRounds !== 0 ||
     s.testRunnerRounds !== 0 ||
+    s.requirementsRounds !== 0 ||
     s.totalDispatches !== 0 ||
     s.landingBlocks !== 0 ||
     s.handsOnBlocks !== 0 ||
@@ -42,6 +43,7 @@ export function clearMeteringCounters(s: GateState): boolean {
   s.plannerRounds = 0
   s.planReviewerRounds = 0
   s.testRunnerRounds = 0
+  s.requirementsRounds = 0
   s.totalDispatches = 0
   s.landingBlocks = 0
   s.handsOnBlocks = 0
@@ -107,6 +109,8 @@ export const REVIEW_ENSEMBLE_SIZE = 2
  * configured values — a renamed install names its renamed stages.
  */
 export interface PipelineStages {
+  /** Optional pre-planner requirements leg (present only when configured). */
+  requirements?: string
   planner: string
   planReviewer: string
   executor: string
@@ -133,6 +137,8 @@ export interface PipelineStages {
  *     "land"/"escalate"; "" when `justCompleted` is not a pipeline stage.
  */
 function nextStage(s: GateState, stages: PipelineStages, justCompleted: string): string {
+  if (stages.requirements !== undefined && justCompleted === stages.requirements)
+    return stages.planner
   if (justCompleted === stages.planner) return stages.planReviewer
   if (justCompleted === stages.planReviewer)
     return s.hasPlanVerdict ? stages.executor : stages.planner

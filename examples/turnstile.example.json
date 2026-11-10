@@ -8,6 +8,7 @@
   "maxPlannerRounds": 3,
   "maxPlanReviewerRounds": 3,
   "maxTestRunnerRounds": 4,
+  "maxRequirementsRounds": 2,
   "maxTotalDispatches": 16,
   "maxSessions": 64,
   "agentMarkerRetry": 1,
@@ -29,6 +30,7 @@
   "alwaysEnforce": false,
   "planImpactStrict": false,
   "planUserReview": false,
+  "requirementsPhase": false,
   "planReviewAcceptMarker": "PLAN REVIEWED:",
   "planReviewRejectMarker": "PLAN REJECTED:",
   "agents": {
@@ -38,6 +40,7 @@
     "executor": "executor",
     "testRunner": "test-runner",
     "debugger": "debugger",
+    "requirements": "requirements",
     "bareOutput": []
   },
   "gateMarker": "^\\s*[`>#*\\s]*GATE: (PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+",

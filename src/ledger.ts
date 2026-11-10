@@ -78,7 +78,7 @@ export interface GateLedger {
    * `hasPlanVerdict` holds. `mergeAfterReplay` in `src/state-carry.ts` is the
    * authority for the exact carry set. Every other reset is a full
    * reset (fresh flags; `reviewRounds`/`plannerRounds`/
-   * `planReviewerRounds`/`testRunnerRounds`/`totalDispatches`/`reads`/`seen`/
+   * `planReviewerRounds`/`testRunnerRounds`/`requirementsRounds`/`totalDispatches`/`reads`/`seen`/
    * `seenFrom`/`suppressedPending` are always fresh). Fail-open: pure object map
    * operations.
    *

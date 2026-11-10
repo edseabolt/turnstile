@@ -71,10 +71,13 @@ test("defaultConfig reproduces the historical constants", () => {
     executor: "executor",
     testRunner: "test-runner",
     debugger: "debugger",
+    requirements: "requirements",
     bareOutput: [],
   })
   assert.equal(cfg.agents.bareOutput, BARE_OUTPUT_UNSET)
   assert.equal(cfg.agents.planner, "planner")
+  assert.equal(cfg.maxRequirementsRounds, 2)
+  assert.equal(cfg.requirementsPhase, false)
 })
 
 /** Covers the XDG_DATA_HOME → ~/.local/share fallback for metricsDir. */

@@ -20,9 +20,10 @@ import type { Journaler } from "./journal.ts"
  * counter, config cap key, and cap value.
  */
 interface ResolvedDispatchLeg {
-  label: "planner" | "planReviewer" | "testRunner"
-  countKey: "plannerRounds" | "planReviewerRounds" | "testRunnerRounds"
-  capKey: "maxPlannerRounds" | "maxPlanReviewerRounds" | "maxTestRunnerRounds"
+  label: "planner" | "planReviewer" | "testRunner" | "requirements"
+  countKey: "plannerRounds" | "planReviewerRounds" | "testRunnerRounds" | "requirementsRounds"
+  capKey:
+    "maxPlannerRounds" | "maxPlanReviewerRounds" | "maxTestRunnerRounds" | "maxRequirementsRounds"
   cap: number
 }
 
@@ -59,6 +60,13 @@ function resolveDispatchLeg(config: TurnstileConfig, agent: string): ResolvedDis
       countKey: "testRunnerRounds",
       capKey: "maxTestRunnerRounds",
       cap: config.maxTestRunnerRounds,
+    }
+  if (agent === config.agents.requirements)
+    return {
+      label: "requirements",
+      countKey: "requirementsRounds",
+      capKey: "maxRequirementsRounds",
+      cap: config.maxRequirementsRounds,
     }
   return null
 }

@@ -36,6 +36,7 @@ const BOOLEAN_KEYS: readonly (keyof TurnstileConfig)[] = [
   "alwaysEnforce",
   "planImpactStrict",
   "planUserReview",
+  "requirementsPhase",
 ]
 
 /** Config keys whose valid value is a non-empty string. */

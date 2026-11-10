@@ -29,6 +29,8 @@ export type PolicyConfig = Pick<
   | "approvalMarker"
   | "plansDir"
   | "planUserReview"
+  | "requirementsPhase"
+  | "maxRequirementsRounds"
   | "planReviewAcceptMarker"
   | "planReviewRejectMarker"
   | "metricsDir"
@@ -44,12 +46,17 @@ function openingSection(): string {
 }
 
 /**
- * Pipeline order line: the fixed stage order the continuation imperative
- * dispatches through.
+ * Pipeline order line: the stage order the continuation imperative dispatches
+ * through. With `requirementsPhase` on, the optional pre-planner requirements
+ * leg is named with its trivial-task skip criterion; the default line stays
+ * byte-identical to the historical fixed string.
+ * @param c The resolved config slice (the phase switch).
  * @returns The pipeline order line.
  */
-function pipelineOrderSection(): string {
-  return `Pipeline order: planner → plan-reviewer → executor → test-runner → reviewer.`
+function pipelineOrderSection(c: PolicyConfig): string {
+  return c.requirementsPhase
+    ? `Pipeline order: requirements → planner → plan-reviewer → executor → test-runner → reviewer (the requirements leg runs only for non-trivial tasks; trivial ones — small fixes, renames, doc/config changes — skip it).`
+    : `Pipeline order: planner → plan-reviewer → executor → test-runner → reviewer.`
 }
 
 /**
@@ -233,6 +240,34 @@ function planUserReviewSection(c: PolicyConfig): string {
 }
 
 /**
+ * Requirements-phase line: the pre-planner spec extraction choreography —
+ * dispatch, Open Questions relay, verbatim spec hand-off, and the loop cap.
+ * Appended only when `requirementsPhase` is on, so the default policy text
+ * stays byte-identical. Deliberately written without backticks and quoting no
+ * marker syntax (the planUserReviewSection precedent).
+ * @param c The resolved config slice (the phase switch and the leg cap).
+ * @returns The requirements-phase line.
+ */
+function requirementsPhaseSection(c: PolicyConfig): string {
+  return (
+    `Requirements phase: for a non-trivial task, dispatch the requirements ` +
+    `subagent FIRST with the user's request verbatim; it returns a spec ` +
+    `(# Objective, # Explicit Requirements, # Implied Requirements, ` +
+    `# Constraints, # Non-Goals, numbered acceptance criteria AC-1…AC-n, ` +
+    `and # Open Questions each marked blocking or non-blocking). If any ` +
+    `Open Question remains, present them to the user and stop; fold their ` +
+    `written answers into the spec (a "use your judgment" answer is ` +
+    `recorded as an explicit delegation) and only then dispatch the ` +
+    `planner, passing the finalized spec VERBATIM at the top of the ` +
+    `planner dispatch prompt. Trivial tasks (small fixes, renames, ` +
+    `doc/config changes) skip the leg. The leg emits no marker and is ` +
+    `capped at ${c.maxRequirementsRounds} dispatches per task inside the ` +
+    `total dispatch budget; if the spec keeps coming back without ` +
+    `converging, escalate to the user.`
+  )
+}
+
+/**
  * Builds the orchestrator policy injected into the parent session per task.
  *
  * One line per concern: the injected block is prepended to the model-facing
@@ -249,7 +284,7 @@ export function orchestratorPolicyFor(c: PolicyConfig): string {
   return [
     openingSection(),
     [
-      pipelineOrderSection(),
+      pipelineOrderSection(c),
       continuationSection(),
       waiversSection(c),
       planGateSection(c),
@@ -261,6 +296,7 @@ export function orchestratorPolicyFor(c: PolicyConfig): string {
       traceSection(c),
       verificationSection(),
       ...(c.planUserReview ? [planUserReviewSection(c)] : []),
+      ...(c.requirementsPhase ? [requirementsPhaseSection(c)] : []),
     ].join("\n"),
   ].join("\n\n")
 }
