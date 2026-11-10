@@ -32,7 +32,8 @@ The plugin and pipeline subagent definitions are installed by
 `~/.config/opencode/plugin(s)`, `~/.config/opencode/agents`, and
 `~/.config/opencode/skills` (the vendored `turnstile-init`, `turnstile-on`,
 `turnstile-off`, `turnstile-evidence`, `turnstile-config`,
-`turnstile-status`, and `turnstile-log` skills).
+`turnstile-status`, `turnstile-log`, `turnstile-prov`, and
+`turnstile-prov-views` skills).
 The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `agents/`;

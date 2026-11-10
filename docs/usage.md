@@ -685,18 +685,19 @@ Shared caveats:
 
 ### Vendored skills
 
-The full install ships eight skills into `~/.config/opencode/skills/`:
+The full install ships nine skills into `~/.config/opencode/skills/`:
 
-| Skill                | What it does                                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `turnstile-init`     | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`).                       |
-| `turnstile-off`      | Compose a copy-ready suspend prompt for **you** to send (see below).                                                           |
-| `turnstile-on`       | Compose a copy-ready resume prompt for **you** to send.                                                                        |
-| `turnstile-evidence` | Publish or inspect an evidence bundle (`evidence`, §6).                                                                        |
-| `turnstile-config`   | Show which config keys are overridden vs default, read-only.                                                                   |
-| `turnstile-status`   | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).                                 |
-| `turnstile-log`      | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                                       |
-| `turnstile-prov`     | Report the decision ledger via `prov` (`prov:stated` prompts, `prov:denied` denials, `prov:waiver` waivers); forwards options. |
+| Skill                  | What it does                                                                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `turnstile-init`       | Install, check, uninstall, or inspect the turnstile install (`init` / `check` / `uninstall` / `status`).                         |
+| `turnstile-off`        | Compose a copy-ready suspend prompt for **you** to send (see below).                                                             |
+| `turnstile-on`         | Compose a copy-ready resume prompt for **you** to send.                                                                          |
+| `turnstile-evidence`   | Publish or inspect an evidence bundle (`evidence`, §6).                                                                          |
+| `turnstile-config`     | Show which config keys are overridden vs default, read-only.                                                                     |
+| `turnstile-status`     | Run `status` and present the result readably; forwards options the user names (e.g. `--json`).                                   |
+| `turnstile-log`        | Tail the JSONL journal via `log` (default `--tail 50`); forwards options the user names.                                         |
+| `turnstile-prov`       | Report the decision ledger via `prov` (`prov:stated` prompts, `prov:denied` denials, `prov:waiver` waivers); forwards options.   |
+| `turnstile-prov-views` | Show derived views over the decision ledger via `prov-views` (origin labels, chatter noise rate, taste-drift); forwards options. |
 
 Derived views (origin labels, noise rate, taste-drift) are available offline
 via `opencode-turnstile prov-views`; they read the same `prov:*` rows and
