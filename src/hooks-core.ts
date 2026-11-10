@@ -2070,9 +2070,8 @@ function wireConcerns(st: CoreState): void {
   wireAdmissionConcerns(st)
 }
 
-function coreDeps(
-  st: CoreState,
-): Pick<
+/** The `coreDeps` view: shared concern handles re-exposed on the context. */
+type CoreDeps = Pick<
   TurnstileContext,
   | "config"
   | "journaler"
@@ -2085,7 +2084,9 @@ function coreDeps(
   | "overrideAdjacency"
   | "childStatus"
   | "subagentNames"
-> {
+>
+
+function coreDeps(st: CoreState): CoreDeps {
   return {
     config: st.config,
     journaler: st.journaler,
@@ -2101,9 +2102,8 @@ function coreDeps(
   }
 }
 
-function coreMapViews(
-  st: CoreState,
-): Pick<
+/** The `coreMapViews` view: per-session mutable map cells on the context. */
+type CoreMapViews = Pick<
   TurnstileContext,
   | "nearMissPending"
   | "failedLookups"
@@ -2127,7 +2127,9 @@ function coreMapViews(
   | "sessionAgents"
   | "admittedIds"
   | "summarizedSessions"
-> {
+>
+
+function coreMapViews(st: CoreState): CoreMapViews {
   return {
     nearMissPending: st.nearMissPending,
     failedLookups: st.failedLookups,
@@ -2154,9 +2156,8 @@ function coreMapViews(
   }
 }
 
-function coreConstViews(
-  st: CoreState,
-): Pick<
+/** The `coreConstViews` view: config-derived scalar constants on the context. */
+type CoreConstViews = Pick<
   TurnstileContext,
   | "maxTrackedNearMiss"
   | "maxTrackedPlanAsks"
@@ -2177,7 +2178,9 @@ function coreConstViews(
   | "maxTrackedAdmittedIds"
   | "LOOKUP_REASON_NOT_VISIBLE"
   | "LOOKUP_REASON_NO_PARENT_ID"
-> {
+>
+
+function coreConstViews(st: CoreState): CoreConstViews {
   return {
     maxTrackedNearMiss: st.maxTrackedNearMiss,
     maxTrackedPlanAsks: st.maxTrackedPlanAsks,
@@ -2201,9 +2204,8 @@ function coreConstViews(
   }
 }
 
-function coreBounderViews(
-  st: CoreState,
-): Pick<
+/** The `coreBounderViews` view: LRU-bound helpers over the map cells. */
+type CoreBounderViews = Pick<
   TurnstileContext,
   | "boundSessionDirs"
   | "boundNearMissPending"
@@ -2220,7 +2222,9 @@ function coreBounderViews(
   | "boundLandingGateAsks"
   | "boundAdmittedIds"
   | "boundSummarizedSessions"
-> {
+>
+
+function coreBounderViews(st: CoreState): CoreBounderViews {
   return {
     boundSessionDirs: st.boundSessionDirs,
     boundNearMissPending: st.boundNearMissPending,
@@ -2240,9 +2244,8 @@ function coreBounderViews(
   }
 }
 
-function coreServiceViews1(
-  st: CoreState,
-): Pick<
+/** The `coreServiceViews1` view: surface + marker + project-dir services. */
+type CoreServiceViews1 = Pick<
   TurnstileContext,
   | "surfaceConfigWarnings"
   | "surfaceObserveSummary"
@@ -2260,7 +2263,9 @@ function coreServiceViews1(
   | "resolveProjectDir"
   | "resolveParent"
   | "promoteOnEvidence"
-> {
+>
+
+function coreServiceViews1(st: CoreState): CoreServiceViews1 {
   return {
     surfaceConfigWarnings: st.surfaceConfigWarnings,
     surfaceObserveSummary: st.surfaceObserveSummary,
@@ -2281,9 +2286,8 @@ function coreServiceViews1(
   }
 }
 
-function coreServiceViews2(
-  st: CoreState,
-): Pick<
+/** The `coreServiceViews2` view: evidence, lookup, and policy services. */
+type CoreServiceViews2 = Pick<
   TurnstileContext,
   | "evidenceSearch"
   | "readBudgetKey"
@@ -2301,7 +2305,9 @@ function coreServiceViews2(
   | "prependPolicy"
   | "prependIntentNudge"
   | "prependIntentNudgeRead"
-> {
+>
+
+function coreServiceViews2(st: CoreState): CoreServiceViews2 {
   return {
     evidenceSearch: st.evidenceSearch,
     readBudgetKey: st.readBudgetKey,
@@ -2322,9 +2328,8 @@ function coreServiceViews2(
   }
 }
 
-function coreServiceViews3(
-  st: CoreState,
-): Pick<
+/** The `coreServiceViews3` view: dispatch, admission, and gate services. */
+type CoreServiceViews3 = Pick<
   TurnstileContext,
   | "observeRequestDraft"
   | "injectContextPolicy"
@@ -2340,7 +2345,9 @@ function coreServiceViews3(
   | "parseMarkers"
   | "admitPrompt"
   | "retryMarker"
-> {
+>
+
+function coreServiceViews3(st: CoreState): CoreServiceViews3 {
   return {
     observeRequestDraft: st.observeRequestDraft,
     injectContextPolicy: st.injectContextPolicy,
@@ -2359,9 +2366,13 @@ function coreServiceViews3(
   }
 }
 
-function coreMethodViews(
-  st: CoreState,
-): Pick<TurnstileContext, "bindHost" | "bindToast" | "bumpPromptFires" | "nextTaskDeliverySeq"> {
+/** The `coreMethodViews` view: host-binding and delivery-seq methods. */
+type CoreMethodViews = Pick<
+  TurnstileContext,
+  "bindHost" | "bindToast" | "bumpPromptFires" | "nextTaskDeliverySeq"
+>
+
+function coreMethodViews(st: CoreState): CoreMethodViews {
   return {
     bindHost: st.bindHost,
     bindToast: st.bindToast,

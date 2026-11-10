@@ -107,6 +107,35 @@ export function blockWithEscalation(
   traceMessage: string,
   message: string,
 ): void {
+  journalBlockEscalation(journaler, sessionID, agent, reason, count, cap, edge, blockedExtras)
+  journaler.traceEvent(agent, reason, traceMessage, sessionID)
+  throw new BlockError(message)
+}
+
+/**
+ * Journals the paired `blocked` + `escalation` entries for a cap refusal;
+ * when the blocked session has a registered edge, both entries are stamped
+ * `parent` so the escalation is attributed to the actionable session.
+ * @param journaler The telemetry writer.
+ * @param sessionID The blocked session ID.
+ * @param agent The blocked agent name.
+ * @param reason The block reason (e.g. `"dispatch-budget"`).
+ * @param count The exhausted count to journal.
+ * @param cap The exhausted cap to journal.
+ * @param edge The blocked session's registered parent (undefined when none).
+ * @param blockedExtras Site-specific fields emitted after `reason` in the
+ *     `blocked` entry.
+ */
+function journalBlockEscalation(
+  journaler: Journaler,
+  sessionID: string,
+  agent: string,
+  reason: string,
+  count: number,
+  cap: number,
+  edge: string | undefined,
+  blockedExtras: Record<string, unknown>,
+): void {
   journaler.journal({
     type: "blocked",
     sessionID,
@@ -124,8 +153,6 @@ export function blockWithEscalation(
     cap,
     ...(edge ? { parent: edge } : {}),
   })
-  journaler.traceEvent(agent, reason, traceMessage, sessionID)
-  throw new BlockError(message)
 }
 
 /**

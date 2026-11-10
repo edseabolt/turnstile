@@ -639,11 +639,8 @@ function planImpactFor(
  * @returns `planGateStatus`, `planSummary`, `plansSignature`,
  *     `planApprovalBinding`, and `planImpactFor`.
  */
-export function createPlanGateStatus(
-  config: TurnstileConfig,
-  journaler: Journaler,
-  cache: ReturnType<typeof createPlansScanCache>,
-): {
+/** The status-mirror and plan-scope surfaces `createPlanGateStatus` returns. */
+interface PlanGateStatusSurfaces {
   planGateStatus(
     projectDir: string,
     ledger: GateLedger,
@@ -662,7 +659,13 @@ export function createPlanGateStatus(
     targetPath: string,
     matchInText: boolean,
   ): PlanImpact
-} {
+}
+
+export function createPlanGateStatus(
+  config: TurnstileConfig,
+  journaler: Journaler,
+  cache: ReturnType<typeof createPlansScanCache>,
+): PlanGateStatusSurfaces {
   const st: PlanGateStatusState = {
     config,
     journaler,

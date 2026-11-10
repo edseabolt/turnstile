@@ -611,36 +611,50 @@ async function guardedTaskDispatchBody(
     // pending flag set. The pending read is wrapped fail-open: an internal
     // error journals and falls through (dispatch allowed) — only the
     // deliberate block throws.
-    if (agent === st.config.agents.planReviewer) {
-      try {
-        planReviewPendingBlockBody(st, sessionID)
-      } catch (e) {
-        if (e instanceof BlockError) throw e
-        st.journaler.journal({ type: "error", sessionID, error: `plan-review gate: ${e}` })
-      }
+    if (agent === st.config.agents.planReviewer) planReviewPauseFailOpen(st, sessionID)
+    if (
+      agent === st.config.agents.executor &&
+      (await guardExecutorDispatch(st, sessionID, agent, prompt, description, waived))
+    ) {
+      return
     }
-    if (agent === st.config.agents.executor) {
-      const admitted = await guardExecutorDispatch(
-        st,
-        sessionID,
-        agent,
-        prompt,
-        description,
-        waived,
-      )
-      if (admitted) return
-    }
-    if (agent === st.config.agents.planner) {
-      try {
-        armPlanReviewBody(st, sessionID)
-      } catch (e) {
-        st.journaler.journal({ type: "error", sessionID, error: `plan-review arm: ${e}` })
-      }
-    }
+    if (agent === st.config.agents.planner) planReviewArmFailOpen(st, sessionID)
     allowDispatchBody(st, sessionID, agent, description, waived)
   } catch (e) {
     if (st.dispatchBlockOutcome(e, sessionID, agent, description, waived)) return
     throw e
+  }
+}
+
+/**
+ * Runs the plan-reviewer user-review pause wrapped fail-open: an internal
+ * error journals and falls through (dispatch allowed) — only the deliberate
+ * block rethrows for the outer fail-open catch.
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ */
+function planReviewPauseFailOpen(st: DispatchGuardState, sessionID: string): void {
+  try {
+    planReviewPendingBlockBody(st, sessionID)
+  } catch (e) {
+    if (e instanceof BlockError) throw e
+    st.journaler.journal({ type: "error", sessionID, error: `plan-review gate: ${e}` })
+  }
+}
+
+/**
+ * Arms the plan-review pause for a planner dispatch wrapped fail-open: an
+ * internal error journals and falls through (dispatch allowed). The arm
+ * body never throws a deliberate block today; if it ever does, the error is
+ * journaled like any other internal failure rather than blocking.
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ */
+function planReviewArmFailOpen(st: DispatchGuardState, sessionID: string): void {
+  try {
+    armPlanReviewBody(st, sessionID)
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID, error: `plan-review arm: ${e}` })
   }
 }
 

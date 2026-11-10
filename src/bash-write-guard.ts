@@ -372,6 +372,30 @@ function classifyParentPlanImpact(
   }
   if (impact === "none") return "allow"
   if (impact === "uninspectable") return "proceed-hands-on"
+  return journalPlanImpactAdvisory(st, parent, tool, target, s, impact)
+}
+
+/**
+ * Journals the plan-impact classification for a real overlap, applies the
+ * strict-mode block for structural impact, and stashes the hands-on
+ * advisory (refreshing the bound-intent nudges).
+ * @param st The bash-write-guard state.
+ * @param parent The parent session (the advisory stash's key).
+ * @param tool The narrowed tool name (for the journal row).
+ * @param target The write/edit file path, or the bash command text.
+ * @param s The parent's gate-state bucket (carries `activePlan`).
+ * @param impact The classified plan impact (never `none`/`uninspectable`).
+ * @returns `"proceed-hands-on"` after a strict structural block, else
+ *     `"allow"` to skip the hands-on ladder.
+ */
+function journalPlanImpactAdvisory(
+  st: BashWriteGuardState,
+  parent: string,
+  tool: string,
+  target: string,
+  s: GateState,
+  impact: PlanImpact,
+): "proceed-hands-on" | "allow" {
   st.journaler.journal({
     type: "plan-impact",
     sessionID: parent,
