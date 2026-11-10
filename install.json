@@ -64,6 +64,10 @@
     {
       "src": "skills/turnstile-prov/SKILL.md",
       "dest": "~/.config/opencode/skills/turnstile-prov/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-prov-views/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-prov-views/SKILL.md"
     }
   ],
   "retired": [
