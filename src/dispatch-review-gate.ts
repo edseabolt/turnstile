@@ -13,7 +13,13 @@ import type { Journaler } from "./journal.ts"
 import { REVIEW_ENSEMBLE_SIZE } from "./state.ts"
 import type { GateLedger } from "./ledger.ts"
 import type { GateState, TurnstileConfig } from "./types.ts"
-import { BlockError, reviewerEnsembleEntry, waiverCovers, waiverStateNote } from "./gates-common.ts"
+import {
+  BlockError,
+  journalProvWaiver,
+  reviewerEnsembleEntry,
+  waiverCovers,
+  waiverStateNote,
+} from "./gates-common.ts"
 import {
   capBlockMessage,
   searchedSessionIds,
@@ -38,12 +44,14 @@ export interface DispatchGateState {
  * unscoped entry stays byte-identical to the legacy shape. Provenance: the
  * waiver opened the gate from the user prompt, not a dispatch prompt. The
  * waiver quote carries raw prompt context and is already trace-gated by
- * the prompt-hook capture (SECURITY.md redaction contract).
- * @param journaler The telemetry writer.
+ * the prompt-hook capture (SECURITY.md redaction contract). The
+ * decision-ledger row carries only the covered stages (no waiver text).
+ * @param st The dispatch gate state (journaler, config).
  * @param sessionID The parent session ID.
  * @param s The gate state carrying the live waiver.
  */
-function journalReviewerWaiver(journaler: Journaler, sessionID: string, s: GateState): void {
+function journalReviewerWaiver(st: DispatchGateState, sessionID: string, s: GateState): void {
+  const { journaler } = st
   journaler.journal({
     type: "gate",
     sessionID,
@@ -60,6 +68,7 @@ function journalReviewerWaiver(journaler: Journaler, sessionID: string, s: GateS
     ...(s.userWaiverScope.length > 0 ? { scope: s.userWaiverScope.join(", ") } : {}),
   })
   journaler.traceEvent("user", "waiver", s.userWaiver, sessionID)
+  journalProvWaiver(st.journaler, st.config, sessionID, [st.config.agents.reviewer])
 }
 
 /**
@@ -98,6 +107,35 @@ export function blockWithEscalation(
   traceMessage: string,
   message: string,
 ): void {
+  journalBlockEscalation(journaler, sessionID, agent, reason, count, cap, edge, blockedExtras)
+  journaler.traceEvent(agent, reason, traceMessage, sessionID)
+  throw new BlockError(message)
+}
+
+/**
+ * Journals the paired `blocked` + `escalation` entries for a cap refusal;
+ * when the blocked session has a registered edge, both entries are stamped
+ * `parent` so the escalation is attributed to the actionable session.
+ * @param journaler The telemetry writer.
+ * @param sessionID The blocked session ID.
+ * @param agent The blocked agent name.
+ * @param reason The block reason (e.g. `"dispatch-budget"`).
+ * @param count The exhausted count to journal.
+ * @param cap The exhausted cap to journal.
+ * @param edge The blocked session's registered parent (undefined when none).
+ * @param blockedExtras Site-specific fields emitted after `reason` in the
+ *     `blocked` entry.
+ */
+function journalBlockEscalation(
+  journaler: Journaler,
+  sessionID: string,
+  agent: string,
+  reason: string,
+  count: number,
+  cap: number,
+  edge: string | undefined,
+  blockedExtras: Record<string, unknown>,
+): void {
   journaler.journal({
     type: "blocked",
     sessionID,
@@ -115,8 +153,6 @@ export function blockWithEscalation(
     cap,
     ...(edge ? { parent: edge } : {}),
   })
-  journaler.traceEvent(agent, reason, traceMessage, sessionID)
-  throw new BlockError(message)
 }
 
 /**
@@ -279,6 +315,26 @@ function blockNoGatePass(st: DispatchGateState, sessionID: string, s: GateState)
 }
 
 /**
+ * Counts one unwaived reviewer dispatch toward the ensemble: advances
+ * `reviewerDispatches` and journals the plain count entry (restart-sticky,
+ * and — replay-side — clears a prior refusal stamp). Shared by the engaged
+ * path (`applyReviewerMutation`) and the dormant arm's admit path.
+ * @param st The shared dispatch-gate state.
+ * @param sessionID The parent session ID.
+ * @param s The caller's resolved gate state to mutate.
+ */
+export function countReviewerEnsemble(
+  st: DispatchGateState,
+  sessionID: string,
+  s: GateState,
+): void {
+  s.reviewerDispatches++
+  st.journaler.journal(
+    reviewerEnsembleEntry(sessionID, st.config.agents.reviewer, s.reviewerDispatches),
+  )
+}
+
+/**
  * Applies the reviewer dispatch's final state mutation: an unwaived
  * dispatch advances the ordinary cap and the ensemble count (counted
  * toward the landing gate's ensemble and journaled so the count is
@@ -299,11 +355,10 @@ function applyReviewerMutation(
   scoped: boolean,
 ): void {
   if (!covered) {
+    // Engaged-path-only: the round cap is not consumed while dormant (the
+    // dormant arm counts the ensemble without advancing reviewRounds).
     s.reviewRounds++
-    s.reviewerDispatches++
-    st.journaler.journal(
-      reviewerEnsembleEntry(sessionID, st.config.agents.reviewer, s.reviewerDispatches),
-    )
+    countReviewerEnsemble(st, sessionID, s)
   } else if (scoped) {
     s.reviewWaiverRounds++
   } else {
@@ -353,7 +408,7 @@ function guardReviewerDispatch(
   // Journal the WAIVED transition only after the allowance checks admit
   // the dispatch: a dispatch refused on the cap must not record a waived
   // gate transition that never happened.
-  if (covered) journalReviewerWaiver(st.journaler, sessionID, s)
+  if (covered) journalReviewerWaiver(st, sessionID, s)
   if (!s.hasGatePass && !covered) {
     // An unverified PASS (evidence correlation, gateEvidence:enforce) leaves
     // unverifiedPass set: the gate is genuinely not green, so the block names
@@ -449,11 +504,14 @@ export function createReviewGate(
 ): {
   guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
   reviewEnsembleComplete(sessionID: string, ledger: GateLedger): boolean
+  countReviewerEnsemble(sessionID: string, ledger: GateLedger): void
 } {
   const st: DispatchGateState = { config, journaler }
   return {
     guardReviewerDispatch: (sessionID, ledger, search) =>
       guardReviewerDispatch(st, sessionID, ledger, search),
     reviewEnsembleComplete: (sessionID, ledger) => reviewEnsembleComplete(st, sessionID, ledger),
+    countReviewerEnsemble: (sessionID, ledger) =>
+      countReviewerEnsemble(st, sessionID, ledger.state(sessionID)),
   }
 }

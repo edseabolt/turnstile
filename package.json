@@ -1,6 +1,6 @@
 {
   "name": "opencode-turnstile",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "OpenCode promise plugin enforcing a verified agent pipeline with dispatch-blocking gates and journaled evidence",
   "keywords": [
     "opencode",
@@ -45,6 +45,7 @@
     "format:check": "prettier --check .",
     "check:markers": "node scripts/check-markers.mjs",
     "test": "node --test --experimental-strip-types --experimental-test-isolation=none --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-include='**/src/**' --test-coverage-include='**/turnstile.ts' tests/*.test.ts",
+    "test:differential": "node --experimental-strip-types scripts/differential.mjs",
     "init": "node scripts/install.mjs",
     "init:copy": "node scripts/install.mjs --copy",
     "init:check": "node scripts/install.mjs --check",

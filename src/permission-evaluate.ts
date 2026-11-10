@@ -126,9 +126,9 @@ function consumeEscalationLatch(
 
 /**
  * The bash/shell landing-gate arm: a live one-shot landing latch (armed by
- * the guard on a repeat attempt under `escalation: "ask"` — under the
- * default `"block"` no latch is ever armed, so this arm stays inert by
- * construction) forces an ask for the landing requirement and consumes the
+ * the guard on a repeat attempt in BOTH `escalation` modes — the ask-first
+ * ladder arms the latch and the block-throw is only the no-human fallback)
+ * forces an ask for the landing requirement and consumes the
  * latch; a hasReviewApprove state or an unarmed latch returns inert.
  * Candidate detection lives in `isPushLanding` (used by the guard); the arm
  * consults the latch rather than re-reading the command from the
@@ -176,8 +176,9 @@ function evaluateLandingArm(
 /**
  * The write/edit hands-on-gate arm: mirrors the landing arm for the
  * hands-on gate — a live one-shot hands-on latch (armed by the guard on a
- * repeat parent attempt under `escalation: "ask"`; under the default
- * `"block"` never armed, so inert by construction) forces an ask naming the
+ * repeat parent attempt in BOTH `escalation` modes — the ask-first
+ * ladder arms the latch and the block-throw is only the no-human fallback)
+ * forces an ask naming the
  * hands-on requirement and consumes the latch; a live `always` release, an
  * executor-scoped waiver, a suspended parent, or an unarmed latch returns
  * inert (suspension also deletes the latch — the one-shot consume, so a

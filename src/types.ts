@@ -506,6 +506,13 @@ export interface GateState {
    */
   testRunnerRounds: number
   /**
+   * Task-scoped requirements-phase dispatch count. Exceeded ⇒ the spec is not
+   * converging; see `maxRequirementsRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  requirementsRounds: number
+  /**
    * Every task/subagent dispatch this task across all legs (planner,
    * plan-reviewer, executor, test-runner, reviewer, debugger, unknown),
    * capped by `maxTotalDispatches` as the global loop backstop. Waived
@@ -738,6 +745,8 @@ export interface TurnstileAgents {
   executor: string
   testRunner: string
   debugger: string
+  /** Requirements: pre-planner spec extraction (opt-in via `requirementsPhase`). */
+  requirements: string
   /** Agents contracted to emit GATE/VERDICT markers (bare-output check). */
   bareOutput: string[]
 }
@@ -795,6 +804,12 @@ export interface TurnstileConfig {
    */
   maxTestRunnerRounds: number
   /**
+   * Max requirements-phase dispatches per task; the cap counts dispatches,
+   * applies regardless of gate state, and is bypassed by an explicit waiver.
+   * Consulted only while `requirementsPhase` is on.
+   */
+  maxRequirementsRounds: number
+  /**
    * Total task/subagent dispatches per task across all legs, the global loop
    * backstop; the cap counts dispatches and is bypassed by an explicit waiver.
    */
@@ -841,7 +856,7 @@ export interface TurnstileConfig {
   sessionSummary: "on" | "quiet" | "off"
   /**
    * Repeat-attempt escalation mode for the landing and hands-on gates.
-   * Both modes are ask-first since Phase 2 (chunk-3): an armed repeat
+   * Both modes are ask-first: an armed repeat
    * attempt arms the one-shot ask latch and forces the host permission ask
    * (the block-throw fires only when the latch cannot be armed — a
    * within-window duplicate arm — or the host never surfaces the ask). The
@@ -931,6 +946,15 @@ export interface TurnstileConfig {
    * literals). Default false — the fully-automated flow.
    */
   planUserReview: boolean
+  /**
+   * Requirements phase (opt-in): when true, non-trivial tasks dispatch the
+   * requirements subagent before the planner; the orchestrator relays the
+   * spec's Open Questions to the user and passes the finalized spec verbatim
+   * into the planner dispatch. Soft and ungated: the leg is loop-capped via
+   * `maxRequirementsRounds` but emits no marker and no gate. Default false —
+   * the pipeline is byte-identical when off.
+   */
+  requirementsPhase: boolean
   /**
    * Literal marker that, appearing in the user's own prompt, accepts the
    * written plan and unblocks the plan-reviewer dispatch (the edited file is

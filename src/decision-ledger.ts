@@ -11,8 +11,25 @@
 
 import { redactSecrets } from "./decision-ledger-redact.ts"
 
-/** Hard cap on `prov:stated` prompt text, keeping journal rows bounded. */
+/** Hard cap on `prov:override` target paths, keeping journal rows bounded. */
+export const LEDGER_PATH_CAP = 200
+
+/** One journaled human prompt, verbatim after redaction and capping. */
 export const LEDGER_TEXT_CAP = 2000
+
+/** One journaled parent override of a pipeline-child write. */
+export interface ProvOverrideEntry {
+  /** Discriminator: a parent write/edit matching a pipeline-child write. */
+  type: "prov:override"
+  /** The parent session the override occurred in. */
+  sessionID: string
+  /** The parent-side tool that performed the override. */
+  tool: "write" | "edit"
+  /** The target path, redacted first, then capped at `LEDGER_PATH_CAP`. */
+  path: string
+  /** The pipeline-child session whose write was overridden. */
+  child: string
+}
 
 /** One journaled human prompt, verbatim after redaction and capping. */
 export interface ProvStatedEntry {
@@ -99,13 +116,51 @@ export interface ProvWaiverInput {
 }
 
 /**
- * Build a `prov:waiver` entry for a human gate waiver. Shipped unwired:
- * the waiver quote text is already redacted upstream, so the entry carries
- * only the covered stages; wiring lands post-MVP.
+ * Build a `prov:waiver` entry for a human gate waiver. Journaled at the
+ * plan-gate and reviewer-gate waiver sites (`journalPlanWaiver` /
+ * `journalReviewerWaiver`), gated on `decisionLedger.enabled`; the waiver
+ * quote text is already redacted upstream, so the entry carries only the
+ * covered stages.
  *
  * @param input - The session ID and the covered gate stages.
  * @returns The entry with keys in construction order.
  */
 export function provWaiverEntry(input: ProvWaiverInput): ProvWaiverEntry {
   return { type: "prov:waiver", sessionID: input.sessionID, stages: input.stages }
+}
+
+/** Input for {@link provOverrideEntry}. */
+export interface ProvOverrideInput {
+  /** The parent session the override occurred in. */
+  sessionID: string
+  /** The parent-side tool that performed the override. */
+  tool: "write" | "edit"
+  /** The raw target path, redacted and capped by the builder. */
+  path: string
+  /** The pipeline-child session whose write was overridden. */
+  child: string
+}
+
+/**
+ * Build a `prov:override` entry for a parent write/edit that follows a
+ * pipeline-child write to the same path. Journaled at the parent write/edit
+ * after-surface, gated on `decisionLedger.enabled`. Ordering is explicit:
+ * redact-then-truncate — a secret straddling the cap boundary is masked
+ * before truncation, never left half-visible in the prefix. No `truncated`
+ * flag: the path cap is bounded by design, unlike prompt text.
+ *
+ * @param input - The session ID, tool, raw target path, and child session.
+ * @returns The entry with redacted, capped path and keys in construction
+ *     order.
+ */
+export function provOverrideEntry(input: ProvOverrideInput): ProvOverrideEntry {
+  const redacted = redactSecrets(input.path)
+  const path = redacted.slice(0, LEDGER_PATH_CAP)
+  return {
+    type: "prov:override",
+    sessionID: input.sessionID,
+    tool: input.tool,
+    path,
+    child: input.child,
+  }
 }

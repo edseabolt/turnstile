@@ -22,6 +22,7 @@ import {
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
 import { wouldBlockEntry } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
+import { createOverrideAdjacency, type OverrideAdjacency } from "./override-adjacency.ts"
 import { createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
@@ -96,7 +97,7 @@ export interface TurnstileContext {
   /**
    * Re-applies the boot replay's restored child→parent edges and re-seeds
    * the emitter-authority cache from them, journaling the `reseed` row;
-   * called once per setup before hooks register (#225 re-seed).
+   * called once per setup before hooks register (re-seed telemetry).
    * @returns The number of child edges restored.
    */
   reseedChildEdges(): number
@@ -106,6 +107,10 @@ export interface TurnstileContext {
   toolPolicy: ToolPolicy
   /** Evidence tracker for plan-approval stamps. */
   evidence: EvidenceTracker
+  /** In-memory child-write adjacency for prov:override capture; not persisted. */
+  overrideAdjacency: OverrideAdjacency
+  /** Resolves a session's registration status (pipeline-child exemption). */
+  childStatus: ReturnType<typeof createParentResolution>["childStatus"]
   /** Set of known subagent names (name-guard skips). */
   subagentNames: Set<string>
   // ── maps ──────────────────────────────────────────────────────────────────
@@ -262,7 +267,6 @@ export interface TurnstileContext {
   handleReadBudget(key: string): void
   /** Returns the last verdict match in text for re. */
   lastMatch(text: string, re: RegExp): string
-  /** Stamps a plan-reviewer verdict's approval against the plans dir. */
   /** Returns the optional identity/stamp fields a plan APPROVE journals. */
   planApprovalStampFields(s: GateState): {
     plan?: string
@@ -399,6 +403,7 @@ interface CoreState {
   gates: Gates
   toolPolicy: ToolPolicy
   evidence: EvidenceTracker
+  overrideAdjacency: OverrideAdjacency
   subagentNames: Set<string>
   failedLookups: Map<string, { attempts: number; reason: string }>
   lookupReasonNotVisible: string
@@ -835,7 +840,7 @@ function promoteOnEvidence(st: CoreState, parent: string): void {
       mode: st.config.gateEvidence,
       ...(ps.taskFingerprint !== "" ? { fp: ps.taskFingerprint } : {}),
     })
-    // The gate's green flip is the task's completion boundary (Phase 3):
+    // The gate's green flip is the task's completion boundary:
     // the flip journals its task-complete companion row and stamps the
     // retire, so the next admitted prompt starts a fresh scope.
     st.markTaskComplete(parent, ps)
@@ -1570,6 +1575,9 @@ function buildCoreLedger(opts: TurnstileOptions, st: CoreState): void {
   // bash/shell test executions attributed to the parent. Owns only the
   // *evidence* dimension; marker authority is separate.
   st.evidence = createEvidenceTracker(st.config, (raw) => st.ledger.parentOf(raw), st.journaler)
+  // Child-write adjacency for prov:override capture: in-process only, never
+  // persisted; the journaled childWrite telemetry rows are the durable trail.
+  st.overrideAdjacency = createOverrideAdjacency()
   if (st.ledger.observeCounts().pendingSummary) st.surfaceFlags.observeSummaryPending = true
 }
 
@@ -1594,9 +1602,17 @@ function buildCoreDeliveryMaps(st: CoreState): void {
   // rather than injected self-keyed. Same config.agents keys the dispatch
   // guards read, so a renamed agent is excluded by name exactly as before.
   st.subagentNames = new Set(
-    (["reviewer", "planReviewer", "executor", "testRunner", "debugger", "planner"] as const).map(
-      (name) => st.config.agents[name],
-    ),
+    (
+      [
+        "reviewer",
+        "planReviewer",
+        "executor",
+        "testRunner",
+        "debugger",
+        "planner",
+        "requirements",
+      ] as const
+    ).map((name) => st.config.agents[name]),
   )
 
   // Host session API, bound at setup time (hooks already fire post-setup).
@@ -2062,9 +2078,8 @@ function wireConcerns(st: CoreState): void {
   wireAdmissionConcerns(st)
 }
 
-function coreDeps(
-  st: CoreState,
-): Pick<
+/** The `coreDeps` view: shared concern handles re-exposed on the context. */
+type CoreDeps = Pick<
   TurnstileContext,
   | "config"
   | "journaler"
@@ -2074,8 +2089,12 @@ function coreDeps(
   | "gates"
   | "toolPolicy"
   | "evidence"
+  | "overrideAdjacency"
+  | "childStatus"
   | "subagentNames"
-> {
+>
+
+function coreDeps(st: CoreState): CoreDeps {
   return {
     config: st.config,
     journaler: st.journaler,
@@ -2085,13 +2104,14 @@ function coreDeps(
     gates: st.gates,
     toolPolicy: st.toolPolicy,
     evidence: st.evidence,
+    overrideAdjacency: st.overrideAdjacency,
+    childStatus: st.childStatus,
     subagentNames: st.subagentNames,
   }
 }
 
-function coreMapViews(
-  st: CoreState,
-): Pick<
+/** The `coreMapViews` view: per-session mutable map cells on the context. */
+type CoreMapViews = Pick<
   TurnstileContext,
   | "nearMissPending"
   | "failedLookups"
@@ -2115,7 +2135,9 @@ function coreMapViews(
   | "sessionAgents"
   | "admittedIds"
   | "summarizedSessions"
-> {
+>
+
+function coreMapViews(st: CoreState): CoreMapViews {
   return {
     nearMissPending: st.nearMissPending,
     failedLookups: st.failedLookups,
@@ -2142,9 +2164,8 @@ function coreMapViews(
   }
 }
 
-function coreConstViews(
-  st: CoreState,
-): Pick<
+/** The `coreConstViews` view: config-derived scalar constants on the context. */
+type CoreConstViews = Pick<
   TurnstileContext,
   | "maxTrackedNearMiss"
   | "maxTrackedPlanAsks"
@@ -2165,7 +2186,9 @@ function coreConstViews(
   | "maxTrackedAdmittedIds"
   | "LOOKUP_REASON_NOT_VISIBLE"
   | "LOOKUP_REASON_NO_PARENT_ID"
-> {
+>
+
+function coreConstViews(st: CoreState): CoreConstViews {
   return {
     maxTrackedNearMiss: st.maxTrackedNearMiss,
     maxTrackedPlanAsks: st.maxTrackedPlanAsks,
@@ -2189,9 +2212,8 @@ function coreConstViews(
   }
 }
 
-function coreBounderViews(
-  st: CoreState,
-): Pick<
+/** The `coreBounderViews` view: LRU-bound helpers over the map cells. */
+type CoreBounderViews = Pick<
   TurnstileContext,
   | "boundSessionDirs"
   | "boundNearMissPending"
@@ -2208,7 +2230,9 @@ function coreBounderViews(
   | "boundLandingGateAsks"
   | "boundAdmittedIds"
   | "boundSummarizedSessions"
-> {
+>
+
+function coreBounderViews(st: CoreState): CoreBounderViews {
   return {
     boundSessionDirs: st.boundSessionDirs,
     boundNearMissPending: st.boundNearMissPending,
@@ -2228,9 +2252,8 @@ function coreBounderViews(
   }
 }
 
-function coreServiceViews1(
-  st: CoreState,
-): Pick<
+/** The `coreServiceViews1` view: surface + marker + project-dir services. */
+type CoreServiceViews1 = Pick<
   TurnstileContext,
   | "surfaceConfigWarnings"
   | "surfaceObserveSummary"
@@ -2248,7 +2271,9 @@ function coreServiceViews1(
   | "resolveProjectDir"
   | "resolveParent"
   | "promoteOnEvidence"
-> {
+>
+
+function coreServiceViews1(st: CoreState): CoreServiceViews1 {
   return {
     surfaceConfigWarnings: st.surfaceConfigWarnings,
     surfaceObserveSummary: st.surfaceObserveSummary,
@@ -2269,9 +2294,8 @@ function coreServiceViews1(
   }
 }
 
-function coreServiceViews2(
-  st: CoreState,
-): Pick<
+/** The `coreServiceViews2` view: evidence, lookup, and policy services. */
+type CoreServiceViews2 = Pick<
   TurnstileContext,
   | "evidenceSearch"
   | "readBudgetKey"
@@ -2289,7 +2313,9 @@ function coreServiceViews2(
   | "prependPolicy"
   | "prependIntentNudge"
   | "prependIntentNudgeRead"
-> {
+>
+
+function coreServiceViews2(st: CoreState): CoreServiceViews2 {
   return {
     evidenceSearch: st.evidenceSearch,
     readBudgetKey: st.readBudgetKey,
@@ -2310,9 +2336,8 @@ function coreServiceViews2(
   }
 }
 
-function coreServiceViews3(
-  st: CoreState,
-): Pick<
+/** The `coreServiceViews3` view: dispatch, admission, and gate services. */
+type CoreServiceViews3 = Pick<
   TurnstileContext,
   | "observeRequestDraft"
   | "injectContextPolicy"
@@ -2328,7 +2353,9 @@ function coreServiceViews3(
   | "parseMarkers"
   | "admitPrompt"
   | "retryMarker"
-> {
+>
+
+function coreServiceViews3(st: CoreState): CoreServiceViews3 {
   return {
     observeRequestDraft: st.observeRequestDraft,
     injectContextPolicy: st.injectContextPolicy,
@@ -2347,9 +2374,13 @@ function coreServiceViews3(
   }
 }
 
-function coreMethodViews(
-  st: CoreState,
-): Pick<TurnstileContext, "bindHost" | "bindToast" | "bumpPromptFires" | "nextTaskDeliverySeq"> {
+/** The `coreMethodViews` view: host-binding and delivery-seq methods. */
+type CoreMethodViews = Pick<
+  TurnstileContext,
+  "bindHost" | "bindToast" | "bumpPromptFires" | "nextTaskDeliverySeq"
+>
+
+function coreMethodViews(st: CoreState): CoreMethodViews {
   return {
     bindHost: st.bindHost,
     bindToast: st.bindToast,

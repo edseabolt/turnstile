@@ -6,8 +6,9 @@
  * draft telemetry plus the policy-head/intent-nudge injection into the
  * draft's system array), and the compaction context (the preserve-verbatim
  * instruction plus the live gate snapshot). Extracted from
- * `src/hooks-session.ts`, whose factory keeps the registration shape and the
- * fail-open try/catch wrappers. The bodies are fail-open: their inner
+ * `src/hooks-session.ts`, whose factory wraps the generate, context, and
+ * compaction bodies in fail-open try/catch (the prompt body relies on its
+ * own inner guard). The bodies are fail-open: their inner
  * try/catch journal every failure, and the registration guard in
  * src/setup.ts catches registration errors.
  */

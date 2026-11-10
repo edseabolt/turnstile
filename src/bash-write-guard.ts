@@ -29,6 +29,7 @@ import { waiverCovers } from "./gates-common.ts"
 import { isPushLanding } from "./tool-policy.ts"
 import { planImpactAdvisory } from "./policy.ts"
 import { asSessionID } from "./delivery.ts"
+import type { OverrideAdjacency } from "./override-adjacency.ts"
 
 /**
  * The state the bash/write-guard concern reads and mutates: the shared deps
@@ -61,6 +62,8 @@ export interface BashWriteGuardState {
   boundIntentNudges(): void
   /** Parent → pending plan-impact advisory text awaiting the next delivery. */
   planImpactAdvisories: Map<string, string>
+  /** In-memory child-write adjacency for prov:override capture; shared with the tool after-surface. */
+  overrideAdjacency: OverrideAdjacency
 }
 
 /**
@@ -174,6 +177,42 @@ function handleBashDispatchBody(
 }
 
 /**
+ * The child-write telemetry for `prov:override` capture: when the decision
+ * ledger is enabled and the target path is a non-empty string, records the
+ * write into the in-memory adjacency tracker (shared with the tool
+ * after-surface) and journals one bounded `{type:"tool", childWrite:true}`
+ * telemetry row — the audit trail is the point, so recording is
+ * unconditional once the ledger gate passes. Fail-open: an internal error
+ * journals `type:"error"` and never blocks the exempt dispatch.
+ * @param st The bash-write-guard state.
+ * @param sid The child session ID.
+ * @param tool The narrowed tool name (`"write"` or `"edit"`).
+ * @param filePath The raw target-path value.
+ */
+function observeChildWrite(
+  st: BashWriteGuardState,
+  sid: string,
+  tool: "write" | "edit",
+  filePath: unknown,
+): void {
+  if (!st.config.decisionLedger.enabled) return
+  const path = typeof filePath === "string" ? filePath : ""
+  if (path === "") return
+  try {
+    st.overrideAdjacency.recordChildWrite(st.ledger.parentOf(sid), sid, path, Date.now())
+    st.journaler.journal({
+      type: "tool",
+      sessionID: sid,
+      tool,
+      childWrite: true,
+      path: path.slice(0, 200),
+    })
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID: sid, error: `child-write telemetry: ${e}` })
+  }
+}
+
+/**
  * The exemption half of a write/edit dispatch: a registered pipeline child's
  * own write/edit is the executor's work and never gates (a non-empty event
  * agent name in the configured pipeline set is authoritative evidence — edge
@@ -200,6 +239,7 @@ function writeEditExempt(
   // pipeline child's own write/edit (the executor's work) is exempt
   // (agent-name precedence first, then the edge + emitter fallback).
   if (st.childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") {
+    observeChildWrite(st, sid, tool, filePath)
     return true
   }
   if (isScratchTarget(filePath)) {
@@ -332,6 +372,30 @@ function classifyParentPlanImpact(
   }
   if (impact === "none") return "allow"
   if (impact === "uninspectable") return "proceed-hands-on"
+  return journalPlanImpactAdvisory(st, parent, tool, target, s, impact)
+}
+
+/**
+ * Journals the plan-impact classification for a real overlap, applies the
+ * strict-mode block for structural impact, and stashes the hands-on
+ * advisory (refreshing the bound-intent nudges).
+ * @param st The bash-write-guard state.
+ * @param parent The parent session (the advisory stash's key).
+ * @param tool The narrowed tool name (for the journal row).
+ * @param target The write/edit file path, or the bash command text.
+ * @param s The parent's gate-state bucket (carries `activePlan`).
+ * @param impact The classified plan impact (never `none`/`uninspectable`).
+ * @returns `"proceed-hands-on"` after a strict structural block, else
+ *     `"allow"` to skip the hands-on ladder.
+ */
+function journalPlanImpactAdvisory(
+  st: BashWriteGuardState,
+  parent: string,
+  tool: string,
+  target: string,
+  s: GateState,
+  impact: PlanImpact,
+): "proceed-hands-on" | "allow" {
   st.journaler.journal({
     type: "plan-impact",
     sessionID: parent,
@@ -353,9 +417,11 @@ function classifyParentPlanImpact(
  * The stateful hands-on-gate capability handed to `toolPolicy.guardHandsOn`
  * (mirrors landingGateHandles): only a shaped capability crosses the
  * boundary. `escalate` arms the pending-hands-on-ask latch (the evaluate
- * handler forces the human ask off it) and is called by guardHandsOn only
- * under `escalation: "ask"` on a repeat attempt (no release, >= 1 prior
- * block); it returns whether the ask row must be journaled (within-TTL
+ * handler forces the human ask off it) and is called by guardHandsOn on a
+ * repeat attempt (no release, >= 1 prior block) in both escalation modes —
+ * the ask-first ladder arms the one-shot ask latch; the mode only governs
+ * non-latch side effects (under `"ask"` a red plan gate forces the dispatch
+ * permission ask); it returns whether the ask row must be journaled (within-TTL
  * duplicate arms return false); fail-toward-strict — a host reject leaves
  * the gate red, so the next attempt re-blocks.
  * @param st The bash-write-guard state.
@@ -406,10 +472,12 @@ function bashWriteGateHandles(
  * only a shaped capability crosses the boundary, so the stateful ledger
  * never enters the pure tool-policy module. `recordBlock`/`escalate` are its
  * only mutators; `escalate` arms the pending-landing-ask latch (the evaluate
- * handler forces the human ask off it) and is called by guardLanding only
- * under `escalation: "ask"` on an armed attempt (a repeat attempt, or a
- * credited first attempt); it returns whether the ask row must be journaled
- * (within-TTL duplicate arms return false); fail-toward-strict — a host
+ * handler forces the human ask off it) and is called by guardLanding on an
+ * armed attempt (a repeat attempt, or a credited first attempt) in both
+ * escalation modes — the ask-first ladder arms the one-shot ask latch; the
+ * mode only governs non-latch side effects (under `"ask"` a red plan gate
+ * forces the dispatch permission ask); it returns whether the ask row must
+ * be journaled (within-TTL duplicate arms return false); fail-toward-strict — a host
  * reject leaves approval absent, so the next attempt re-blocks.
  * `hasCreditedApproval` is a read of the ledger's bucket-free credit trace
  * (a journaled, non-refused reviewer APPROVE that a prompt reset dropped the

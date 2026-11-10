@@ -91,6 +91,7 @@ function defaultLoopCaps(): Pick<
   | "maxPlannerRounds"
   | "maxPlanReviewerRounds"
   | "maxTestRunnerRounds"
+  | "maxRequirementsRounds"
   | "maxTotalDispatches"
   | "maxSessions"
   | "agentMarkerRetry"
@@ -104,6 +105,7 @@ function defaultLoopCaps(): Pick<
     maxPlannerRounds: 3,
     maxPlanReviewerRounds: 3,
     maxTestRunnerRounds: 4,
+    maxRequirementsRounds: 2,
     maxTotalDispatches: 16,
     maxSessions: 64,
     // Compliance retry: a marker-less bare-output delivery is re-prompted
@@ -155,7 +157,8 @@ function defaultMarkerScalars(): Pick<
  * defaults.
  * @returns The mode-shaped default fields.
  */
-function defaultModeScalars(): Pick<
+/** The `defaultModeScalars` shape: mode-shaped default config fields. */
+type DefaultModeScalars = Pick<
   TurnstileConfig,
   | "sessionSummary"
   | "escalation"
@@ -164,18 +167,21 @@ function defaultModeScalars(): Pick<
   | "resumeMarker"
   | "taskDoneMarker"
   | "allowSuspend"
-> {
+>
+
+function defaultModeScalars(): DefaultModeScalars {
   return {
     // Session-end summary: "quiet" prints one recap line at session.idle for
     // sessions that did something (silent for zero-activity sessions); "on"
     // also prints an all-gates-green line for zero-activity sessions; "off"
     // restores pre-summary behavior exactly.
     sessionSummary: "quiet",
-    // Escalation ladder: "block" (default) re-throws the block on a retried
-    // landing/hands-on attempt and never raises a permission ask, so an
-    // auto-accepting host cannot silently collapse the ask tier into an
-    // allow; release is waiver/approval-marker or earned reviewer verdict
-    // only. "ask" restores the interactive permission-ask ladder verbatim.
+    // Escalation ladder: on a retried landing/hands-on attempt BOTH modes
+    // arm the one-shot ask latch and raise the permission ask; the
+    // block-throw is only the no-human fallback, so an auto-accepting host
+    // can silently collapse the ask tier into an allow (one reason the
+    // default is "block"). Release is also waiver/approval-marker or earned
+    // reviewer verdict. The plan-gate escalation is the only mode-gated one.
     escalation: "block",
     // Continuation carry is on by default: a reviewer-approved landing prompt
     // re-arms earned credit when the worktree/branch is unchanged; set
@@ -199,10 +205,13 @@ function defaultModeScalars(): Pick<
  * Builds the enforcement-arming defaults.
  * @returns The enforcement-shaped default fields.
  */
-function defaultEnforcementScalars(): Pick<
+/** The `defaultEnforcementScalars` shape: enforcement-arming default fields. */
+type DefaultEnforcementScalars = Pick<
   TurnstileConfig,
-  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview"
-> {
+  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview" | "requirementsPhase"
+>
+
+function defaultEnforcementScalars(): DefaultEnforcementScalars {
   return {
     // Advisory intent nudge is on by default: an admitted prompt classified
     // as implementation intent with no plan approval journals `{type:"intent"}`
@@ -228,6 +237,12 @@ function defaultEnforcementScalars(): Pick<
     // blocked after a planner dispatch until the user's own prompt carries
     // the accept or reject literal. Default false — fully-automated flow.
     planUserReview: false,
+    // Requirements phase (opt-in): when true, non-trivial tasks dispatch the
+    // requirements subagent before the planner; the orchestrator relays the
+    // spec's Open Questions to the user and passes the finalized spec verbatim
+    // into the planner dispatch. Soft and ungated: the leg is loop-capped via
+    // maxRequirementsRounds but emits no marker and no gate.
+    requirementsPhase: false,
   }
 }
 

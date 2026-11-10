@@ -11,6 +11,7 @@
 //   opencode-turnstile status     Report gate/plan state from the JSONL journal
 //   opencode-turnstile log        Render a session's turnstile timeline from the JSONL journal
 //   opencode-turnstile prov       Render the decision-provenance ledger (prov:* rows) from the JSONL journal
+//   opencode-turnstile prov-views Derive views over the decision ledger (origin labels, noise rate, taste-drift)
 //   opencode-turnstile evidence   Emit a shareable evidence summary for one task
 //   opencode-turnstile version    Print the installed package version
 //
@@ -32,6 +33,7 @@ const statusScript = join(repoRoot, "scripts/status.mjs")
 const evidenceScript = join(repoRoot, "scripts/evidence.mjs")
 const logScript = join(repoRoot, "scripts/log.mjs")
 const provScript = join(repoRoot, "scripts/prov.mjs")
+const provViewsScript = join(repoRoot, "scripts/prov-views.mjs")
 
 const USAGE = `Usage: opencode-turnstile <command>
 
@@ -56,6 +58,11 @@ Commands:
   prov      Print the decision-provenance ledger: journaled human decision
             events (prov:* rows) for one session, or every session
             (read-only; prov [sessionID]; --json prints the raw rows)
+  prov-views
+            Derive views over the decision ledger: origin labels for stated
+            prompts, the chatter noise rate, and taste-drift aggregates over
+            denials and overrides (read-only; prov-views [sessionID];
+            --json prints machine-readable output)
   version   Print the installed package version
 
 init also accepts convenience flags (passthrough to scripts/install.mjs); separate them from the subcommand with a leading "--":
@@ -148,6 +155,13 @@ async function main() {
       // leading-"--" strip as the status case).
       const provPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
       return process.exit(await spawnInstaller(provScript, provPassthrough))
+    }
+    case "prov-views": {
+      // Read-only derived-views surface over the provenance ledger (writes
+      // nothing): spawn scripts/prov-views.mjs with passthrough args (same
+      // leading-"--" strip as the status case).
+      const viewsPassthrough = passthrough[0] === "--" ? passthrough.slice(1) : passthrough
+      return process.exit(await spawnInstaller(provViewsScript, viewsPassthrough))
     }
     default:
       console.log(USAGE)

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="560" viewBox="0 0 2400 560" role="img" aria-label="turnstile: the enforced pipeline — planner, plan-reviewer, executor, test-runner, reviewer with gates blocking every dispatch">
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="560" viewBox="0 0 2400 560" role="img" aria-label="turnstile: the enforced pipeline — requirements (optional, default off), planner, plan-reviewer, executor, test-runner, reviewer with gates blocking every dispatch">
   <defs>
     <!-- Background: deep vertical gradient with a subtle vignette -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
@@ -85,6 +85,14 @@
 
   <!-- Main flow line (behind nodes) -->
   <path class="flow" d="M150 325 H2260" stroke="url(#flow)" stroke-width="2.5" fill="none" opacity="0.55" marker-end="url(#arrow)"/>
+
+  <!-- ============ OPTIONAL STAGE 0: requirements (requirementsPhase: true) ============ -->
+  <g>
+    <rect x="130" y="208" width="190" height="46" rx="23" fill="url(#glass)" stroke="#94E2D5" stroke-width="1.6" stroke-dasharray="6 5"/>
+    <text x="225" y="228" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="19" font-weight="600" fill="#94E2D5">requirements</text>
+    <text x="225" y="247" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#A6ADC8">optional · default off</text>
+    <path d="M225 254 L 225 276" stroke="#94E2D5" stroke-width="1.6" stroke-dasharray="5 4" fill="none" marker-end="url(#arrow)" opacity="0.8"/>
+  </g>
 
   <!-- ============ STAGE 1: planner ============ -->
   <g filter="url(#cardshadow)">
@@ -177,15 +185,15 @@
     <text x="1200" y="530" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="19" font-weight="700" fill="#F38BA8" filter="url(#softglow)">a red gate answers BLOCKED by turnstile: &lt;reason&gt; and escalates to a human ask</text>
   </g>
 
-  <!-- journal chip, bottom right of band -->
+  <!-- journal chip, top of band (right of the optional requirements pill) -->
   <g filter="url(#cardshadow)">
-    <rect x="100" y="212" width="340" height="40" rx="20" fill="#11111B" stroke="url(#acc-journal)" stroke-opacity="0.7" stroke-width="1.4"/>
+    <rect x="470" y="210" width="340" height="40" rx="20" fill="#11111B" stroke="url(#acc-journal)" stroke-opacity="0.7" stroke-width="1.4"/>
   </g>
-  <text x="270" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#CBA6F7">every decision → turnstile.jsonl</text>
+  <text x="640" y="236" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#CBA6F7">every decision → turnstile.jsonl</text>
 
   <!-- decision-ledger chip, top right of band -->
   <g filter="url(#cardshadow)">
-    <rect x="1960" y="212" width="340" height="40" rx="20" fill="#11111B" stroke="#A6E3A1" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="1890" y="212" width="400" height="40" rx="20" fill="#11111B" stroke="#A6E3A1" stroke-opacity="0.55" stroke-width="1.4"/>
   </g>
-  <text x="2130" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#A6E3A1">human prompts + denials → prov ledger</text>
+  <text x="2090" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#A6E3A1">human prompts + denials → decision ledger</text>
 </svg>

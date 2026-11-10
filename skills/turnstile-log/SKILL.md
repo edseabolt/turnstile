@@ -11,8 +11,11 @@ config or journals from this skill.
 ## Steps
 
 1. Detect context: inside the turnstile repo use `node bin/cli.mjs log`;
-   elsewhere `npx opencode-turnstile log`. It tails both the shared journal
-   and the current session's sink and handles missing/rotated files.
+   elsewhere `npx opencode-turnstile log`. It reads the per-session sink
+   for the requested session (defaulting to the most recent per-session
+   journal when no sessionID is given), walking the shared journal and
+   rotated generations for that session's rows, and handles missing/rotated
+   files.
 2. The CLI defaults the tail to the configured replay bound; default to
    `--tail 50` unless the user says otherwise. If the user names any other
    options (e.g. `--tail 100`, a sessionID, `--json`), forward them verbatim

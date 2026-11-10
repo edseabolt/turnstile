@@ -97,7 +97,8 @@ function seedEmitterBody(st: ParentResolutionState, sessionID: string, agent: st
 }
 
 /**
- * Rebuilds the post-reload child state from the journal tail (#225 defense
+ * Rebuilds the post-reload child state from the journal tail (post-reload
+ * defense
  * in depth): the ledger re-applies the journaled `child-edge` rows to
  * `childToParent` (a live executor/test-runner child is no longer gated as
  * a parent on its next write after a plugin setup re-fire), the

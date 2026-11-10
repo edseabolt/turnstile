@@ -34,6 +34,10 @@
       "dest": "~/.config/opencode/agents/debugger.md"
     },
     {
+      "src": "agents/requirements.md",
+      "dest": "~/.config/opencode/agents/requirements.md"
+    },
+    {
       "src": "skills/turnstile-init/SKILL.md",
       "dest": "~/.config/opencode/skills/turnstile-init/SKILL.md"
     },
@@ -60,6 +64,14 @@
     {
       "src": "skills/turnstile-log/SKILL.md",
       "dest": "~/.config/opencode/skills/turnstile-log/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-prov/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-prov/SKILL.md"
+    },
+    {
+      "src": "skills/turnstile-prov-views/SKILL.md",
+      "dest": "~/.config/opencode/skills/turnstile-prov-views/SKILL.md"
     }
   ],
   "retired": [

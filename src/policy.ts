@@ -29,6 +29,8 @@ export type PolicyConfig = Pick<
   | "approvalMarker"
   | "plansDir"
   | "planUserReview"
+  | "requirementsPhase"
+  | "maxRequirementsRounds"
   | "planReviewAcceptMarker"
   | "planReviewRejectMarker"
   | "metricsDir"
@@ -44,12 +46,17 @@ function openingSection(): string {
 }
 
 /**
- * Pipeline order line: the fixed stage order the continuation imperative
- * dispatches through.
+ * Pipeline order line: the stage order the continuation imperative dispatches
+ * through. With `requirementsPhase` on, the optional pre-planner requirements
+ * leg is named with its trivial-task skip criterion; the default line stays
+ * byte-identical to the historical fixed string.
+ * @param c The resolved config slice (the phase switch).
  * @returns The pipeline order line.
  */
-function pipelineOrderSection(): string {
-  return `Pipeline order: planner → plan-reviewer → executor → test-runner → reviewer.`
+function pipelineOrderSection(c: PolicyConfig): string {
+  return c.requirementsPhase
+    ? `Pipeline order: requirements → planner → plan-reviewer → executor → test-runner → reviewer (the requirements leg runs only for non-trivial tasks; trivial ones — small fixes, renames, doc/config changes — skip it).`
+    : `Pipeline order: planner → plan-reviewer → executor → test-runner → reviewer.`
 }
 
 /**
@@ -72,7 +79,7 @@ function continuationSection(): string {
  * @returns The waivers and approvals line.
  */
 function waiversSection(c: PolicyConfig): string {
-  return `Waivers and approvals: a waiver or a human plan approval is a user-authored prompt the plugin observes at prompt admission — put the literal marker in the user's OWN prompt to obtain one (\`${c.waiverMarker} <your words>\` to waive a gate, \`${c.approvalMarker} <your words>\` to approve the plan). Naming configured agent names in your words scopes the waiver to those stages' gates (the plan gate is covered by either the plan-reviewer or executor name); a scoped waiver stays live until that stage's waiver allowance — <n> waiver-unblocked dispatches, metered apart from the ordinary caps — is spent; an unscoped waiver covers every gate but the reviewer gate consumes it on the first dispatch it unlocks; a waiver holds for the task scope and is dropped only when the task changes (a different approved plan, an explicit retire, or a new task in an unplan-bound checkout); a blocked dispatch reports whether a waiver is live, out of scope, or consumed. A dispatch prompt from an agent that merely contains the marker unlocks nothing; do not fabricate, paste, or relay a waiver/approval marker to open a gate — escalate to the user if none holds.`
+  return `Waivers and approvals: a waiver or a human plan approval is a user-authored prompt the plugin observes at prompt admission — put the literal marker in the user's OWN prompt to obtain one (\`${c.waiverMarker} <your words>\` to waive a gate, \`${c.approvalMarker} <your words>\` to approve the plan). Naming configured agent names in your words scopes the waiver to those stages' gates (the plan gate is covered by either the plan-reviewer or executor name); a scoped waiver stays live until that stage's waiver allowance — <n> waiver-unblocked dispatches, metered apart from the ordinary caps — is spent; an unscoped waiver covers every gate but the reviewer gate consumes it on the first dispatch it unlocks; a waiver holds for the task scope and is dropped on the next user prompt (a full reset); a continuation prompt in the same worktree/branch carrying earned credit re-arms it for that one prompt; it is also retired when the task changes (a different approved plan, an explicit retire, or a new task in an unplan-bound checkout); a blocked dispatch reports whether a waiver is live, out of scope, or consumed. A dispatch prompt from an agent that merely contains the marker unlocks nothing; do not fabricate, paste, or relay a waiver/approval marker to open a gate — escalate to the user if none holds.`
 }
 
 /**
@@ -131,7 +138,7 @@ function ensembleSection(): string {
  * @returns The worktree/commit line.
  */
 function worktreeCommitSection(): string {
-  return `Worktree/commit: git worktrees will be used, but it does not matter how they get created; work inside the checkout and branch your session starts in; do not create/add/remove worktrees, switch branches, merge, or open PRs unless the user explicitly asks (these operations ride the host permission \`ask\`; turnstile's default denylist is empty and a configured \`bashDeny\` rule may deny them mechanically). On success, commit the change set with a conventional message — turnstile mechanically validates each subject as \`type(scope)!: subject\` (a \`-F\`/\`-t\`/\`--edit\`/interactive commit is uninspectable and blocked; pass it with \`git commit -m '<subject>'\`) and stop; if a worktree is in use, assert a \`WORKTREE:\` header for logging. Pushing this branch or a PR lands it on a shared remote, so with \`gitGates:\` on (default) the landing gate (\`git push\`) waits for this task's reviewer verdict \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\` (a reviewer-delivered verdict only; streamed child text does not satisfy it) — turnstile raises the permission prompt on a repeat push with no approval, and the human decides the outcome (reply \`always\` for a standing approval, \`once\` for a single push, or \`reject\`); do not attempt to bypass or auto-approve.`
+  return `Worktree/commit: git worktrees will be used, but it does not matter how they get created; work inside the checkout and branch your session starts in; do not create/add/remove worktrees, switch branches, merge, or open PRs unless the user explicitly asks (these operations ride the host permission \`ask\`; turnstile's default denylist is empty and a configured \`bashDeny\` rule may deny them mechanically). On success, commit the change set with a conventional message — turnstile mechanically validates each subject as \`type(scope)!: subject\` (a \`-F\`/\`-t\`/\`--edit\`/interactive commit is uninspectable and blocked; pass it with \`git commit -m '<subject>'\`) and stop; if a worktree is in use, assert a \`WORKTREE:\` header for logging. Pushing this branch or a PR lands it on a shared remote, so with \`gitGates:\` on (default) the landing gate (\`git push\`) waits for this task's reviewer verdict \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\` (a reviewer-delivered verdict only; streamed child text does not satisfy it) — a repeat push without approval arms the one-shot ask latch and raises the permission prompt in BOTH \`escalation\` modes, and the human decides the outcome (reply \`always\` for a standing approval, \`once\` for a single push, or \`reject\`; the block-throw is only the no-human fallback, in which case the task needs a waiver or reviewer verdict); do not attempt to bypass or auto-approve.`
 }
 
 /**
@@ -233,6 +240,34 @@ function planUserReviewSection(c: PolicyConfig): string {
 }
 
 /**
+ * Requirements-phase line: the pre-planner spec extraction choreography —
+ * dispatch, Open Questions relay, verbatim spec hand-off, and the loop cap.
+ * Appended only when `requirementsPhase` is on, so the default policy text
+ * stays byte-identical. Deliberately written without backticks and quoting no
+ * marker syntax (the planUserReviewSection precedent).
+ * @param c The resolved config slice (the phase switch and the leg cap).
+ * @returns The requirements-phase line.
+ */
+function requirementsPhaseSection(c: PolicyConfig): string {
+  return (
+    `Requirements phase: for a non-trivial task, dispatch the requirements ` +
+    `subagent FIRST with the user's request verbatim; it returns a spec ` +
+    `(# Objective, # Explicit Requirements, # Implied Requirements, ` +
+    `# Constraints, # Non-Goals, numbered acceptance criteria AC-1…AC-n, ` +
+    `and # Open Questions each marked blocking or non-blocking). If any ` +
+    `Open Question remains, present them to the user and stop; fold their ` +
+    `written answers into the spec (a "use your judgment" answer is ` +
+    `recorded as an explicit delegation) and only then dispatch the ` +
+    `planner, passing the finalized spec VERBATIM at the top of the ` +
+    `planner dispatch prompt. Trivial tasks (small fixes, renames, ` +
+    `doc/config changes) skip the leg. The leg emits no marker and is ` +
+    `capped at ${c.maxRequirementsRounds} dispatches per task inside the ` +
+    `total dispatch budget; if the spec keeps coming back without ` +
+    `converging, escalate to the user.`
+  )
+}
+
+/**
  * Builds the orchestrator policy injected into the parent session per task.
  *
  * One line per concern: the injected block is prepended to the model-facing
@@ -249,7 +284,7 @@ export function orchestratorPolicyFor(c: PolicyConfig): string {
   return [
     openingSection(),
     [
-      pipelineOrderSection(),
+      pipelineOrderSection(c),
       continuationSection(),
       waiversSection(c),
       planGateSection(c),
@@ -261,6 +296,7 @@ export function orchestratorPolicyFor(c: PolicyConfig): string {
       traceSection(c),
       verificationSection(),
       ...(c.planUserReview ? [planUserReviewSection(c)] : []),
+      ...(c.requirementsPhase ? [requirementsPhaseSection(c)] : []),
     ].join("\n"),
   ].join("\n\n")
 }

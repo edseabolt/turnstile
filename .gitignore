@@ -5,3 +5,4 @@ node_modules/
 
 # packed npm tarballs are artifacts, never checked in
 *.tgz
+papers/

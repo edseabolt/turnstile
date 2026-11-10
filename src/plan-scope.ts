@@ -36,7 +36,7 @@ export interface PlanScope {
 
 /**
  * The path-like token shape: a word-ish token ending in a file extension of
- * at least two characters, so prose words, `chunk-1` citations, and `e.g.`
+ * at least two characters, so prose words, decomposition-chunk citations, and `e.g.`
  * abbreviations never match while `README.md` and `src/gates.ts` do.
  */
 const PATH_TOKEN_RE = /[\w.@/-]*\/?[\w@-]+\.[A-Za-z][\w]+/g

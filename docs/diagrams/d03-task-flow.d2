@@ -5,7 +5,7 @@ flow: {
   }
   orch: "Orchestrator\n(parent session)"
   hooks: "Turnstile hooks"
-  agents: "Child subagents\n(planner → plan-reviewer → executor →\ntest-runner → reviewer)"
+  agents: "Child subagents\n(requirements → planner → plan-reviewer →\nexecutor → test-runner → reviewer)"
   journal: "Journal\n(turnstile.jsonl)" {
     shape: cylinder
   }
@@ -14,18 +14,25 @@ flow: {
   hooks -> journal: "admitPrompt — resetState (+continuation carry), capture waiver/approval"
   user -> orch: "task request"
 
+  orch -> hooks: "dispatch requirements (requirementsPhase: true,\nnon-trivial tasks only; config-gated, ungated)"
+  hooks -> hooks: "loop cap maxRequirementsRounds (2);\nno marker, no gate — metered in the\ntotal dispatch budget only"
+  agents -> hooks: "requirements spec (AC-1…AC-n, Open Questions)"
+  hooks -> orch: "relay Open Questions to the user; fold answers in;\npass the finalized spec verbatim into the planner dispatch" {
+    style.stroke-dash: 4
+  }
+
   orch -> hooks: "dispatch planner"
   hooks -> journal: "dispatch journaled at guard exit; blocked:true when a guard rejects"
   hooks -> orch: "allowed (no gate for planner besides caps)" {
     style.stroke-dash: 4
   }
   agents -> hooks: "planner output (numbered AC-n / chunk-N)"
-  hooks -> journal: "parseMarkers — verdict store update"
+  hooks -> journal: "planner result journaled (no marker: parseMarkers matches nothing here)"
 
   orch -> hooks: "dispatch plan-reviewer"
   hooks -> hooks: "planReviewerDispatch map updated\n(in-memory, round-scoped attribution)"
   agents -> hooks: "VERDICT: APPROVE crit=…"
-  hooks -> journal: "plan entry — plansSignature stamped on APPROVE"
+  hooks -> journal: "plan entry — APPROVE journals plansSignature\nplus bound plan/planKey"
 
   orch -> hooks: "dispatch executor"
   hooks -> hooks: "maintenance dispatch? prompt declares scope +\ndiff only non-src surfaces → skip plan gates,\njournal {type:maintenance}, cap 4/plan"
