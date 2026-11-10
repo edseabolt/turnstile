@@ -193,7 +193,7 @@
 
   <!-- decision-ledger chip, top right of band -->
   <g filter="url(#cardshadow)">
-    <rect x="1960" y="212" width="340" height="40" rx="20" fill="#11111B" stroke="#A6E3A1" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="1930" y="212" width="400" height="40" rx="20" fill="#11111B" stroke="#A6E3A1" stroke-opacity="0.55" stroke-width="1.4"/>
   </g>
   <text x="2130" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#A6E3A1">human prompts + denials → decision ledger</text>
 </svg>
