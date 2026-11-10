@@ -259,20 +259,6 @@ function applyVerdictMarker(
  *     same text re-delivered stays silent).
  * @returns Marker events observed for the first time in this text.
  */
-/**
- * Finds the last match of a marker regex in a text and counts its
- * occurrences: the pair fed to the per-kind apply helpers (the last
- * observation wins; the count feeds the dedup/journal stamps).
- * @param text The text scanned for markers.
- * @param re The marker regex.
- * @returns The last match (null when the text carries none) and the total
- *     match count.
- */
-function lastMarkerMatches(text: string, re: RegExp): { match: string | null; count: number } {
-  const matches = text.match(re) ?? []
-  return { match: matches[matches.length - 1] ?? null, count: matches.length }
-}
-
 export function parseGateMarkers(
   state: GateState,
   text: string,
@@ -302,6 +288,20 @@ export function parseGateMarkers(
     events,
   )
   return events
+}
+
+/**
+ * Finds the last match of a marker regex in a text and counts its
+ * occurrences: the pair fed to the per-kind apply helpers (the last
+ * observation wins; the count feeds the dedup/journal stamps).
+ * @param text The text scanned for markers.
+ * @param re The marker regex.
+ * @returns The last match (null when the text carries none) and the total
+ *     match count.
+ */
+function lastMarkerMatches(text: string, re: RegExp): { match: string | null; count: number } {
+  const matches = text.match(re) ?? []
+  return { match: matches[matches.length - 1] ?? null, count: matches.length }
 }
 
 /**
