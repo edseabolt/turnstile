@@ -284,6 +284,59 @@
           "description": "Whether decision-ledger capture is on: human prompts journal prov:stated, human permission denials journal prov:denied, and human gate waivers journal prov:waiver; false disables all prov:* journaling with no other behavior change (default true)."
         }
       }
+    },
+    "tamperEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Tamper-evidence configuration: per-record journal hash chain, anchor sinks, Merkle epochs, and the optional session-end verify.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for the per-record journal hash chain; false (the default) keeps the legacy unchained row shape, true appends seq/prevHash/hash to every row and commits chain-epoch Merkle rows."
+        },
+        "anchor": {
+          "description": "Anchor sink(s): a builtin name (session-state, git-note, commit-trailer), an external {plugin, options} object, or an array of those (default session-state).",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "plugin": { "type": "string" },
+                "options": { "type": "object" }
+              },
+              "required": ["plugin"]
+            },
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  { "type": "string" },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "plugin": { "type": "string" },
+                      "options": { "type": "object" }
+                    },
+                    "required": ["plugin"]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "epochEntries": {
+          "type": "integer",
+          "description": "Data rows per Merkle epoch, per journal file family (default 512).",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "verifyOnSessionEnd": {
+          "type": "boolean",
+          "description": "Run a chain+anchor verify at session idle and journal the verdict (default false)."
+        }
+      }
     }
   }
 }

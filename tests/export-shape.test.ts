@@ -227,6 +227,7 @@ test("config-merge.ts exposes the default sub-object builders and merge dispatch
     "mergeDecisionLedgerPatch",
     "mergeGitGatesPatch",
     "mergeScalarKey",
+    "mergeTamperEvidencePatch",
     "mergeToolPolicyPatch",
   ])
 })
@@ -309,6 +310,7 @@ test("journal-sinks.ts exposes the persistence primitives and sink factory", asy
     "createJournalSinks",
     "formatTraceLine",
     "now",
+    "repairTornTail",
     "rotateIfLarge",
     "sessionJournalPath",
   ])

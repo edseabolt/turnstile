@@ -20,6 +20,7 @@ import {
 } from "./delivery.ts"
 import { decisionEntry, reviewerEnsembleEntry } from "./gates-common.ts"
 import { readJournalEntries } from "./journal.ts"
+import { verifyJournalChain } from "./verify.ts"
 import { provDeniedEntry, type ProvDeniedKind } from "./decision-ledger.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import {
@@ -602,6 +603,42 @@ async function deliverToast(ctx: TurnstileContext, line: string): Promise<void> 
 }
 
 /**
+ * Runs the optional session-end chain+anchor verify (`verifyOnSessionEnd`)
+ * and journals the verdict as a `chain-verify` row, toasting on failure
+ * when the host offers a toast. Fail-open: a verify error journals and
+ * never breaks the idle handler.
+ * @param ctx The shared per-setup context.
+ * @param sid The idle session ID.
+ */
+async function runSessionEndVerify(ctx: TurnstileContext, sid: string): Promise<void> {
+  if (!ctx.config.tamperEvidence.verifyOnSessionEnd) return
+  try {
+    const report = await verifyJournalChain({
+      metricsDir: ctx.config.metricsDir,
+      sinks: ctx.anchorSinks,
+      maxGenerations: ctx.config.journalMaxGenerations,
+    })
+    const broken = report.families.find((f) => f.verdict.status === "broken")
+    const detail =
+      broken && broken.verdict.status === "broken"
+        ? `${broken.source}: ${broken.verdict.detail}`
+        : report.ok
+          ? ""
+          : report.absentAnchored.length > 0
+            ? report.absentAnchored.join("; ")
+            : "unanchored epoch refs"
+    ctx.journaler.journal(
+      report.ok
+        ? { type: "chain-verify", ok: true, sessionID: sid }
+        : { type: "chain-verify", ok: false, sessionID: sid, detail },
+    )
+    if (!report.ok) await deliverToast(ctx, `[turnstile] chain verify failed: ${detail}`)
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", error: `chain-verify: ${String(e)}` })
+  }
+}
+
+/**
  * Handles a session.idle event: surfaces the once-per-session summary line
  * per the `sessionSummary` config. "off" is silent; a zero-activity session
  * is silent under "quiet" and prints the all-green line under "on"; an
@@ -624,9 +661,17 @@ async function handleSessionIdle(
 ): Promise<void> {
   const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
   if (sid === "" || ctx.summarizedSessions.has(sid)) return
-  if (ctx.config.sessionSummary === "off") return
   ctx.summarizedSessions.add(sid)
   ctx.boundSummarizedSessions()
+  // The session-end anchor trigger runs first and its publish is awaited, so
+  // refs closed/published for this session count as anchored in the verify
+  // that follows (no false "unanchored epoch refs" verdict). Fail-open by
+  // the journaler's anchor contract.
+  await ctx.journaler.anchorAsync("session-end", sid)
+  // The chain verify is independent of the summary setting: it runs once per
+  // session even when sessionSummary is "off".
+  await runSessionEndVerify(ctx, sid)
+  if (ctx.config.sessionSummary === "off") return
   const counts = countSessionActivity(readJournalEntries(ctx.journaler.journalPath), sid)
   const inactive = isInactive(counts)
   if (inactive && ctx.config.sessionSummary === "quiet") return

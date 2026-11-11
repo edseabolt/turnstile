@@ -45,6 +45,7 @@ import {
   type Delivery,
 } from "./delivery.ts"
 import type {
+  AnchorSink,
   ChildVerdict,
   GateState,
   Host,
@@ -89,6 +90,11 @@ export interface TurnstileContext {
   config: TurnstileConfig
   /** Telemetry journal writer. */
   journaler: Journaler
+  /**
+   * The anchor sinks bound at setup (empty until the setup bind runs; the
+   * session-end verify fans epoch refs out across them).
+   */
+  anchorSinks: AnchorSink[]
   /** Compiled GATE marker regex. */
   gateRe: RegExp
   /** Compiled VERDICT marker regex. */
@@ -395,6 +401,7 @@ interface CoreState {
   // deps
   policyText: string
   journaler: Journaler
+  anchorSinks: AnchorSink[]
   surfaceFlags: ContextSurfaceFlags
   gateRe: RegExp
   verdictRe: RegExp
@@ -1431,6 +1438,9 @@ function retireTaskBody(st: CoreState, sessionID: string, s: GateState): void {
   // reject — route here).
   st.clearIntentNudge(sessionID)
   st.journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
+  // Tamper evidence: close the partial epoch and publish pending anchor
+  // refs at the task-completion trigger (fail-open inside anchor()).
+  st.journaler.anchor("task-complete", sessionID)
 }
 
 function markTaskComplete(st: CoreState, sessionID: string, s: GateState): void {
@@ -1495,6 +1505,9 @@ function buildCoreConfig(opts: TurnstileOptions, st: CoreState): void {
   // the injected prose (caps, markers, journal paths) matches the mechanical
   // enforcement; it is constant for the load's lifetime.
   st.policyText = orchestratorPolicyFor(st.config)
+  // Anchor sinks bind later, at setup (after async resolution); until then
+  // the verify fan-out sees an empty list.
+  st.anchorSinks = []
 }
 
 function buildCoreJournaler(st: CoreState): void {
@@ -1513,6 +1526,10 @@ function buildCoreJournaler(st: CoreState): void {
     rotateEveryEntries: st.config.journalRotateEveryEntries,
     perSession: st.config.journalPerSession,
     sinkFor: (sessionID) => st.ledger.parentOf(sessionID),
+    tamper: {
+      enabled: st.config.tamperEvidence.enabled,
+      epochEntries: st.config.tamperEvidence.epochEntries,
+    },
   })
 }
 
@@ -2089,6 +2106,7 @@ type CoreDeps = Pick<
   TurnstileContext,
   | "config"
   | "journaler"
+  | "anchorSinks"
   | "gateRe"
   | "verdictRe"
   | "ledger"
@@ -2104,6 +2122,7 @@ function coreDeps(st: CoreState): CoreDeps {
   return {
     config: st.config,
     journaler: st.journaler,
+    anchorSinks: st.anchorSinks,
     gateRe: st.gateRe,
     verdictRe: st.verdictRe,
     ledger: st.ledger,

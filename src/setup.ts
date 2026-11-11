@@ -16,6 +16,7 @@ import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { configDigest } from "./config.ts"
+import { resolveAnchorSinks } from "./anchor.ts"
 import { BlockError } from "./gates.ts"
 import { evaluateHostCompat, HOST_COMPAT } from "./host-compat.ts"
 import type { CompatResult } from "./host-compat.ts"
@@ -442,7 +443,12 @@ async function runSetup(
   }
 
   const cleanups: Array<() => void> = []
-  // Child-edge re-seed BEFORE any hook registers: a live pipeline child from
+  // Anchor-sink resolution before any hook registers: a task completing in
+  // the first moments of the session is never unanchored. Malformed sink
+  // selections degrade to journaled `anchor-sink:` warnings (fail-open);
+  // resolution itself never throws.
+  await bindAnchorSinks(ctx)
+  // Child-edge re-seed BEFORE any hook register: a live pipeline child from
   // before the reload must resolve through its restored edge (and emitter
   // agent) on the first post-reload write — the post-reload re-seed window is
   // exactly the gap between setup and the child's next tool call.
@@ -452,6 +458,28 @@ async function runSetup(
   const hooks = await registerAllHooks(h, ctx, cleanups)
   writeSetupHeartbeat(ctx, version, compat, hooks, edgesRestored)
   return disposeAll(cleanups)
+}
+
+/**
+ * Resolves the configured anchor sinks and binds them to the journaler.
+ * Degradation warnings journal as `anchor-sink:` error rows; the bind is
+ * fail-open (a resolution problem never blocks setup).
+ * @param ctx The shared per-setup context (config + journaler).
+ */
+async function bindAnchorSinks(ctx: TurnstileContext): Promise<void> {
+  try {
+    const { sinks, warnings } = await resolveAnchorSinks(ctx.config.tamperEvidence.anchor, {
+      metricsDir: ctx.config.metricsDir,
+      projectDir: ctx.currentProjectDir(""),
+    })
+    for (const warning of warnings) {
+      ctx.journaler.journal({ type: "error", error: warning })
+    }
+    ctx.journaler.bindAnchorSinks(sinks)
+    ctx.anchorSinks = sinks
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", error: `anchor-sink: resolution failed: ${String(e)}` })
+  }
 }
 
 /**
