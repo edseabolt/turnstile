@@ -1019,7 +1019,15 @@ sorts oldest) and keeps the last `replayTailLines` lines (default 2000)
 globally. Last-wins folds are per-sessionID and each sessionID's rows live
 in exactly one file, so cross-file ordering cannot change any per-session
 fold; the global `ts` sort only preserves the observe-mode global totals'
-last-wins behavior. Per-file reads stay tail-capped with an early stop: the
+last-wins behavior. The global slice is also an inclusion bound: each
+session-sink family is read with the full `replayTailLines` window, but the
+slice keeps the last window overall — with a hot shared journal plus many
+session sinks, a quiet session's entire contribution can fall outside the
+kept tail, so its boot gate restore silently fails toward strict (the same
+eviction spirit as journal rotation). The merge also bounds boot memory, not
+just boot I/O: all read lines are held at once, O((1 + number of
+session-sink families) × `replayTailLines`) lines in the worst case — a
+bound, not a steady-state cost. Per-file reads stay tail-capped with an early stop: the
 walk ends inside the newest
 generation that alone satisfies the tail bound, so boot I/O stays bounded by
 the retained-generation sizes, never the full
