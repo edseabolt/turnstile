@@ -64,5 +64,11 @@
   },
   "decisionLedger": {
     "enabled": true
+  },
+  "tamperEvidence": {
+    "enabled": false,
+    "anchor": "session-state",
+    "epochEntries": 512,
+    "verifyOnSessionEnd": false
   }
 }

@@ -9,7 +9,7 @@
 import * as path from "node:path"
 
 import { CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER, GATE_RE, VERDICT_RE } from "./markers.ts"
-import type { TurnstileConfig } from "./types.ts"
+import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "./types.ts"
 
 /**
  * Identity sentinel for "bareOutput not configured": `defaultConfig()` stores
@@ -291,6 +291,23 @@ function ensembleWarning(config: TurnstileConfig): string | undefined {
 }
 
 /**
+ * Warns when `tamperEvidence.epochEntries` is out of bounds and resets it to
+ * the default: a non-positive or non-integer value would never (or
+ * unpredictably) close an epoch, and a pathological value would balloon the
+ * in-memory epoch hash list. The reset keeps the warning truthful — the
+ * value the journaler then runs with is the default, not the out-of-bounds
+ * one.
+ * @param config The resolved config to check (mutated on correction).
+ * @returns The epoch-entries warning, or undefined when in bounds.
+ */
+function epochEntriesWarning(config: TurnstileConfig): string | undefined {
+  const n = config.tamperEvidence.epochEntries
+  if (Number.isInteger(n) && n > 0 && n <= 100_000) return undefined
+  config.tamperEvidence.epochEntries = DEFAULT_EPOCH_ENTRIES
+  return `config: tamperEvidence.epochEntries must be a positive integer <= 100000 (got ${String(n)}); keeping default`
+}
+
+/**
  * Defends the fully-resolved config against inter-key and path invariants that
  * no single layer validator catches, so hand-constructed configs cannot slip a
  * bad value past the merge-time checks. Mutates `config` in place (clamping
@@ -312,5 +329,7 @@ export function validateResolved(config: TurnstileConfig): string[] {
   warnings.push(...pathWarnings(config))
   const ensemble = ensembleWarning(config)
   if (ensemble) warnings.push(ensemble)
+  const epoch = epochEntriesWarning(config)
+  if (epoch) warnings.push(epoch)
   return warnings
 }

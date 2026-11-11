@@ -616,7 +616,7 @@ full chain.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (40 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (42 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
@@ -626,7 +626,7 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
   `task-complete`, `engagement`, `plan-rekey`, `marker-retry`, `plan-impact`,
   `plan-review`, `prov:stated`, `prov:denied`, `prov:waiver`,
-  `prov:override`). A
+  `prov:override`, `chain-epoch`, `chain-verify`). A
   `prov:stated` entry records one admitted parent-session human prompt into
   the decision ledger:
   `{type:"prov:stated", sessionID, text, truncated}` — `text` is the prompt
@@ -863,6 +863,10 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   file count grows with sessions (accepted; the shared-file bound alone is
   unchanged).
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
+- **`anchors.jsonl`** — the session-state anchor store (only written when
+  `tamperEvidence.enabled` is `true`; see the tamper-evidence subsection
+  below): one published epoch ref per line, appended by the `session-state`
+  sink at the task-completion trigger.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
@@ -901,6 +905,74 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   replaced plan (content-key mismatch) or another project's plan stays
   pending, and read or write failures are fail-open (journaled, never
   blocking).
+
+### Tamper evidence: the journal hash chain and anchors (opt-in)
+
+When `tamperEvidence.enabled` is `true` (default `false` — the legacy
+unchained row shape stays the default so existing journal consumers are
+untouched), every journaled row carries three chain fields appended after the
+payload: `seq` (per-file monotonic counter starting at 0), `prevHash` (the
+previous row's hash, `""` for the first), and `hash` — the SHA-256 over the
+canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
+`{prevHash, ts, payload}` (`src/chain.ts`, `node:crypto` only, zero runtime
+dependencies). Editing, deleting, or reordering any row breaks every hash
+after it.
+
+Epochs batch the chain for verification and anchoring: every
+`epochEntries` data rows (default 512, matching the rotation cadence) the
+journaler appends a `chain-epoch` row — itself chained like any other —
+carrying `{source, epoch, count, root, head}` where `root` is the Merkle root
+over the epoch's data-row hashes (pairwise `sha256(a + b)`, an odd trailing
+node hashed with itself, the single survivor hashed with itself once more)
+and `head` is the epoch's last data-row hash. Two more entry types ride the
+chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
+verdict, below).
+
+**Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
+the same file an attacker can rewrite proves nothing by itself, so each
+committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is published
+to independent durable stores — anchor sinks — at the task-completion
+trigger, fire-and-forget: every publish runs concurrently, a rejection
+journals an `anchor-publish:` `error` row, and nothing blocks the pipeline.
+Sinks are selected by `tamperEvidence.anchor`:
+
+| Sink                      | Trust domain | Store                                                                                                                                              | Defeats                                                                        |
+| ------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `session-state` (default) | host         | `<metricsDir>/anchors.jsonl`                                                                                                                       | lazy edit-in-place of the journal — a rewriter must also forge the second file |
+| `git-note`                | repo         | git notes on HEAD, `refs/notes/turnstile`                                                                                                          | anything short of rewriting the git object store                               |
+| `commit-trailer`          | repo         | `Turnstile-Anchor:` trailers on landing commits (pending refs parked in `.git/turnstile/trailer-anchors.jsonl` until the landing flow stamps them) | same, plus ties the epoch to project history                                   |
+| `{plugin: "<specifier>"}` | external     | whatever the imported factory implements                                                                                                           | strongest: a store outside the host's control                                  |
+
+An array selects several: all publish, verify intersects (a ref is anchored
+when any sink vouches; the report names the **weakest vouching trust
+domain** — external > repo > host). External plugin sinks are lazy-`import()`ed
+at setup with a factory shape-check; a malformed sink degrades to a journaled
+warning, never a boot failure. **Caveat:** a plugin specifier is code the
+host executes — only point `plugin:` at modules you trust as much as
+turnstile itself.
+
+**Verification.** `verifyJournalChain` (`src/verify.ts`) folds every journal
+file family (shared + per-session sinks) across its rotation generations
+oldest-first, re-derives each row's hash and each epoch's Merkle root, and
+reports the first broken link (`<family>:<line>: prevHash|seq|hash mismatch`
+or an epoch root/head mismatch). When `tamperEvidence.verifyOnSessionEnd` is
+`true` (default `false`), the session-idle handler runs it once per session
+and journals the `chain-verify` verdict, toasting on failure — shrinking the
+detection window from "whenever someone runs the CLI" to one session. The
+same check is available offline: `opencode-turnstile prov --verify` folds the
+chain and verifies the epoch refs against the configured sinks, exiting 0 on
+an intact anchored chain, 1 on the first broken link or any unanchored ref,
+and 2 on usage errors.
+
+**Two honesty caveats.** Integrity is not fidelity: the chain proves the
+journal bytes are unchanged since they were written — it cannot prove the
+_content_ was true (a gate that lied at write time hashes just as cleanly).
+And detection latency is bounded by verification, not by chaining: an
+attacker who controls the host can recompute the whole chain and forge the
+host-domain `session-state` anchor too; only the repo- and external-domain
+sinks raise the cost above "edit two files", and nothing here stops a
+determined host-level adversary (that is the tamper matrix's problem, out of
+scope here).
 
 On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file

@@ -375,6 +375,7 @@ dumb, derivation is offline. Read-only; never writes or blocks.
     opencode-turnstile prov <sessionID>     # a specific session
     opencode-turnstile prov --json          # machine-readable output
     opencode-turnstile prov --tail 100      # last 100 events
+    opencode-turnstile prov --verify        # check the journal hash chain + anchors
 
 Capture is gated on `decisionLedger.enabled` (default `true`; `false` disables
 all `prov:*` journaling).
@@ -506,6 +507,10 @@ no edits. The key knobs most people touch:
 | `agents.*` | stage names | rename recognition when you bring your own agents |
 | `plansDir` | `.opencode/plans` | where the decomposition scan looks |
 | `decisionLedger.enabled` | `true` | observe-only decision ledger (`opencode-turnstile prov`): `false` disables all `prov:*` journaling |
+| `tamperEvidence.enabled` | `false` | per-record SHA-256 hash chain over every journal row + Merkle epoch commits; `true` opts in (existing journals and consumers stay on the unchained shape) |
+| `tamperEvidence.anchor` | `session-state` | where epoch Merkle roots are published: `session-state` (host), `git-note` / `commit-trailer` (repo), `{plugin}` (external), or an array (all publish, verify intersects) |
+| `tamperEvidence.epochEntries` | `512` | data rows per `chain-epoch` Merkle commit |
+| `tamperEvidence.verifyOnSessionEnd` | `false` | run the chain + anchor verify once per session at idle and journal/toast the verdict; `opencode-turnstile prov --verify` runs the same check offline anytime |
 
 Invalid keys are ignored, journaled, and summarized once into the session
 context; a malformed config file never breaks the host. The full table —
