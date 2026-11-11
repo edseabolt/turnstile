@@ -37,6 +37,7 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
     },
     bindAnchorSinks() {},
     anchor() {},
+    async anchorAsync() {},
   }
   return { journaler, entries, traces }
 }

@@ -236,6 +236,44 @@ test("array selection resolves every element in order", async () => {
   )
 })
 
+test("the session-state sink skips a ref the store already holds", async () => {
+  const { metricsDir, projectDir } = dirs()
+  const sink = sessionStateSink({ metricsDir, projectDir })
+  const file = path.join(metricsDir, "anchors.jsonl")
+  sink.publish(ref())
+  sink.publish(ref())
+  const lines = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean)
+  assert.equal(lines.length, 1, "no duplicate anchor line for the same ref")
+  // A different epoch is a different ref and still lands.
+  sink.publish(ref({ epoch: 1 }))
+  assert.equal(fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).length, 2)
+})
+
+test("the session-state sink repairs a torn tail and skips malformed lines", async () => {
+  const { metricsDir, projectDir } = dirs()
+  const sink = sessionStateSink({ metricsDir, projectDir })
+  const file = path.join(metricsDir, "anchors.jsonl")
+  sink.publish(ref())
+  // A crash mid-append left a partial line with no trailing newline.
+  fs.appendFileSync(file, '{"sink":"session-state","source":"sha')
+  // The next publish separates the torn line and appends cleanly.
+  sink.publish(ref({ epoch: 1 }))
+  const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+  assert.equal(lines.length, 3)
+  assert.equal((JSON.parse(lines[2]!) as AnchorRef).epoch, 1)
+  // The torn line is skipped on read; valid refs still anchor-match.
+  assert.equal((await sink.verify(ref())).status, "ok")
+  assert.equal((await sink.verify(ref({ epoch: 1 }))).status, "ok")
+  // A garbage middle line is skipped and does not cause re-appends: the
+  // duplicate guard still sees the valid ref already in the store.
+  const all = fs.readFileSync(file, "utf8").split("\n")
+  all.splice(1, 0, "not json")
+  fs.writeFileSync(file, all.join("\n"))
+  sink.publish(ref())
+  assert.equal(fs.readFileSync(file, "utf8").split("\n").filter(Boolean).length, 4)
+  assert.equal((await sink.verify(ref())).status, "ok")
+})
+
 test("publishRefs fans out to all sinks and collects rejections as strings", async () => {
   const { metricsDir, projectDir } = dirs()
   const good = sessionStateSink({ metricsDir, projectDir })
@@ -251,7 +289,8 @@ test("publishRefs fans out to all sinks and collects rejections as strings", asy
   }
   const errors = await publishRefs([good, bad], [ref()])
   assert.equal(errors.length, 1)
-  assert.match(errors[0]!, /nope/)
+  assert.equal(errors[0]!.sink, "bad")
+  assert.match(errors[0]!.error, /nope/)
   const file = path.join(metricsDir, "anchors.jsonl")
   assert.ok(fs.readFileSync(file, "utf8").includes('"sink":"session-state"'))
 })

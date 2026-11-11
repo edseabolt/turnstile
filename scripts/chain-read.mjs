@@ -98,37 +98,60 @@ export function merkleRoot(hashes) {
  * @returns {{ status: "ok", epochs: object[] } | { status: "broken",
  *     detail: string, index: number }} The fold verdict.
  */
-export function foldChain(rows, source) {
+export function foldChain(rows, source, options = {}) {
   let prevHash = ""
   let expectedSeq = 0
   let epochHashes = []
   const epochs = []
+  let atRoot = options.chainRootAtStart ?? false
+  // The window in progress at the trust root is incomplete (its earliest
+  // data rows were pruned); it completes at the next committed epoch.
+  let windowIncomplete = atRoot
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]
     if (typeof row.hash !== "string") continue
     const at = `${source}:${i + 1}`
-    if (row.prevHash !== prevHash) {
-      return { status: "broken", detail: `${at}: prevHash mismatch`, index: i + 1 }
+    if (atRoot) {
+      // Trust root: the generation this row continued from was pruned, so
+      // its prevHash points outside the surviving files. Its own hash is
+      // still verified and its seq must be a non-negative integer.
+      if (typeof row.seq !== "number" || !Number.isInteger(row.seq) || row.seq < 0) {
+        return { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 }
+      }
+    } else {
+      if (row.prevHash !== prevHash) {
+        return { status: "broken", detail: `${at}: prevHash mismatch`, index: i + 1 }
+      }
+      if (typeof row.seq !== "number" || row.seq !== expectedSeq) {
+        return { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 }
+      }
     }
-    if (typeof row.seq !== "number" || row.seq !== expectedSeq) {
-      return { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 }
-    }
-    if (recordHash(prevHash, row.ts, row.payload) !== row.hash) {
+    // A trust-root row is hashed over its own (out-of-family) prevHash, not
+    // the running "" seed; a non-string prevHash there folds to a hash
+    // mismatch rather than a throw.
+    const seed = atRoot && typeof row.prevHash === "string" ? row.prevHash : prevHash
+    if (recordHash(seed, row.ts, row.payload) !== row.hash) {
       return { status: "broken", detail: `${at}: hash mismatch`, index: i + 1 }
     }
+    atRoot = false
     prevHash = row.hash
     expectedSeq = row.seq + 1
     if (row.payload.type === "chain-epoch") {
       const root = row.payload.root
       const head = row.payload.head
-      const computedRoot = merkleRoot(epochHashes)
-      const computedHead = epochHashes[epochHashes.length - 1] ?? ""
-      if (
-        typeof root !== "string" ||
-        typeof head !== "string" ||
-        root !== computedRoot ||
-        head !== computedHead
-      ) {
+      if (!windowIncomplete) {
+        const computedRoot = merkleRoot(epochHashes)
+        const computedHead = epochHashes[epochHashes.length - 1] ?? ""
+        if (
+          typeof root !== "string" ||
+          typeof head !== "string" ||
+          root !== computedRoot ||
+          head !== computedHead
+        ) {
+          return { status: "broken", detail: `${source}: epoch root/head mismatch`, index: 0 }
+        }
+      } else if (typeof root !== "string" || typeof head !== "string") {
+        // An incomplete window with non-string root/head is still malformed.
         return { status: "broken", detail: `${source}: epoch root/head mismatch`, index: 0 }
       }
       epochs.push({
@@ -140,6 +163,7 @@ export function foldChain(rows, source) {
         ts: row.ts,
       })
       epochHashes = []
+      windowIncomplete = false
     } else {
       epochHashes.push(row.hash)
     }
@@ -149,11 +173,14 @@ export function foldChain(rows, source) {
 
 /**
  * Lists one file family's generations oldest-first (numbered generations
- * that exist, then the current file). Mirrors `familyFiles` in
+ * that exist, then the current file), plus whether the family folds with a
+ * trust root: the oldest surviving file is a numbered generation other than
+ * `.1` only when the journaler pruned. Mirrors `familyFiles` in
  * src/verify.ts.
  * @param {string} file Absolute path of the current journal file.
  * @param {number} maxGenerations The generation count convention.
- * @returns {string[]} The existing file paths, oldest-first.
+ * @returns {{ files: string[], chainRootAtStart: boolean }} The existing
+ *     file paths oldest-first plus the trust-root flag.
  */
 export function familyFiles(file, maxGenerations) {
   const files = []
@@ -161,7 +188,9 @@ export function familyFiles(file, maxGenerations) {
     if (fs.existsSync(`${file}.${gen}`)) files.push(`${file}.${gen}`)
   }
   if (fs.existsSync(file)) files.push(file)
-  return files
+  const oldest = files[0]
+  const chainRootAtStart = oldest !== undefined && oldest !== file && oldest !== `${file}.1`
+  return { files, chainRootAtStart }
 }
 
 /**
@@ -203,12 +232,13 @@ export function readFamilyRows(file) {
  * Folds one family across its generations and collects the epoch refs its
  * committed `chain-epoch` rows carry. Mirrors `foldFamily` in src/verify.ts.
  * @param {string} source The family label.
- * @param {string[]} files The family's files, oldest-first.
+ * @param {{ files: string[], chainRootAtStart: boolean }} family The
+ *     family's files oldest-first plus the trust-root flag.
  * @returns {{ verdict: object, refs: object[] }} The verdict plus refs.
  */
-export function foldFamily(source, files) {
-  const rows = files.flatMap((file) => readFamilyRows(file))
-  const verdict = foldChain(rows, source)
+export function foldFamily(source, family) {
+  const rows = family.files.flatMap((file) => readFamilyRows(file))
+  const verdict = foldChain(rows, source, { chainRootAtStart: family.chainRootAtStart })
   const refs = []
   if (verdict.status === "ok") {
     for (const epoch of verdict.epochs) {
@@ -249,26 +279,83 @@ export function sessionSinkPathsLocal(metricsDir) {
  * Mirrors `verifyJournalChain` in src/verify.ts (anchor verification is
  * performed by the caller, which resolves sinks).
  * @param {string} metricsDir The metrics directory.
+ * @param {number} [maxGenerations=5] The rotation generation count convention
+ *     (`journalMaxGenerations`); defaults to 5 like the src/ mirror.
  * @returns {{ families: { source: string, verdict: object }[], refs: object[] }}
  *     The per-family verdicts and the collected epoch refs.
  */
-export function verifyFamilies(metricsDir) {
+export function verifyFamilies(metricsDir, maxGenerations = 5) {
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
   const families = []
   const refs = []
   let rows = 0
-  const shared = foldFamily("shared", familyFiles(journalPath, 5))
+  const shared = foldFamily("shared", familyFiles(journalPath, maxGenerations))
   families.push({ source: "shared", verdict: shared.verdict })
   refs.push(...shared.refs)
   rows += shared.rows
   for (const sink of sessionSinkPathsLocal(metricsDir)) {
     const source = path.basename(sink).replace(/\.jsonl$/, "")
-    const folded = foldFamily(source, familyFiles(sink, 5))
+    const folded = foldFamily(source, familyFiles(sink, maxGenerations))
     families.push({ source, verdict: folded.verdict })
     refs.push(...folded.refs)
     rows += folded.rows
   }
   return { families, refs, rows }
+}
+
+/**
+ * Reads the session-state anchor store (`<metricsDir>/anchors.jsonl`) and
+ * returns the refs it names. Fail-open: a missing or malformed file yields
+ * no anchored refs. Mirrors `readAnchoredRefs` in src/verify.ts.
+ * @param {string} metricsDir The metrics directory hosting the anchor store.
+ * @returns {object[]} The anchored refs, oldest-first.
+ */
+export function readAnchoredRefs(metricsDir) {
+  try {
+    return fs
+      .readFileSync(path.join(metricsDir, "anchors.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Names the anchored refs the surviving journal positively fails to vouch
+ * for. The committed root is the identity that survives rotation: an
+ * anchored ref is satisfied when a retained epoch carries its root, or when
+ * its epoch index lies below the family's lowest retained index (that
+ * generation was pruned, so absence is undetectable). It is reported absent
+ * only when the root matches nothing AND the index is at or above the
+ * lowest retained index — a gap within, or truncation of, retained history.
+ * Mirrors `absentAnchoredRefs` in src/verify.ts.
+ * @param {string} metricsDir The metrics directory hosting the anchor store.
+ * @param {object[]} refs The epoch refs collected from the journal.
+ * @returns {string[]} One detail string per absent anchored epoch.
+ */
+export function absentAnchoredRefs(metricsDir, refs) {
+  const roots = new Set(refs.map((r) => r.root))
+  const retained = new Set(refs.map((r) => `${r.source}#${r.epoch}`))
+  const lowest = new Map()
+  for (const r of refs) {
+    const cur = lowest.get(r.source)
+    if (cur === undefined || r.epoch < cur) lowest.set(r.source, r.epoch)
+  }
+  return readAnchoredRefs(metricsDir)
+    .filter((a) => {
+      if (roots.has(a.root)) return false
+      // No retained epoch for the source at all: any anchored index is a
+      // positive mismatch (the same signal as whole-journal deletion).
+      return a.epoch >= (lowest.get(a.source) ?? 0)
+    })
+    .map((a) =>
+      retained.has(`${a.source}#${a.epoch}`)
+        ? `anchored epoch ${a.source}#${a.epoch} root mismatch (reforged commit?)`
+        : `anchored epoch ${a.source}#${a.epoch} absent from journal`,
+    )
 }
 
 // ---------------------------------------------------------------------------

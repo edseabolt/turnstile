@@ -41,10 +41,11 @@ ledger -> enforce
 jsonl -> cli
 jsonl -> summary: "readJournalEntries\n(current file only — rotation\nstraddles undercount visibly)"
 summary: "countSessionActivity\n→ session-summary entry\n(+ toast when the host\noffers tui.toast)"
-writers.hooks -> chain: "task-complete trigger:\nappend chained rows,\ncommit epoch on cadence"
+writers.hooks -> chain: "task-complete + session-end triggers:\nappend chained rows,\ncommit epoch on cadence"
 chain -> epoch: "every epochEntries rows"
 chain -> jsonl: "rows carry seq/prevHash/hash"
-epoch -> sinks: "publish epoch ref\n(fire-and-forget, fail-open)"
+epoch -> sinks: "publish epoch ref\n(fire-and-forget on task-complete,\nawaited before the session-end\nverify, fail-open)"
 sinks -> anchors: "session-state sink appends"
 jsonl -> verify: "fold families across\ngenerations, re-derive roots"
 anchors -> verify: "verify refs against sinks"
+verify -> sinks: "session idle: anchorAsync\n(session-end) publishes first,\nthen the verify runs"

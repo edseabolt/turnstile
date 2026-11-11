@@ -13,6 +13,8 @@ import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import type { StdioOptions } from "node:child_process"
 
+import { repairTornTail } from "./journal-sinks.ts"
+
 import type { AnchorRef, AnchorSelection, AnchorSink, AnchorVerdict } from "./types.ts"
 
 export type { AnchorRef, AnchorSelection, AnchorSink, AnchorVerdict } from "./types.ts"
@@ -55,14 +57,21 @@ function git(exec: ExecFile, projectDir: string, args: string[]): string {
  */
 export function sessionStateSink(options: AnchorOptions): AnchorSink {
   const file = path.join(options.metricsDir, "anchors.jsonl")
+  // Per-line parse, skipping malformed lines (journal fail-open row
+  // semantics): one torn or garbage line must not blind the whole store.
   const readRefs = (): AnchorRef[] => {
     try {
       return fs
         .readFileSync(file, "utf8")
-        .trim()
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as AnchorRef)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as AnchorRef]
+          } catch {
+            return []
+          }
+        })
     } catch {
       return []
     }
@@ -71,6 +80,19 @@ export function sessionStateSink(options: AnchorOptions): AnchorSink {
     id: "session-state",
     trustDomain: "host",
     publish(ref: AnchorRef): void {
+      // Skip a ref the store already holds (same source, epoch, root, head):
+      // repeated anchor triggers must not accumulate duplicate lines.
+      const duplicate = readRefs().some(
+        (r) =>
+          r.source === ref.source &&
+          r.epoch === ref.epoch &&
+          r.root === ref.root &&
+          r.head === ref.head,
+      )
+      if (duplicate) return
+      // Same torn-tail repair as the journal: a crash mid-append must not
+      // concatenate the next ref onto a partial line.
+      repairTornTail(file)
       fs.mkdirSync(path.dirname(file), { recursive: true })
       fs.appendFileSync(file, JSON.stringify(ref) + "\n")
     },
@@ -83,6 +105,43 @@ export function sessionStateSink(options: AnchorOptions): AnchorSink {
       return { status: "ok", anchoredAt: hit.ts }
     },
   }
+}
+
+/**
+ * Verifies one git note against a target ref: shows the note body, parses
+ * it as an anchor ref, and compares source/epoch/root/head. A note that
+ * cannot be read or parsed, or belongs to another ref, is skipped.
+ * @param exec The execution seam.
+ * @param projectDir The cwd for the git invocations.
+ * @param noteArgs The `notes --ref=…` argv prefix.
+ * @param ref The ref being verified.
+ * @param noteRef The annotated object sha (the note to show).
+ * @returns The verdict for this note, or undefined to keep scanning.
+ */
+function gitNoteVerdict(
+  exec: ExecFile,
+  projectDir: string,
+  noteArgs: readonly string[],
+  ref: AnchorRef,
+  noteRef: string,
+): AnchorVerdict | undefined {
+  let body: string
+  try {
+    body = git(exec, projectDir, [...noteArgs, "show", noteRef])
+  } catch {
+    return undefined
+  }
+  let parsed: AnchorRef
+  try {
+    parsed = JSON.parse(body.trim()) as AnchorRef
+  } catch {
+    return undefined
+  }
+  if (parsed.source !== ref.source || parsed.epoch !== ref.epoch) return undefined
+  if (parsed.root !== ref.root || parsed.head !== ref.head) {
+    return { status: "mismatch", detail: `${ref.source}#${ref.epoch} root/head differ` }
+  }
+  return { status: "ok", anchoredAt: parsed.ts }
 }
 
 /**
@@ -114,24 +173,8 @@ export function gitNoteSink(options: AnchorOptions, exec: ExecFile = defaultExec
         // `git notes show` takes the annotated object (the second column).
         const noteRef = line.trim().split(/\s+/)[1]
         if (!noteRef) continue
-        let body: string
-        try {
-          body = git(exec, options.projectDir, [...noteArgs, "show", noteRef])
-        } catch {
-          continue
-        }
-        let parsed: AnchorRef
-        try {
-          parsed = JSON.parse(body.trim()) as AnchorRef
-        } catch {
-          continue
-        }
-        if (parsed.source === ref.source && parsed.epoch === ref.epoch) {
-          if (parsed.root !== ref.root || parsed.head !== ref.head) {
-            return { status: "mismatch", detail: `${ref.source}#${ref.epoch} root/head differ` }
-          }
-          return { status: "ok", anchoredAt: parsed.ts }
-        }
+        const verdict = gitNoteVerdict(exec, options.projectDir, noteArgs, ref, noteRef)
+        if (verdict) return verdict
       }
       return { status: "missing", detail: `${ref.source}#${ref.epoch} not anchored` }
     },
@@ -309,28 +352,69 @@ export async function resolveAnchorSinks(
 
 /**
  * Publishes refs to every sink, fire-and-forget style: all publishes run
- * concurrently and every rejection becomes a returned error string (never a
- * thrown exception).
+ * concurrently and every failure becomes a returned `{sink, error}` pair
+ * (never a thrown exception). A hostile sink whose `id` getter throws is
+ * reported under `"unknown"` instead of breaking the fan-out.
  * @param sinks The sinks to publish to.
  * @param refs The refs to publish (each ref is copied per sink with the
  *     sink's id stamped into `sink`).
- * @returns One error string per failed publish (empty when all succeeded).
+ * @returns One pair per failed publish (empty when all succeeded).
  */
 export async function publishRefs(
   sinks: readonly AnchorSink[],
   refs: readonly AnchorRef[],
-): Promise<string[]> {
-  const results = await Promise.allSettled(
+): Promise<Array<{ sink: string; error: string }>> {
+  const results = await Promise.all(
     refs.flatMap((ref) =>
       sinks.map(async (sink) => {
-        await sink.publish({ ...ref, sink: sink.id })
-        return null
+        let id = "unknown"
+        try {
+          id = sink.id
+        } catch {
+          // a hostile id getter must not break the fan-out
+        }
+        try {
+          await sink.publish({ ...ref, sink: id })
+          return null
+        } catch (e) {
+          return { sink: id, error: String(e) }
+        }
       }),
     ),
   )
-  return results
-    .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-    .map((r) => String(r.reason))
+  return results.filter((r): r is { sink: string; error: string } => r !== null)
+}
+
+/**
+ * Verifies one ref against every sink, collecting the per-sink verdicts. A
+ * throwing sink (including a throwing `id` access) is a broken verifier,
+ * not a missing anchor: it is recorded as an error verdict so reports
+ * distinguish it from "not anchored".
+ * @param sinks The sinks to verify against.
+ * @param ref The ref to verify.
+ * @returns One verdict entry per sink.
+ */
+async function verifyRefAgainstSinks(
+  sinks: readonly AnchorSink[],
+  ref: AnchorRef,
+): Promise<Array<{ ref: AnchorRef; sink: string; verdict: AnchorVerdict }>> {
+  return Promise.all(
+    sinks.map(async (sink) => {
+      try {
+        const verdict = await sink.verify(ref)
+        return { ref, sink: sink.id, verdict }
+      } catch (e) {
+        return {
+          ref,
+          sink: sink.id,
+          verdict: {
+            status: "mismatch" as const,
+            detail: `sink ${sink.id} verify failed: ${String(e)}`,
+          },
+        }
+      }
+    }),
+  )
 }
 
 /**
@@ -348,31 +432,10 @@ export async function verifyAnchors(
   verdicts: Array<{ ref: AnchorRef; sink: string; verdict: AnchorVerdict }>
   weakest: Array<{ ref: AnchorRef; domain: string | null }>
 }> {
+  const settled = await Promise.allSettled(refs.map((ref) => verifyRefAgainstSinks(sinks, ref)))
   const verdicts: Array<{ ref: AnchorRef; sink: string; verdict: AnchorVerdict }> = []
-  const settled = await Promise.allSettled(
-    refs.flatMap((ref) =>
-      sinks.map(async (sink) => {
-        try {
-          const verdict = await sink.verify(ref)
-          return { ref, sink: sink.id, verdict }
-        } catch (e) {
-          // A throwing sink is a broken verifier, not a missing anchor:
-          // record it as an error verdict so reports distinguish it from
-          // "not anchored".
-          return {
-            ref,
-            sink: sink.id,
-            verdict: {
-              status: "mismatch" as const,
-              detail: `sink ${sink.id} verify failed: ${String(e)}`,
-            },
-          }
-        }
-      }),
-    ),
-  )
   for (const result of settled) {
-    if (result.status === "fulfilled") verdicts.push(result.value)
+    if (result.status === "fulfilled") verdicts.push(...result.value)
   }
   const domains = new Map(sinks.map((s) => [s.id, s.trustDomain]))
   const weakest = refs.map((ref) => ({ ref, domain: weakestTrustDomain(verdicts, domains, ref) }))

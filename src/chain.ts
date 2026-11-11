@@ -131,48 +131,28 @@ export type ChainBroken = { status: "broken"; detail: string; index: number }
 /** The fold verdict for one file family. */
 export type ChainVerdict = ChainOk | ChainBroken
 
-/**
- * Folds one file family's rows oldest-first, verifying the per-record chain
- * and every committed epoch root. Rows without a `hash` field (legacy
- * pre-chain rows) are inert and start the window; the chain begins at the
- * first row carrying `hash`. A `chain-epoch` row is consumed as an epoch
- * commit: its `root` must equal the Merkle root of the epoch's data-row
- * hashes and its `head` the last data-row hash. The first mismatch wins.
- * @param rows The family's rows, oldest-first.
- * @param source The family label (for epoch summaries and error detail).
- * @returns The fold verdict.
- */
-export function foldChain(rows: readonly ParsedRow[], source: string): ChainVerdict {
-  let prevHash = ""
-  let expectedSeq = 0
-  let epochHashes: string[] = []
-  const epochs: EpochSummary[] = []
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]!
-    if (typeof row.hash !== "string") continue
-    const broken = checkRow(row, prevHash, expectedSeq, i, source)
-    if (broken) return broken
-    prevHash = row.hash
-    // checkRow verified seq is the expected number, so the increment is safe.
-    expectedSeq = (row.seq as number) + 1
-    if (row.payload.type === "chain-epoch") {
-      const verdict = closeEpoch(row, epochHashes, epochs, source)
-      if (verdict) return verdict
-      epochHashes = []
-    } else {
-      epochHashes.push(row.hash)
-    }
-  }
-  return { status: "ok", epochs }
+/** Options for the chain fold. */
+export interface FoldOptions {
+  /** When true, the first chained row folds as a trust root: the generation
+   *  it continued from was pruned by rotation, so its `prevHash` points
+   *  outside the surviving files. Its own hash is still verified and its
+   *  `seq` must be a non-negative integer, but the prevHash continuity
+   *  check and the expected-seq match are waived for that row only. */
+  chainRootAtStart?: boolean
 }
 
 /**
- * Verifies one chained row against the running chain state.
+ * Verifies one chained row against the running chain state. A trust-root
+ * row (first chained row of a pruned family) skips the prevHash continuity
+ * check and the expected-seq match — its seq need only be a non-negative
+ * integer — but its self-hash is still verified against its own declared
+ * prevHash.
  * @param row The row to check.
  * @param prevHash The previous verified row's hash ("" at chain start).
  * @param expectedSeq The expected sequence number.
  * @param index The row's 1-based position (for error detail).
  * @param source The family label (for error detail).
+ * @param atRoot True when the row is the family's trust root.
  * @returns A broken verdict on the first mismatch, undefined otherwise.
  */
 function checkRow(
@@ -181,15 +161,26 @@ function checkRow(
   expectedSeq: number,
   index: number,
   source: string,
+  atRoot: boolean,
 ): ChainBroken | undefined {
   const at = `${source}:${index + 1}`
-  if (row.prevHash !== prevHash) {
-    return { status: "broken", detail: `${at}: prevHash mismatch`, index: index + 1 }
+  if (atRoot) {
+    if (typeof row.seq !== "number" || !Number.isInteger(row.seq) || row.seq < 0) {
+      return { status: "broken", detail: `${at}: seq mismatch`, index: index + 1 }
+    }
+  } else {
+    if (row.prevHash !== prevHash) {
+      return { status: "broken", detail: `${at}: prevHash mismatch`, index: index + 1 }
+    }
+    if (typeof row.seq !== "number" || row.seq !== expectedSeq) {
+      return { status: "broken", detail: `${at}: seq mismatch`, index: index + 1 }
+    }
   }
-  if (typeof row.seq !== "number" || row.seq !== expectedSeq) {
-    return { status: "broken", detail: `${at}: seq mismatch`, index: index + 1 }
-  }
-  const computed = recordHash(prevHash, row.ts, row.payload)
+  // A trust-root row is hashed over its own (out-of-family) prevHash, not
+  // the running "" seed; a non-string prevHash there folds to a hash
+  // mismatch rather than a throw.
+  const seed = atRoot && typeof row.prevHash === "string" ? row.prevHash : prevHash
+  const computed = recordHash(seed, row.ts, row.payload)
   if (computed !== row.hash) {
     return { status: "broken", detail: `${at}: hash mismatch`, index: index + 1 }
   }
@@ -197,23 +188,71 @@ function checkRow(
 }
 
 /**
- * Consumes a `chain-epoch` row: checks its root against the Merkle root of
- * the epoch's data-row hashes and its head against the last data-row hash,
- * then records the epoch summary.
- * @param row The `chain-epoch` row (already chain-verified).
+ * Folds one file family's rows oldest-first, verifying the per-record chain
+ * and every committed epoch root. Rows without a `hash` field (legacy
+ * pre-chain rows) are inert and start the window; the chain begins at the
+ * first row carrying `hash`. A `chain-epoch` row is consumed as an epoch
+ * commit: its `root` must equal the Merkle root of the epoch's data-row
+ * hashes and its `head` the last data-row hash. The first mismatch wins.
+ * When `chainRootAtStart` is set (the family's oldest surviving generation
+ * was preceded by pruned generations), that first chained row folds as a
+ * trust root instead of a broken link.
+ * @param rows The family's rows, oldest-first.
+ * @param source The family label (for epoch summaries and error detail).
+ * @param options The fold options (trust-root handling).
+ * @returns The fold verdict.
+ */
+export function foldChain(
+  rows: readonly ParsedRow[],
+  source: string,
+  options: FoldOptions = {},
+): ChainVerdict {
+  let prevHash = ""
+  let expectedSeq = 0
+  let epochHashes: string[] = []
+  const epochs: EpochSummary[] = []
+  let atRoot = options.chainRootAtStart ?? false
+  // The window in progress at the trust root is incomplete (its earliest
+  // data rows were pruned); it completes at the next committed epoch.
+  let windowIncomplete = atRoot
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!
+    if (typeof row.hash !== "string") continue
+    const broken = checkRow(row, prevHash, expectedSeq, i, source, atRoot)
+    if (broken) return broken
+    atRoot = false
+    prevHash = row.hash
+    // checkRow verified seq is the expected number (or a plausible integer
+    // at the trust root), so the increment is safe.
+    expectedSeq = (row.seq as number) + 1
+    if (row.payload.type === "chain-epoch") {
+      const verdict = closeEpoch(row, epochHashes, epochs, source, windowIncomplete)
+      if (verdict) return verdict
+      epochHashes = []
+      windowIncomplete = false
+    } else {
+      epochHashes.push(row.hash)
+    }
+  }
+  return { status: "ok", epochs }
+}
+
+/**
+ * Checks a `chain-epoch` row's declared root and head against the epoch's
+ * data-row hashes: the root must equal the Merkle root and the head the
+ * last data-row hash.
+ * @param root The declared root (unvalidated payload field).
+ * @param head The declared head (unvalidated payload field).
  * @param epochHashes The epoch's data-row hashes accumulated so far.
- * @param epochs The epoch summaries accumulated so far (appended to).
- * @param source The family label (for error detail and the summary).
+ * @param source The family label (for error detail).
  * @returns A broken verdict on a root/head mismatch, undefined otherwise.
  */
-function closeEpoch(
-  row: ParsedRow,
+function epochRootHeadMismatch(
+  root: unknown,
+  head: unknown,
   epochHashes: readonly string[],
-  epochs: EpochSummary[],
   source: string,
 ): ChainBroken | undefined {
-  const root = row.payload.root
-  const head = row.payload.head
   const computedRoot = merkleRoot(epochHashes)
   // The journaler only closes non-empty epochs, but a hostile or hand-built
   // journal can carry an epoch row with no data rows: the empty-window root
@@ -231,12 +270,45 @@ function closeEpoch(
       index: 0,
     }
   }
+  return undefined
+}
+
+/**
+ * Consumes a `chain-epoch` row: checks its root against the Merkle root of
+ * the epoch's data-row hashes and its head against the last data-row hash,
+ * then records the epoch summary. A window that begins at or before the
+ * trust root is incomplete (its earliest data rows were pruned), so the
+ * recomputed root cannot match: the declared root/head — themselves
+ * chain-hash-protected payload — are recorded as declared instead.
+ * @param row The `chain-epoch` row (already chain-verified).
+ * @param epochHashes The epoch's data-row hashes accumulated so far.
+ * @param epochs The epoch summaries accumulated so far (appended to).
+ * @param source The family label (for error detail and the summary).
+ * @param windowIncomplete True when the window includes the trust-root row.
+ * @returns A broken verdict on a root/head mismatch, undefined otherwise.
+ */
+function closeEpoch(
+  row: ParsedRow,
+  epochHashes: readonly string[],
+  epochs: EpochSummary[],
+  source: string,
+  windowIncomplete: boolean,
+): ChainBroken | undefined {
+  const root = row.payload.root
+  const head = row.payload.head
+  if (!windowIncomplete) {
+    const broken = epochRootHeadMismatch(root, head, epochHashes, source)
+    if (broken) return broken
+  } else if (typeof root !== "string" || typeof head !== "string") {
+    // An incomplete window with non-string root/head is still malformed.
+    return epochRootHeadMismatch(root, head, epochHashes, source)
+  }
   epochs.push({
     source,
     epoch: typeof row.payload.epoch === "number" ? row.payload.epoch : -1,
     count: epochHashes.length,
-    root,
-    head,
+    root: root as string,
+    head: head as string,
     ts: row.ts,
   })
   return undefined

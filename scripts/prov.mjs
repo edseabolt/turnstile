@@ -22,6 +22,9 @@
 //   opencode-turnstile prov --verify   Check the journal hash chain + anchors.
 //   opencode-turnstile prov --help      This usage. Unknown flags exit 2.
 
+import * as fs from "node:fs"
+import * as path from "node:path"
+
 import {
   clockOf,
   loadConfigFile,
@@ -33,7 +36,12 @@ import {
   resolveConfig,
   truncateField,
 } from "./journal-read.mjs"
-import { resolveAnchorSinks, verifyAnchors, verifyFamilies } from "./chain-read.mjs"
+import {
+  absentAnchoredRefs,
+  resolveAnchorSinks,
+  verifyAnchors,
+  verifyFamilies,
+} from "./chain-read.mjs"
 
 const USAGE = `Usage: opencode-turnstile prov [sessionID] [--json] [--tail <n>]
        opencode-turnstile prov --verify
@@ -78,6 +86,9 @@ function parseArgs(argv) {
     else if (a.startsWith("--")) throw new Error(`unknown argument "${a}"`)
     else if (out.sessionID === "") out.sessionID = a
     else throw new Error(`unexpected extra argument "${a}"`)
+  }
+  if (out.verify && out.sessionID !== "") {
+    throw new Error("--verify checks every session and cannot be combined with a sessionID")
   }
   return out
 }
@@ -215,13 +226,45 @@ function anchorSelectionOf(env) {
 }
 
 /**
+ * Reads the journal rotation generation count from the config file (the
+ * `journalMaxGenerations` key), defaulting to 5 — the same default
+ * `defaultConfig()` uses. Verify must fold the same generations the
+ * journaler wrote or an intact journal reports a broken link.
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {number} The configured generation count.
+ */
+function maxGenerationsOf(env) {
+  const config = loadConfigFile(env)
+  const gens = config?.journalMaxGenerations
+  return Number.isInteger(gens) && gens > 0 ? gens : 5
+}
+
+/**
+ * Reports the unanchored epoch refs (no sink vouches for them) to stdout.
+ * @param {Array<{ ref: object, domain: string | null }>} weakest The
+ *     weakest vouching domain per ref.
+ * @param {Array<{ ref: object, sink: string, verdict: object }>} verdicts
+ *     The per-sink verdicts.
+ * @returns {number} 1 when at least one ref is unanchored, 0 otherwise.
+ */
+function reportUnanchored(weakest, verdicts) {
+  const failed = weakest.filter((w) => w.domain === null)
+  for (const f of failed) {
+    const v = verdicts.find((x) => x.ref === f.ref && x.verdict.status !== "ok")
+    const detail = v ? v.verdict.detail : "not anchored by any configured sink"
+    process.stdout.write(`unanchored: ${f.ref.source}#${f.ref.epoch}: ${detail}\n`)
+  }
+  return failed.length > 0 ? 1 : 0
+}
+
+/**
  * Runs the `--verify` check: folds every journal family, then verifies the
  * collected epoch refs against the configured anchor sinks. Read-only.
  * @returns {Promise<number>} The exit code: 0 ok, 1 broken/unanchored.
  */
 async function runVerify() {
   const { metricsDir } = resolveConfig(process.env, null)
-  const report = verifyFamilies(metricsDir)
+  const report = verifyFamilies(metricsDir, maxGenerationsOf(process.env))
   const broken = report.families.find((f) => f.verdict.status === "broken")
   if (broken) {
     process.stdout.write(`chain broken at ${broken.verdict.detail}\n`)
@@ -232,14 +275,21 @@ async function runVerify() {
     projectDir: process.cwd(),
   })
   for (const warning of warnings) process.stderr.write(`${warning}\n`)
+  // Repo-domain sinks shell out to git in the process cwd; without a .git
+  // there they can never anchor or verify — say so instead of failing silently.
+  if (
+    sinks.some((s) => s.trustDomain === "repo") &&
+    !fs.existsSync(path.join(process.cwd(), ".git"))
+  ) {
+    process.stderr.write(
+      `warning: repo-domain anchor sinks resolve against ${process.cwd()}, which has no .git\n`,
+    )
+  }
   const { verdicts, weakest } = await verifyAnchors(sinks, report.refs)
-  const failed = weakest.filter((w) => w.domain === null)
-  if (failed.length > 0) {
-    for (const f of failed) {
-      const v = verdicts.find((x) => x.ref === f.ref && x.verdict.status !== "ok")
-      const detail = v ? v.verdict.detail : "not anchored by any configured sink"
-      process.stdout.write(`unanchored: ${f.ref.source}#${f.ref.epoch}: ${detail}\n`)
-    }
+  if (reportUnanchored(weakest, verdicts) === 1) return 1
+  const absent = absentAnchoredRefs(metricsDir, report.refs)
+  if (absent.length > 0) {
+    for (const d of absent) process.stdout.write(`${d}\n`)
     return 1
   }
   const domains = [...new Set(weakest.map((w) => w.domain))].join("+")

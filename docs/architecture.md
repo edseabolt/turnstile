@@ -866,7 +866,7 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
 - **`anchors.jsonl`** — the session-state anchor store (only written when
   `tamperEvidence.enabled` is `true`; see the tamper-evidence subsection
   below): one published epoch ref per line, appended by the `session-state`
-  sink at the task-completion trigger.
+  sink at the task-completion and session-end triggers.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
@@ -955,7 +955,16 @@ turnstile itself.
 file family (shared + per-session sinks) across its rotation generations
 oldest-first, re-derives each row's hash and each epoch's Merkle root, and
 reports the first broken link (`<family>:<line>: prevHash|seq|hash mismatch`
-or an epoch root/head mismatch). When `tamperEvidence.verifyOnSessionEnd` is
+or an epoch root/head mismatch). Epoch indices are monotonic per family
+across rotations — a seeding or resyncing journaler continues from the max
+committed index in the surviving generations — so a `source#epoch` ref
+identity is stable for the anchor cross-check. When rotation has pruned
+generations — the
+oldest surviving file is a numbered generation other than `.1` — its first
+chained row folds as a **trust root**: its `prevHash` points into a pruned
+generation, so the prevHash continuity check is waived for that row only
+(its own hash and a plausible `seq` are still verified). When
+`tamperEvidence.verifyOnSessionEnd` is
 `true` (default `false`), the session-idle handler runs it once per session
 and journals the `chain-verify` verdict, toasting on failure — shrinking the
 detection window from "whenever someone runs the CLI" to one session. The
@@ -964,7 +973,7 @@ chain and verifies the epoch refs against the configured sinks, exiting 0 on
 an intact anchored chain, 1 on the first broken link or any unanchored ref,
 and 2 on usage errors.
 
-**Two honesty caveats.** Integrity is not fidelity: the chain proves the
+**Honesty caveats.** Integrity is not fidelity: the chain proves the
 journal bytes are unchanged since they were written — it cannot prove the
 _content_ was true (a gate that lied at write time hashes just as cleanly).
 And detection latency is bounded by verification, not by chaining: an
@@ -972,7 +981,31 @@ attacker who controls the host can recompute the whole chain and forge the
 host-domain `session-state` anchor too; only the repo- and external-domain
 sinks raise the cost above "edit two files", and nothing here stops a
 determined host-level adversary (that is the tamper matrix's problem, out of
-scope here).
+scope here). Deletion and rotation semantics: anchor refs outlive the rows
+they vouch for, so absence detection keys on the committed root (with the
+monotonic epoch index as a bound), not on the ref's presence in the fold.
+An anchored ref is reported absent only when its root matches no retained
+epoch AND its index is at or above the family's lowest retained index — a
+gap within, or truncation of, retained history. An anchored epoch whose
+commit row has rotated out entirely is satisfied silently: after that row
+is pruned, absence is undetectable, the same trust domain as journal
+deletion. Steady-state `verify` exit 0 is the expected signal; a red verify
+means either genuine truncation within retained history or a
+store/journal mismatch worth investigating. The anchor store grows by one
+ref per epoch commit (duplicates skipped by the session-state sink), is
+host-local, and is bounded only by the epoch commit rate. A hostile writer
+can also forge an arbitrarily large epoch index and pollute identity
+numbering, but the forged commit's ref then verifies unanchored — the
+host-trust-domain ceiling already described above. One deletion
+caveat remains: because
+pruning makes the oldest surviving generation's first row a trust root,
+deleting the oldest generations resets the chain root — the same trust
+domain as deleting the journal outright. And verify over an empty or wholly
+deleted journal with an empty anchor store is vacuously ok: absence of rows
+is not evidence of integrity, which is why the anchors live in a second
+file (or sink domain) that still names the epochs the deleted journal
+should have contained — with anchors retained, that deletion is exactly
+what the absence check reports.
 
 On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file

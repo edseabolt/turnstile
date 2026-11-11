@@ -59,10 +59,39 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
 }
 
 /**
+ * Repairs a torn tail before appending: a crash mid-append can leave the
+ * file's last line without a trailing newline, and appending directly would
+ * concatenate the next row onto it (an unparseable merged line that breaks
+ * the chain fold forever). One `\n` separates the partial line — it stays
+ * as an inert row the fold and chain seeding already skip (malformed JSON
+ * or a row without a `hash` field).
+ * @param file The file to inspect and repair.
+ */
+function repairTornTail(file: string): void {
+  let fd: number
+  try {
+    fd = fs.openSync(file, "r")
+  } catch {
+    return // missing file: nothing to repair
+  }
+  try {
+    const size = fs.fstatSync(fd).size
+    if (size === 0) return
+    const last = Buffer.alloc(1)
+    fs.readSync(fd, last, 0, 1, size - 1)
+    if (last[0] !== 0x0a) fs.appendFileSync(file, "\n")
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
  * Appends one line to a file, creating the parent directory first. The
  * caller is responsible for rotating when a size bound applies (the journaler's
  * `journal()`/`traceEvent()` call `tickRotate` on an entry-count tick, under a
- * lock-guarded rename). Silent on any failure: journaling must never break
+ * lock-guarded rename). A torn final line (no trailing newline, left by a
+ * crash mid-append) is separated with one `\n` first so the new line always
+ * parses on its own. Silent on any failure: journaling must never break
  * execution.
  * @param file Path of the file to append to.
  * @param text The line to append (a trailing newline is added).
@@ -70,11 +99,14 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
 export function appendLine(file: string, text: string): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
+    repairTornTail(file)
     fs.appendFileSync(file, text + "\n")
   } catch {
     // journaling must never break execution
   }
 }
+
+export { repairTornTail }
 
 /**
  * Resolves the per-session journal file for a parent session ID.

@@ -616,6 +616,7 @@ async function runSessionEndVerify(ctx: TurnstileContext, sid: string): Promise<
     const report = await verifyJournalChain({
       metricsDir: ctx.config.metricsDir,
       sinks: ctx.anchorSinks,
+      maxGenerations: ctx.config.journalMaxGenerations,
     })
     const broken = report.families.find((f) => f.verdict.status === "broken")
     const detail =
@@ -623,7 +624,9 @@ async function runSessionEndVerify(ctx: TurnstileContext, sid: string): Promise<
         ? `${broken.source}: ${broken.verdict.detail}`
         : report.ok
           ? ""
-          : "unanchored epoch refs"
+          : report.absentAnchored.length > 0
+            ? report.absentAnchored.join("; ")
+            : "unanchored epoch refs"
     ctx.journaler.journal(
       report.ok
         ? { type: "chain-verify", ok: true, sessionID: sid }
@@ -660,6 +663,11 @@ async function handleSessionIdle(
   if (sid === "" || ctx.summarizedSessions.has(sid)) return
   ctx.summarizedSessions.add(sid)
   ctx.boundSummarizedSessions()
+  // The session-end anchor trigger runs first and its publish is awaited, so
+  // refs closed/published for this session count as anchored in the verify
+  // that follows (no false "unanchored epoch refs" verdict). Fail-open by
+  // the journaler's anchor contract.
+  await ctx.journaler.anchorAsync("session-end", sid)
   // The chain verify is independent of the summary setting: it runs once per
   // session even when sessionSummary is "off".
   await runSessionEndVerify(ctx, sid)

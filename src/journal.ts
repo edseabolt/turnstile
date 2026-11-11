@@ -11,6 +11,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { merkleRoot, recordHash } from "./chain.ts"
+import { publishRefs } from "./anchor.ts"
 import {
   appendLine,
   createJournalSinks,
@@ -141,6 +142,18 @@ export interface Journaler {
    *     per-session attribution; unused today).
    */
   anchor(trigger: "task-complete" | "session-end", _sessionID?: string): void
+  /**
+   * Awaitable variant of {@link anchor} for callers that must observe the
+   * publish completion before acting on the journal state (the session-end
+   * verify runs after this resolves so freshly published refs count as
+   * anchored). Same fail-open contract: sink rejections journal
+   * `{type:"error", error:"anchor-publish: …"}` and never throw. No-op when
+   * tamper evidence is disabled.
+   * @param trigger What fired the anchor (task completion or session end).
+   * @param _sessionID The parent session ID, when known (reserved for
+   *     per-session attribution; unused today).
+   */
+  anchorAsync(trigger: "task-complete" | "session-end", _sessionID?: string): Promise<void>
 }
 
 /** Per-file-family hash-chain state, the sibling of the tick counters. */
@@ -248,6 +261,9 @@ function seedFamilyChain(file: string, maxGenerations: number): FamilyChain {
 
 /**
  * Folds one generation file's chained rows into the seeding chain state.
+ * The epoch index is seeded from the MAX committed epoch field seen, not a
+ * row count: after rotation prunes early generations, a fresh journaler
+ * must continue the family's monotonic epoch numbering, not restart it.
  * @param chain The chain state being seeded (mutated in place).
  * @param file The generation file to read (missing/unreadable: no-op).
  */
@@ -266,7 +282,10 @@ function seedFromFile(chain: FamilyChain, file: string): void {
       if (typeof row["seq"] === "number") chain.seq = row.seq + 1
       chain.prevHash = row["hash"]
       if (row["type"] === "chain-epoch") {
-        chain.epochIndex++
+        const epoch = row["epoch"]
+        if (typeof epoch === "number" && epoch >= chain.epochIndex) {
+          chain.epochIndex = epoch + 1
+        }
         chain.epochHashes = []
       } else {
         chain.epochHashes.push(row["hash"])
@@ -274,6 +293,85 @@ function seedFromFile(chain: FamilyChain, file: string): void {
     } catch {
       // malformed line: skip, keep the rest
     }
+  }
+}
+
+/**
+ * The chain state a journal file's tail implies, scanned newest-first
+ * without walking rotation generations. `epochIndex` is null when no
+ * `chain-epoch` row appears in the file (the epoch window extends into
+ * earlier generations, so the window cannot be recovered from this file
+ * alone); `undefined` means the scan is unusable (unreadable file,
+ * malformed tail, or no chained rows) and the caller must reseed fully.
+ * @param file The family's current journal file path.
+ * @returns The tail-implied chain state, or undefined when unusable.
+ */
+function tailChainState(
+  file: string,
+): { seq: number; prevHash: string; epochIndex: number | null; epochHashes: string[] } | undefined {
+  let text: string
+  try {
+    text = fs.readFileSync(file, "utf8")
+  } catch {
+    return undefined
+  }
+  const state = {
+    seq: 0,
+    prevHash: "",
+    epochIndex: null as number | null,
+    epochHashes: [] as string[],
+  }
+  const lines = text.split("\n")
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (line.trim() === "") continue
+    let row: Record<string, unknown>
+    try {
+      row = JSON.parse(line) as Record<string, unknown>
+    } catch {
+      return undefined // malformed tail: the cheap scan cannot be trusted
+    }
+    if (typeof row["hash"] !== "string") continue
+    if (typeof row["seq"] !== "number") return undefined
+    if (state.prevHash === "") {
+      state.seq = row.seq + 1
+      state.prevHash = row["hash"]
+    }
+    if (row["type"] === "chain-epoch") {
+      // A corrupt epoch field makes the tail's index unusable: reseed fully
+      // (seedFromFile ignores such rows and keeps the max committed index).
+      if (typeof row["epoch"] !== "number") return undefined
+      state.epochIndex = row["epoch"] + 1
+      break // the epoch window is complete within this file
+    }
+    state.epochHashes.unshift(row["hash"])
+  }
+  if (state.prevHash === "") return undefined
+  return state
+}
+
+/**
+ * Re-validates the in-memory family head against the journal file's actual
+ * tail before a chained append. A second host process sharing the metrics
+ * directory appends to the same files, so a stale in-memory head would fork
+ * the chain; on drift the state continues from the file's tail (when its
+ * epoch window is complete in this file) or reseeds from the full
+ * generation walk. Fail-open: every read problem falls back to a reseed.
+ * @param file The family's current journal file path.
+ * @param chain The in-memory chain state from the last append.
+ * @param maxGenerations The rotation generation count (for a full reseed).
+ * @returns The chain state to continue from.
+ */
+function resyncFamilyHead(file: string, chain: FamilyChain, maxGenerations: number): FamilyChain {
+  const tail = tailChainState(file)
+  if (!tail) return seedFamilyChain(file, maxGenerations)
+  if (tail.prevHash === chain.prevHash && tail.seq === chain.seq) return chain
+  if (tail.epochIndex === null) return seedFamilyChain(file, maxGenerations)
+  return {
+    seq: tail.seq,
+    prevHash: tail.prevHash,
+    epochIndex: tail.epochIndex,
+    epochHashes: tail.epochHashes,
   }
 }
 
@@ -302,10 +400,15 @@ function appendChainedEntry(
   maxGenerations: number,
 ): void {
   let chain = chains.get(file)
-  if (!chain) {
+  if (chain) {
+    // Another host process sharing the metrics dir may have appended since
+    // our last write: re-validate the head against the file's tail so
+    // interleaved writers continue one chain instead of forking it.
+    chain = resyncFamilyHead(file, chain, maxGenerations)
+  } else {
     chain = seedFamilyChain(file, maxGenerations)
-    chains.set(file, chain)
   }
+  chains.set(file, chain)
   const ts = now()
   const hash = appendChainedRow(file, ts, { ...entry, ts }, chain)
   chain.epochHashes.push(hash)
@@ -313,9 +416,23 @@ function appendChainedEntry(
 }
 
 /**
- * Fire-and-forget publishes the pending anchor refs to the bound sinks.
- * Every rejection (sync or async) journals an `anchor-publish:` error row
- * and never propagates; the refs are consumed either way.
+ * Journals the error rows for a batch of failed publishes (one row per
+ * error string, fail-open).
+ * @param errors The error strings from the publish fan-out.
+ * @param journal The journaler's append (for fail-open error rows).
+ */
+function journalPublishErrors(
+  errors: ReadonlyArray<{ sink: string; error: string }>,
+  journal: (entry: Record<string, unknown>) => void,
+): void {
+  for (const e of errors) journal({ type: "error", error: `anchor-publish: ${e.sink}: ${e.error}` })
+}
+
+/**
+ * Fire-and-forget publishes the pending anchor refs to the bound sinks via
+ * the shared `publishRefs` fan-out. Every rejection journals an
+ * `anchor-publish:` error row and never propagates; the refs are consumed
+ * either way.
  * @param pendingRefs The pending anchor-ref list (consumed).
  * @param boundSinks The currently bound anchor sinks.
  * @param journal The journaler's append (for fail-open error rows).
@@ -327,15 +444,25 @@ function publishPendingRefs(
 ): void {
   if (pendingRefs.length === 0 || boundSinks.length === 0) return
   const refs = pendingRefs.splice(0)
-  for (const ref of refs) {
-    for (const sink of boundSinks) {
-      Promise.resolve()
-        .then(() => sink.publish({ ...ref, sink: sink.id }))
-        .catch((e: unknown) => {
-          journal({ type: "error", error: `anchor-publish: ${sink.id}: ${String(e)}` })
-        })
-    }
-  }
+  void publishRefs(boundSinks, refs).then((errors) => journalPublishErrors(errors, journal))
+}
+
+/**
+ * Awaitable variant of {@link publishPendingRefs}: resolves once every
+ * publish settled (rejections journaled, never thrown), so a caller can
+ * order work after the refs are durably anchored.
+ * @param pendingRefs The pending anchor-ref list (consumed).
+ * @param boundSinks The currently bound anchor sinks.
+ * @param journal The journaler's append (for fail-open error rows).
+ */
+async function publishPendingRefsAwait(
+  pendingRefs: AnchorRef[],
+  boundSinks: readonly AnchorSink[],
+  journal: (entry: Record<string, unknown>) => void,
+): Promise<void> {
+  if (pendingRefs.length === 0 || boundSinks.length === 0) return
+  const refs = pendingRefs.splice(0)
+  journalPublishErrors(await publishRefs(boundSinks, refs), journal)
 }
 
 /**
@@ -450,6 +577,16 @@ export function createJournaler(options: {
         if (chain.epochHashes.length > 0) closeEpoch(sinks, file, chain, pendingRefs)
       }
       publishPendingRefs(pendingRefs, boundSinks, (e) => this.journal(e))
+    },
+    async anchorAsync(
+      _trigger: "task-complete" | "session-end",
+      _sessionID?: string,
+    ): Promise<void> {
+      if (!options.tamper?.enabled) return
+      for (const [file, chain] of chains) {
+        if (chain.epochHashes.length > 0) closeEpoch(sinks, file, chain, pendingRefs)
+      }
+      await publishPendingRefsAwait(pendingRefs, boundSinks, (e) => this.journal(e))
     },
     traceEvent(agent: string, event: string, detail: string, sessionID?: string): void {
       if (!options.trace) return

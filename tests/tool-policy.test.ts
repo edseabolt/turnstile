@@ -35,6 +35,7 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
   const journaler: Journaler = {
     bindAnchorSinks() {},
     anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",

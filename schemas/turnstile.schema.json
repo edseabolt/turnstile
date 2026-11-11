@@ -328,7 +328,9 @@
         },
         "epochEntries": {
           "type": "integer",
-          "description": "Data rows per Merkle epoch, per journal file family (default 512)."
+          "description": "Data rows per Merkle epoch, per journal file family (default 512).",
+          "minimum": 1,
+          "maximum": 100000
         },
         "verifyOnSessionEnd": {
           "type": "boolean",

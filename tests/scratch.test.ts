@@ -31,6 +31,7 @@ function captureJournaler(): { journaler: Journaler; entries: any[] } {
   const journaler: Journaler = {
     bindAnchorSinks() {},
     anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",
@@ -223,6 +224,7 @@ test("observeScratchWrite: a journal failure fails open", () => {
   const journaler: Journaler = {
     bindAnchorSinks() {},
     anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",

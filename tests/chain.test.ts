@@ -276,4 +276,118 @@ describe("foldChain", () => {
     assert.equal(v.status, "ok")
     assert.equal(v.status === "ok" && v.epochs.length, 2)
   })
+
+  it("folds the first chained row as a trust root when chainRootAtStart is set", () => {
+    // The row continues a pruned generation: its prevHash points outside
+    // the surviving files and its seq is whatever the pruned chain reached.
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const next = chainedRow(root.hash, 8, { type: "b" })
+    const v = foldChain([root, next], "shared", { chainRootAtStart: true })
+    assert.deepEqual(v, { status: "ok", epochs: [] })
+  })
+
+  it("still rejects a trust-root row with an implausible seq", () => {
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const v = foldChain([{ ...root, seq: -1 }], "shared", { chainRootAtStart: true })
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared:1: seq mismatch")
+  })
+
+  it("still rejects a trust-root row whose self-hash does not match", () => {
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const v = foldChain([{ ...root, hash: "0".repeat(64) }], "shared", {
+      chainRootAtStart: true,
+    })
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared:1: hash mismatch")
+  })
+
+  it("rejects a trust-root row whose prevHash is not a string", () => {
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const v = foldChain([{ ...root, prevHash: 5 } as ParsedRow], "shared", {
+      chainRootAtStart: true,
+    })
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared:1: hash mismatch")
+  })
+
+  it("still detects a first-row prevHash mismatch without the trust-root option", () => {
+    const root = chainedRow("deadbeef", 0, { type: "a" })
+    const v = foldChain([root], "shared")
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared:1: prevHash mismatch")
+  })
+
+  it("waives the root check for an epoch window that includes the trust root", () => {
+    // The window's earlier data rows were pruned, so the recomputed root
+    // cannot match: the chain-hash-protected declared root is recorded.
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const epoch = chainedRow(root.hash, 8, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 3,
+      root: "declared-root",
+      head: root.hash,
+    })
+    const v = foldChain([root, epoch], "shared", { chainRootAtStart: true })
+    assert.equal(v.status, "ok")
+    assert.equal(v.status === "ok" && v.epochs[0]!.root, "declared-root")
+  })
+
+  it("rejects an incomplete window whose declared root is not a string", () => {
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const epoch = chainedRow(root.hash, 8, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 1,
+      root: 5,
+      head: root.hash,
+    })
+    const v = foldChain([root, epoch], "shared", { chainRootAtStart: true })
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared: epoch root/head mismatch")
+  })
+
+  it("still checks the root of a complete window after the trust root", () => {
+    const root = chainedRow("pruned-hash", 7, { type: "a" })
+    const epoch0 = chainedRow(root.hash, 8, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 1,
+      root: "declared-root",
+      head: root.hash,
+    })
+    const r1 = chainedRow(epoch0.hash, 9, { type: "b" })
+    const epoch1 = chainedRow(r1.hash, 10, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 1,
+      count: 1,
+      root: "wrong",
+      head: r1.hash,
+    })
+    const v = foldChain([root, epoch0, r1, epoch1], "shared", { chainRootAtStart: true })
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared: epoch root/head mismatch")
+  })
+
+  it("still detects a tampered row inside a complete epoch of a multi-epoch journal", () => {
+    const r0 = chainedRow("", 0, { type: "a" })
+    const epoch0 = chainedRow(r0.hash, 1, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 1,
+      root: merkleRoot([r0.hash]),
+      head: r0.hash,
+    })
+    const r1 = chainedRow(epoch0.hash, 2, { type: "b" })
+    const tampered = { ...r1, payload: { ...r1.payload, type: "edited" } }
+    const v = foldChain([r0, epoch0, tampered], "shared")
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.detail, "shared:3: hash mismatch")
+  })
 })

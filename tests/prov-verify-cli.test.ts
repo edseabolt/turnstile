@@ -182,6 +182,17 @@ test("prov --verify rejects unknown flags with exit 2", () => {
   }
 })
 
+test("prov --verify rejects a sessionID combination with exit 2", () => {
+  const dir = metricsDir()
+  try {
+    const r = runProv(dir, ["ses1", "--verify"])
+    assert.equal(code(r), 2)
+    assert.match(r.stderr, /--verify checks every session/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /**
  * Reads a file into non-empty lines.
  * @param file The file path.

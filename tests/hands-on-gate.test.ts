@@ -41,6 +41,7 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
     },
     bindAnchorSinks() {},
     anchor() {},
+    async anchorAsync() {},
   }
   return { journaler, entries, traces }
 }
@@ -431,6 +432,7 @@ test("observeBashWrite: a journal failure fails open", () => {
   const journaler: Journaler = {
     bindAnchorSinks() {},
     anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",
