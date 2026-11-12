@@ -58,7 +58,9 @@ Commands:
   prov      Print the decision-provenance ledger: journaled human decision
             events (prov:* rows) for one session, or every session
             (read-only; prov [sessionID]; --json prints the raw rows;
-            prov --verify checks the journal hash chain and anchors)
+            prov --verify checks the journal hash chain and anchors;
+            --verify --session <id> scopes it to one session with per-row
+            inclusion proofs)
   prov-views
             Derive views over the decision ledger: origin labels for stated
             prompts, the chatter noise rate, and taste-drift aggregates over
