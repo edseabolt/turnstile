@@ -991,6 +991,7 @@ positive) fails loudly:
 | 6   | rewrite-all with recomputed chain                                                           | chain folds clean, anchor check fails                                                                                                  | anchor                                                                                                                                               |
 | 7   | edit rows within the un-anchored tail                                                       | **passes** — documented residual hole, bounded by the anchor cadence                                                                   | —                                                                                                                                                    |
 | 8   | truncate-and-continue (recurring-cleaner attack: truncate, keep logging into a fresh chain) | fail — previously published epoch roots become underivable from the current file, even though the new chain folds clean and re-anchors | anchor (CLI surfaces it via the unanchored-ref check against the retained store; missing-root detection confirmed at the `verifyJournalChain` level) |
+| 9   | commit a wrong epoch root (row re-hashed honestly)                                          | fail — the per-record fold stays clean, so only the epoch-root check catches it                                                        | chain fold / epoch root                                                                                                                              |
 
 Row 7 is deliberate: characterizing what the mechanism _cannot_ see is part
 of the verification. Its scope is bounded by the anchoring trigger — anything
@@ -1000,6 +1001,9 @@ Row 8 differs from a mid-file deletion (row 2): the surviving file is
 internally valid from a new genesis, so only the anchor comparison catches
 it. The harness also confirms a second task-completion anchor after the
 truncation re-anchors the fresh chain without masking row 8's failure.
+Row 9 isolates the epoch-root limb specifically: the tampered `chain-epoch`
+row is re-hashed honestly, so rows 1–5's per-record detection is bypassed by
+construction and the mismatch is attributable to the root/head check alone.
 Integrity ≠ fidelity: a chain-valid journal that recorded fabricated
 execution hashes fine and passes every row; detecting that class needs
 ground-truth correlation outside the journal (out of scope here).

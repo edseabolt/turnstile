@@ -374,6 +374,31 @@ async function truncateAndContinue(dir: string): Promise<void> {
   await journaler.anchorAsync("task-complete")
 }
 
+/**
+ * Rewrites one committed `chain-epoch` row's declared root to a foreign
+ * value and re-hashes that row — and every row after it — honestly, so the
+ * per-record fold stays clean: seq/prevHash continuity holds and every row's
+ * hash matches its payload. Only the epoch-root check can see the forgery.
+ * @param dir The metrics directory.
+ */
+function forgeEpochRoot(dir: string): void {
+  mutateFamily(dir, (rows) => {
+    // The builder rotates every append with maxGenerations: 5, so the
+    // earliest epoch rows are evicted; the first surviving committed
+    // chain-epoch row (a complete window) is the tamper target.
+    const idx = rows.findIndex((r) => r.type === "chain-epoch")
+    rows[idx]!.root = "f".repeat(64)
+    let prevHash = rows[idx]!.prevHash as string
+    for (let k = idx; k < rows.length; k++) {
+      const { seq: _s, prevHash: _p, hash: _h, ...payload } = rows[k]!
+      const hash = recordHash(prevHash, rows[k]!.ts, payload)
+      rows[k]!.prevHash = prevHash
+      rows[k]!.hash = hash
+      prevHash = hash
+    }
+  })
+}
+
 /** The characterization table: every mutation of a captured honest journal
  *  and the `prov --verify` verdict it must produce. */
 const ROWS: Row[] = [
@@ -438,6 +463,15 @@ const ROWS: Row[] = [
     name: "truncate-and-continue (recurring-cleaner)",
     mutate: truncateAndContinue,
     expect: { exit: 1, match: /unanchored: shared#0: .*root\/head differ/ },
+  },
+  {
+    id: 9,
+    name: "commit a wrong epoch root (row re-hashed honestly)",
+    mutate: forgeEpochRoot,
+    // Pinned to the observed first-broken-link reason: the per-record fold
+    // is clean, so only the epoch-root check can catch the forged root.
+    // The CLI prints the source without an epoch index here.
+    expect: { exit: 1, match: /chain broken at shared: epoch root\/head mismatch/ },
   },
 ]
 
@@ -531,6 +565,24 @@ test("tamper matrix row 8: the fresh chain folds clean and re-anchors without ma
     // the `anchored epoch …` lines are only observable in-process via
     // verifyJournalChain's report.absentAnchored (asserted above, wording
     // from src/verify.ts absentAnchoredRefs).
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tamper matrix row 9: the forged-epoch chain folds broken at the epoch root check", async () => {
+  const dir = await buildHonestJournal()
+  try {
+    forgeEpochRoot(dir)
+    const report = await verifyJournalChain({
+      metricsDir: dir,
+      sinks: [sessionStateSink({ metricsDir: dir, projectDir: dir })],
+    })
+    assert.equal(report.ok, false)
+    const shared = report.families.find((f) => f.source === "shared")
+    const verdict = shared!.verdict as { status: string; detail?: string }
+    assert.equal(verdict.status, "broken")
+    assert.match(verdict.detail!, /epoch root\/head mismatch/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
