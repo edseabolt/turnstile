@@ -589,11 +589,31 @@ test("tamper matrix row 9: the forged-epoch chain folds broken at the epoch root
   }
 })
 
+/** The empty git config file backing the hermetic git env — created lazily
+ *  so it exists on every platform git runs on (unlike a device path). */
+let emptyGitConfigFile: string | undefined
+
+/**
+ * Lazily creates (once) an empty temp file for git's global/system config
+ * and registers its cleanup with the test run.
+ * @returns The path of the empty config file.
+ */
+function emptyGitConfig(): string {
+  if (emptyGitConfigFile === undefined) {
+    const dir = mkdtempSync(join(tmpdir(), "turnstile-tamper-gitcfg-"))
+    emptyGitConfigFile = join(dir, "empty-config")
+    writeFileSync(emptyGitConfigFile, "")
+    test.after(() => rmSync(dir, { recursive: true, force: true }))
+  }
+  return emptyGitConfigFile
+}
+
 /** The git env that isolates the sink tests from the developer's global and
  *  system git config.
  *  @returns The hermetic env map. */
 function hermeticGitEnv(): Record<string, string> {
-  return { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" }
+  const empty = emptyGitConfig()
+  return { ...process.env, GIT_CONFIG_GLOBAL: empty, GIT_CONFIG_SYSTEM: empty }
 }
 
 /**
@@ -614,7 +634,7 @@ function hermeticExec(
 
 /**
  * Creates a throwaway git repo with one commit, configured hermetically
- * (repo-local identity, global/system config pointed at /dev/null).
+ * (repo-local identity, global/system config pointed at an empty temp file).
  * @returns The repo directory (caller removes it).
  */
 function initHermeticRepo(): string {
