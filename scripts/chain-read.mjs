@@ -66,21 +66,84 @@ export function recordHash(prevHash, ts, payload) {
 export function merkleRoot(hashes) {
   if (hashes.length === 0) return createHash("sha256").update("").digest("hex")
   let level = [...hashes]
-  while (level.length > 1) {
-    const next = []
-    for (let i = 0; i < level.length; i += 2) {
-      const a = level[i]
-      const b = i + 1 < level.length ? level[i + 1] : a
-      next.push(
-        createHash("sha256")
-          .update(a + b)
-          .digest("hex"),
-      )
-    }
-    level = next
-  }
+  while (level.length > 1) level = reduceLevel(level)
   return createHash("sha256")
     .update(level[0] + level[0])
+    .digest("hex")
+}
+
+/**
+ * Reduces one Merkle level by one pairwise step: each adjacent pair hashes
+ * via `sha256(a + b)`, and an odd trailing node is hashed with itself.
+ * Shared by `merkleRoot` and `merklePath`. Must stay identical to
+ * `reduceLevel` in src/chain.ts.
+ * @param {string[]} level The current level's hashes, in order.
+ * @returns {string[]} The next level's hashes.
+ */
+function reduceLevel(level) {
+  const next = []
+  for (let i = 0; i < level.length; i += 2) {
+    const a = level[i]
+    const b = i + 1 < level.length ? level[i + 1] : a
+    next.push(
+      createHash("sha256")
+        .update(a + b)
+        .digest("hex"),
+    )
+  }
+  return next
+}
+
+/**
+ * Derives one leaf's audit path to the root `merkleRoot(hashes)` computes:
+ * at each level the sibling index is `index ^ 1`; a sibling past the
+ * level's end is the odd-promotion case (the node's own hash, side
+ * "right"). The final survivor self-hash is applied by `merklePathRoot`,
+ * not recorded in the path. Must stay identical to `merklePath` in
+ * src/chain.ts.
+ * @param {string[]} hashes The epoch's leaf hashes, in order.
+ * @param {number} index The target leaf's 0-based position.
+ * @returns {{ side: "left" | "right", hash: string }[]} The audit path,
+ *     leaf-to-root order; [] for an empty list.
+ * @throws {RangeError} When `index` is not an in-range integer.
+ */
+export function merklePath(hashes, index) {
+  if (hashes.length === 0) return []
+  if (!Number.isInteger(index) || index < 0 || index >= hashes.length) {
+    throw new RangeError(`merklePath: index ${index} out of range for ${hashes.length} hashes`)
+  }
+  const path = []
+  let level = [...hashes]
+  let i = index
+  while (level.length > 1) {
+    const sib = i ^ 1
+    const sibHash = sib < level.length ? level[sib] : level[i]
+    path.push({ side: (i & 1) === 0 ? "right" : "left", hash: sibHash })
+    level = reduceLevel(level)
+    i >>= 1
+  }
+  return path
+}
+
+/**
+ * Recomputes the root from a leaf and its `merklePath` audit path: folds
+ * `sha256(node + sibling)` per step (sibling on the right per `side`), then
+ * applies the final survivor self-hash. Must stay identical to
+ * `merklePathRoot` in src/chain.ts.
+ * @param {string} leaf The target leaf's hash.
+ * @param {{ side: "left" | "right", hash: string }[]} path The audit path,
+ *     leaf-to-root order.
+ * @returns {string} The recomputed root hash.
+ */
+export function merklePathRoot(leaf, path) {
+  let h = leaf
+  for (const { side, hash } of path) {
+    h = createHash("sha256")
+      .update(side === "right" ? h + hash : hash + h)
+      .digest("hex")
+  }
+  return createHash("sha256")
+    .update(h + h)
     .digest("hex")
 }
 
@@ -99,76 +162,157 @@ export function merkleRoot(hashes) {
  *     detail: string, index: number }} The fold verdict.
  */
 export function foldChain(rows, source, options = {}) {
-  let prevHash = ""
-  let expectedSeq = 0
-  let epochHashes = []
-  const epochs = []
-  let atRoot = options.chainRootAtStart ?? false
-  // The window in progress at the trust root is incomplete (its earliest
-  // data rows were pruned); it completes at the next committed epoch.
-  let windowIncomplete = atRoot
+  const ctx = {
+    prevHash: "",
+    expectedSeq: 0,
+    epochHashes: [],
+    epochs: [],
+    atRoot: options.chainRootAtStart ?? false,
+    // The window in progress at the trust root is incomplete (its earliest
+    // data rows were pruned); it completes at the next committed epoch.
+    windowIncomplete: options.chainRootAtStart ?? false,
+    windowEpoch: 0,
+    collected: options.collectRows === true ? [] : undefined,
+  }
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]
     if (typeof row.hash !== "string") continue
     const at = `${source}:${i + 1}`
-    if (atRoot) {
+    if (ctx.atRoot) {
       // Trust root: the generation this row continued from was pruned, so
       // its prevHash points outside the surviving files. Its own hash is
       // still verified and its seq must be a non-negative integer.
       if (typeof row.seq !== "number" || !Number.isInteger(row.seq) || row.seq < 0) {
-        return { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 }
+        return withProvContext(
+          { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 },
+          row,
+          ctx.windowEpoch,
+        )
       }
     } else {
-      if (row.prevHash !== prevHash) {
-        return { status: "broken", detail: `${at}: prevHash mismatch`, index: i + 1 }
+      if (row.prevHash !== ctx.prevHash) {
+        return withProvContext(
+          { status: "broken", detail: `${at}: prevHash mismatch`, index: i + 1 },
+          row,
+          ctx.windowEpoch,
+        )
       }
-      if (typeof row.seq !== "number" || row.seq !== expectedSeq) {
-        return { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 }
+      if (typeof row.seq !== "number" || row.seq !== ctx.expectedSeq) {
+        return withProvContext(
+          { status: "broken", detail: `${at}: seq mismatch`, index: i + 1 },
+          row,
+          ctx.windowEpoch,
+        )
       }
     }
     // A trust-root row is hashed over its own (out-of-family) prevHash, not
     // the running "" seed; a non-string prevHash there folds to a hash
     // mismatch rather than a throw.
-    const seed = atRoot && typeof row.prevHash === "string" ? row.prevHash : prevHash
+    const seed = ctx.atRoot && typeof row.prevHash === "string" ? row.prevHash : ctx.prevHash
     if (recordHash(seed, row.ts, row.payload) !== row.hash) {
-      return { status: "broken", detail: `${at}: hash mismatch`, index: i + 1 }
+      return withProvContext(
+        { status: "broken", detail: `${at}: hash mismatch`, index: i + 1 },
+        row,
+        ctx.windowEpoch,
+      )
     }
-    atRoot = false
-    prevHash = row.hash
-    expectedSeq = row.seq + 1
-    if (row.payload.type === "chain-epoch") {
-      const root = row.payload.root
-      const head = row.payload.head
-      if (!windowIncomplete) {
-        const computedRoot = merkleRoot(epochHashes)
-        const computedHead = epochHashes[epochHashes.length - 1] ?? ""
-        if (
-          typeof root !== "string" ||
-          typeof head !== "string" ||
-          root !== computedRoot ||
-          head !== computedHead
-        ) {
-          return { status: "broken", detail: `${source}: epoch root/head mismatch`, index: 0 }
-        }
-      } else if (typeof root !== "string" || typeof head !== "string") {
-        // An incomplete window with non-string root/head is still malformed.
+    ctx.atRoot = false
+    ctx.prevHash = row.hash
+    ctx.expectedSeq = row.seq + 1
+    const verdict = consumeRow(row, ctx, source)
+    if (verdict) return verdict
+  }
+  const ok = { status: "ok", epochs: ctx.epochs }
+  if (ctx.collected !== undefined) ok.rows = ctx.collected
+  return ok
+}
+
+/**
+ * Attaches `provContext` to a broken verdict when the rejected row is a
+ * `prov:*` row, localizing the mutation to the row and its epoch window.
+ * Must stay identical to `withProvContext` in src/chain.ts.
+ * @param {{ status: "broken", detail: string, index: number }} broken The
+ *     broken verdict.
+ * @param {{ payload: Record<string, unknown>, seq: unknown }} row The row
+ *     the fold rejected.
+ * @param {number} windowEpoch The epoch window index the row folded into.
+ * @returns {object} The verdict, with `provContext` attached when
+ *     applicable.
+ */
+function withProvContext(broken, row, windowEpoch) {
+  const type = row.payload.type
+  if (typeof type !== "string" || !type.startsWith("prov:")) return broken
+  return {
+    ...broken,
+    provContext: {
+      type,
+      seq: row.seq,
+      index: broken.index,
+      epoch: windowEpoch,
+      committed: false,
+    },
+  }
+}
+
+/**
+ * Consumes one chain-verified row into the fold state: a `chain-epoch` row
+ * closes the current window (advancing the window index), any other row
+ * accumulates into it — and into the collected-row list when collecting.
+ * Must stay identical to `consumeRow` in src/chain.ts.
+ * @param {{ ts: string, payload: Record<string, unknown>, seq: number,
+ *     hash: string }} row The verified row.
+ * @param {{ epochHashes: string[], epochs: object[], windowIncomplete:
+ *     boolean, windowEpoch: number, collected: object[] | undefined }} ctx
+ *     The fold's running state.
+ * @param {string} source The family label.
+ * @returns {object | undefined} A broken verdict on an epoch root/head
+ *     mismatch, undefined otherwise.
+ */
+function consumeRow(row, ctx, source) {
+  if (row.payload.type === "chain-epoch") {
+    const root = row.payload.root
+    const head = row.payload.head
+    if (!ctx.windowIncomplete) {
+      const computedRoot = merkleRoot(ctx.epochHashes)
+      const computedHead = ctx.epochHashes[ctx.epochHashes.length - 1] ?? ""
+      if (
+        typeof root !== "string" ||
+        typeof head !== "string" ||
+        root !== computedRoot ||
+        head !== computedHead
+      ) {
         return { status: "broken", detail: `${source}: epoch root/head mismatch`, index: 0 }
       }
-      epochs.push({
-        source,
-        epoch: typeof row.payload.epoch === "number" ? row.payload.epoch : -1,
-        count: epochHashes.length,
-        root,
-        head,
-        ts: row.ts,
-      })
-      epochHashes = []
-      windowIncomplete = false
-    } else {
-      epochHashes.push(row.hash)
+    } else if (typeof root !== "string" || typeof head !== "string") {
+      // An incomplete window with non-string root/head is still malformed.
+      return { status: "broken", detail: `${source}: epoch root/head mismatch`, index: 0 }
     }
+    ctx.epochs.push({
+      source,
+      epoch: typeof row.payload.epoch === "number" ? row.payload.epoch : -1,
+      count: ctx.epochHashes.length,
+      root,
+      head,
+      ts: row.ts,
+    })
+    ctx.epochHashes = []
+    ctx.windowIncomplete = false
+    ctx.windowEpoch =
+      typeof row.payload.epoch === "number" ? row.payload.epoch + 1 : ctx.windowEpoch + 1
+    return undefined
   }
-  return { status: "ok", epochs }
+  if (ctx.collected !== undefined) {
+    ctx.collected.push({
+      seq: row.seq,
+      hash: row.hash,
+      epoch: ctx.windowEpoch,
+      position: ctx.epochHashes.length,
+      ts: row.ts,
+      payload: row.payload,
+    })
+  }
+  ctx.epochHashes.push(row.hash)
+  return undefined
 }
 
 /**
@@ -236,9 +380,9 @@ export function readFamilyRows(file) {
  *     family's files oldest-first plus the trust-root flag.
  * @returns {{ verdict: object, refs: object[] }} The verdict plus refs.
  */
-export function foldFamily(source, family) {
+export function foldFamily(source, family, options = {}) {
   const rows = family.files.flatMap((file) => readFamilyRows(file))
-  const verdict = foldChain(rows, source, { chainRootAtStart: family.chainRootAtStart })
+  const verdict = foldChain(rows, source, { chainRootAtStart: family.chainRootAtStart, ...options })
   const refs = []
   if (verdict.status === "ok") {
     for (const epoch of verdict.epochs) {
@@ -252,7 +396,7 @@ export function foldFamily(source, family) {
       })
     }
   }
-  return { verdict, refs, rows: rows.length }
+  return { verdict, refs, rows: rows.length, collected: verdict.rows ?? [] }
 }
 
 /**
@@ -301,6 +445,53 @@ export function verifyFamilies(metricsDir, maxGenerations = 5) {
     rows += folded.rows
   }
   return { families, refs, rows }
+}
+
+/**
+ * Runs the scoped verify over a metrics directory for one session: folds
+ * only the shared family and that session's sink family (across their
+ * rotation generations), collecting per-row epoch attribution for the
+ * per-row inclusion proofs. Epoch refs are collected the same way the
+ * global walk collects them, but only from the two folded families.
+ * @param {string} metricsDir The metrics directory.
+ * @param {string} sessionID The target session's ID (shape-validated by
+ *     the caller).
+ * @param {number} [maxGenerations=5] The rotation generation count convention
+ *     (`journalMaxGenerations`); defaults to 5 like the src/ mirror.
+ * @returns {{ families: { source: string, verdict: object }[], refs:
+ *     object[], rows: number, collected: object[] }} The per-family
+ *     verdicts, the collected epoch refs, the total folded row count, and
+ *     every collected data row attributed to its epoch (each carrying
+ *     `{ source, seq, hash, epoch, position, ts, payload }`).
+ */
+export function verifySessionFamilies(metricsDir, sessionID, maxGenerations = 5) {
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const sinkFile = path.join(metricsDir, "sessions", `${sessionID}.jsonl`)
+  const families = []
+  const refs = []
+  const collected = []
+  let rows = 0
+  for (const [source, file] of [
+    ["shared", journalPath],
+    [sessionID, sinkFile],
+  ]) {
+    const folded = foldFamily(source, familyFiles(file, maxGenerations), { collectRows: true })
+    families.push({ source, verdict: folded.verdict })
+    refs.push(...folded.refs)
+    rows += folded.rows
+    for (const r of folded.collected) {
+      collected.push({
+        source,
+        seq: r.seq,
+        hash: r.hash,
+        epoch: r.epoch,
+        position: r.position,
+        ts: r.ts,
+        payload: r.payload,
+      })
+    }
+  }
+  return { families, refs, rows, collected }
 }
 
 /**

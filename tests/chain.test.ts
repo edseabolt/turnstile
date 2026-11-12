@@ -9,7 +9,14 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { describe, it } from "node:test"
 
-import { canonicalJson, foldChain, merkleRoot, recordHash } from "../src/chain.ts"
+import {
+  canonicalJson,
+  foldChain,
+  merklePath,
+  merklePathRoot,
+  merkleRoot,
+  recordHash,
+} from "../src/chain.ts"
 import type { ParsedRow } from "../src/chain.ts"
 
 /** SHA-256 helper for expected-value construction. */
@@ -105,6 +112,60 @@ describe("merkleRoot", () => {
     const h22 = sha("cc" + "cc")
     const survivor = sha(h01 + h22)
     assert.equal(merkleRoot(["aa", "bb", "cc"]), sha(survivor + survivor))
+  })
+})
+
+describe("merklePath / merklePathRoot", () => {
+  it("derives a two-leaf audit path that recomputes the root", () => {
+    const leaves = ["aa", "bb"]
+    assert.deepEqual(merklePath(leaves, 0), [{ side: "right", hash: "bb" }])
+    assert.deepEqual(merklePath(leaves, 1), [{ side: "left", hash: "aa" }])
+    assert.equal(merklePathRoot(leaves[0]!, merklePath(leaves, 0)), merkleRoot(leaves))
+    assert.equal(merklePathRoot(leaves[1]!, merklePath(leaves, 1)), merkleRoot(leaves))
+  })
+
+  it("handles odd promotion: last leaf of a 3-leaf epoch", () => {
+    const leaves = ["aa", "bb", "cc"]
+    const path = merklePath(leaves, 2)
+    assert.deepEqual(path, [
+      { side: "right", hash: "cc" },
+      { side: "left", hash: sha("aabb") },
+    ])
+    assert.equal(merklePathRoot(leaves[2]!, path), merkleRoot(leaves))
+  })
+
+  it("round-trips every leaf of a 4-leaf epoch", () => {
+    const leaves = ["aa", "bb", "cc", "dd"]
+    for (let i = 0; i < leaves.length; i++) {
+      assert.equal(merklePathRoot(leaves[i]!, merklePath(leaves, i)), merkleRoot(leaves))
+    }
+  })
+
+  it("returns an empty path for a single-leaf epoch", () => {
+    assert.deepEqual(merklePath(["aa"], 0), [])
+    assert.equal(merklePathRoot("aa", []), merkleRoot(["aa"]))
+  })
+
+  it("returns an empty path for an empty hash list", () => {
+    assert.deepEqual(merklePath([], 0), [])
+  })
+
+  it("throws a RangeError for an out-of-range index", () => {
+    assert.throws(() => merklePath(["aa", "bb"], 2), RangeError)
+    assert.throws(() => merklePath(["aa", "bb"], -1), RangeError)
+    assert.throws(() => merklePath(["aa", "bb"], 1.5), RangeError)
+  })
+
+  it("folds a tampered leaf to a different root", () => {
+    const leaves = ["aa", "bb", "cc"]
+    assert.notEqual(merklePathRoot("forged", merklePath(leaves, 0)), merkleRoot(leaves))
+  })
+
+  it("folds a reordered path to a different root", () => {
+    const leaves = ["aa", "bb", "cc", "dd"]
+    const path = merklePath(leaves, 0)
+    const reordered = [path[1]!, path[0]!]
+    assert.notEqual(merklePathRoot(leaves[0]!, reordered), merkleRoot(leaves))
   })
 })
 
@@ -389,5 +450,78 @@ describe("foldChain", () => {
     const v = foldChain([r0, epoch0, tampered], "shared")
     assert.equal(v.status, "broken")
     assert.equal(v.status === "broken" && v.detail, "shared:3: hash mismatch")
+  })
+
+  it("omits collected rows by default", () => {
+    const r0 = chainedRow("", 0, { type: "a" })
+    const v = foldChain([r0], "shared")
+    assert.equal(v.status, "ok")
+    assert.equal(v.status === "ok" && v.rows, undefined)
+  })
+
+  it("collectRows attributes each data row to its epoch and position", () => {
+    const r0 = chainedRow("", 0, { type: "prov:stated", text: "one" })
+    const r1 = chainedRow(r0.hash, 1, { type: "prov:stated", text: "two" })
+    const r2 = chainedRow(r1.hash, 2, { type: "prov:denied", kind: "plan" })
+    const epoch0 = chainedRow(r2.hash, 3, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 3,
+      root: merkleRoot([r0.hash, r1.hash, r2.hash]),
+      head: r2.hash,
+    })
+    const r3 = chainedRow(epoch0.hash, 4, { type: "prov:stated", text: "three" })
+    const v = foldChain([r0, r1, r2, epoch0, r3], "shared", { collectRows: true })
+    assert.equal(v.status, "ok")
+    if (v.status !== "ok") return
+    assert.deepEqual(
+      v.rows!.map((r) => [r.seq, r.epoch, r.position]),
+      [
+        [0, 0, 0],
+        [1, 0, 1],
+        [2, 0, 2],
+        [4, 1, 0],
+      ],
+    )
+    assert.equal(v.rows![0]!.payload.type, "prov:stated")
+    assert.equal(v.rows![0]!.hash, r0.hash)
+  })
+
+  it("attaches provContext when the broken row is a prov row", () => {
+    const r0 = chainedRow("", 0, { type: "prov:stated", text: "one" })
+    const tampered = { ...r0, payload: { type: "prov:stated", text: "forged" } }
+    const v = foldChain([tampered], "shared")
+    assert.equal(v.status, "broken")
+    assert.deepEqual(v.status === "broken" && v.provContext, {
+      type: "prov:stated",
+      seq: 0,
+      index: 1,
+      epoch: 0,
+      committed: false,
+    })
+  })
+
+  it("attaches provContext with the post-commit window index", () => {
+    const r0 = chainedRow("", 0, { type: "a" })
+    const epoch0 = chainedRow(r0.hash, 1, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 1,
+      root: merkleRoot([r0.hash]),
+      head: r0.hash,
+    })
+    const tampered = chainedRow(epoch0.hash, 2, { type: "prov:denied", kind: "plan" })
+    const v = foldChain([r0, epoch0, { ...tampered, payload: { type: "prov:denied" } }], "shared")
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.provContext!.epoch, 1)
+  })
+
+  it("omits provContext when the broken row is not a prov row", () => {
+    const tampered = chainedRow("", 0, { type: "gate" })
+    const v = foldChain([{ ...tampered, payload: { type: "edited" } }], "shared")
+    assert.equal(v.status, "broken")
+    assert.equal(v.status === "broken" && v.provContext, undefined)
   })
 })

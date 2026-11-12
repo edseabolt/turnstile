@@ -376,6 +376,15 @@ dumb, derivation is offline. Read-only; never writes or blocks.
     opencode-turnstile prov --json          # machine-readable output
     opencode-turnstile prov --tail 100      # last 100 events
     opencode-turnstile prov --verify        # check the journal hash chain + anchors
+    opencode-turnstile prov --verify --session <id> --json
+                                            # scoped verify: this session's decision
+                                            # records, with per-row inclusion proofs
+                                            # (row hash, Merkle path, anchored status)
+
+Scoped verify folds only the session's sink and the shared journal, reports
+the first broken link with the mutated `prov:*` row and its epoch localized,
+and reports each row's inclusion proof against the anchored epoch roots;
+rows written after the last epoch close report `epoch: null` / not anchored.
 
 Capture is gated on `decisionLedger.enabled` (default `true`; `false` disables
 all `prov:*` journaling).

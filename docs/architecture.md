@@ -973,6 +973,20 @@ chain and verifies the epoch refs against the configured sinks, exiting 0 on
 an intact anchored chain, 1 on the first broken link or any unanchored ref,
 and 2 on usage errors.
 
+**Row-level inclusion proofs (`prov --verify --session <id>`).** The scoped
+variant folds only the shared journal and the target session's sink.
+`merklePath`/`merklePathRoot` (`src/chain.ts`) derive a per-row RFC
+6962-style audit path under the same pairwise/self-hash conventions as
+`merkleRoot`; the CLI validates each `prov:*` row's path against its epoch's
+anchored ref root (`merkleOk` — `false` when an anchor disagrees with the
+journal), reports the weakest vouching trust domain per row via the existing
+anchor-sink verdicts, and localizes a mutated `prov:*` row (row + epoch)
+while leaving the global verdict and the tamper matrix untouched.
+Open-window rows — written after the last epoch close — are reported as
+not-yet-anchored (`epoch: null`, with a reason) and never flip the exit
+code. `--json` is honored in scoped mode only; plain `--verify` keeps its
+human-only output.
+
 **Differential characterization** (integration-tested in
 `tests/tamper-matrix.test.ts`): for each mutation of a captured honest
 journal — built through the real write path with a rotation generation and a
