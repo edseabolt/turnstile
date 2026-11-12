@@ -17,9 +17,10 @@ import { defaultConfig } from "../src/config.ts"
 
 /** One node of the schema's `properties` object. */
 interface SchemaNode {
-  type: string
+  type?: string
   enum?: string[]
   properties?: Record<string, SchemaNode>
+  oneOf?: SchemaNode[]
 }
 
 const schema = JSON.parse(
@@ -48,12 +49,18 @@ function assertTypesMatch(name: string, props: Record<string, SchemaNode>, runti
   for (const [key, node] of Object.entries(props)) {
     if (key === "$schema") continue // editor convention, not a runtime key
     assert.ok(key in rec, `${name}.${key} exists at runtime`)
+    // A oneOf node (e.g. tamperEvidence.anchor) has no top-level type: the
+    // variant whose declared type matches the runtime value is asserted.
+    const effective = node.oneOf
+      ? (node.oneOf.find((v) => v.type !== undefined && jsType(v.type) === typeof rec[key]) ?? node)
+      : node
+    const effType = effective.type ?? ""
     assert.equal(
-      jsType(node.type),
+      jsType(effType),
       typeof rec[key],
-      `${name}.${key}: schema type ${node.type} matches runtime ${typeof rec[key]}`,
+      `${name}.${key}: schema type ${effType} matches runtime ${typeof rec[key]}`,
     )
-    if (node.properties) assertTypesMatch(`${name}.${key}`, node.properties, rec[key])
+    if (effective.properties) assertTypesMatch(`${name}.${key}`, effective.properties, rec[key])
   }
 }
 

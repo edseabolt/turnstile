@@ -19,10 +19,15 @@
 // shown. Rows whose `type` does not start with `prov:` are dropped.
 //
 //   opencode-turnstile prov [sessionID] [--json] [--tail <n>]
+//   opencode-turnstile prov --verify   Check the journal hash chain + anchors.
 //   opencode-turnstile prov --help      This usage. Unknown flags exit 2.
+
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 import {
   clockOf,
+  loadConfigFile,
   parseTailValue,
   provEntriesOf,
   readAllProvLines,
@@ -31,18 +36,32 @@ import {
   resolveConfig,
   truncateField,
 } from "./journal-read.mjs"
+import {
+  absentAnchoredRefs,
+  resolveAnchorSinks,
+  verifyAnchors,
+  verifyFamilies,
+} from "./chain-read.mjs"
 
 const USAGE = `Usage: opencode-turnstile prov [sessionID] [--json] [--tail <n>]
+       opencode-turnstile prov --verify
 
 Prints the decision-provenance ledger: the journaled human decision events
 (prompts stated, permission denials, gate waivers, parent overrides of
 pipeline-child writes) for one session, or for
 every session when no sessionID is given. Read-only: nothing is written.
 
+With --verify, instead checks the journal hash chain: every journal file
+family folds across its rotation generations, each committed epoch's Merkle
+root is re-derived, and the epoch refs are verified against the configured
+anchor sinks. Exit 0 when the chain is intact and anchored; exit 1 on the
+first broken link or any unanchored/mismatched ref; exit 2 on usage errors.
+
 Options:
   --json      Print the raw journal rows as JSON instead of the rendered lines
   --tail <n>  Bound the output to the last <n> prov rows (default: the
               configured replayTailLines)
+  --verify    Verify the journal hash chain and anchors instead of rendering
   --help      Show this help`
 
 /** Render bound for `prov:stated` text so one long prompt cannot blow out a row. */
@@ -57,15 +76,19 @@ const STATED_RENDER_CAP = 120
  *     Parsed arguments; `tail` is null when the flag is absent.
  */
 function parseArgs(argv) {
-  const out = { sessionID: "", json: false, tail: null, help: false }
+  const out = { sessionID: "", json: false, tail: null, help: false, verify: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === "--json") out.json = true
     else if (a === "--help") out.help = true
+    else if (a === "--verify") out.verify = true
     else if (a === "--tail") out.tail = parseTailValue(argv[++i])
     else if (a.startsWith("--")) throw new Error(`unknown argument "${a}"`)
     else if (out.sessionID === "") out.sessionID = a
     else throw new Error(`unexpected extra argument "${a}"`)
+  }
+  if (out.verify && out.sessionID !== "") {
+    throw new Error("--verify checks every session and cannot be combined with a sessionID")
   }
   return out
 }
@@ -187,10 +210,103 @@ function resolveAndRead(args) {
 }
 
 /**
+ * Reads the configured anchor selection from the config file (the
+ * `tamperEvidence.anchor` key), defaulting to `session-state` — the same
+ * default `defaultConfig()` uses.
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {string | object | Array<string | object>} The anchor selection.
+ */
+function anchorSelectionOf(env) {
+  const config = loadConfigFile(env)
+  const te =
+    config && typeof config.tamperEvidence === "object" && config.tamperEvidence !== null
+      ? config.tamperEvidence
+      : {}
+  return te.anchor ?? "session-state"
+}
+
+/**
+ * Reads the journal rotation generation count from the config file (the
+ * `journalMaxGenerations` key), defaulting to 5 — the same default
+ * `defaultConfig()` uses. Verify must fold the same generations the
+ * journaler wrote or an intact journal reports a broken link.
+ * @param {NodeJS.ProcessEnv} env The process environment.
+ * @returns {number} The configured generation count.
+ */
+function maxGenerationsOf(env) {
+  const config = loadConfigFile(env)
+  const gens = config?.journalMaxGenerations
+  return Number.isInteger(gens) && gens > 0 ? gens : 5
+}
+
+/**
+ * Reports the unanchored epoch refs (no sink vouches for them) to stdout.
+ * @param {Array<{ ref: object, domain: string | null }>} weakest The
+ *     weakest vouching domain per ref.
+ * @param {Array<{ ref: object, sink: string, verdict: object }>} verdicts
+ *     The per-sink verdicts.
+ * @returns {number} 1 when at least one ref is unanchored, 0 otherwise.
+ */
+function reportUnanchored(weakest, verdicts) {
+  const failed = weakest.filter((w) => w.domain === null)
+  for (const f of failed) {
+    const v = verdicts.find((x) => x.ref === f.ref && x.verdict.status !== "ok")
+    const detail = v ? v.verdict.detail : "not anchored by any configured sink"
+    process.stdout.write(`unanchored: ${f.ref.source}#${f.ref.epoch}: ${detail}\n`)
+  }
+  return failed.length > 0 ? 1 : 0
+}
+
+/**
+ * Runs the `--verify` check: folds every journal family, then verifies the
+ * collected epoch refs against the configured anchor sinks. Read-only.
+ * @returns {Promise<number>} The exit code: 0 ok, 1 broken/unanchored.
+ */
+async function runVerify() {
+  const { metricsDir } = resolveConfig(process.env, null)
+  const report = verifyFamilies(metricsDir, maxGenerationsOf(process.env))
+  const broken = report.families.find((f) => f.verdict.status === "broken")
+  if (broken) {
+    process.stdout.write(`chain broken at ${broken.verdict.detail}\n`)
+    return 1
+  }
+  const { sinks, warnings } = await resolveAnchorSinks(anchorSelectionOf(process.env), {
+    metricsDir,
+    projectDir: process.cwd(),
+  })
+  for (const warning of warnings) process.stderr.write(`${warning}\n`)
+  // Repo-domain sinks shell out to git in the process cwd; without a .git
+  // there they can never anchor or verify — say so instead of failing silently.
+  if (
+    sinks.some((s) => s.trustDomain === "repo") &&
+    !fs.existsSync(path.join(process.cwd(), ".git"))
+  ) {
+    process.stderr.write(
+      `warning: repo-domain anchor sinks resolve against ${process.cwd()}, which has no .git\n`,
+    )
+  }
+  const { verdicts, weakest } = await verifyAnchors(sinks, report.refs)
+  if (reportUnanchored(weakest, verdicts) === 1) return 1
+  const absent = absentAnchoredRefs(metricsDir, report.refs)
+  if (absent.length > 0) {
+    for (const d of absent) process.stdout.write(`${d}\n`)
+    return 1
+  }
+  const domains = [...new Set(weakest.map((w) => w.domain))].join("+")
+  const ids = [...new Set(verdicts.filter((v) => v.verdict.status === "ok").map((v) => v.sink))]
+  const anchored =
+    report.refs.length === 0 ? "nothing to anchor" : `anchored by ${domains} [${ids.join(", ")}]`
+  process.stdout.write(
+    `chain ok (${report.rows} rows, ${report.refs.length} epochs) · ${anchored}\n`,
+  )
+  return 0
+}
+
+/**
  * Entry point. Parses args, walks the journal sinks, and prints the prov
  * rows. An empty ledger exits 0 with no output; usage errors exit 2.
  * @param {string[]} argv Arguments after the `prov` subcommand.
- * @returns {number} The process exit code.
+ * @returns {number | Promise<number>} The process exit code.
  */
 function main(argv) {
   let args
@@ -199,17 +315,20 @@ function main(argv) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     process.stderr.write(`${msg}\n`)
-    process.stderr.write("usage: opencode-turnstile prov [sessionID] [--json] [--tail <n>]\n")
+    process.stderr.write(
+      "usage: opencode-turnstile prov [sessionID] [--json] [--tail <n>] [--verify]\n",
+    )
     return 2
   }
   if (args.help) {
     process.stdout.write(`${USAGE}\n`)
     return 0
   }
+  if (args.verify) return runVerify()
   const read = resolveAndRead(args)
   if (typeof read === "number") return read
   emit(read.entries, args.json)
   return 0
 }
 
-process.exit(main(process.argv.slice(2)) ?? 0)
+process.exit((await main(process.argv.slice(2))) ?? 0)

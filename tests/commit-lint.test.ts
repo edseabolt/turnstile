@@ -35,6 +35,9 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
     traceEvent(agent, event, detail, sessionID) {
       traces.push(`${agent} | ${event} | ${detail}${sessionID ? ` | ${sessionID}` : ""}`)
     },
+    bindAnchorSinks() {},
+    anchor() {},
+    async anchorAsync() {},
   }
   return { journaler, entries, traces }
 }

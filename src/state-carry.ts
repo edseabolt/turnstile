@@ -8,8 +8,10 @@ import type { GateState } from "./types.ts"
 import { isInterruptedReview } from "./task-scope.ts"
 
 /**
- * Builds the fresh boolean/display flag fields of a gate-state bucket.
- * @returns The flag fields at their fresh values.
+ * Builds the fresh boolean/display flag and counter fields of a gate-state
+ * bucket (`suppressedPending` is a numeric cross-child suppression counter,
+ * not a flag).
+ * @returns The flag and counter fields at their fresh values.
  */
 function freshFlags(): Pick<
   GateState,

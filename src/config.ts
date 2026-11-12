@@ -23,7 +23,7 @@ import {
   mergeConfigKey,
 } from "./config-merge.ts"
 import { BARE_OUTPUT_UNSET, validateResolved } from "./config-validate.ts"
-import type { TurnstileConfig } from "./types.ts"
+import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "./types.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -47,6 +47,8 @@ export const ENV_KEYS = {
  */
 export const DEFAULT_EVIDENCE_PATTERN =
   "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
+
+export { DEFAULT_EPOCH_ENTRIES } from "./types.ts"
 
 export { BARE_OUTPUT_UNSET } from "./config-validate.ts"
 export { CANONICAL_REVIEWER_AGENT, DEFAULT_COMMIT_FORMAT } from "./config-merge.ts"
@@ -277,6 +279,25 @@ function defaultDecisionLedgerScalars(): Pick<TurnstileConfig, "decisionLedger">
 }
 
 /**
+ * Builds the tamper-evidence defaults. The chain is off by default so
+ * existing journal consumers and exact-shape tests keep the unchained row
+ * shape; `enabled: true` opts in.
+ * @returns The tamper-evidence-shaped default fields.
+ */
+function defaultTamperEvidence(): Pick<TurnstileConfig, "tamperEvidence"> {
+  return {
+    tamperEvidence: {
+      enabled: false,
+      anchor: "session-state",
+      // Matches journalRotateEveryEntries so epoch and rotation cadence
+      // align by default without coupling the keys.
+      epochEntries: DEFAULT_EPOCH_ENTRIES,
+      verifyOnSessionEnd: false,
+    },
+  }
+}
+
+/**
  * Builds the code defaults for every config key.
  * @param env Environment consulted for XDG_DATA_HOME only.
  * @returns The default TurnstileConfig matching the historical hardcoded
@@ -294,6 +315,7 @@ export function defaultConfig(
     ...defaultModeScalars(),
     ...defaultEnforcementScalars(),
     ...defaultDecisionLedgerScalars(),
+    ...defaultTamperEvidence(),
     agents: defaultAgents(),
     ...defaultMarkerSources(),
     toolPolicy: defaultToolPolicy(),
@@ -322,6 +344,7 @@ export function mergeConfig(
     toolPolicy: { ...base.toolPolicy },
     gitGates: { ...base.gitGates },
     decisionLedger: { ...base.decisionLedger },
+    tamperEvidence: { ...base.tamperEvidence },
   }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {

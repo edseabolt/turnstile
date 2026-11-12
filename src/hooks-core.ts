@@ -17,6 +17,7 @@ import {
   deltaWindowFloorChars,
   formatNearMissDiagnostics,
   GATE_RE,
+  verdictResultOf,
   VERDICT_RE,
 } from "./markers.ts"
 import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
@@ -44,6 +45,7 @@ import {
   type Delivery,
 } from "./delivery.ts"
 import type {
+  AnchorSink,
   ChildVerdict,
   GateState,
   Host,
@@ -88,6 +90,11 @@ export interface TurnstileContext {
   config: TurnstileConfig
   /** Telemetry journal writer. */
   journaler: Journaler
+  /**
+   * The anchor sinks bound at setup (empty until the setup bind runs; the
+   * session-end verify fans epoch refs out across them).
+   */
+  anchorSinks: AnchorSink[]
   /** Compiled GATE marker regex. */
   gateRe: RegExp
   /** Compiled VERDICT marker regex. */
@@ -394,6 +401,7 @@ interface CoreState {
   // deps
   policyText: string
   journaler: Journaler
+  anchorSinks: AnchorSink[]
   surfaceFlags: ContextSurfaceFlags
   gateRe: RegExp
   verdictRe: RegExp
@@ -1157,7 +1165,12 @@ function prependIntentNudgeRead(st: CoreState, event: ToolHookEvent): void {
 }
 
 function creditReviewApproval(st: CoreState, child: string, markerEvents: MarkerEvent[]): void {
-  if (!markerEvents.some((e) => e.kind === "verdict" && e.marker.includes("APPROVE"))) return
+  if (
+    !markerEvents.some(
+      (e) => e.kind === "verdict" && verdictResultOf(e.marker, st.verdictRe) === "APPROVE",
+    )
+  )
+    return
   const parent = st.ledger.parentOf(child)
   if (!st.gates.reviewEnsembleComplete(parent, st.ledger)) return
   st.ledger.state(parent).hasReviewApprove = true
@@ -1177,7 +1190,7 @@ async function attributeEdgeVerdict(
   const rec = st.ledger.childVerdict(child)
   const marker = own || rec.marker
   const markerSource = own ? "task-result" : rec.source || "task-result"
-  const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+  const result = verdictResultOf(marker, st.verdictRe)
   await st.journalPlanApproval(
     sid,
     child,
@@ -1199,7 +1212,7 @@ function selectAttributedChild(st: CoreState, sid: string): AttributedChildDisco
       : edge.filter((c) => st.ledger.childVerdict(c).recordedAt >= dispatchTs)
   const pool = [...edgeCandidates, ...plausible]
   const verdictOf = (c: string): "APPROVE" | "BLOCK" =>
-    st.ledger.childVerdict(c).marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+    verdictResultOf(st.ledger.childVerdict(c).marker, st.verdictRe)
   const unanimous = new Set(pool.map(verdictOf))
   const attributed =
     pool.length > 0 && unanimous.size === 1
@@ -1270,7 +1283,7 @@ async function attributePlanVerdict(st: CoreState, child: string, output: string
     // deliveries.
     const marker = own || rec.marker
     const markerSource = own ? "task-result" : rec.source
-    const result = marker.includes("APPROVE") ? "APPROVE" : "BLOCK"
+    const result = verdictResultOf(marker, st.verdictRe)
     await st.journalPlanApproval(sid, d.attributed, result, marker, markerSource, marker)
     return
   }
@@ -1425,6 +1438,9 @@ function retireTaskBody(st: CoreState, sessionID: string, s: GateState): void {
   // reject — route here).
   st.clearIntentNudge(sessionID)
   st.journaler.journal({ type: "task-complete", sessionID, plan: s.activePlan })
+  // Tamper evidence: close the partial epoch and publish pending anchor
+  // refs at the task-completion trigger (fail-open inside anchor()).
+  st.journaler.anchor("task-complete", sessionID)
 }
 
 function markTaskComplete(st: CoreState, sessionID: string, s: GateState): void {
@@ -1489,6 +1505,9 @@ function buildCoreConfig(opts: TurnstileOptions, st: CoreState): void {
   // the injected prose (caps, markers, journal paths) matches the mechanical
   // enforcement; it is constant for the load's lifetime.
   st.policyText = orchestratorPolicyFor(st.config)
+  // Anchor sinks bind later, at setup (after async resolution); until then
+  // the verify fan-out sees an empty list.
+  st.anchorSinks = []
 }
 
 function buildCoreJournaler(st: CoreState): void {
@@ -1507,6 +1526,10 @@ function buildCoreJournaler(st: CoreState): void {
     rotateEveryEntries: st.config.journalRotateEveryEntries,
     perSession: st.config.journalPerSession,
     sinkFor: (sessionID) => st.ledger.parentOf(sessionID),
+    tamper: {
+      enabled: st.config.tamperEvidence.enabled,
+      epochEntries: st.config.tamperEvidence.epochEntries,
+    },
   })
 }
 
@@ -2083,6 +2106,7 @@ type CoreDeps = Pick<
   TurnstileContext,
   | "config"
   | "journaler"
+  | "anchorSinks"
   | "gateRe"
   | "verdictRe"
   | "ledger"
@@ -2098,6 +2122,7 @@ function coreDeps(st: CoreState): CoreDeps {
   return {
     config: st.config,
     journaler: st.journaler,
+    anchorSinks: st.anchorSinks,
     gateRe: st.gateRe,
     verdictRe: st.verdictRe,
     ledger: st.ledger,

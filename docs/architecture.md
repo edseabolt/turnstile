@@ -616,7 +616,7 @@ full chain.
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (40 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (42 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
@@ -626,7 +626,7 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
   `task-complete`, `engagement`, `plan-rekey`, `marker-retry`, `plan-impact`,
   `plan-review`, `prov:stated`, `prov:denied`, `prov:waiver`,
-  `prov:override`). A
+  `prov:override`, `chain-epoch`, `chain-verify`). A
   `prov:stated` entry records one admitted parent-session human prompt into
   the decision ledger:
   `{type:"prov:stated", sessionID, text, truncated}` — `text` is the prompt
@@ -863,6 +863,10 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   file count grows with sessions (accepted; the shared-file bound alone is
   unchanged).
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
+- **`anchors.jsonl`** — the session-state anchor store (only written when
+  `tamperEvidence.enabled` is `true`; see the tamper-evidence subsection
+  below): one published epoch ref per line, appended by the `session-state`
+  sink at the task-completion and session-end triggers.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
@@ -902,6 +906,138 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   pending, and read or write failures are fail-open (journaled, never
   blocking).
 
+### Tamper evidence: the journal hash chain and anchors (opt-in)
+
+When `tamperEvidence.enabled` is `true` (default `false` — the legacy
+unchained row shape stays the default so existing journal consumers are
+untouched), every journaled row carries three chain fields appended after the
+payload: `seq` (per-file monotonic counter starting at 0), `prevHash` (the
+previous row's hash, `""` for the first), and `hash` — the SHA-256 over the
+canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
+`{prevHash, ts, payload}` (`src/chain.ts`, `node:crypto` only, zero runtime
+dependencies). Editing, deleting, or reordering any row breaks every hash
+after it.
+
+Epochs batch the chain for verification and anchoring: every
+`epochEntries` data rows (default 512, matching the rotation cadence) the
+journaler appends a `chain-epoch` row — itself chained like any other —
+carrying `{source, epoch, count, root, head}` where `root` is the Merkle root
+over the epoch's data-row hashes (pairwise `sha256(a + b)`, an odd trailing
+node hashed with itself, the single survivor hashed with itself once more)
+and `head` is the epoch's last data-row hash. Two more entry types ride the
+chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
+verdict, below).
+
+**Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
+the same file an attacker can rewrite proves nothing by itself, so each
+committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is published
+to independent durable stores — anchor sinks — at the task-completion
+trigger, fire-and-forget: every publish runs concurrently, a rejection
+journals an `anchor-publish:` `error` row, and nothing blocks the pipeline.
+Sinks are selected by `tamperEvidence.anchor`:
+
+| Sink                      | Trust domain | Store                                                                                                                                              | Defeats                                                                        |
+| ------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `session-state` (default) | host         | `<metricsDir>/anchors.jsonl`                                                                                                                       | lazy edit-in-place of the journal — a rewriter must also forge the second file |
+| `git-note`                | repo         | git notes on HEAD, `refs/notes/turnstile`                                                                                                          | anything short of rewriting the git object store                               |
+| `commit-trailer`          | repo         | `Turnstile-Anchor:` trailers on landing commits (pending refs parked in `.git/turnstile/trailer-anchors.jsonl` until the landing flow stamps them) | same, plus ties the epoch to project history                                   |
+| `{plugin: "<specifier>"}` | external     | whatever the imported factory implements                                                                                                           | strongest: a store outside the host's control                                  |
+
+An array selects several: all publish, verify intersects (a ref is anchored
+when any sink vouches; the report names the **weakest vouching trust
+domain** — external > repo > host). External plugin sinks are lazy-`import()`ed
+at setup with a factory shape-check; a malformed sink degrades to a journaled
+warning, never a boot failure. **Caveat:** a plugin specifier is code the
+host executes — only point `plugin:` at modules you trust as much as
+turnstile itself.
+
+**Verification.** `verifyJournalChain` (`src/verify.ts`) folds every journal
+file family (shared + per-session sinks) across its rotation generations
+oldest-first, re-derives each row's hash and each epoch's Merkle root, and
+reports the first broken link (`<family>:<line>: prevHash|seq|hash mismatch`
+or an epoch root/head mismatch). Epoch indices are monotonic per family
+across rotations — a seeding or resyncing journaler continues from the max
+committed index in the surviving generations — so a `source#epoch` ref
+identity is stable for the anchor cross-check. When rotation has pruned
+generations — the
+oldest surviving file is a numbered generation other than `.1` — its first
+chained row folds as a **trust root**: its `prevHash` points into a pruned
+generation, so the prevHash continuity check is waived for that row only
+(its own hash and a plausible `seq` are still verified). When
+`tamperEvidence.verifyOnSessionEnd` is
+`true` (default `false`), the session-idle handler runs it once per session
+and journals the `chain-verify` verdict, toasting on failure — shrinking the
+detection window from "whenever someone runs the CLI" to one session. The
+same check is available offline: `opencode-turnstile prov --verify` folds the
+chain and verifies the epoch refs against the configured sinks, exiting 0 on
+an intact anchored chain, 1 on the first broken link or any unanchored ref,
+and 2 on usage errors.
+
+**Differential characterization** (integration-tested in
+`tests/tamper-matrix.test.ts`): for each mutation of a captured honest
+journal — built through the real write path with a rotation generation and a
+task-completion anchor — the observed `prov --verify` verdict must equal the
+characterized verdict, so a detector regression (false negative or false
+positive) fails loudly:
+
+| #   | Mutation                                                                                    | Expected result                                                                                                                        | Caught by                                                                                                                                            |
+| --- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | none (control)                                                                              | verify passes                                                                                                                          | —                                                                                                                                                    |
+| 1   | edit one row's payload                                                                      | fail, first broken link reported                                                                                                       | chain fold                                                                                                                                           |
+| 2   | delete a row                                                                                | fail                                                                                                                                   | chain fold                                                                                                                                           |
+| 3   | insert a fabricated row                                                                     | fail                                                                                                                                   | chain fold                                                                                                                                           |
+| 4   | reorder rows                                                                                | fail                                                                                                                                   | chain fold / epoch root                                                                                                                              |
+| 5   | fork (branch from an interior row)                                                          | fail                                                                                                                                   | chain fold / epoch root                                                                                                                              |
+| 6   | rewrite-all with recomputed chain                                                           | chain folds clean, anchor check fails                                                                                                  | anchor                                                                                                                                               |
+| 7   | edit rows within the un-anchored tail                                                       | **passes** — documented residual hole, bounded by the anchor cadence                                                                   | —                                                                                                                                                    |
+| 8   | truncate-and-continue (recurring-cleaner attack: truncate, keep logging into a fresh chain) | fail — previously published epoch roots become underivable from the current file, even though the new chain folds clean and re-anchors | anchor (CLI surfaces it via the unanchored-ref check against the retained store; missing-root detection confirmed at the `verifyJournalChain` level) |
+
+Row 7 is deliberate: characterizing what the mechanism _cannot_ see is part
+of the verification. Its scope is bounded by the anchoring trigger — anything
+written after the last task-completion/session-end anchor is unverifiable
+until the next one; if the anchor cadence changes, re-characterize row 7.
+Row 8 differs from a mid-file deletion (row 2): the surviving file is
+internally valid from a new genesis, so only the anchor comparison catches
+it. The harness also confirms a second task-completion anchor after the
+truncation re-anchors the fresh chain without masking row 8's failure.
+Integrity ≠ fidelity: a chain-valid journal that recorded fabricated
+execution hashes fine and passes every row; detecting that class needs
+ground-truth correlation outside the journal (out of scope here).
+
+**Honesty caveats.** Integrity is not fidelity: the chain proves the
+journal bytes are unchanged since they were written — it cannot prove the
+_content_ was true (a gate that lied at write time hashes just as cleanly).
+And detection latency is bounded by verification, not by chaining: an
+attacker who controls the host can recompute the whole chain and forge the
+host-domain `session-state` anchor too; only the repo- and external-domain
+sinks raise the cost above "edit two files", and nothing here stops a
+determined host-level adversary (that is the tamper matrix's problem, out of
+scope here). Deletion and rotation semantics: anchor refs outlive the rows
+they vouch for, so absence detection keys on the committed root (with the
+monotonic epoch index as a bound), not on the ref's presence in the fold.
+An anchored ref is reported absent only when its root matches no retained
+epoch AND its index is at or above the family's lowest retained index — a
+gap within, or truncation of, retained history. An anchored epoch whose
+commit row has rotated out entirely is satisfied silently: after that row
+is pruned, absence is undetectable, the same trust domain as journal
+deletion. Steady-state `verify` exit 0 is the expected signal; a red verify
+means either genuine truncation within retained history or a
+store/journal mismatch worth investigating. The anchor store grows by one
+ref per epoch commit (duplicates skipped by the session-state sink), is
+host-local, and is bounded only by the epoch commit rate. A hostile writer
+can also forge an arbitrarily large epoch index and pollute identity
+numbering, but the forged commit's ref then verifies unanchored — the
+host-trust-domain ceiling already described above. One deletion
+caveat remains: because
+pruning makes the oldest surviving generation's first row a trust root,
+deleting the oldest generations resets the chain root — the same trust
+domain as deleting the journal outright. And verify over an empty or wholly
+deleted journal with an empty anchor store is vacuously ok: absence of rows
+is not evidence of integrity, which is why the anchors live in a second
+file (or sink domain) that still names the epochs the deleted journal
+should have contained — with anchors retained, that deletion is exactly
+what the absence check reports.
+
 On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file
 exists) and then every `sessions/` file family's generations the same way
@@ -914,7 +1050,15 @@ sorts oldest) and keeps the last `replayTailLines` lines (default 2000)
 globally. Last-wins folds are per-sessionID and each sessionID's rows live
 in exactly one file, so cross-file ordering cannot change any per-session
 fold; the global `ts` sort only preserves the observe-mode global totals'
-last-wins behavior. Per-file reads stay tail-capped with an early stop: the
+last-wins behavior. The global slice is also an inclusion bound: each
+session-sink family is read with the full `replayTailLines` window, but the
+slice keeps the last window overall — with a hot shared journal plus many
+session sinks, a quiet session's entire contribution can fall outside the
+kept tail, so its boot gate restore silently fails toward strict (the same
+eviction spirit as journal rotation). The merge also bounds boot memory, not
+just boot I/O: all read lines are held at once, O((1 + number of
+session-sink families) × `replayTailLines`) lines in the worst case — a
+bound, not a steady-state cost. Per-file reads stay tail-capped with an early stop: the
 walk ends inside the newest
 generation that alone satisfies the tail bound, so boot I/O stays bounded by
 the retained-generation sizes, never the full
