@@ -18,7 +18,12 @@
     "plan-reviewer",
     "executor",
     "test-runner",
-    "reviewer"
+    "reviewer",
+    "decision-provenance",
+    "provenance",
+    "tamper-evident",
+    "audit-trail",
+    "merkle-tree"
   ],
   "type": "module",
   "license": "MIT",
