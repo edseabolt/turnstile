@@ -290,7 +290,9 @@ function consumeRow(row, ctx, source) {
     ctx.epochs.push({
       source,
       epoch: typeof row.payload.epoch === "number" ? row.payload.epoch : -1,
-      count: ctx.epochHashes.length,
+      // The commit row's declared count — for a pruned window this is the
+      // committed count, larger than the surviving leaf list.
+      count: typeof row.payload.count === "number" ? row.payload.count : ctx.epochHashes.length,
       root,
       head,
       ts: row.ts,
@@ -309,6 +311,7 @@ function consumeRow(row, ctx, source) {
       position: ctx.epochHashes.length,
       ts: row.ts,
       payload: row.payload,
+      incompleteWindow: ctx.windowIncomplete,
     })
   }
   ctx.epochHashes.push(row.hash)
@@ -462,7 +465,7 @@ export function verifyFamilies(metricsDir, maxGenerations = 5) {
  *     object[], rows: number, collected: object[] }} The per-family
  *     verdicts, the collected epoch refs, the total folded row count, and
  *     every collected data row attributed to its epoch (each carrying
- *     `{ source, seq, hash, epoch, position, ts, payload }`).
+ *     `{ source, seq, hash, epoch, position, ts, payload, incompleteWindow }`).
  */
 export function verifySessionFamilies(metricsDir, sessionID, maxGenerations = 5) {
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
@@ -488,6 +491,7 @@ export function verifySessionFamilies(metricsDir, sessionID, maxGenerations = 5)
         position: r.position,
         ts: r.ts,
         payload: r.payload,
+        incompleteWindow: r.incompleteWindow,
       })
     }
   }

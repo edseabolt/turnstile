@@ -187,7 +187,10 @@ export interface EpochSummary {
   source: string
   /** 0-based epoch index within the family. */
   epoch: number
-  /** Number of data rows the epoch covers. */
+  /** The epoch commit row's declared data-row count — for a window whose
+   *  earliest rows were pruned this is the committed count, larger than the
+   *  surviving leaf list; when the commit row's count is not a number, the
+   *  surviving data-row count. */
   count: number
   /** The committed Merkle root over the epoch's data-row hashes. */
   root: string
@@ -246,6 +249,11 @@ export interface CollectedRow {
   ts: string
   /** The row's payload (chain fields excluded). */
   payload: Record<string, unknown>
+  /** True when the row accumulated into an epoch window whose earliest data
+   *  rows were pruned (the fold started at a trust root and this window had
+   *  not yet closed): the surviving leaf list is partial, so no per-row
+   *  inclusion proof can be derived against it. */
+  incompleteWindow: boolean
 }
 
 /** The fold verdict for one file family. */
@@ -424,6 +432,7 @@ function consumeRow(
       position: ctx.epochHashes.length,
       ts: row.ts,
       payload: row.payload,
+      incompleteWindow: ctx.windowIncomplete,
     })
   }
   ctx.epochHashes.push(row.hash as string)
@@ -499,7 +508,7 @@ function closeEpoch(
   epochs.push({
     source,
     epoch: typeof row.payload.epoch === "number" ? row.payload.epoch : -1,
-    count: epochHashes.length,
+    count: typeof row.payload.count === "number" ? row.payload.count : epochHashes.length,
     root: root as string,
     head: head as string,
     ts: row.ts,

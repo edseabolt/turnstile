@@ -984,8 +984,12 @@ anchor-sink verdicts, and localizes a mutated `prov:*` row (row + epoch)
 while leaving the global verdict and the tamper matrix untouched.
 Open-window rows — written after the last epoch close — are reported as
 not-yet-anchored (`epoch: null`, with a reason) and never flip the exit
-code. `--json` is honored in scoped mode only; plain `--verify` keeps its
-human-only output.
+code. The same applies to rows whose epoch window spans a pruned rotation
+generation: the surviving leaf list is partial, so no inclusion proof can
+be derived (`epochRoot`/`merklePath`/`merkleOk` null, an "epoch window
+incomplete" reason), while `epochs[].count` still reports the commit row's
+declared committed count. `--json` is honored in scoped mode only; plain
+`--verify` keeps its human-only output.
 
 **Differential characterization** (integration-tested in
 `tests/tamper-matrix.test.ts`): for each mutation of a captured honest

@@ -384,7 +384,10 @@ dumb, derivation is offline. Read-only; never writes or blocks.
 Scoped verify folds only the session's sink and the shared journal, reports
 the first broken link with the mutated `prov:*` row and its epoch localized,
 and reports each row's inclusion proof against the anchored epoch roots;
-rows written after the last epoch close report `epoch: null` / not anchored.
+rows written after the last epoch close report `epoch: null` / not anchored,
+and rows whose epoch window spans a pruned rotation generation report null
+proof fields with an "epoch window incomplete" reason (the surviving leaf
+list is partial) — neither flips the exit code.
 
 Capture is gated on `decisionLedger.enabled` (default `true`; `false` disables
 all `prov:*` journaling).

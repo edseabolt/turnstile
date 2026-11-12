@@ -486,6 +486,42 @@ describe("foldChain", () => {
     )
     assert.equal(v.rows![0]!.payload.type, "prov:stated")
     assert.equal(v.rows![0]!.hash, r0.hash)
+    assert.equal(v.rows![0]!.incompleteWindow, false)
+  })
+
+  it("falls back to the surviving row count when the commit row's count is not a number", () => {
+    const r0 = chainedRow("", 0, { type: "a" })
+    const epoch = chainedRow(r0.hash, 1, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      root: merkleRoot([r0.hash]),
+      head: r0.hash,
+    })
+    const v = foldChain([r0, epoch], "shared")
+    assert.equal(v.status, "ok")
+    assert.equal(v.status === "ok" && v.epochs[0]!.count, 1)
+  })
+
+  it("collectRows flags rows of a window that includes the trust root", () => {
+    const r0 = chainedRow("pruned-hash", 7, { type: "prov:stated", text: "one" })
+    const epoch = chainedRow(r0.hash, 8, {
+      type: "chain-epoch",
+      source: "shared",
+      epoch: 0,
+      count: 2,
+      root: "declared-root",
+      head: r0.hash,
+    })
+    const r1 = chainedRow(epoch.hash, 9, { type: "prov:stated", text: "two" })
+    const v = foldChain([r0, epoch, r1], "shared", {
+      chainRootAtStart: true,
+      collectRows: true,
+    })
+    assert.equal(v.status, "ok")
+    if (v.status !== "ok") return
+    assert.equal(v.rows![0]!.incompleteWindow, true)
+    assert.equal(v.rows![1]!.incompleteWindow, false)
   })
 
   it("attaches provContext when the broken row is a prov row", () => {

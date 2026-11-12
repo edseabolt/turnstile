@@ -223,6 +223,9 @@ test("a mutated prov row is localized to row and epoch", () => {
     assert.equal(j.broken.prov.index, 1)
     assert.match(String(j.broken.prov.epoch), /^\d+$/)
     assert.equal(j.broken.prov.committed, false)
+    // The committed count is never the -1 sentinel: an epoch the fold
+    // summarized reports its count, one it did not reach reports null.
+    assert.ok(j.epochs.every((e: Entry) => e.count === null || typeof e.count === "number"))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -316,6 +319,92 @@ test("open-window prov rows render the open-window line in human output", () => 
     assert.match(
       r.stdout,
       /stated {2}trailing prompt {2}row=[0-9a-f]{8} epoch=open anchored=no \(not yet committed\)/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("pruned-window rows report null proofs and the committed epoch count", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"), { recursive: true })
+    const ts = "2026-01-01T10:00:00.000Z"
+    const hashes: string[] = []
+    let prevHash = "pruned-hash" // points into a rotation generation that no longer exists
+    let seq = 0
+    const append = (sink: string[], payload: Entry): string => {
+      const full = { ts, ...payload }
+      const hash = recordHash(prevHash, ts, full)
+      sink.push(JSON.stringify({ ...full, seq, prevHash, hash }))
+      hashes.push(hash)
+      prevHash = hash
+      seq++
+      return hash
+    }
+    const prov = (text: string): Entry => ({ type: "prov:stated", sessionID: "ses1", text })
+    // Epoch rows r0–r1 lived in generation .1, which rotation deleted; .2
+    // survives and folds as a trust root.
+    const gen2: string[] = []
+    append(gen2, prov("pruned prompt a"))
+    append(gen2, prov("pruned prompt b"))
+    writeFileSync(join(dir, "sessions", "ses1.jsonl.2"), gen2.join("\n") + "\n")
+    const current: string[] = []
+    append(current, prov("surviving prompt c"))
+    append(current, prov("surviving prompt d"))
+    append(current, prov("surviving prompt e"))
+    const root = merkleRoot(hashes)
+    const head = prevHash
+    append(current, { type: "chain-epoch", source: "ses1", epoch: 0, count: 5, root, head })
+    // A second, complete epoch: its rows prove inclusion normally.
+    hashes.length = 0
+    append(current, prov("later prompt f"))
+    append(current, prov("later prompt g"))
+    const root1 = merkleRoot(hashes)
+    const head1 = prevHash
+    append(current, {
+      type: "chain-epoch",
+      source: "ses1",
+      epoch: 1,
+      count: 2,
+      root: root1,
+      head: head1,
+    })
+    writeFileSync(join(dir, "sessions", "ses1.jsonl"), current.join("\n") + "\n")
+    appendAnchor(dir, "ses1", { epoch: 0, root, head })
+    appendAnchor(dir, "ses1", { epoch: 1, root: root1, head: head1 })
+    const r = runProv(dir, ["--verify", "--session", "ses1", "--json"])
+    assert.equal(code(r), 0, `stderr: ${r.stderr}`)
+    const j = JSON.parse(r.stdout)
+    assert.equal(j.chain.status, "ok")
+    assert.equal(j.rows.length, 7)
+    const pruned = j.rows.filter((x: Entry) => x.epoch === 0)
+    assert.equal(pruned.length, 5)
+    for (const row of pruned) {
+      assert.equal(row.epoch, 0)
+      assert.equal(row.epochRoot, null)
+      assert.equal(row.merklePath, null)
+      assert.equal(row.merkleOk, null)
+      assert.equal(row.anchored, true)
+      assert.equal(row.reason, "epoch window incomplete (earlier rows pruned)")
+    }
+    for (const row of j.rows.filter((x: Entry) => x.epoch === 1)) {
+      assert.equal(row.merkleOk, true)
+      assert.equal(row.reason, null)
+    }
+    assert.equal(j.epochs.length, 2)
+    assert.equal(j.epochs[0].count, 5)
+    assert.equal(j.epochs[1].count, 2)
+    assert.equal(j.epochs[0].anchored, true)
+    const human = runProv(dir, ["--verify", "--session", "ses1"])
+    assert.equal(code(human), 0)
+    assert.match(
+      human.stdout,
+      /stated {2}pruned prompt a {2}row=[0-9a-f]{8} epoch=0 merkle=pruned anchored=host \(earlier rows pruned\)/,
+    )
+    assert.match(
+      human.stdout,
+      /stated {2}later prompt g {2}row=[0-9a-f]{8} epoch=1 merkle=ok anchored=host/,
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
