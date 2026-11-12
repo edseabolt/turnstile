@@ -76,17 +76,18 @@ const JOURNALER_OPTIONS = Object.freeze({
 })
 
 /**
- * Runs `prov --verify` against a temp metrics dir. The spawned CLI reads an
- * empty-JSON temp config instead of the developer's real
- * `~/.config/opencode/turnstile.json` (the `isolatedEnv()` pattern in
+ * Runs `prov --verify` against a temp metrics dir. The spawned CLI reads a
+ * temp config (an empty JSON object by default) instead of the developer's
+ * real `~/.config/opencode/turnstile.json` (the `isolatedEnv()` pattern in
  * tests/helpers.ts), so config resolution stays hermetic.
  * @param dir The metrics directory to verify.
+ * @param config The config object written to the hermetic temp config file.
  * @returns The spawn result with stdout coerced to string.
  */
-function runProvVerify(dir: string) {
+function runProvVerify(dir: string, config: Record<string, unknown> = {}) {
   const cfgDir = mkdtempSync(join(tmpdir(), "turnstile-tamper-cfg-"))
   const configPath = join(cfgDir, "empty-config.json")
-  writeFileSync(configPath, "{}")
+  writeFileSync(configPath, JSON.stringify(config))
   try {
     return spawnSync(process.execPath, [provScript, "--verify"], {
       env: { ...process.env, TURNSTILE_CONFIG: configPath, TURNSTILE_METRICS_DIR: dir },
@@ -692,15 +693,12 @@ test("commit-trailer sink: missing before the trailer, ok after, mismatch on a f
   }
 })
 
-test("a plugin anchor sink participates in verification and can fail it", async () => {
-  const dir = await buildHonestJournal()
-  try {
-    // The negative control: a registered external sink whose verify rejects
-    // any head it did not publish itself.
-    const mod = join(dir, "negative-control-sink.mjs")
-    writeFileSync(
-      mod,
-      `export default () => {
+/**
+ * The negative-control plugin source: a registered external sink whose verify
+ * rejects any head it did not publish itself. Shared by the in-process test
+ * and the CLI-level test so both exercise the same module bytes.
+ */
+const NEGATIVE_CONTROL_SINK_MJS = `export default () => {
   const published = new Map()
   return {
     id: "negative-control",
@@ -714,8 +712,14 @@ test("a plugin anchor sink participates in verification and can fail it", async 
       return { status: "ok", anchoredAt: ref.ts }
     },
   }
-}\n`,
-    )
+}
+`
+
+test("a plugin anchor sink participates in verification and can fail it", async () => {
+  const dir = await buildHonestJournal()
+  try {
+    const mod = join(dir, "negative-control-sink.mjs")
+    writeFileSync(mod, NEGATIVE_CONTROL_SINK_MJS)
     const { sinks, warnings } = await resolveAnchorSinks(
       [{ plugin: pathToFileURL(mod).href, options: {} }],
       { metricsDir: dir, projectDir: dir },
@@ -733,6 +737,30 @@ test("a plugin anchor sink participates in verification and can fail it", async 
     assert.equal(after.ok, true, "the plugin vouches for the refs it published")
     const { weakest } = await verifyAnchors([sink], [{ ...before.refs[0]!, head: "f".repeat(64) }])
     assert.equal(weakest[0]!.domain, null, "a mismatched head is unanchored")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a mismatched plugin sink fails the real prov --verify CLI", async () => {
+  const dir = await buildHonestJournal()
+  try {
+    const mod = join(dir, "negative-control-sink.mjs")
+    writeFileSync(mod, NEGATIVE_CONTROL_SINK_MJS)
+    // Pins the CLI's standalone anchor-sink mirror (scripts/chain-read.mjs):
+    // it resolves a {plugin} selection from the config file, loads the module,
+    // and folds its mismatch verdict into the exit-1 report — the CLI-side
+    // counterpart of the in-process negative control above. The positive
+    // ("ok") direction cannot cross the process boundary here: the plugin's
+    // published refs live in an in-process Map, so a spawned CLI always sees
+    // an unpublished head. The ok-direction equivalence is pinned in-process
+    // by the test above, and the builtin sinks' CLI coverage lives in the
+    // matrix rows 0-9.
+    const r = runProvVerify(dir, {
+      tamperEvidence: { anchor: [{ plugin: pathToFileURL(mod).href, options: {} }] },
+    })
+    assert.equal(code(r), 1, r.stdout)
+    assert.match(r.stdout, /unanchored: shared#\d+: head not published by this sink/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
