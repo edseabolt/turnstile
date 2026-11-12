@@ -63,15 +63,38 @@ interface Row {
 }
 
 /**
- * Runs `prov --verify` against a temp metrics dir.
+ * The journaler options every honest fixture builds with: rotation on every
+ * append (`maxBytes: 1` + `rotateEveryEntries: 1`) and an epoch commit every
+ * 4 data rows, with tamper evidence on.
+ */
+const JOURNALER_OPTIONS = Object.freeze({
+  trace: false,
+  maxBytes: 1,
+  maxGenerations: 5,
+  rotateEveryEntries: 1,
+  tamper: { enabled: true, epochEntries: 4 },
+})
+
+/**
+ * Runs `prov --verify` against a temp metrics dir. The spawned CLI reads an
+ * empty-JSON temp config instead of the developer's real
+ * `~/.config/opencode/turnstile.json` (the `isolatedEnv()` pattern in
+ * tests/helpers.ts), so config resolution stays hermetic.
  * @param dir The metrics directory to verify.
  * @returns The spawn result with stdout coerced to string.
  */
 function runProvVerify(dir: string) {
-  return spawnSync(process.execPath, [provScript, "--verify"], {
-    env: { ...process.env, TURNSTILE_METRICS_DIR: dir },
-    encoding: "utf8",
-  })
+  const cfgDir = mkdtempSync(join(tmpdir(), "turnstile-tamper-cfg-"))
+  const configPath = join(cfgDir, "empty-config.json")
+  writeFileSync(configPath, "{}")
+  try {
+    return spawnSync(process.execPath, [provScript, "--verify"], {
+      env: { ...process.env, TURNSTILE_CONFIG: configPath, TURNSTILE_METRICS_DIR: dir },
+      encoding: "utf8",
+    })
+  } finally {
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
 }
 
 /**
@@ -93,14 +116,7 @@ function code(res: { status: number | null; exitCode?: number | null }): number 
  */
 async function buildHonestJournal(): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "turnstile-tamper-matrix-"))
-  const journaler = createJournaler({
-    metricsDir: dir,
-    trace: false,
-    maxBytes: 1,
-    maxGenerations: 5,
-    rotateEveryEntries: 1,
-    tamper: { enabled: true, epochEntries: 4 },
-  })
+  const journaler = createJournaler({ metricsDir: dir, ...JOURNALER_OPTIONS })
   journaler.bindAnchorSinks([sessionStateSink({ metricsDir: dir, projectDir: dir })])
   for (let i = 0; i < 10; i++) {
     journaler.journal({ type: "gate", sessionID: "p1", result: "PASS", i })
@@ -269,14 +285,7 @@ function reforgeAll(dir: string): void {
  * @param dir The metrics directory.
  */
 async function appendTailRows(dir: string): Promise<void> {
-  const journaler = createJournaler({
-    metricsDir: dir,
-    trace: false,
-    maxBytes: 1,
-    maxGenerations: 5,
-    rotateEveryEntries: 1,
-    tamper: { enabled: true, epochEntries: 4 },
-  })
+  const journaler = createJournaler({ metricsDir: dir, ...JOURNALER_OPTIONS })
   journaler.journal({ type: "gate", sessionID: "p1", result: "PASS", i: 10 })
   journaler.journal({ type: "gate", sessionID: "p1", result: "PASS", i: 11 })
 }
@@ -359,14 +368,7 @@ async function truncateAndContinue(dir: string): Promise<void> {
   rmSync(file, { force: true })
   const genesis = buildGenesisLines()
   writeFileSync(file, genesis.join("\n") + "\n")
-  const journaler = createJournaler({
-    metricsDir: dir,
-    trace: false,
-    maxBytes: 1,
-    maxGenerations: 5,
-    rotateEveryEntries: 1,
-    tamper: { enabled: true, epochEntries: 4 },
-  })
+  const journaler = createJournaler({ metricsDir: dir, ...JOURNALER_OPTIONS })
   journaler.bindAnchorSinks([sessionStateSink({ metricsDir: dir, projectDir: dir })])
   journaler.journal({ type: "gate", sessionID: "p1", result: "PASS", i: 100 })
   await journaler.anchorAsync("task-complete")
@@ -386,25 +388,33 @@ const ROWS: Row[] = [
     id: 2,
     name: "delete a row",
     mutate: deleteRow,
-    expect: { exit: 1, match: /chain broken at shared:\d+: (prevHash|seq) mismatch/ },
+    // Pinned to the observed first-broken-link reason: the surviving
+    // successor's prevHash points at the deleted row.
+    expect: { exit: 1, match: /chain broken at shared:\d+: prevHash mismatch/ },
   },
   {
     id: 3,
     name: "insert a fabricated row",
     mutate: insertFabricatedRow,
-    expect: { exit: 1, match: /chain broken at shared:\d+: (prevHash|hash) mismatch/ },
+    // Pinned to the observed first-broken-link reason: the fabricated row's
+    // declared hash cannot match its modified payload.
+    expect: { exit: 1, match: /chain broken at shared:\d+: hash mismatch/ },
   },
   {
     id: 4,
     name: "reorder rows",
     mutate: reorderRows,
-    expect: { exit: 1, match: /chain broken at shared:\d+: (prevHash|seq|hash) mismatch/ },
+    // Pinned to the observed first-broken-link reason: the swapped row's
+    // prevHash no longer matches the running chain state.
+    expect: { exit: 1, match: /chain broken at shared:\d+: prevHash mismatch/ },
   },
   {
     id: 5,
     name: "fork (branch from an interior row)",
     mutate: forkInteriorRow,
-    expect: { exit: 1, match: /chain broken at shared:\d+: (hash|prevHash) mismatch/ },
+    // Pinned to the observed first-broken-link reason: the forked row's
+    // prevHash points at the original, breaking seq/prevHash continuity.
+    expect: { exit: 1, match: /chain broken at shared:\d+: prevHash mismatch/ },
   },
   {
     id: 6,
@@ -499,12 +509,28 @@ test("tamper matrix row 8: the fresh chain folds clean and re-anchors without ma
     // the fresh chain retains epochs 0 and 1 with different roots (root
     // mismatch) and no epoch 2 at all (absent from journal).
     assert.equal(report.absentAnchored.length, 3)
+    assert.equal(
+      report.absentAnchored.filter((d) => /absent from journal/.test(d)).length,
+      1,
+      "exactly one anchored epoch is absent from the journal",
+    )
+    assert.equal(
+      report.absentAnchored.filter((d) => /root mismatch/.test(d)).length,
+      2,
+      "exactly two anchored epochs show a root mismatch",
+    )
     assert.equal(report.ok, false)
     const r = runProvVerify(dir)
     assert.equal(code(r), 1, r.stdout)
     // The retained store's stale shared#0/shared#1 refs shadow the fresh
     // epochs at the same indices, so the CLI reports the anchor mismatch.
     assert.match(r.stdout, /unanchored: shared#0: .*root\/head differ/)
+    // The CLI also prints the per-epoch absent-anchored details — but not
+    // here: reportUnanchored (scripts/prov.mjs) exits 1 on the stale
+    // shared#0/shared#1 refs before reaching the absent-anchored print, so
+    // the `anchored epoch …` lines are only observable in-process via
+    // verifyJournalChain's report.absentAnchored (asserted above, wording
+    // from src/verify.ts absentAnchoredRefs).
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
