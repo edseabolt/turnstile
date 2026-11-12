@@ -9,6 +9,10 @@
  *    reports the row/epoch counts and the weakest vouching domain;
  *  - a tampered row exits 1 with the first broken link;
  *  - an intact chain with unanchored epoch refs exits 1;
+ *  - a journal truncated within retained history with a stale anchored
+ *    epoch exits 1 with the absent-epoch detail;
+ *  - an anchored epoch whose root matches no retained ref exits 1 with
+ *    the root-mismatch detail;
  *  - an empty metrics directory exits 0 (vacuously ok);
  *  - usage errors (unknown flag) exit 2.
  *
@@ -19,7 +23,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -60,19 +64,22 @@ function code(res: { status: number | null; exitCode?: number | null }): number 
 }
 
 /**
- * Seeds a chained shared journal: `count` data rows followed by a
- * `chain-epoch` commit, all hashed through the real src/ recordHash.
+ * Seeds a chained shared journal: one data row plus a `chain-epoch`
+ * commit per requested epoch, all hashed through the real src/
+ * recordHash.
  * @param dir The temp metrics directory.
- * @param count The number of data rows before the epoch commit.
- * @returns The epoch ref the commit carries (root/head).
+ * @param counts The number of data rows before each epoch commit.
+ * @returns The epoch refs the commits carry (root/head), in epoch order.
  */
-function seedChainedJournal(dir: string, count: number): { root: string; head: string } {
+function seedChainedEpochs(
+  dir: string,
+  counts: number[],
+): { root: string; head: string; epoch: number }[] {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, "turnstile.jsonl")
   const lines: string[] = []
   let prevHash = ""
   let seq = 0
-  const hashes: string[] = []
   const append = (payload: Entry): string => {
     const ts = "2026-01-01T10:00:00.000Z"
     const full = { ts, ...payload }
@@ -82,40 +89,63 @@ function seedChainedJournal(dir: string, count: number): { root: string; head: s
     seq++
     return hash
   }
-  for (let i = 0; i < count; i++) {
-    hashes.push(append({ type: "gate", sessionID: "ses1", result: "PASS", tests: i }))
+  const refs: { root: string; head: string; epoch: number }[] = []
+  for (let epoch = 0; epoch < counts.length; epoch++) {
+    const hashes: string[] = []
+    for (let i = 0; i < counts[epoch]!; i++) {
+      hashes.push(append({ type: "gate", sessionID: "ses1", result: "PASS", tests: i }))
+    }
+    const root = merkleRoot(hashes)
+    const head = prevHash
+    append({ type: "chain-epoch", source: "shared", epoch, count: counts[epoch], root, head })
+    refs.push({ root, head, epoch })
   }
-  const root = merkleRoot(hashes)
-  const head = prevHash
-  append({
-    type: "chain-epoch",
-    source: "shared",
-    epoch: 0,
-    count,
-    root,
-    head,
-  })
   writeFileSync(file, lines.join("\n") + "\n")
-  return { root, head }
+  return refs
+}
+
+/**
+ * Seeds a chained shared journal with a single epoch.
+ * @param dir The temp metrics directory.
+ * @param count The number of data rows before the epoch commit.
+ * @returns The epoch ref the commit carries (root/head).
+ */
+function seedChainedJournal(
+  dir: string,
+  count: number,
+): { root: string; head: string; epoch: number } {
+  return seedChainedEpochs(dir, [count])[0]!
+}
+
+/**
+ * Appends one session-state anchor line to the anchors file.
+ * @param dir The temp metrics directory.
+ * @param ref The epoch ref to anchor (root/head plus its epoch).
+ */
+function appendAnchor(dir: string, ref: { root: string; head: string; epoch: number }): void {
+  const file = join(dir, "anchors.jsonl")
+  const lines = existsSync(file) ? readLines(file) : []
+  lines.push(
+    JSON.stringify({
+      sink: "session-state",
+      source: "shared",
+      epoch: ref.epoch,
+      root: ref.root,
+      head: ref.head,
+      ts: "2026-01-01T10:00:01.000Z",
+    }),
+  )
+  writeFileSync(file, lines.join("\n") + "\n")
 }
 
 /**
  * Writes the session-state anchors file with one ref.
  * @param dir The temp metrics directory.
- * @param ref The epoch ref to anchor.
+ * @param ref The epoch ref to anchor (root/head plus its epoch).
  */
-function seedAnchors(dir: string, ref: { root: string; head: string }): void {
-  writeFileSync(
-    join(dir, "anchors.jsonl"),
-    JSON.stringify({
-      sink: "session-state",
-      source: "shared",
-      epoch: 0,
-      root: ref.root,
-      head: ref.head,
-      ts: "2026-01-01T10:00:01.000Z",
-    }) + "\n",
-  )
+function seedAnchors(dir: string, ref: { root: string; head: string; epoch: number }): void {
+  writeFileSync(join(dir, "anchors.jsonl"), "")
+  appendAnchor(dir, ref)
 }
 
 test("prov --verify exits 0 on an intact anchored chain", () => {
@@ -155,6 +185,44 @@ test("prov --verify exits 1 when epoch refs are unanchored", () => {
     const r = runProv(dir, ["--verify"])
     assert.equal(code(r), 1)
     assert.match(r.stdout, /unanchored: shared#0: shared#0 not anchored/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("prov --verify exits 1 when an anchored epoch is absent from the journal", () => {
+  const dir = metricsDir()
+  try {
+    const refs = seedChainedEpochs(dir, [1, 1])
+    seedAnchors(dir, refs[0]!)
+    appendAnchor(dir, refs[1]!)
+    // Hand-truncate within retained history: drop epoch 1's rows. The
+    // retained fold still vouches for epoch 0, so the chain is ok and the
+    // stale anchored epoch is reported as absent instead.
+    const file = join(dir, "turnstile.jsonl")
+    writeFileSync(file, readLines(file).slice(0, 2).join("\n") + "\n")
+    const r = runProv(dir, ["--verify"])
+    assert.equal(code(r), 1)
+    assert.match(r.stdout, /^anchored epoch shared#1 absent from journal$/m)
+    assert.doesNotMatch(r.stdout, /chain broken|unanchored:/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("prov --verify exits 1 when an anchored epoch root matches no retained ref", () => {
+  const dir = metricsDir()
+  try {
+    const refs = seedChainedEpochs(dir, [1])
+    seedAnchors(dir, refs[0]!)
+    // A second, re-forged anchor line for the same epoch: the sink verifies
+    // against the first matching line (ok), while the absent-anchored scan
+    // sees the forged root matching no retained ref.
+    appendAnchor(dir, { root: "forged-root", head: refs[0]!.head, epoch: 0 })
+    const r = runProv(dir, ["--verify"])
+    assert.equal(code(r), 1)
+    assert.match(r.stdout, /^anchored epoch shared#0 root mismatch \(reforged commit\?\)$/m)
+    assert.doesNotMatch(r.stdout, /chain broken|unanchored:/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
