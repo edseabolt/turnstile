@@ -167,6 +167,53 @@ test("synthetic non-pipeline-agent completion is parsed but credits nothing", as
   }
 })
 
+/**
+ * Two background children emitting byte-identical verdict markers both
+ * credit: the per-child dedup scope keeps one child's first-sight marker
+ * from suppressing the other's.
+ */
+test("two background children with identical markers both credit", async () => {
+  const { h, dispose, metricsDir, restoreCwd } = await boot()
+  try {
+    await seedChildEdge(h, "c1", "p1", "plan-reviewer")
+    await seedChildEdge(h, "c2", "p1", "plan-reviewer")
+    await pushSynthetic(h, "p1", syntheticItem("c1", APPROVE), "inb-1")
+    await pushSynthetic(h, "p1", syntheticItem("c2", APPROVE), "inb-2")
+    const plans = entriesOf(metricsDir, "plan")
+    assert.equal(plans.length, 2, "both children's approvals are credited")
+    assert.deepEqual(plans.map((e) => e.raw).sort(), ["c1", "c2"], "each child is attributed once")
+  } finally {
+    dispose()
+    restoreCwd()
+  }
+})
+
+/**
+ * A prior streamed verdict with an identical marker (a different dedup
+ * scope) does not suppress the synthetic completion's credit.
+ */
+test("a prior streamed identical marker does not suppress the synthetic credit", async () => {
+  const { h, dispose, metricsDir, restoreCwd } = await boot()
+  try {
+    await seedChildEdge(h, "c1", "p1", "plan-reviewer")
+    // The same text first arrives on the streaming path (child-text).
+    await h.pushEvent({
+      type: "message.updated",
+      data: {
+        info: { id: "m1", sessionID: "c1", role: "assistant" },
+        parts: [{ type: "text", text: APPROVE }],
+      },
+    })
+    await pushSynthetic(h, "p1", syntheticItem("c1", APPROVE))
+    const plans = entriesOf(metricsDir, "plan")
+    assert.equal(plans.length, 1, "the streamed marker does not suppress the credit")
+    assert.equal(plans[0]!.raw, "c1", "the synthetic credit is attributed")
+  } finally {
+    dispose()
+    restoreCwd()
+  }
+})
+
 /** A replayed durable event dedupes: the same text twice credits once. */
 test("synthetic completion replay dedupes to a single credit", async () => {
   const { h, dispose, metricsDir, restoreCwd } = await boot()
@@ -176,6 +223,34 @@ test("synthetic completion replay dedupes to a single credit", async () => {
     await pushSynthetic(h, "p1", item)
     await pushSynthetic(h, "p1", item)
     assert.equal(entriesOf(metricsDir, "plan").length, 1, "the replay is a dedup no-op")
+  } finally {
+    dispose()
+    restoreCwd()
+  }
+})
+
+/**
+ * A prior `refusedApprove` ensemble entry suppresses a subsequent synthetic
+ * reviewer approval: refusal last-wins outranks the carried approval.
+ */
+test("a prior refusedApprove suppresses a synthetic reviewer approval", async () => {
+  const { h, dispose, metricsDir, restoreCwd } = await boot()
+  try {
+    // One dispatch counts, but the ensemble needs two: the first synthetic
+    // APPROVE is refused and stamps refusedApprove:true on the ensemble.
+    await h.toolHooks["execute.before"]!({
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer", prompt: "only review" },
+    })
+    await seedChildEdge(h, "c1", "p1", "reviewer")
+    await pushSynthetic(h, "p1", syntheticItem("c1", APPROVE, "reviewer"))
+    // A second child's APPROVE (a first-sight marker under the per-child
+    // dedup scope) must still be suppressed by the standing refusal.
+    await seedChildEdge(h, "c2", "p1", "reviewer")
+    await pushSynthetic(h, "p1", syntheticItem("c2", APPROVE, "reviewer"), "inb-2")
+    const restored = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000).state("p1")
+    assert.equal(restored.hasReviewApprove, false, "the refusal outranks the later approval")
   } finally {
     dispose()
     restoreCwd()

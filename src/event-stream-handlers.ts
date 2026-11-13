@@ -595,11 +595,14 @@ async function creditSyntheticCompletion(
  * `VERDICT:`/`GATE:` markers must be parsed here. The child's emitter is
  * seeded from the item metadata (the always-firing authority source), the
  * child→parent edge is resolved, the text is parsed child-keyed under the
- * `subagent-synthetic` source (first-sight journaling + streamed-verdict
- * records only), and the gate-moving credits then run gated on the seeded
- * effective agent (see {@link creditSyntheticCompletion}). The
- * `(scope, marker)` dedup makes a durable-event replay (the same text
- * delivered twice) a no-op. Non-subagent or malformed items return
+ * `subagent-synthetic` source with a per-child dedup scope (first-sight
+ * journaling + streamed-verdict records only), and the gate-moving credits
+ * then run gated on the seeded effective agent (see
+ * {@link creditSyntheticCompletion}). The per-child scope keeps the
+ * `(scope, marker)` dedup from colliding across children or with the
+ * streaming sources (whose verdict markers are near-identical boilerplate)
+ * while still making a durable-event replay — the same scope and marker —
+ * a no-op. Non-subagent or malformed items return
  * silently; a throw propagates to the outer loop's fail-open journaling.
  * @param ctx The shared per-setup context.
  * @param properties The resolved event properties.
@@ -612,7 +615,12 @@ async function handleSyntheticCompletion(
   if (!c) return
   ctx.seedEmitter(c.childID, c.agent)
   await ctx.resolveParent(c.childID)
-  const markerEvents = ctx.parseMarkers(c.text, c.childID, "subagent-synthetic")
+  const markerEvents = ctx.parseMarkers(
+    c.text,
+    c.childID,
+    "subagent-synthetic",
+    `subagent-synthetic\u0000${c.childID}\u0000`,
+  )
   await creditSyntheticCompletion(ctx, c, markerEvents)
 }
 
