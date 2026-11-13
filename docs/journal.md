@@ -4,7 +4,7 @@ The journal is the plugin's only persistence edge. It lives outside the repo
 at `~/.local/share/opencode/metrics/`. This document is the developer
 reference for the file layout, the entry-type catalog, rotation, replay, and
 tamper evidence. The state-machine view lives in
-[architecture.md §6](architecture.md#6-persistence-journal-and-restart).
+[architecture/persistence.md](architecture/persistence.md).
 
 ## File layout
 
