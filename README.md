@@ -600,9 +600,13 @@ reports when a newer turnstile is published.
 ## More documentation
 
 - [`docs/architecture.md`](docs/architecture.md) — how the plugin works
-  inside: module map, hook surface, end-to-end task flow, gate state
-  machine, journal/replay, policy injection, security posture, and
-  ecosystem positioning, with rendered diagrams.
+  inside: hook surface, end-to-end task flow, gate state machine, policy
+  injection, security posture, and ecosystem positioning, with rendered
+  diagrams.
+- [`docs/modules.md`](docs/modules.md) — the authoritative module map: every
+  file under `src/` with its responsibility.
+- [`docs/journal.md`](docs/journal.md) — the journal catalog: every entry
+  type with its replay fold, file layout, rotation, and tamper evidence.
 - [`docs/usage.md`](docs/usage.md) — day-to-day operation: a worked session,
   waivers and approvals in full, installing and maintaining (modes, ledger,
   model pins), the complete configuration table, journals and retention, and
