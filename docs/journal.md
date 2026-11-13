@@ -277,7 +277,7 @@ Sinks are selected by `tamperEvidence.anchor`:
 
 An array selects several: all publish, verify intersects (a ref is anchored
 when any sink vouches; the report names the **weakest vouching trust
-domain** — external > repo > host). External plugin sinks are lazy-`import()`ed
+domain** — external > repo > host)). External plugin sinks are lazy-`import()`ed
 at setup with a factory shape-check; a malformed sink degrades to a journaled
 warning, never a boot failure. **Caveat:** a plugin specifier is code the
 host executes — only point `plugin:` at modules you trust as much as
