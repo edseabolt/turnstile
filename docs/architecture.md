@@ -2,11 +2,11 @@
 
 Turnstile is an OpenCode v2 promise-plugin that mechanically enforces an agent
 pipeline (**planner → plan-reviewer → executor → test-runner → reviewer**; an
-optional, default-off requirements leg may precede the planner — see §4) by
+optional, default-off requirements leg may precede the planner; see §4) by
 interposing on the host's hook surface: every dispatch, read, shell call, and
 user prompt is checked against per-parent gate state before it is allowed to
-proceed. Enforcement is fail-open — internal errors are journaled, never
-thrown — except for deliberate `BLOCKED by turnstile:` errors.
+proceed. Enforcement is fail-open except for deliberate
+`BLOCKED by turnstile:` errors (§8).
 
 This document is written for two audiences at once:
 
@@ -44,24 +44,25 @@ Three ideas explain the whole plugin:
    `GATE: PASS tests=<n> passed=<n> failed=<n>`; the reviewers emit
    `VERDICT: APPROVE|BLOCK crit=<n> high=<n> med=<n> low=<n>` (see
    `agents/test-runner.md`, `agents/reviewer.md`, `agents/plan-reviewer.md`).
-   The planner emits no marker — instead it produces numbered `AC-n` /
+   The planner emits no marker. Instead it produces numbered `AC-n` /
    `chunk-N` entries that the executor must cite and the plan gate scans for
    (`## Decomposition` in `.opencode/plans/`).
 2. **Per-parent gate state.** Every session that admits a user prompt becomes a
    _parent_ (`ledger.markParent`). Gate flags, round counters, and the read
-   budget all key off the parent via the `childToParent` edge map — a
-   subagent's reads and dispatches draw down its parent's budget, never its own.
+   budget all key off the parent via the `childToParent` edge map. A
+   subagent's reads and dispatches draw down its parent's budget, never its
+   own.
 3. **Fail-open plumbing, fail-toward-strict enforcement.** Hook bodies catch
    their own errors and journal them; only deliberate `BlockError` decisions
-   reach the host. Where evidence can go stale (plan edits), the plugin
+   reach the host (§8). Where evidence can go stale (plan edits), the plugin
    invalidates approvals rather than trusting them.
 
 Human decision points exist at every gate: a literal `USER WAIVER:`
-(scope-aware — naming configured agent stages in the waiver text scopes it to
+(scope-aware: naming configured agent stages in the waiver text scopes it to
 those stages' gates; an unscoped waiver covers every gate) or `PLAN APPROVED:`
 in the **user's own prompt** (never in an agent-composed dispatch prompt), or
-an interactive permission ask the plugin escalates when a gate is red —
-except for the landing/hands-on repeat-attempt ladder, which arms the
+an interactive permission ask the plugin escalates when a gate is red.
+The exception is the landing/hands-on repeat-attempt ladder: it arms the
 one-shot ask latch and forces the interactive ask on a retried attempt in
 BOTH `escalation` modes (the block-throw is only the no-human fallback).
 
@@ -69,81 +70,14 @@ BOTH `escalation` modes (the block-throw is only the no-human fallback).
 
 ## 2. Module map
 
-One boundary per file under `src/`; dependencies flow one way, no cycles.
-`turnstile.ts` stays a thin entry point (`{ id: "turnstile", server, setup }`;
-`server` is a legacy v1 shim).
+One boundary per file under `src/`. Dependencies flow one way; no cycles.
+`turnstile.ts` stays a thin entry point. Its shape is
+`{ id: "turnstile", server, setup }`; `server` is a legacy v1 shim.
 
-![Module map](images/d01-modules.svg)
-
-| Module                          | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turnstile.ts`                  | Entry point: module shape + factory; its doc comment is a contract-level summary pointing here as the authoritative reference                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `src/setup.ts`                  | Wiring only: the host-compat guard verdict, hook registration (per-surface hook modules below), the load heartbeat, lifecycle/disposal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `src/host-compat.ts`            | Host-version guard: semver parse/compare, the shipped compat range, and the verdict; fail-open — consumed only by `setup.ts` and the tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `src/hooks-core.ts`             | Composition root: builds the per-setup `CoreState` (deps, bounded maps, constants, holders, bound helper fields) via small `buildCore*` state builders, wires the seven concern modules below against it, and assembles the returned `TurnstileContext` with `coreContext` — no hook bodies and no concern logic live here                                                                                                                                                                                                                                                                                                                                                                                             |
-| `src/context-surface.ts`        | Context-surface concern: the once-per-load model-facing injections — config warnings, the end-of-period observe summary, the generation-draft telemetry, and the primary-turn context policy head with its pending intent nudge; threaded the shared `CoreState`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/parent-resolution.ts`      | Parent-resolution concern: resolving a child session's parent edge and project directory through the host session API (negative caching, bounded retries), the emitter-authority cache deciding marker authority, and the boot re-seed rebuilding both from replayed edges                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `src/verdict-capture.ts`        | Verdict-capture concern: parsing `GATE:`/`VERDICT:` markers out of assistant text, journaling first-sight observations, recording streamed verdicts into the child store, and the `lastMatch` helper the attribution paths share                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/plan-verdict.ts`           | Plan-verdict concern: attributing a plan-reviewer verdict to the parent's plan-approval gate (edge-first, then the unique unanimous unresolved pool), applying approval bindings, and recording the durable plan identity under the project                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `src/dispatch-guard.ts`         | Dispatch-guard concern: the `task`/`subagent` execute.before path — the dispatch prologue (agent resolution, parent pinning, delta age-out, plan-reviewer round bookkeeping), the guard-and-meter chain, and the single admitted-dispatch exit                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `src/bash-write-guard.ts`       | Bash/write-guard concern: the `bash`/`shell` and `write`/`edit` execute.before paths — denylist guards, commit lint, landing and bash-write telemetry, scratch/pipeline-child exemptions (the pipeline-child arm journals the `childWrite` telemetry row and records the override adjacency), the plan-impact advisory, the hands-on and landing ladders, `session_move` telemetry                                                                                                                                                                                                                                                                                                                                     |
-| `src/prompt-admission.ts`       | Prompt-admission concern: the single admission body for a user-authored prompt (dedupe, dead-channel telemetry, task-scope decision, capture sequence), the task-scope reset/carry machinery, and the prompt-channel captures (waiver, approval, task-done, suspend/resume, near-miss, observe stamp)                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `src/decision-ledger.ts`        | Pure `prov:*` entry builders for the decision ledger (`provStatedEntry`, `provDeniedEntry`, `provWaiverEntry`, and `provOverrideEntry`): redact-then-truncate shaping, no I/O, no classification; payloads stay canonically serializable (stable key order, no non-JSON values) so a later hash chain needs no row migration                                                                                                                                                                                                                                                                                                                                                                                           |
-| `src/decision-ledger-redact.ts` | Pure secret redaction (`redactSecrets`) over a fixed, ordered pattern list (`SECRET_PATTERNS` — API keys, AWS access keys, bearer/authorization headers, GitHub tokens, key/token assignments, private-key blocks), replacing each match with `[REDACTED]`; not user-configurable in v1, never throws                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `src/hooks-session.ts`          | Session-surface registration: binds the prompt/generate/context/compaction hooks to the bodies in `hooks-session-bodies.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `src/hooks-session-bodies.ts`   | Session-surface hook bodies: prompt-admission counting (the dead-channel telemetry key), the pipeline-agent decoding clamps shared by the generate and context hooks, the primary-turn context body, and the compaction snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/generate-injection.ts`     | Request-draft surface primitives: the usable-shape guard (`usableRequestDraft`), the in-place `appendSystemText` mutation, and the bounded content-free draft descriptor (`describeRequestDraft`) — pure, consumed by `context-surface.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `src/hooks-permission.ts`       | Permission-surface registration: binds the `evaluate` hook to the arms in `permission-evaluate.ts` (never blocks, forces `ask`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `src/permission-evaluate.ts`    | Permission-surface evaluate arms: the task-dispatch plan-gate escalation arm, the bash/shell landing-gate arm, and the write/edit hands-on-gate arm, plus the shared one-shot latch-consume helper — the payload carries no tool input, so arms read latches the guards armed                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `src/hooks-tool.ts`             | Tool-surface registration: binds `execute.before`/`execute.after` to the routers in `tool-hooks-before.ts`/`tool-hooks-after.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/tool-hooks-before.ts`      | Tool-surface execute.before router: routes the tool call to its guard — task/subagent dispatch (`dispatch-guard.ts`), the parent-keyed read budget, the bash/shell and write/edit guards (`bash-write-guard.ts`), and `session_move`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/tool-hooks-after.ts`       | Tool-surface execute.after body: the once-per-scope surface blocks (observe summary, config block, near-miss diagnostics) followed by the per-tool delivery bodies — task/subagent delivery classification, emitter seeding, marker parsing, verdict capture + attribution, the bare-output compliance re-prompt, and the write/edit `prov:override` capture                                                                                                                                                                                                                                                                                                                                                           |
-| `src/override-adjacency.ts`     | In-memory child-write adjacency for `prov:override` capture: records pipeline-child write target paths per parent (bounded, window-pruned) and matches a later parent write/edit to the same path within `OVERRIDE_WINDOW_MS`; no I/O, never reads child session content                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `src/hooks-events.ts`           | Event-surface stream loop: subscription, per-event dispatch to `event-stream-handlers.ts`, and re-subscription under a throw-only restart budget                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/event-stream-handlers.ts`  | Event-stream per-event handlers: the dispatch table consumed by the stream loop — child→parent resolution and marker parsing from child sessions, permission ask/reply bookkeeping (plan/landing/hands-on latches), inbox admission, the session-end summary, error telemetry                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `src/delivery.ts`               | Host payload delivery: result-shape classification, text mutation (policy head/tail, config/marker blocks), candidate-key tables, ask-message prefixes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `src/config.ts`                 | Four-layer config composition (code defaults ⊕ `~/.config/opencode/turnstile.json` ⊕ env ⊕ injected opts) + `configDigest`; the per-section merge arms live in `config-merge.ts`, the per-key validation and resolved invariants in `config-validate.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `src/config-merge.ts`           | Config-merge boundary: per-section patch merging for `mergeConfig` and the `agents`/`toolPolicy`/`gitGates` default sub-objects; warning strings byte-identical to the historical arms                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `src/config-validate.ts`        | Config-validation boundary: scalar patch-value validation and the post-merge resolved-config invariants; pure decision logic with byte-identical warning strings                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/state.ts`                  | Gate-state shape: metering-counter clearing, snapshot and pipeline rendering; the fresh-bucket factory and the replay/continuation carry merge live in `state-carry.ts` (re-exported)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `src/state-carry.ts`            | State-carry boundary: the fresh gate-state bucket factory (`newState`) and the replay/continuation carry merge (`mergeAfterReplay`); pure bookkeeping — the ledger owns persistence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/ledger.ts`                 | `GateLedger`: per-parent `GateState` buckets (LRU), child-verdict store, journal replay, live-parent eviction protection; the child→parent edge maps, the live-parent registry, and the credit-bearing APPROVE trace live in `ledger-registry.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `src/ledger-registry.ts`        | The ledger's parent-edge registry and credit trace: the child→parent edge maps (journaling, re-seed, child-release), the live-parent registry protecting `states` buckets from LRU eviction, and the bucket-free credit-bearing reviewer APPROVE trace                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `src/markers.ts`                | Canonical `GATE:`/`VERDICT:` regex compilation, dedup with first-sight provenance, cross-child suppression, near-miss detection; the GATE/VERDICT parse arms live in `gate-markers-parse.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `src/gate-markers-parse.ts`     | Gate-marker parsing boundary: the GATE/VERDICT marker arms extracted from `parseGateMarkers` — pure with respect to journal and filesystem (the caller journals the returned events); the regex literals stay canonical in `markers.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `src/child-registration.ts`     | Pipeline-child registration boundary: `resolveChildStatus` (event agent-name precedence, then the child→parent edge + emitter fallback, fail-closed `"unknown"`), `isPipelineChildDispatch`, and the dispatch/delivery agent resolvers — consumed by `parent-resolution.ts`, `dispatch-guard.ts`, and `tool-hooks-after.ts`                                                                                                                                                                                                                                                                                                                                                                                            |
-| `src/gates.ts`                  | Composition of the per-gate enforcement modules; the `Gates` interface is the host-facing contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `src/gates-dispatch.ts`         | Composition of the dispatch-domain gates: the reviewer gate (`dispatch-review-gate.ts`), the loop caps/budget/read horizon (`dispatch-budget.ts`), and the shared block/refusal message composers (`gate-messages.ts`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `src/dispatch-budget.ts`        | Dispatch budget enforcement: the per-leg loop caps, the per-task total-dispatch budget, and the whole-file read horizon                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `src/dispatch-review-gate.ts`   | Reviewer dispatch gate: the round-cap + gate-evidence enforcement for a pending reviewer dispatch, waiver journaling/consumption, and the ensemble-completeness credit decision for the landing gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/gate-messages.ts`          | Shared gate-message builders for the dispatch-domain gates: the cap-block composer (edge-aware parent/child recovery tails) and the gate-unverified refusal renderer with its attribution summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `src/gates-plan.ts`             | Composition of the plan gates: the plans-dir scan + cache (`plans-scan.ts`), the approval/decomposition enforcement (`plan-gate-enforce.ts`), and the status mirror + plan-scope resolution (`plan-gate-status.ts`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/plans-scan.ts`             | Plans-dir content scan: the cached scan both plan gates build on — sorted `.md` names, per-file spec-region and whole-file sha256 keys, and the `## Decomposition` set — keyed by the dir's path-free content signature                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `src/plan-gate-enforce.ts`      | Plan-gate enforcement: the decomposition gate (executor dispatches must cite the chunk/AC they implement when the resolved plan carries `## Decomposition`) and the plan-approval gate (executor dispatches require a current reviewer APPROVE or an equivalent release)                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `src/plan-gate-status.ts`       | Plan-gate status mirror and plan-scope resolution: whether the plan-approval gate is red for a parent (mirroring the enforcing dispatch's guard so evaluate and dispatch decide from the same scan), the plan preview/summary surfaces, and the approval-binding resolution                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `src/plan-region.ts`            | The plan spec-region extractor (`planSpecRegion`): everything from the first top-level heading after a leading exact `# Progress` to EOF, with whole-file fallbacks on a missing/misplaced header or a progress-only file — the one shared slice behind approval capture, reconcile, and the durable sidecar key                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/plan-scope.ts`             | Pure plan-scope extraction + impact classification (`planScopeFiles`, `classifyPlanImpact`): path-like tokens from the plan's spec region split into the advisory set (Objective/steps) and the structural set (after `## Decomposition`), classified against a parent tool call's target — equality matching for write/edit paths, containment matching for bash command text (`matchInText`); the plan-file-self target classifies `structural`. The `PlanImpact` union also hosts `uninspectable` (an equality target outside the project dir), produced only by the plan-gate boundary's `planImpactFor`, never by the pure classifier. Never throws, no fs — the plan-gate boundary owns reading and failing open |
-| `src/maintenance.ts`            | Maintenance-dispatch classification rules (`maintenanceDeclared`, `maintenanceFileEligible`, `maintenanceDiffEligible`, `maintenanceMarkerSensitive`): the structural eligibility of a bookkeeping-only executor dispatch (declaration + non-src diff surfaces; marker-validated files need a passing marker guard)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/gates-common.ts`           | Shared `BlockError`, waiver coverage semantics, pure journal-entry composers, and the `journalProvWaiver` decision-ledger capture helper                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `src/tool-policy.ts`            | Tool-policy composition: compiles the denylists once and exposes the guard/telemetry surface; the guards themselves (bash denylist, commit lint, landing gate, hands-on gates, observers) live in `tool-policy-guards.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `src/tool-policy-guards.ts`     | Tool-policy guards and telemetry: the denylist guards (`guardBash`, `guardPath`), the commit-message lint, the landing gate, the hands-on gates (`guardHandsOn`, `guardBashWrite`), the non-blocking telemetry observers, and the compiled denylist structures                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `src/shell-parse.ts`            | Shell-parsing boundary: the quote-aware command splitter and word tokenizer shared by the write-shape classifier, the landing guard, and the commit lint — one parser, so every consumer parses the same shape — plus the redirect-target scanner; pure string logic                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/commit-args.ts`            | Commit-args boundary: the `git commit` argument scanner extracting `-m`/`--message` messages and detecting uninspectable forms (`-F`/`-t`/`--edit`/`-e`, or a bundled short-flag cluster carrying an editor/template flag); pure string logic shared by the commit lint                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `src/bash-write.ts`             | Stateless write-shape classifier for bash/shell commands (`classifyBashWrite`: `gate` / `telemetry` / `none`) — shared by the hands-on bash telemetry and the bash write gate; the quote-aware parser it uses lives in `shell-parse.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `src/scratch.ts`                | The scratch-target predicate (`isScratchTarget`): a write/edit target that resolves under the platform temp dir (realpath-based, fail-toward-gating on an unresolvable path) is zero-governance scratch — consumed by the write/edit arm's exemption; the bash write classifier is its second consumer (DRY anchor)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/empty-diff.ts`             | The landing-gate empty-diff probe: pure-text `planPushRefs` plus a total, never-throwing ref-equality check (`git rev-parse` through a child_process seam); consulted under `gitGates.emptyDiffExempt` (default true)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `src/evidence.ts`               | Evidence tracker factory: pattern compile, journaling, and the tracker surface; the hits-map operations (record, correlate, snapshot, clear) live in `evidence-hits.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `src/evidence-hits.ts`          | Evidence-hits boundary: the hits-map operations behind `createEvidenceTracker` — record, correlate, snapshot, and clear over the raw session → hit-timestamp ring map; pure in-memory bookkeeping                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `src/fingerprint.ts`            | Worktree fingerprint (git toplevel+branch) and the credit-scoped continuation-carry predicate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `src/task-scope.ts`             | The interrupted-review predicate (`isInterruptedReview`): a retired task whose review was interrupted mid-flight (green gate, ≥1 counted reviewer dispatch or a waived reviewer round, no credited approval) carries its earned context through `mergeAfterReplay` — consumed by `state.ts` and `fingerprint.ts`                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/bounded.ts`                | FIFO eviction to a bounded size: the one source for the map/Set trim loops                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `src/journal.ts`                | Journaler factory + the fail-open journal reader (`readJournalEntries`); the append/rotate primitives, sink resolution, rotation locking, and trace formatting live in `journal-sinks.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `src/journal-sinks.ts`          | Journal-persistence boundary: the append/rotate primitives, the session-ID shape rule, per-file sink resolution, rotation locking, and trace-line formatting behind `createJournaler`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `src/intent.ts`                 | Stateless prompt-intent classifier (`classifyIntent`): implementation-intent signals (work verbs at code, gh issue refs, `*.md` plan refs, plan-dispatch phrasing) vs. deliberate non-intent framings (questions, explanations, status, chat) — total on any string, never throws, consumed by prompt admission for the advisory nudge                                                                                                                                                                                                                                                                                                                                                                                 |
-| `src/engagement.ts`             | Engagement decision helpers for dormant-until-engaged enforcement: the pure predicate deciding whether a classified prompt intent engages the pipeline (`shouldEngage`) and the pure `type:"engagement"` journal-entry builder                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `src/policy.ts`                 | Orchestrator-policy prose built by `orchestratorPolicyFor` from the resolved config and injected into parent context once per task (template placeholders for digits so echoed text never parses as markers), plus the advisory intent-nudge text (`intentNudge`) and the plan-impact advisory text (`planImpactAdvisory`) — both marker-syntax-free                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/summary.ts`                | Session-end summary counting + one-line formatting over parsed journal entries (`countSessionActivity`, `formatSessionSummary`, `formatAllGreenLine`) — pure and host-free, shared with the observe-period summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `src/types.ts`                  | Host wire shapes, `GateState`, `TurnstileConfig`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+The full module map lives in [modules.md](modules.md). It lists every file
+with its responsibility and links the
+[d01-modules diagram](images/d01-modules.svg). AGENTS.md's architecture-docs
+rule keeps the map in sync with `src/`. This section is a pointer only.
 
 ---
 
@@ -153,7 +87,7 @@ Before any registration, `setup(h)` runs the host-compat guard
 (`src/host-compat.ts`): the host version (`app.version`) is compared against
 the shipped range (`HOST_COMPAT`, ≥ 2.0.22 and < 3.0.0). An **incompatible**
 host is journaled (`type:"compat"`, `event:"incompatible"`), toasted with the
-upgrade instruction, and turnstile degrades to a full no-op — no hook is
+upgrade instruction, and turnstile degrades to a full no-op: no hook is
 registered and the heartbeat carries `compat:"incompatible"`. An **unknown**
 host (version unreadable or unparseable) enforces as usual and journals a
 one-time `compat` warning (`event:"unknown-host"`); its heartbeat reads
@@ -169,88 +103,99 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 
 **`session.hook` ×4** (`hooks-session.ts`)
 
-- **`prompt`** → `admitPrompt` (`prompt-admission.ts`): the single prompt-admission body,
-  shared with the inbox stream and deduped on the host message id. Marks the
-  session a live parent, performs `resetState` (with optional
-  continuation-carry via `fingerprint.ts` when the worktree is unchanged, and
-  a release of the session's edge-registered children's metering counters —
-  journaled `type:"child-reset"` when at least one is freed), clears evidence
-  and latches, and captures `USER WAIVER:` / `PLAN APPROVED:`
-  literals — a waiver capture also parses its scope, the configured agent
-  names named in the waiver text (`parseWaiverScope` in `src/markers.ts`),
-  into `userWaiverScope`. It also captures the gate suspend/resume markers
-  (`captureSuspend`): the configured `suspendMarker` / `resumeMarker`
-  literals (defaults `TURNSTILE OFF:` / `TURNSTILE ON:`) are scanned by strict
-  `indexOf`, the later-occurring marker wins, and the winning action is
-  journaled `type:"suspended"` — an OFF suspends enforcement for the session
-  (fresh-start state clear via `clearState`, no restart-sticky merge) and an
-  ON resumes it (also fresh — no credit earned while suspended rehydrates).
-  When `allowSuspend:false`, both markers are refused: journaled
-  `refused:true` (with the refused marker's `action`) plus a parked
-  marker-style diagnostic; no state changes, and the refused entry folds
-  replay-inert (a refusal can never resurrect a suspension after a restart). When an allowed OFF shares the
-  prompt with `PLAN APPROVED:` or `USER WAIVER:`, the
-  waiver/approval is captured first and then wiped by the fresh-start clear
-  (the clear is authoritative), with a skip notice journaled. It also scans the
-  text for marker-shaped near misses
-  of the two literals (case, separator, or colon variants) — diagnostic-only:
-  the strict
-  literal capture is untouched, the hits are journaled `type:"marker"` and
-  parked for one-shot surfacing. Under `intentNudge` (default on), admission
-  also classifies the prompt via `classifyIntent`
-  (`src/intent.ts`): a detected implementation intent with no plan approval
-  in the same admission journals `type:"intent"` (sessionID + signal kind)
-  and arms a one-shot advisory nudge — one nudge per detected intent signal
-  per session (a plan approval clears the latch), delivered by prepending
-  marker-syntax-free advisory prose to the first task delivery or the
-  parent's own read delivery (`prependIntentNudge` / `prependIntentNudgeRead`
-  in `hooks-core.ts`'s delivery helpers, text from `intentNudge` in `src/policy.ts`). Advisory
-  only: nothing gates, a throw in classification journals `type:"error"` and
-  never propagates from the prompt path. Admission also captures the prompt
-  into the decision ledger: `captureLedgerBody`
-  (`src/prompt-admission.ts`), placed after the dedupe check and after the
-  approval/waiver capture sequence, journals one `prov:stated` entry per
-  admitted parent prompt — verbatim after redaction, capped at 2000 chars,
-  no relevance filtering ("continue" included); pipeline-child dispatch
-  prompts are skipped, and the capture is gated on `decisionLedger.enabled`
-  (default `true`, §7). Because it lives inside the single deduped admission
-  body, both transport paths (the prompt hook and the inbox stream) capture
-  exactly once.
+- **`prompt`** → `admitPrompt` (`prompt-admission.ts`): the single
+  prompt-admission body, shared with the inbox stream and deduped on the
+  host message id. Its concerns, in order:
+  - _Admission and reset._ The body marks the session a live parent and
+    performs `resetState`. When the worktree is unchanged, continuation
+    carry rides along via `fingerprint.ts`. The reset releases the
+    session's edge-registered children's metering counters; freeing at
+    least one journals `type:"child-reset"`. It also clears evidence and
+    latches.
+  - _Waiver and approval capture._ The body captures `USER WAIVER:` /
+    `PLAN APPROVED:` literals. A waiver capture also parses its scope, the
+    configured agent names named in the waiver text (`parseWaiverScope` in
+    `src/markers.ts`), into `userWaiverScope`.
+  - _Suspend and resume._ `captureSuspend` scans for the configured
+    `suspendMarker` / `resumeMarker` literals (defaults `TURNSTILE OFF:` /
+    `TURNSTILE ON:`) by strict `indexOf`; the later-occurring marker wins,
+    and the winning action is journaled `type:"suspended"`. An OFF suspends
+    enforcement for the session (fresh-start state clear via `clearState`,
+    no restart-sticky merge); an ON resumes it (also fresh: no credit
+    earned while suspended rehydrates). When `allowSuspend:false`, both
+    markers are refused: journaled `refused:true` (with the refused
+    marker's `action`) plus a parked marker-style diagnostic; no state
+    changes, and the refused entry folds replay-inert (a refusal can never
+    resurrect a suspension after a restart). When an allowed OFF shares the
+    prompt with `PLAN APPROVED:` or `USER WAIVER:`, the waiver/approval is
+    captured first and then wiped by the fresh-start clear (the clear is
+    authoritative), with a skip notice journaled.
+  - _Near-miss diagnostics._ The body scans the text for marker-shaped
+    near misses of the two literals (case, separator, or colon variants).
+    This is diagnostic-only: the strict literal capture is untouched, the
+    hits are journaled `type:"marker"` and parked for one-shot surfacing.
+  - _Intent nudge._ Under `intentNudge` (default on), admission also
+    classifies the prompt via `classifyIntent` (`src/intent.ts`). A
+    detected implementation intent with no plan approval in the same
+    admission journals `type:"intent"` (sessionID + signal kind) and arms
+    a one-shot advisory nudge (one nudge per detected intent signal per
+    session; a plan approval clears the latch). The nudge is delivered by
+    prepending marker-syntax-free advisory prose to the first task
+    delivery or the parent's own read delivery (`prependIntentNudge` /
+    `prependIntentNudgeRead` in `hooks-core.ts`'s delivery helpers, text
+    from `intentNudge` in `src/policy.ts`). Advisory only: nothing gates,
+    and a throw in classification journals `type:"error"` and never
+    propagates from the prompt path.
+  - _Decision-ledger capture._ `captureLedgerBody`
+    (`src/prompt-admission.ts`), placed after the dedupe check and after
+    the approval/waiver capture sequence, journals one `prov:stated` entry
+    per admitted parent prompt, verbatim after redaction, capped at 2000
+    chars, no relevance filtering ("continue" included). Pipeline-child
+    dispatch prompts are skipped, and the capture is gated on
+    `decisionLedger.enabled` (default `true`, §7). Because it lives inside
+    the single deduped admission body, both transport paths (the prompt
+    hook and the inbox stream) capture exactly once.
 - **`generate`** → decoding clamps (`applyClamps`): reviewer/plan-reviewer
-  temperature forced to 0; executor/test-runner/debugger clamped ≤ 0.2 — plus
+  temperature forced to 0; executor/test-runner/debugger clamped ≤ 0.2, plus
   one-per-boot draft telemetry (`observeRequestDraft`, a bounded
   `type:"generate-draft"` descriptor). Background generations (goal judge,
   warming) stay clean of policy prose.
 - **`context`** → the primary-turn surface (pre-first-model-call; on v2.2.x
   hosts the main conversation turn fires `session.context`, not
-  `session.generate`). The body applies the same decoding clamps via the
-  shared `applyClamps` helper (registering both hooks repairs the clamp gap —
-  primary turns never rode `session.generate`), observes the draft once per
-  boot, then `injectContextPolicy` (`context-surface.ts`) injects the orchestrator
-  policy head (`orchestratorPolicyFor`) and any pending intent nudge into the
-  draft's `system` array in place — the host builds the model request from the
-  same object, so the prose precedes the first model call. Injection is
-  parent-guarded: a config-known pipeline agent name on the draft, a
-  registered child→parent edge (`ledger.childToParent`), or an unresolvable
-  session id each skips with a journaled `reason`
-  (`context-agent` / `context-child` / `context-no-id`). The shared
-  `policyInjected` latch (src/state.ts) dedupes against the `execute.after`
-  prepend — whichever channel fires first wins — and the nudge is consumed
-  one-shot from the same pending map. Fail-open throughout: an unusable draft
-  shape journals one `type:"error"` row per boot and degrades to the
-  `execute.after` fallback channel; a head append failure keeps the nudge
-  pending; nothing ever throws.
+  `session.generate`). Its concerns:
+  - _Clamps and draft observation._ The body applies the same decoding
+    clamps via the shared `applyClamps` helper (registering both hooks
+    repairs the clamp gap: primary turns never rode `session.generate`)
+    and observes the draft once per boot.
+  - _Policy injection._ `injectContextPolicy` (`context-surface.ts`)
+    injects the orchestrator policy head (`orchestratorPolicyFor`) and any
+    pending intent nudge into the draft's `system` array in place; the
+    host builds the model request from the same object, so the prose
+    precedes the first model call.
+  - _Parent guard._ Injection is parent-guarded: a config-known pipeline
+    agent name on the draft, a registered child→parent edge
+    (`ledger.childToParent`), or an unresolvable session id each skips
+    with a journaled `reason` (`context-agent` / `context-child` /
+    `context-no-id`).
+  - _Shared latch._ The shared `policyInjected` latch (src/state.ts)
+    dedupes against the `execute.after` prepend (whichever channel fires
+    first wins), and the nudge is consumed one-shot from the same pending
+    map.
+  - _Fail-open degradation._ An unusable draft shape journals one
+    `type:"error"` row per boot and degrades to the `execute.after`
+    fallback channel; a head append failure keeps the nudge pending;
+    nothing ever throws.
 - **`compaction`** → appends a system block demanding verbatim preservation of
   open findings, AC status, and the last GATE/VERDICT markers, then the live
-  gate-state snapshot (`formatGateSnapshot`) from the ledger — concrete state,
+  gate-state snapshot (`formatGateSnapshot`) from the ledger: concrete state,
   not just a demand. The snapshot's `GATE:`/`VERDICT:` tokens are de-tokenized
   (leading token lowercased) so it can never re-parse as an authoritative
-  marker. It reads — never mints — the parent bucket via `ledger.peek`,
+  marker. It reads, never mints, the parent bucket via `ledger.peek`,
   keyed off `draft.sessionID` and falling back to the last-admitted parent
   whenever parent resolution yields no bucket; both paths degrade to
   instruction-only (fail-open, no mint, no journal spam).
 
-**`tool.hook("execute.before")`** (`hooks-tool.ts`) — _all gating lives here_:
+**`tool.hook("execute.before")`** (`hooks-tool.ts`): _all gating lives here_:
 
 - `task`/`subagent`: dispatch budget (16 total), per-leg caps
   (planner 3 / plan-reviewer 3 / test-runner 4 / requirements 2, the last
@@ -259,51 +204,57 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   grants; a waiver-covered dispatch additionally journals one `prov:waiver`
   decision-ledger row at its gate site (§6); the counters advance at guard
   exit, only for admitted dispatches.
-- `read`: parent-keyed read horizon — warn at 8 whole-file reads (once per task), block at 15.
+- `read`: parent-keyed read horizon (warn at 8 whole-file reads, once per task; block at 15).
 - `bash`/`shell`: bash denylist → commit-message lint → hands-on bash
   telemetry + write-shaped bash gate (parent sessions and non-pipeline
-  subagents — a registered pipeline child's own file-writing bash is the
+  subagents; a registered pipeline child's own file-writing bash is the
   executor's own work and never gates, keyed off the event's agent name with
   the child→parent edge + emitter fallback behind it (`resolveChildStatus`),
   fail-closed on an unresolved agent, after the telemetry row is journaled;
   while a plan is bound, a gate-tier write command is first classified
-  against the plan's scope by the plan-impact advisory — containment
-  matching on the command text — and an overlapping command is allowed with
+  against the plan's scope by the plan-impact advisory (containment
+  matching on the command text), and an overlapping command is allowed with
   a journaled `plan-impact` row instead of the block, `planImpactStrict`
   delegating structural overlap back into the ladder)
   → landing gate (with the empty-diff
-  exemption, default on — ref-equality with upstream, force pushes always
+  exemption, default on: ref-equality with upstream, force pushes always
   gate; `false` opts out).
-- `write`/`edit`: path denylist → scratch-target exemption (a target
-  resolving under the platform temp dir is zero-governance scratch work —
-  allowed with a `{type:"tool", scratch:true}` audit row carrying the target
-  path, before any once-grant consume or ladder run; the denylist decision
-  wins first) → hands-on gate (parent sessions and
-  non-pipeline subagents — a registered pipeline child's write/edit is the
-  executor's own work and never gates; the exemption keys off the event's
-  agent name first — a configured pipeline name alone exempts — with the
-  child→parent edge + emitter fallback behind it, so an unresolved or
-  non-pipeline agent fails closed; the denylist decision wins first and the
-  journal reasons stay disjoint. Inside the child exemption, a planner
-  child's write/edit is additionally confined to the configured `plansDir`
-  (the planner write-target guard): the agent name resolves by the same
-  precedence (event name first, emitter fallback second; an unresolved name
-  is not a planner — fail-open), scratch targets and empty paths are
-  allowed, and a target outside the configured plans directory (resolved
-  against the session's project dir, relative and absolute `plansDir` both
-  honored) journals `{type:"blocked", reason:"planner-write-outside-plans-dir"}`
-  and throws `BLOCKED by turnstile:` naming the configured directory and the
-  corrective action; an internal error journals `type:"error"` and never
-  blocks. While a plan is bound and the session is
-  engaged, the plan-impact advisory runs after the once-grant consume: a
-  target overlapping the plan's scope (equality matching on the path; the
-  plan file itself is always structural) is allowed with a journaled
-  `plan-impact` row and a one-shot advisory prepended to the next delivery
-  instead of the block — `planImpactStrict: true` restores the block for
-  structural overlap only; an equality target outside the project dir
-  classifies `uninspectable` and falls through to the hands-on ladder with
-  no journal row; with no plan bound the hands-on ladder is
-  unchanged).
+- `write`/`edit`: a guard chain, evaluated in order:
+  - _Denylist._ The path denylist decides first; its decision wins over
+    everything below.
+  - _Scratch exemption._ A target resolving under the platform temp dir is
+    zero-governance scratch work, allowed with a
+    `{type:"tool", scratch:true}` audit row carrying the target path,
+    before any once-grant consume or ladder run.
+  - _Child exemption._ The hands-on gate covers parent sessions and
+    non-pipeline subagents; a registered pipeline child's write/edit is
+    the executor's own work and never gates. The exemption keys off the
+    event's agent name first (a configured pipeline name alone exempts),
+    with the child→parent edge + emitter fallback behind it
+    (`resolveChildStatus`), so an unresolved or non-pipeline agent fails
+    closed. The denylist decision wins first and the journal reasons stay
+    disjoint.
+  - _Planner write-target guard._ Inside the child exemption, a planner
+    child's write/edit is additionally confined to the configured
+    `plansDir`. The agent name resolves by the same precedence (event name
+    first, emitter fallback second; an unresolved name is not a planner —
+    fail-open). Scratch targets and empty paths are allowed. A target
+    outside the configured plans directory (resolved against the session's
+    project dir, relative and absolute `plansDir` both honored) journals
+    `{type:"blocked", reason:"planner-write-outside-plans-dir"}` and
+    throws `BLOCKED by turnstile:` naming the configured directory and the
+    corrective action; an internal error journals `type:"error"` and never
+    blocks.
+  - _Plan-impact advisory._ While a plan is bound and the session is
+    engaged, the advisory runs after the once-grant consume: a target
+    overlapping the plan's scope (equality matching on the path; the plan
+    file itself is always structural) is allowed with a journaled
+    `plan-impact` row and a one-shot advisory prepended to the next
+    delivery instead of the block. `planImpactStrict: true` restores the
+    block for structural overlap only. An equality target outside the
+    project dir classifies `uninspectable` and falls through to the
+    hands-on ladder with no journal row. With no plan bound the hands-on
+    ladder is unchanged.
 
   The deliberate blocks above (bash denylist, commit lint, landing gate) all
   rethrow through the same `guardedToolBefore` choke point in `setup.ts`,
@@ -311,14 +262,14 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   suspended, the BlockError is journaled (`type:"suspended"`,
   `event:"would-block"`) and the tool call proceeds (§5).
 
-**`tool.hook("execute.after")`** (`hooks-tool.ts`) — observation only, never blocks: first surfaces any
+**`tool.hook("execute.after")`** (`hooks-tool.ts`): observation only, never blocks. First surfaces any
 config-validation warnings once per load (a `[turnstile] config:` block
 prepended to the first string-output result, journaled `type:"config"`), then
 surfaces pending near-miss marker diagnostics once per prompt batch (a
 `[turnstile] marker:` block prepended to the first string-output result of a
 parent with a parked hit, journaled `type:"marker"` / `surfaced`), then
 parses markers out of task deliveries, attributes plan verdicts, credits reviewer
-approval (ensemble-gated) — both on the delivery's agent, resolved through the
+approval (ensemble-gated); both on the delivery's agent, resolved through the
 child→parent edge + host session record when the dispatch input names none —
 appends the per-delivery `PIPELINE:` status tail
 (skipped when the delivery's agent is not a pipeline stage), prepends the
@@ -326,20 +277,20 @@ orchestrator policy head once per task (the first pipeline delivery reads
 head+tail, later deliveries tail-only),
 corrects the read counter charge down when a read produced no string output
 (`execute.before` charged it on the guard), and promotes an `unverifiedPass`
-when a correlated exit-0 test execution appears — the same correlation
+when a correlated exit-0 test execution appears (the same correlation
 re-checks when a child→parent edge resolves late (a background dispatch, via
 `session.created` or `session.get`) and again at reviewer-dispatch time,
 bounded to the parent's current task window (stamped at prompt admission).
 
-**`permission.hook("evaluate")`** (`hooks-permission.ts`) — never blocks; when the plan gate is red on
+**`permission.hook("evaluate")`** (`hooks-permission.ts`): never blocks. When the plan gate is red on
 a task dispatch, the task arm's behavior follows `escalation`: under `"ask"` it _forces_ an interactive
-`ask` to the user, while under the default `"block"` it stays inert — the dispatch guard
+`ask` to the user, while under the default `"block"` it stays inert (the dispatch guard
 (`enforcePlanApproval`) blocks with the stop-and-report instruction and release flows via
 `PLAN APPROVED:` plus the sticky waiver/ask paths. The landing arm does the same when a push lacks reviewer approval and the
 parent carries a live `pendingLandingAsk` latch; the write/edit arm does the
 same for the hands-on gate: a
 parent `write`/`edit` with a live `pendingHandsOnAsk` latch (each armed by the
-guard in BOTH `escalation` modes — the ask-first ladder arms the one-shot ask
+guard in BOTH `escalation` modes; the ask-first ladder arms the one-shot ask
 latch on the armed repeat attempt; the block-throw is only the no-human
 fallback, so both arms fire the ask whenever the latch is live) is forced to
 `ask`. Replies are matched to recorded ask request-IDs only:
@@ -349,26 +300,26 @@ enforcement is suspended (§5's suspension overlay): the task arm returns
 before the ask and its latch, and the landing arm returns after deleting the
 parent's armed `pendingLandingAsk` latch (the one-shot consume), so a latch
 armed before the suspension cannot fire a mislabeled landing ask after a
-`TURNSTILE ON:` resume — the guard re-arms on a fresh repeat attempt. The
+`TURNSTILE ON:` resume; the guard re-arms on a fresh repeat attempt. The
 landing and hands-on arms consume their latches the same one-shot way, and
 all three arms are inert when the parent's gate state carries the matching
 standing release (`handsOnRelease` / an executor-scoped waiver).
 
-**`event.subscribe` loop** (`hooks-events.ts`) — child→parent edges (`session.created`), marker
+**`event.subscribe` loop** (`hooks-events.ts`): child→parent edges (`session.created`), marker
 parsing from streamed child text (`message.part.updated`,
 `session.text.ended`, `session.text.delta`): each `GATE:`/`VERDICT:`
 observation is applied only when the emitting session's agent holds the marker
 contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
 `reviewer` / `plan-reviewer`), and a denied observation is journaled
 `suppressed` rather than flipping state, permission ask/reply bookkeeping
-(whose three human-reject sites — the plan, landing, and hands-on ask
-replies — each journal one `prov:denied` entry via `journalProvDenied`
+(whose three human-reject sites, the plan, landing, and hands-on ask
+replies, each journal one `prov:denied` entry via `journalProvDenied`
 (`src/event-stream-handlers.ts`), carrying the ask `kind`; gated on
 `decisionLedger.enabled`, replay-inert),
-prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29 — an
+prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29; an
 additive channel the host publishes immediately after the prompt hook fires,
 deduped against the hook path on the shared host message id), the
-session-end summary (`session.idle` — one recap line per session, see §6's
+session-end summary (`session.idle`, one recap line per session, see §6's
 `session-summary` entry kind), and error
 telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
@@ -387,7 +338,7 @@ once per close (an aborted exit stays silent).
 ## 4. A task, end to end
 
 The three lifelines: orchestrator (parent session), child subagent sessions,
-and the journal — the only persistence edge.
+and the journal, the only persistence edge.
 
 ![Task flow](images/d03-task-flow.svg)
 
@@ -405,30 +356,19 @@ A typical enforced run:
    revised and re-review is attributed via round-scoped evidence (the newest
    dispatched plan-reviewer round wins within the parent).
 4. The executor is gated on plan approval (keyed on the plan's **spec
-   region** — everything from `# Objective` onward; the leading `# Progress`
-   section is pipeline-maintained and excluded from the hashed key, so a
-   progress-note edit keeps the approval live while any spec edit invalidates
-   it); its result must cite `chunk-N` / `AC-n` entries from the
-   decomposition.
-   **Maintenance dispatches**: an executor dispatch whose prompt declares
-   maintenance scope for the live bound plan (names the plan + the literal
-   word "maintenance") AND whose current working-tree diff touches only
-   non-src surfaces (the active plan file under the configured `plansDir`,
-   `docs/*.md`, `README.md`/`CONTRIBUTING.md`,
-   `agents/*.md` — marker-validated ones only when the repo's
-   `scripts/check-markers.mjs` guard passes) rides a lighter path: it skips
-   the plan-approval and decomposition gates (without consuming a pending
-   plan-gate once-grant) and journals
-   `{type:"maintenance", capped:false}`, capped at 4 per plan (a cap-exceeded
-   attempt escalates like any blocked dispatch). Any `src/`, `tests/`,
-   `bin/`, `scripts/`, or config/schema/example touch gates it as ordinary
-   implementation work.
+   region**; §5's plan-approval row defines the hashing). Its result must
+   cite `chunk-N` / `AC-n` entries from the decomposition. A **maintenance
+   dispatch** (prompt declares maintenance scope for the live bound plan and
+   the working-tree diff touches only non-src surfaces) rides a lighter
+   path: it skips the plan-approval and decomposition gates and is capped at
+   4 per plan. Eligibility is canonical in `src/maintenance.ts`; the journaling
+   semantics are in [journal.md](journal.md)'s `maintenance` entry.
 5. The test-runner's `GATE: PASS` may require corroborating exit-0 bash
    evidence (`gateEvidence:"enforce"`); without it the flag is held as
-   `unverifiedPass` and promoted when evidence arrives — including when a
+   `unverifiedPass` and promoted when evidence arrives, including when a
    late child→parent edge back-fills the correlation, and only for
    executions journaled within the parent's current task window.
-6. The reviewer's APPROVE credits the landing gate — under
+6. The reviewer's APPROVE credits the landing gate; under
    `reviewEnsemble:"enforce"` only after ≥2 unwaived reviewer dispatches.
 7. `git push` is blocked until reviewer approval exists; the interactive
    landing ask arms immediately when the session carries a credited reviewer
@@ -445,7 +385,7 @@ credit (a green test gate or a reviewer approval). A retired task's credit
 also rides the same window when the review phase was interrupted mid-flight:
 a green test gate, at least one counted reviewer dispatch or waived reviewer
 round, and no credited reviewer approval (`isInterruptedReview`,
-`src/task-scope.ts`) — both the live abort path and the restart-replay path
+`src/task-scope.ts`); both the live abort path and the restart-replay path
 recover identically, and the journaled `continuation` row carries
 `recovery: true` in that case. The recovery re-opens the retired task's
 plan-bound scope, which then persists like any live plan-bound green task
@@ -453,26 +393,26 @@ plan-bound scope, which then persists like any live plan-bound green task
 
 ### Dormant-until-engaged
 
-Enforcement is dormant by default (`alwaysEnforce: false`): a fresh session's
-reactive gates — the dispatch guards (plan, decomposition, budget, reviewer
-ensemble), the hands-on and bash-write ladders, the landing gate, the commit
-lint, and the read horizon — sleep until the pipeline engages. The
+Enforcement is dormant by default (`alwaysEnforce: false`). A fresh session's
+reactive gates (the dispatch guards for plan, decomposition, budget, and the
+reviewer ensemble; the hands-on and bash-write ladders; the landing gate; the
+commit lint; and the read horizon) sleep until the pipeline engages. The
 user-configured denylists (`toolPolicy.bashDeny` / `toolPolicy.pathDeny`) and
 all telemetry (dispatch, landing, hands-on, scratch rows) keep running while
 dormant, so the audit trail stays complete. The `engaged` flag on the parent
 bucket arms enforcement:
 
-- **Arm** — a prompt carrying the `PLAN APPROVED:` marker (reason
+- **Arm**: a prompt carrying the `PLAN APPROVED:` marker (reason
   `plan-approved`), a prompt classified `plan-ref` or `dispatch` by the
   intent classifier (reasons `plan-reference` / `dispatch-request`), or an
   actual planner dispatch (reason `dispatch-request`). Every transition
   journals a `type:"engagement"` row.
-- **Sleep** — task retire (`markTaskComplete`, reason `task-complete`), the
+- **Sleep**: task retire (`markTaskComplete`, reason `task-complete`), the
   `TURNSTILE OFF:` suspend clear (reason `abort`), and a scope-changing new
   prompt with no continuation credit (reason `continuation-drop`; on a
   carry, `mergeAfterReplay` preserves `engaged` like the other
   restart-sticky flags, and replay restores it last-wins from the journal).
-- **Hint** — while dormant, a `work`/`issue`-intent prompt produces exactly
+- **Hint**: while dormant, a `work`/`issue`-intent prompt produces exactly
   the existing one-time advisory nudge; a dispatch/plan-ref prompt journals
   its `intent` row but never nudges (engagement replaced the reminder).
   The orchestrator policy head is also gated: a dormant session's context
@@ -502,22 +442,22 @@ points (`guardedTaskDispatch`, `handleBashDispatch`, `handleWriteEditDispatch`,
 ### Observe mode (adoption period)
 
 `observeSessions: N` (default `0`) suppresses the deliberate block for the
-first N admitted parent sessions — every gate above keeps evaluating
+first N admitted parent sessions. Every gate above keeps evaluating
 unchanged (markers, evidence, and credit are untouched); only the throw is
 gated. A `BlockError` from a task-dispatch guard or the read-budget guard is
 caught in the hook body (`dispatchBlockOutcome` / `handleReadBudget`),
 journaled as a `would-block` entry, and the call proceeds, metered like an
-admitted dispatch (tool-policy and git-gate blocks are not suppressed —
+admitted dispatch (tool-policy and git-gate blocks are not suppressed;
 their own `mode` knobs govern). The phase is per session: prompt admission
-calls `stampObserveAdmission`, which reads `observePhase` — a process-new
+calls `stampObserveAdmission`, which reads `observePhase`. A process-new
 session increments the running `observed` total (phase `observe` while
 `observed <= N`, `enforce` past it, `off` for `N = 0`, the default path that
 stamps and journals nothing) and journals one `observe` entry per first
 admission; repeat admissions read the stored phase and journal nothing.
 `observeActive` gates the suppression and fails toward enforce: any ledger
 throw journals an `error` entry and the block proceeds normally. On the
-period-completing stamp — or at boot, when the replayed tail shows a
-completed period whose summary never surfaced — the `observeSummaryPending`
+period-completing stamp, or at boot when the replayed tail shows a
+completed period whose summary never surfaced, the `observeSummaryPending`
 flag (beside `surfaceObserveSummary`) arms, and the first string-output
 delivery after it is prefixed with the
 once-per-load `[turnstile] observe:` block (`formatObserveSummary`, rendered
@@ -527,13 +467,13 @@ from the `observeCounts()` totals at injection time) and the inert
 ### Gate suspension overlay
 
 A user-typed `TURNSTILE OFF:` prompt marker (the `suspendMarker` literal,
-honored only from admitted user prompts — never agent-dispatchable) suspends
+honored only from admitted user prompts, never agent-dispatchable) suspends
 gate enforcement for the session as an overlay on the state machine, exactly
 like the observe period but session-scoped instead of adoption-scoped: gate
 decisions keep computing and journaling; only the deliberate block (and the
 permission asks) are suppressed. The flag lives in the ledger's suspension
 map (outside the per-prompt bucket, like the observe period), keyed per
-parent — children draw on the parent's suspension via `ledger.parentOf`. At
+parent; children draw on the parent's suspension via `ledger.parentOf`. At
 each deliberate-block site (`dispatchBlockOutcome`, `handleReadBudget`, and
 the `guardedToolBefore` choke via `suspendBlock`) the suspension predicate ORs
 with `observeActive`, and the observe branch wins the flavor: a suppression
@@ -550,13 +490,13 @@ parked `[turnstile] marker:` diagnostic) with no state change.
 
 ### User plan review (opt-in pause)
 
-With `planUserReview: true` (default `false` — the fully-automated flow), the
+With `planUserReview: true` (default `false`, the fully-automated flow), the
 pipeline pauses between the planner writing a plan and the plan-reviewer
 dispatch: an admitted planner dispatch arms `planReviewPending` (journaled as
 a `plan-review` `pause` row), and the next plan-reviewer dispatch is blocked
 with a deliberate `BLOCKED by turnstile:` error naming the plans dir and the
 two literals. The user edits the plan file if they wish, then accepts or
-rejects via their OWN prompt — `planReviewAcceptMarker` (default
+rejects via their OWN prompt: `planReviewAcceptMarker` (default
 `PLAN REVIEWED:`) clears the pause so the reviewer dispatch proceeds (the
 edited file is what the reviewer reads at dispatch time), and
 `planReviewRejectMarker` (default `PLAN REJECTED:`) retires the task scope
@@ -566,11 +506,11 @@ task-scope resets and is restored by the last-wins `plan-review` replay fold,
 so the pause survives both a restart and the user-prompt boundary. The
 literals are admission-only (never agent-dispatchable) and waivers do not
 bypass the pause; a prompt carrying neither literal leaves the pause armed
-(fail-toward-strict — a lost accept never dispatches an unreviewed plan).
+(fail-toward-strict: a lost accept never dispatches an unreviewed plan).
 
 ### Requirements phase (opt-in, ungated)
 
-With `requirementsPhase: true` (default `false` — the pipeline is
+With `requirementsPhase: true` (default `false`; the pipeline is
 byte-identical when off), non-trivial tasks dispatch a `requirements` subagent
 before the planner: it converts the user's request into a spec (objective,
 explicit/implied requirements, constraints, non-goals, numbered acceptance
@@ -579,7 +519,7 @@ non-blocking). The orchestrator relays any remaining Open Questions to the
 user, folds the written answers in (an explicit delegation is recorded with
 its scope), and passes the finalized spec verbatim into the planner dispatch
 prompt. Trivial tasks (small fixes, renames, doc/config changes) skip the
-leg. The phase is soft and ungated: it emits no marker and no gate — the only
+leg. The phase is soft and ungated: it emits no marker and no gate. The only
 enforcement surface is the loop cap (`maxRequirementsRounds`, default 2,
 counted in `requirementsRounds` and the total dispatch budget, waived
 dispatches exempt) and the injected policy prose
@@ -588,7 +528,7 @@ dispatches exempt) and the injected policy prose
 mechanical `PIPELINE:` successor logic beyond the requirements→planner edge
 (`nextStage` in `src/state.ts`, keyed on the optional `PipelineStages.requirements`
 name); a requirements dispatch in a still-dormant session is admitted without
-engaging enforcement — the planner dispatch that follows engages and runs the
+engaging enforcement: the planner dispatch that follows engages and runs the
 full chain.
 
 ### Key `GateState` fields (`src/types.ts`)
@@ -624,551 +564,33 @@ full chain.
 
 ![Journal and replay](images/d05-persistence.svg)
 
-The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
+The journal is the plugin's only persistence edge. It lives outside the
+repo at `~/.local/share/opencode/metrics/`. The store is a shared
+`turnstile.jsonl` plus a per-session `sessions/<parentID>.jsonl` sink
+(`journalPerSession`, default on). `gate-events.log` (trace only),
+`anchors.jsonl`, and `approved-plans.jsonl` sit beside them. Retention is
+bounded: 5 MB per file, 5 generations per file. `replayTailLines` (default 2000) bounds the boot window.
 
-- **`turnstile.jsonl`** — the always-on audit trail (42 entry types:
-  `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
-  `blocked`,
-  `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
-  `continuation`, `child-reset`, `child-edge`, `evidence`, `violation`, `tool`,
-  `error`,
-  `suppressed`, `observe`, `would-block`, `suspended`, `replay`,
-  `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
-  `task-complete`, `engagement`, `plan-rekey`, `marker-retry`, `plan-impact`,
-  `plan-review`, `prov:stated`, `prov:denied`, `prov:waiver`,
-  `prov:override`, `chain-epoch`, `chain-verify`). A
-  `prov:stated` entry records one admitted parent-session human prompt into
-  the decision ledger:
-  `{type:"prov:stated", sessionID, text, truncated}` — `text` is the prompt
-  verbatim after mechanical secret redaction (`redactSecrets`) and capped at
-  2000 chars (`truncated` marks the cap), with no relevance filtering; a
-  `prov:denied` entry records one human permission denial at the plan,
-  landing, or hands-on reject sites:
-  `{type:"prov:denied", sessionID, kind}` with `kind` the ask kind. Both are
-  additive and replay-inert (unknown types fold nothing at replay), gated on
-  `decisionLedger.enabled` (default `true`), and queryable via
-  `opencode-turnstile prov`. A `prov:waiver` entry records one human gate
-  waiver at the two waiver-journaling sites — the plan gate's
-  `journalPlanWaiver` (`src/plan-gate-enforce.ts`) and the reviewer gate's
-  `journalReviewerWaiver` (`src/dispatch-review-gate.ts`):
-  `{type:"prov:waiver", sessionID, stages}` with `stages` the covered stage
-  list each site already computes for `waiverCovers`; the waiver quote text
-  is not carried (it is redacted upstream). Like the other `prov:*` rows it
-  is additive, replay-inert, and gated on `decisionLedger.enabled`. A
-  `prov:override` entry records one parent-side write/edit that follows a
-  pipeline-child write to the same path within a 15-minute adjacency window
-  (`OVERRIDE_WINDOW_MS` in `src/override-adjacency.ts`) — a human-side
-  correction of pipeline work, whatever its semantics (edit, revert, or
-  full rewrite):
-  `{type:"prov:override", sessionID, tool, path, child}` with `tool` the
-  parent-side tool, `path` the target path redacted then capped at 200
-  chars, and `child` the pipeline-child session whose write was overridden.
-  The child-write side of the heuristic is journaled at the write/edit
-  dispatch surface as a bounded `{type:"tool", sessionID, tool,
-childWrite:true, path}` telemetry row and recorded into an in-memory
-  adjacency tracker (`src/override-adjacency.ts`, never child session
-  content); the parent-side match happens at the `execute.after` write/edit
-  surface (`afterWriteEdit` in `src/tool-hooks-after.ts`). The match is
-  window-persistent, not consume-on-match: every completed parent edit
-  inside the window journals its own row. Like the other `prov:*` rows it
-  is additive, replay-inert, and gated on `decisionLedger.enabled`. A
-  `plan-review` entry records one user plan-review lifecycle event (§5's
-  opt-in pause): `{type:"plan-review", sessionID, action}` with `action` one
-  of `pause` (a planner dispatch was admitted while `planUserReview` is on —
-  the plan-reviewer dispatch is now blocked until the user resolves it),
-  `accept` (the user's `planReviewAcceptMarker` prompt unblocked the
-  review), or `reject` (the user's `planReviewRejectMarker` prompt retired
-  the task — the row is accompanied by a `task-complete` row). Replay folds
-  it last-wins per session: `pause` restores `planReviewPending`, `accept`
-  and `reject` restore it cleared (a hostile `action` folds inert).
-  `plan-impact` entry records one classified parent tool call against the
-  bound active plan's scope:
-  `{type:"plan-impact", sessionID, tool, plan, impact, path}` with `impact`
-  one of `advisory` (the target is named in the plan's steps — the steps may
-  go stale) or `structural` (the target is named in the plan's
-  `## Decomposition` block, or is the plan file itself — a replan is
-  required); a non-overlapping call classifies `none` and journals nothing.
-  The row is replay-inert (folded silently, no gate state) — it is the audit
-  trail the reviewer and replay see. A
-  `marker-retry` entry
-  records a compliance re-prompt for a bare-output delivery (a marker-less
-  delivery from an `agents.bareOutput` agent): `attempt` is the prior retry
-  count for that child and `outcome` is `prompted` (the reminder was sent via
-  the host's `session.prompt`), `skipped-no-api` (the host exposes no prompt
-  API), or `exhausted` (the child's retry budget is spent). It is telemetry
-  only and is not replayed into gate state. A `dispatch` entry is written at
-  guard exit and stamps `blocked:true` when a guard rejected the attempt (the
-  guard's own `blocked` entry is the countable signal; `scripts/status.mjs`
-  excludes the stamp from its dispatches counter to avoid a double count).
-  That same guard exit is where the admitted dispatch is metered against the
-  loop counters, so a blocked attempt leaves every counter untouched. An
-  admitted **maintenance dispatch** (bookkeeping-only, lighter path —
-  §4) journals one `{type:"maintenance", sessionID, plan, capped:false}` row;
-  a cap-exceeded attempt journals `capped:true` before its blocked dispatch
-  entry, and `scripts/status.mjs` counts only the admitted rows (MNT column +
-  JSON `maintenance`).
-  A `task-complete` entry records the task retire (§5); the `engagement`
-  entry is its dormant-until-engaged counterpart:
-  `{type:"engagement", sessionID, engaged, reason}` with `reason` one of
-  `plan-approved` / `dispatch-request` / `plan-reference` (arm) or
-  `task-complete` / `abort` / `continuation-drop` (sleep). Replay folds it
-  last-wins per session (a non-boolean `engaged` field is an
-  `entry-shape`-style drop — the value is sanitized and a hostile row
-  restores dormancy), so a restart mid-task keeps enforcement armed and a
-  journaled sleep restores it.
-  A `suppressed` entry is the audit trail for a marker the pipeline
-  deliberately did not honor, in two flavors discriminated by `kind`.
-  `kind:"gate"` / `kind:"verdict"` is the first-observed-from-an-unauthoritative-emitter
-  record — an agent without the marker contract for that kind
-  (`GATE:`↔`test-runner`, `VERDICT:`↔`reviewer` / `plan-reviewer`), or one
-  whose agent could not be resolved; its marker string carries the digits for
-  forensics, and a re-delivery of identical text adds none (dedup stays
-  registered). Each entry carries a `reason` naming the denial cause —
-  `emitter agent unresolved` when no agent was resolved for the session,
-  `agent not contracted for kind` when the resolved agent lacks the marker
-  contract for the kind. `kind:"replay"` is the replay-drop audit: one entry per
-  journal line the boot replay dropped for failing a shape check —
-  `{ts, type:"suppressed", kind:"replay", reason}` with `reason` one of
-  `malformed`, `session-id`, `entry-shape`, `count-invalid`, plus `sessionID`
-  only when it already passed the replay ID-shape check (hostile bytes are
-  never echoed into the journal); a boot that drops more than 16 lines
-  journals one final `{ts, type:"suppressed", kind:"replay",
-event:"summary", dropped:<total>}` in place of the overflow. Every flavor
-  is audit-only, replay-inert (nothing replays against a denial or a drop),
-  and the status aggregate treats it as inert.
-  A `replay` entry is the file-level audit of an unreadable journal
-  generation during the boot replay: `{ts, type:"replay", error:true}` with
-  no message — one per unreadable generation file, always appended to the
-  shared `turnstile.jsonl` (never the file being read), so the entries are
-  bounded by the generation count. It is replay-inert and status-inert, like
-  the drop entries above.
-  A `generate-draft` entry is the one-per-boot request-draft telemetry row
-  from the first `session.context`/`session.generate` fire:
-  `{type:"generate-draft", surface, agent, hasSessionID, systemKind,
-systemLen, messagesKind, messagesLen, hasOptions, keys}` — kinds, counts,
-  and presence flags only, never block or message text. It is replay-inert
-  and status-inert.
-  A `config` entry is the surface audit for the once-per-load `[turnstile]
- config:` block: `{type:"config", sessionID, surfaced:true, count}` on a
-  successful prepend, or `{..., surfaced:false, error}` when the prepend threw
-  (fail-open). It is replay-inert (a surface record, not gate state) and never
-  re-journaled — the warnings themselves are journaled exactly once by the
-  config layer, so this entry is a count-only audit, not a second copy.
-  The `observe` and `would-block` entries are the observe-mode records
-  (§5's adoption period): an `observe` entry stamps a session's admission
-  phase — `{type:"observe", sessionID, phase, observed, wouldBlocks}` with
-  `phase` `observe` or `enforce` — and a `would-block` entry records one
-  suppressed deliberate block — `{type:"would-block", sessionID, cause,
-observed, wouldBlocks}` with `cause` the blocking gate's audit name (its
-  stamped phrase, the dispatched agent name, `"read-budget"` for a read, or
-  the `"gate"` fallback, truncated to 200 chars). Every observe-mode entry
-  carries both running totals, so replay folds them last-wins: the last
-  stamped line restores the per-session phase map and the
-  `observed`/`wouldBlocks` totals, and the journaled session IDs rebuild the
-  admission dedup set so a restart never re-increments a counted session.
-  The end-of-period marker — `{type:"observe", kind:"summary", injected:true,
-observed, wouldBlocks}`, journaled when the `[turnstile] observe:` block
-  lands — folds inert: it only sets the pending-summary probe, proving the
-  summary surfaced so it never re-fires after a restart.
-  A `suspended` entry is the gate-suspension record (§5's overlay): the state
-  flavor is `{type:"suspended", sessionID, action:"off"|"on"}` (plus
-  `refused:true` when `allowSuspend:false` refused the marker) — replay folds
-  an unrefused entry last-wins into the ledger's suspension map, so a restart
-  mid-suspension stays suspended and an ON resumes; a `refused:true` entry
-  folds inert (a refusal records a refusal, never a suspension change, so the
-  kill switch cannot be defeated by replaying a refusal), a missing or
-  unknown `action` is an `entry-shape` replay drop. The audit flavor is
-  `{type:"suspended", sessionID, event:"would-block", cause}` — one entry per
-  deliberate block suppressed by the suspension (cause truncated to 200
-  chars, like `would-block`); it folds inert, recording a suppression but
-  never a state change. The state flavor is status-visible (the status
-  aggregate folds the same last-wins suspension state); the audit flavor is
-  status-inert.
-  A `marker` entry is the near-miss diagnostic for a prompt that mistypes a
-  prompt-channel marker literal: at admission the text is scanned for
-  marker-shaped variants (case, separator, or colon) of the configured
-  `waiverMarker` / `approvalMarker`, and each hit is journaled
-  `{type:"marker", event:"near-miss", sessionID, found, literal}` — `found`
-  is the matched token, `literal` the exact configured string; the prompt
-  text itself is never journaled. The hit is parked per parent session and,
-  on that parent's next string-output tool delivery (a child delivery keys to
-  its parent), is surfaced once as a `[turnstile] marker:` block naming the
-  exact literal, with a surface audit
-  `{type:"marker", event:"surfaced", sessionID, surfaced:true, count}` — or
-  `surfaced:false, error` when the prepend threw (fail-open; the diagnostic
-  retries on the next delivery). A new user prompt drops any undelivered
-  diagnostic (task-scope lifecycle, like the other latches). The entries are
-  replay-inert and status-inert: a near miss admits nothing — gate semantics
-  stay strict-literal — so neither `replayGatePasses` nor the status
-  aggregate reads them.
-  A `child-reset` entry records a parent prompt's `resetState` freeing the
-  metering counters of at least one edge-registered child:
-  `{type:"child-reset", sessionID, children}` where `sessionID` is the
-  prompted parent and `children` the freed count. It exists only on prompts
-  that actually free a child — a prompt that frees none journals nothing —
-  and is replay-inert (the prompt reset is the child's task boundary; nothing
-  of its gate state survives to restore) and status-inert (the aggregate's
-  entry-type chain does not count it).
-  A `permission` entry's telemetry sub-kinds make the permission-ask
-  escalation ladder diagnosable. `event:"latch-steal"`
-  (`{type:"permission", sessionID, event:"latch-steal",
-reason:"plan-gate"}`) journals an empty-message `permission.asked` that
-  wins a live plan latch over the prefixed escalate echo (the steal-able
-  window); `event:"forced"` (`{type:"permission", sessionID,
-reason:"landing", event:"forced"}`) stamps the evaluate landing arm's
-  one-shot consume of a live landing latch (the hands-on evaluate arm
-  journals the same shape with `reason:"hands-on"`), and `event:"unrecorded-reply"`
-  (`{type:"permission", sessionID, event:"unrecorded-reply", requestID}`)
-  journals a non-empty `requestID` `permission.replied` that matches neither
-  recorded ask (a requestID-less reply stays silent — a distinct broken-host
-  case). None carries `action:"ask"` or `decision`, so the `status.mjs`
-  PERM-ask and PERM-decision counters (which key off those fields) leave the
-  human table untouched, and all three are replay-inert (the ledger never
-  replays `permission` rows).
-  A `session-summary` entry is the delivery proof for the session-end
-  summary: `{type:"session-summary", sessionID, verified, blockedDispatches,
-waivers, text}` — the counts mirror the recap line (`text`, bounded to 300
-  chars), which is shown as a TUI toast when the host offers `tui.toast.show`
-  and delivered journal-only otherwise (the headless log). One per session
-  per host process (an in-memory dedupe set; a restarted host may re-summary
-  a still-idle session once). It is audit-only, replay-inert (an unknown
-  replay type folds nothing), and status-inert.
-  A `plan-rekey` entry is the durable-store scheme-migration audit row:
-  `{type:"plan-rekey", sessionID?, plan, reason:"durable-key-scheme", from,
-to}` — appended when a content-verified legacy (or untagged) approved-plan
-  record is transparently re-keyed to the current spec-region scheme (see the
-  `approved-plans.jsonl` bullet below). It is an audit row that folds nothing:
-  replay-inert (an unlisted type returns no state) and surfaced only through
-  the status report's re-key advisory line.
-  Rotation: the append hot path never stats or renames — `journal()` only
-  appends and advances a per-file counter. The rotate-then-rename sequence
-  runs once per `journalRotateEveryEntries` appends (default 512), only
-  under a
-  created `<file>.lock` atomic-mkdir mutex, so two concurrent sessions never
-  both rename the shared file. Disk usage stays bounded at `(N + 1) ×
-maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
-  between the size check and the rename; a contended lock or any rotation error is
-  swallowed (fail-open); a leftover `<file>.lock` from a crash is stolen once
-  its mtime passes the staleness bound (journaling a `rotation-lock-stale:`
-  `error` entry), so rotation resumes instead of stopping forever; a freshly
-  held lock is still skipped silently while journaling keeps appending. A
-  residual bounded race remains:
-  a writer that opens the path across the rename may land an entry in a
-  generation past the current file, but the replay scan walks all retained
-  generations, so such an entry simply joins the tail window when it is
-  read back (the window is small and clock-free).
-  Rotates at 5 MB, 5 generations.
-- **`sessions/<parentID>.jsonl`** — the per-parent-session segment of the
-  audit trail (when `journalPerSession` is on, the default): every entry
-  carrying a resolvable parent sessionID (via the ledger's `parentOf` map)
-  appends here instead of the shared file, so one session's dispatches,
-  verdicts, gates, blocks, and waivers read top-to-bottom in one file.
-  Entries without a sessionID (or with an ID failing the session-ID shape
-  rule) land in the shared `turnstile.jsonl`. Each session file carries the
-  same rotation bounds as the shared file (5 MB, 5 generations, same lock
-  cadence and stale-lock steal — the steal's `rotation-lock-stale:` error
-  row always appends to the shared `turnstile.jsonl`, even when the
-  contended file is a session sink). Aggregate retention and boot read cost
-  scale with the live session count: per-file bounds are equivalent, but the
-  file count grows with sessions (accepted; the shared-file bound alone is
-  unchanged).
-- **`gate-events.log`** — human-readable trace, only when `trace:true`.
-- **`anchors.jsonl`** — the session-state anchor store (only written when
-  `tamperEvidence.enabled` is `true`; see the tamper-evidence subsection
-  below): one published epoch ref per line, appended by the `session-state`
-  sink at the task-completion and session-end triggers.
-- **`approved-plans.jsonl`** — the durable approved-plan store (beside the
-  journal by default; the factory's injected option redirects it). Each line
-  is one record: a plan file name, its content key, and the project scope
-  the approval was recorded under (derived from the resolved project
-  directory). New records carry a `scheme: "spec"` tag (the key is the
-  plan's spec-region sha256); a record without the tag was written under the
-  legacy whole-file scheme (or an unknown newer scheme). A record covers a
-  plan when its key equals the file's spec-region key or its whole-file key,
-  so the plan is not pending. The whole-file key is the sha256 of the file's
-  bytes at the current plans scan; a cached scan may reflect the bytes at
-  its last refresh rather than the current file — a progress-only edit
-  leaves the spec region (and the cached scan signature) unchanged, so a
-  legacy record can be honored across such an edit, and the re-key it
-  performs writes the current spec key. The first legacy match transparently
-  re-keys the
-  record to the current scheme (in-memory, sidecar append, and one
-  replay-inert `plan-rekey` journal row with `reason: "durable-key-scheme"`).
-  A record matching neither key leaves the plan pending with cause
-  `durable-key-stale`: the enforcing dispatch journals the blocked row with
-  that reason and a recovery message (one re-approval re-keys it) instead of
-  the `no-plan-verdict` never-approved message. At boot the ledger loads the
-  store (a missing file is a silent
-  empty; another read error is journaled once and degrades to empty); the
-  in-memory map is last-wins per (project, plan), capped at 256 records, and
-  rewritten on eviction. A record is written when a _bound_ plan-reviewer
-  APPROVE credits the gate — an unbound approval (human releases, prompts
-  naming no single plan, a reviewer approval whose dispatch named no
-  resolvable plan) records nothing. A plan whose name and content key still
-  match a record under the current project is not _pending_: the plan gate
-  stays green for it even after the journal's APPROVE line has aged out of
-  the replay window and across prompt resets — the exemption is re-derived
-  from the sidecar, not the session bucket. A dispatch whose resolved plan
-  is not pending is exempt even while unrelated plans stay pending. A
-  record restores no session
-  bucket itself (`hasPlanVerdict` and kin remain replay-only), an edited or
-  replaced plan (content-key mismatch) or another project's plan stays
-  pending, and read or write failures are fail-open (journaled, never
-  blocking).
+On restart, `replayGatePasses` (`src/ledger.ts`) walks the generations
+newest-first. It merges by `ts` and folds last-wins per session. It
+restores gate flags, verdicts, ensemble counts, the observe period, and
+the suspension map. The `prov:stated` / `prov:denied` / `prov:waiver` /
+`prov:override` decision-ledger rows ride the same journal. Every read
+error is fail-open: the journaler records it and never throws.
 
-### Tamper evidence: the journal hash chain and anchors (opt-in)
-
-When `tamperEvidence.enabled` is `true` (default `false` — the legacy
-unchained row shape stays the default so existing journal consumers are
-untouched), every journaled row carries three chain fields appended after the
-payload: `seq` (per-file monotonic counter starting at 0), `prevHash` (the
-previous row's hash, `""` for the first), and `hash` — the SHA-256 over the
-canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
-`{prevHash, ts, payload}` (`src/chain.ts`, `node:crypto` only, zero runtime
-dependencies). Editing, deleting, or reordering any row breaks every hash
-after it.
-
-Epochs batch the chain for verification and anchoring: every
-`epochEntries` data rows (default 512, matching the rotation cadence) the
-journaler appends a `chain-epoch` row — itself chained like any other —
-carrying `{source, epoch, count, root, head}` where `root` is the Merkle root
-over the epoch's data-row hashes (pairwise `sha256(a + b)`, an odd trailing
-node hashed with itself, the single survivor hashed with itself once more)
-and `head` is the epoch's last data-row hash. Two more entry types ride the
-chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
-verdict, below).
-
-**Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
-the same file an attacker can rewrite proves nothing by itself, so each
-committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is published
-to independent durable stores — anchor sinks — at the task-completion
-trigger, fire-and-forget: every publish runs concurrently, a rejection
-journals an `anchor-publish:` `error` row, and nothing blocks the pipeline.
-Sinks are selected by `tamperEvidence.anchor`:
-
-| Sink                      | Trust domain | Store                                                                                                                                              | Defeats                                                                        |
-| ------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `session-state` (default) | host         | `<metricsDir>/anchors.jsonl`                                                                                                                       | lazy edit-in-place of the journal — a rewriter must also forge the second file |
-| `git-note`                | repo         | git notes on HEAD, `refs/notes/turnstile`                                                                                                          | anything short of rewriting the git object store                               |
-| `commit-trailer`          | repo         | `Turnstile-Anchor:` trailers on landing commits (pending refs parked in `.git/turnstile/trailer-anchors.jsonl` until the landing flow stamps them) | same, plus ties the epoch to project history                                   |
-| `{plugin: "<specifier>"}` | external     | whatever the imported factory implements                                                                                                           | strongest: a store outside the host's control                                  |
-
-An array selects several: all publish, verify intersects (a ref is anchored
-when any sink vouches; the report names the **weakest vouching trust
-domain** — external > repo > host). External plugin sinks are lazy-`import()`ed
-at setup with a factory shape-check; a malformed sink degrades to a journaled
-warning, never a boot failure. **Caveat:** a plugin specifier is code the
-host executes — only point `plugin:` at modules you trust as much as
-turnstile itself.
-
-**Verification.** `verifyJournalChain` (`src/verify.ts`) folds every journal
-file family (shared + per-session sinks) across its rotation generations
-oldest-first, re-derives each row's hash and each epoch's Merkle root, and
-reports the first broken link (`<family>:<line>: prevHash|seq|hash mismatch`
-or an epoch root/head mismatch). Epoch indices are monotonic per family
-across rotations — a seeding or resyncing journaler continues from the max
-committed index in the surviving generations — so a `source#epoch` ref
-identity is stable for the anchor cross-check. When rotation has pruned
-generations — the
-oldest surviving file is a numbered generation other than `.1` — its first
-chained row folds as a **trust root**: its `prevHash` points into a pruned
-generation, so the prevHash continuity check is waived for that row only
-(its own hash and a plausible `seq` are still verified). When
-`tamperEvidence.verifyOnSessionEnd` is
-`true` (default `false`), the session-idle handler runs it once per session
-and journals the `chain-verify` verdict, toasting on failure — shrinking the
-detection window from "whenever someone runs the CLI" to one session. The
-same check is available offline: `opencode-turnstile prov --verify` folds the
-chain and verifies the epoch refs against the configured sinks, exiting 0 on
-an intact anchored chain, 1 on the first broken link or any unanchored ref,
-and 2 on usage errors.
-
-**Row-level inclusion proofs (`prov --verify --session <id>`).** The scoped
-variant folds only the shared journal and the target session's sink.
-`merklePath`/`merklePathRoot` (`src/chain.ts`) derive a per-row RFC
-6962-style audit path under the same pairwise/self-hash conventions as
-`merkleRoot`; the CLI validates each `prov:*` row's path against its epoch's
-anchored ref root (`merkleOk` — `false` when an anchor disagrees with the
-journal), reports the weakest vouching trust domain per row via the existing
-anchor-sink verdicts, and localizes a mutated `prov:*` row (row + epoch)
-while leaving the global verdict and the tamper matrix untouched.
-Open-window rows — written after the last epoch close — are reported as
-not-yet-anchored (`epoch: null`, with a reason) and never flip the exit
-code. The same applies to rows whose epoch window spans a pruned rotation
-generation: the surviving leaf list is partial, so no inclusion proof can
-be derived (`epochRoot`/`merklePath`/`merkleOk` null, an "epoch window
-incomplete" reason), while `epochs[].count` still reports the commit row's
-declared committed count. `--json` is honored in scoped mode only; plain
-`--verify` keeps its human-only output.
-
-**Differential characterization** (integration-tested in
-`tests/tamper-matrix.test.ts`): for each mutation of a captured honest
-journal — built through the real write path with a rotation generation and a
-task-completion anchor — the observed `prov --verify` verdict must equal the
-characterized verdict, so a detector regression (false negative or false
-positive) fails loudly:
-
-| #   | Mutation                                                                                    | Expected result                                                                                                                        | Caught by                                                                                                                                            |
-| --- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0   | none (control)                                                                              | verify passes                                                                                                                          | —                                                                                                                                                    |
-| 1   | edit one row's payload                                                                      | fail, first broken link reported                                                                                                       | chain fold                                                                                                                                           |
-| 2   | delete a row                                                                                | fail                                                                                                                                   | chain fold                                                                                                                                           |
-| 3   | insert a fabricated row                                                                     | fail                                                                                                                                   | chain fold                                                                                                                                           |
-| 4   | reorder rows                                                                                | fail                                                                                                                                   | chain fold / epoch root                                                                                                                              |
-| 5   | fork (branch from an interior row)                                                          | fail                                                                                                                                   | chain fold / epoch root                                                                                                                              |
-| 6   | rewrite-all with recomputed chain                                                           | chain folds clean, anchor check fails                                                                                                  | anchor                                                                                                                                               |
-| 7   | edit rows within the un-anchored tail                                                       | **passes** — documented residual hole, bounded by the anchor cadence                                                                   | —                                                                                                                                                    |
-| 8   | truncate-and-continue (recurring-cleaner attack: truncate, keep logging into a fresh chain) | fail — previously published epoch roots become underivable from the current file, even though the new chain folds clean and re-anchors | anchor (CLI surfaces it via the unanchored-ref check against the retained store; missing-root detection confirmed at the `verifyJournalChain` level) |
-| 9   | commit a wrong epoch root (row re-hashed honestly)                                          | fail — the per-record fold stays clean, so only the epoch-root check catches it                                                        | chain fold / epoch root                                                                                                                              |
-
-Row 7 is deliberate: characterizing what the mechanism _cannot_ see is part
-of the verification. Its scope is bounded by the anchoring trigger — anything
-written after the last task-completion/session-end anchor is unverifiable
-until the next one; if the anchor cadence changes, re-characterize row 7.
-Row 8 differs from a mid-file deletion (row 2): the surviving file is
-internally valid from a new genesis, so only the anchor comparison catches
-it. The harness also confirms a second task-completion anchor after the
-truncation re-anchors the fresh chain without masking row 8's failure.
-Row 9 isolates the epoch-root limb specifically: the tampered `chain-epoch`
-row is re-hashed honestly, so rows 1–5's per-record detection is bypassed by
-construction and the mismatch is attributable to the root/head check alone.
-Integrity ≠ fidelity: a chain-valid journal that recorded fabricated
-execution hashes fine and passes every row; detecting that class needs
-ground-truth correlation outside the journal (out of scope here).
-
-**Honesty caveats.** Integrity is not fidelity: the chain proves the
-journal bytes are unchanged since they were written — it cannot prove the
-_content_ was true (a gate that lied at write time hashes just as cleanly).
-And detection latency is bounded by verification, not by chaining: an
-attacker who controls the host can recompute the whole chain and forge the
-host-domain `session-state` anchor too; only the repo- and external-domain
-sinks raise the cost above "edit two files", and nothing here stops a
-determined host-level adversary (that is the tamper matrix's problem, out of
-scope here). Deletion and rotation semantics: anchor refs outlive the rows
-they vouch for, so absence detection keys on the committed root (with the
-monotonic epoch index as a bound), not on the ref's presence in the fold.
-An anchored ref is reported absent only when its root matches no retained
-epoch AND its index is at or above the family's lowest retained index — a
-gap within, or truncation of, retained history. An anchored epoch whose
-commit row has rotated out entirely is satisfied silently: after that row
-is pruned, absence is undetectable, the same trust domain as journal
-deletion. Steady-state `verify` exit 0 is the expected signal; a red verify
-means either genuine truncation within retained history or a
-store/journal mismatch worth investigating. The anchor store grows by one
-ref per epoch commit (duplicates skipped by the session-state sink), is
-host-local, and is bounded only by the epoch commit rate. A hostile writer
-can also forge an arbitrarily large epoch index and pollute identity
-numbering, but the forged commit's ref then verifies unanchored — the
-host-trust-domain ceiling already described above. One deletion
-caveat remains: because
-pruning makes the oldest surviving generation's first row a trust root,
-deleting the oldest generations resets the chain root — the same trust
-domain as deleting the journal outright. And verify over an empty or wholly
-deleted journal with an empty anchor store is vacuously ok: absence of rows
-is not evidence of integrity, which is why the anchors live in a second
-file (or sink domain) that still names the epochs the deleted journal
-should have contained — with anchors retained, that deletion is exactly
-what the absence check reports.
-
-On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
-generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file
-exists) and then every `sessions/` file family's generations the same way
-(a guarded directory read: any failure replays the shared file only; every
-directory entry maps to its family root — `p1.jsonl.2` roots at `p1.jsonl` —
-and the deduplicated root set is walked, so each generation is read exactly
-once, including a fully rotated family whose current file is absent),
-merges the collected lines ordered by their `ts` field (missing/unparseable
-sorts oldest) and keeps the last `replayTailLines` lines (default 2000)
-globally. Last-wins folds are per-sessionID and each sessionID's rows live
-in exactly one file, so cross-file ordering cannot change any per-session
-fold; the global `ts` sort only preserves the observe-mode global totals'
-last-wins behavior. The global slice is also an inclusion bound: each
-session-sink family is read with the full `replayTailLines` window, but the
-slice keeps the last window overall — with a hot shared journal plus many
-session sinks, a quiet session's entire contribution can fall outside the
-kept tail, so its boot gate restore silently fails toward strict (the same
-eviction spirit as journal rotation). The merge also bounds boot memory, not
-just boot I/O: all read lines are held at once, O((1 + number of
-session-sink families) × `replayTailLines`) lines in the worst case — a
-bound, not a steady-state cost. Per-file reads stay tail-capped with an early stop: the
-walk ends inside the newest
-generation that alone satisfies the tail bound, so boot I/O stays bounded by
-the retained-generation sizes, never the full
-`journalMaxGenerations × journalMaxBytes` envelope (the file count grows
-with live sessions — see the retention note above). The journal is treated as
-untrusted data on the read side: a line folds into the last-wins maps only if
-its `sessionID` passes the replay ID-shape check (alphanumeric plus `.`, `_`,
-`-`, length 1–64) and its kind fields pass their shape guards — verdict
-marker ≤ 512 chars, ensemble count an integer in
-`[0, REVIEW_ENSEMBLE_SIZE]` (higher integers clamp, others drop) — and each
-dropped line journals one replay-drop `suppressed` entry (above). An
-unreadable generation file (a directory in its place, a permission failure)
-folds nothing from its lines: it journals one message-free
-`{ts, type:"replay", error:true}` entry on the shared `turnstile.jsonl`
-(bounded by the generation count) and
-the walk continues with the next-older generation. It then
-restores per session, last-wins:
-`hasGatePass`, `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove`
-(task-result source only — streamed child verdicts never restore it),
-ensemble counts, the observe period (per-session phase, the admission
-dedup set, and the running `observed`/`wouldBlocks` totals — last-wins; a
-`kind:"summary"` marker sets the pending-summary probe), and the gate
-suspension map (last-wins `action:"off"` / `action:"on"` — a restart
-mid-suspension stays suspended; the `refused:true` refusal flavor and the
-`event:"would-block"` audit flavor fold inert). A plan APPROVE
-entry may carry the bound identity fields
-`plan` (file name) and `planKey` (that file's content hash); a field restores
-it only in legal shape (path-free file name ≤ 128 chars; `planKey` a
-64-char lowercase sha256 hex; `plansSig` ≤ 4096 chars) — absent, non-string,
-or malformed-shape → unbound, so legacy lines replay unchanged and hostile
-bytes degrade to the existing unbound validation paths. Restored buckets get
-`replayGrace`, surviving
-exactly the resume prompt. Values, not provenance, are carried: a live
-`GATE: FAIL` after replay stays false. Staleness then applies per approval
-kind: a restored _bound_ verdict is validated against the current files
-immediately (bound plan edited or removed → `plan-edited` / `plan-missing`
-STALE, no accept-once window), while a restored unbound verdict carries its
-journaled `plansSig` stamp and is validated against the current dir (any
-plans-dir change → `signature-mismatch` STALE); a field-less legacy line
-keeps the accept-once window (accepted once and re-stamped). Any read error
-is fail-open. The window bounds only the live approval: bound approvals
-older than it stay exempt through the durable approved-plan store above.
-
-For a read-only status view: `opencode-turnstile status [--json]` aggregates
-gate/plan/verdict/dispatch/blocked/permission/suspension entries per parent
-session, walking the same all-generation tail window with the same
-session-ID and
-marker shape checks (observation-only, so a dropped line is silent there
-rather than journaled). Suspension folds last-wins like the ledger's
-`foldSuspended` (an OFF marks, an ON clears, a `refused:true` refusal, an
-`event:"would-block"` audit, and an unknown action fold nothing) and surfaces
-per session as the `suspended`
-JSON field and the table's SUS column. When the journal holds observe-mode
-entries, the
-report header adds the folded period line
-(`observe: <phase> <observed>/<observeSessions> sessions, <wouldBlocks>
-would-blocks`); journals without them render byte-identically. When the
-journal holds `plan-rekey` rows (the durable-store scheme migration above),
-one advisory line naming the re-keyed plans (capped at five, `+N more`
-beyond) renders under the observe line; journals without them render
-byte-identically too.
-
-`opencode-turnstile evidence [--task <session|latest>]` is the publishable
-half of that view: the same tail window and shape checks, folded to one task
-and projected key by key into `turnstile-evidence/v1` — derived counts,
-canonical marker lines, and two shas (a one-way task handle, and `sha256` of
-the last journaled line). Nothing is filtered out of a larger object: the
-document is built from whitelisted keys, so a journal field cannot leak into a
-public artifact by oversight. It adds no entry type, changes no replay rule,
-and writes nothing to the journal.
+The full catalog lives in [journal.md](journal.md). It lists the 43 entry
+types enumerated by the §6 inventory (the old prose count was 42; all
+literals are listed) with their replay folds, the file layout, rotation
+mechanics, and
+the tamper-evidence hash chain.
 
 ---
 
 ## 7. Configuration surface
 
-Config resolves in four layers — code defaults ⊕ `~/.config/opencode/turnstile.json`
+Config resolves in four layers: code defaults ⊕ `~/.config/opencode/turnstile.json`
 ⊕ environment (`TURNSTILE_TRACE`, `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`)
-⊕ injected options — with per-key validation; invalid values are warned into
+⊕ injected options, with per-key validation; invalid values are warned into
 the journal (never thrown) and summarized once into the session context at
 startup (a `[turnstile] config:` block). A shipped JSON schema
 (`schemas/turnstile.schema.json`, editor opt-in via a `$schema` key that is
@@ -1191,7 +613,7 @@ warned. Highlights:
 | Provenance  | `decisionLedger.enabled`                                                                                                                                                                                                                                                          | `true` — the observe-only decision ledger: every admitted parent prompt journals a redacted `prov:stated` entry, each human permission denial journals `prov:denied`, each human gate waiver journals `prov:waiver`, and each parent write/edit following a pipeline-child write to the same path journals `prov:override` (§6); `false` disables all `prov:*` journaling with no other behavior change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
-`maxReviewerRounds < 2` warns — the ensemble would be mechanically
+`maxReviewerRounds < 2` warns: the ensemble would be mechanically
 unsatisfiable. A user `gateMarker`/`verdictMarker` that matches text the
 shipped default rejects is warned as different from the default (a match-oracle
 probe; a disjoint custom syntax stays silent).
@@ -1200,15 +622,16 @@ probe; a disjoint custom syntax stays silent).
 
 ## 8. Design invariants
 
-- **Fail-open vs BLOCKED.** Only `BlockError` reaches the host, and only from
-  deliberate gate decisions. Every hook body journals internal errors and
-  proceeds; the plugin always loads.
+- **Fail-open vs BLOCKED.** Enforcement is fail-open: every hook body journals
+  internal errors and proceeds, and the plugin always loads. Only `BlockError`
+  reaches the host, and only from deliberate gate decisions, which throw
+  `BLOCKED by turnstile:`.
 - **Parent-keyed state.** Reads, round counts, and gate flags count against
   the parent, resolved asynchronously via `childToParent`; unresolved edges
   journal a fallback signal rather than mis-keying.
 - **Provenance-scoped, stage-aware waivers.** `USER WAIVER:` / `PLAN APPROVED:`
   are honored only from the user's own prompt (hook or inbox stream, deduped
-  by message id) — agent-composed dispatch prompts containing those literals
+  by message id); agent-composed dispatch prompts containing those literals
   are inert. Waiver scope is literal configured stage names, not intent
   parsing: the configured agent names named in the waiver text scope it to
   those stages' gates (the plan gate is covered by either the plan-reviewer
@@ -1218,7 +641,7 @@ probe; a disjoint custom syntax stays silent).
   from the ordinary dispatch caps. The family rides the same one-prompt
   replay grace (a restart resume or a `continuationCarry` re-admission) and
   is otherwise dropped on a new prompt. One exception to "covers every
-  gate": the landing gate never consults the waiver — `git push` is released
+  gate": the landing gate never consults the waiver. `git push` is released
   only by the credited reviewer `VERDICT: APPROVE` or the human permission
   ask, so a waiver aimed at landing is captured at admission and inert at
   that gate.
@@ -1243,7 +666,7 @@ probe; a disjoint custom syntax stays silent).
 
 ## 9. Policy injection
 
-Turnstile does not read orchestrator policy from a file at install time — it
+Turnstile does not read orchestrator policy from a file at install time; it
 makes that policy available by injecting it at runtime. The primary channel is
 the pre-first-model-call `session.context` hook: `injectContextPolicy` in
 `src/context-surface.ts` appends the policy head (and any pending intent nudge)
@@ -1255,15 +678,15 @@ prepends the orchestrator policy paragraph from `src/policy.ts` (via
 task, once per task, and appends a per-delivery `PIPELINE:` status tail to
 every
 pipeline-stage delivery (see Pipeline continuation below), via the
-`tool.hook("execute.after")` handler — the same hook the plugin already uses
-to rewrite tool output reaching the model. Each
-delivery is classified once by `classifyDelivery` into its host shape — the
+`tool.hook("execute.after")` handler (the same hook the plugin already uses
+to rewrite tool output reaching the model). Each
+delivery is classified once by `classifyDelivery` into its host shape: the
 v1 string shape (child-keyed event, text in `result.output`, the child
 optionally named by a string `metadata.sessionID`) or the v2 structured shape
 (parent-keyed event, structured `result.output`, the child on
 `metadata.sessionID` or the structured `output.sessionID`, the canonical
 child text in `output.output`, model-visible `content` as a string or a block
-array) — and the policy head and the status tail both land on that shape's
+array). The policy head and the status tail both land on that shape's
 model-visible text through the shared shape ladder (`mutateDeliveryText`):
 `result.output` for the string shape; string or block-array `result.content`
 for the structured one (a string carries both mutations in place, a block
@@ -1271,8 +694,8 @@ array gains one prepended head block and one appended tail block, and absent
 or other content falls back to the structured output string, which the host
 stringifies into the transcript).
 The classified child and text also drive marker parsing, the bare-output
-check, and the reviewer capture — always from the canonical `output.output`
-string — so a structured delivery parses and attributes to the real child
+check, and the reviewer capture, always from the canonical `output.output`
+string, so a structured delivery parses and attributes to the real child
 exactly like its string twin. Attribution is
 edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
 via `session.get` in `resolveParent`) decides where the policy lands, so both
@@ -1283,30 +706,31 @@ follows the plugin through updates and uninstall–reinstall cycles.
 
 - **Fail-open.** The injection is fully guarded with an inner try/catch; on
   failure it journals a `type:"policy"` entry with `injected:false` and
-  proceeds — a broken injection never blocks a tool call. The status tail has
-  its own fail-open catch: a throwing append journals
+  proceeds, so a broken injection never blocks a tool call (§8). The status
+  tail has its own fail-open catch: a throwing append journals
   `{type:"error", error:"pipeline-status: …"}` without rethrowing, and the
   independent policy head still lands (and vice versa). The only silent skips
-  are the once-flag — which gates only the policy head; the tail lands on
-  every pipeline-stage delivery — and an absent result (nothing to deliver);
+  are the once-flag (which gates only the policy head; the tail lands on
+  every pipeline-stage delivery) and an absent result (nothing to deliver);
   a present-but-unclassifiable result journals loudly on EVERY such delivery
-  (the once-flag no longer gates it) — `{type:"policy", injected:false,
-reason:"unknown-shape", shape:<descriptor>}` — where the descriptor is a
+  (the once-flag no longer gates it) as
+  `{type:"policy", injected:false, reason:"unknown-shape", shape:<descriptor>}`,
+  where the descriptor is a
   bounded, value-free summary of the unrecognized result (per-field types
   plus the sorted key names of an object `output`, capped at 8), so a broken
   shape is discoverable by grepping `type:"policy"` like every other skip.
 - **Per-task idempotency.** A `GateState.policyInjected` flag (cleared on
   each new prompt, so the block re-injects per task) means the policy is
   prepended exactly once per task, not once per turn. The `PIPELINE:` tail
-  has no such once-flag — it is per-delivery by design. The shared latch also
+  has no such once-flag; it is per-delivery by design. The shared latch also
   gates the context-hook channel: its success journals
   `{type:"policy", injected:true, surface:"context"}` and its skips journal
   `skipped:true` with reason `context-agent` / `context-child` /
   `context-no-id`, discoverable by grepping `type:"policy"` like every other
   decision.
-- **Pipeline continuation.** Every pipeline-stage delivery — the delivery's
+- **Pipeline continuation.** Every pipeline-stage delivery (the delivery's
   agent matched against the configured `config.agents` names, so a renamed
-  install names its renamed stages — gains a one-line status tail rendered
+  install names its renamed stages) gains a one-line status tail rendered
   by `formatPipelineStatus` (`src/state.ts`) from the resolved parent's gate
   state after the just-arrived delivery: `PIPELINE: <stage>=done
 plan=APPROVED|PENDING tests=GREEN|RED reviewer=<n>/2 next=<successor> —
@@ -1321,19 +745,19 @@ plan=APPROVED|PENDING tests=GREEN|RED reviewer=<n>/2 next=<successor> —
   successor, "task complete; land through the gated push" for `land`, and
   "escalate to the user" for `escalate`. Two documented residuals: an agent
   outside the five stages renders `""` and the append is skipped entirely
-  (non-pipeline deliveries stay byte-identical); and on a capped round — the
-  other legs carry dispatch caps too (planner 3, plan-reviewer 3,
-  test-runner 4) — the line may name a stage the dispatch gate will refuse;
+  (non-pipeline deliveries stay byte-identical); and on a capped round (the
+  other legs carry dispatch caps too: planner 3, plan-reviewer 3,
+  test-runner 4) the line may name a stage the dispatch gate will refuse;
   it reports the pipeline's nominal successor, not the gate's cap check. The
   tail rides the policy head's `mutateDeliveryText` shape ladder, and the
   output always reads policy head → child text → `PIPELINE:` tail (the
   once-per-load `[turnstile] config:` block sits between head and child text,
   per the config-surface ordering). Every status word is a non-marker token,
   so an echoed copy of the line never parses as a `GATE:`/`VERDICT:` marker,
-  and the line never enters the journal — persistence schema, replay,
+  and the line never enters the journal: persistence schema, replay,
   rotation, and `opencode-turnstile status` are unchanged.
 - **Edge-first attribution.** A delivery whose child→parent edge is
-  registered injects regardless of the `event.agent` name — the name
+  registered injects regardless of the `event.agent` name; the name
   heuristic never excludes an edge-resolved delivery. The name guard survives
   only as a conservative fallback for non-structured deliveries: a delivery
   carrying a config-known subagent name whose edge is unresolvable (no
@@ -1342,13 +766,13 @@ plan=APPROVED|PENDING tests=GREEN|RED reviewer=<n>/2 next=<successor> —
 reason:"agent-name"}` so the decision is observable. Structured deliveries
   skip the guard by construction: the host builds that result on the
   parent's own tool call, so it is always the parent-facing channel and
-  `event.agent` there is the parent's agent name — consulting it risks a
+  `event.agent` there is the parent's agent name. Consulting it risks a
   bogus skip for a parent running under a config-known name. The one
   residual corner that still injects without an edge is a config-UNKNOWN
   name on a host without a session API:
   with neither an edge nor a name signal there is no way to tell a
   parent-facing delivery from a child-own session one, so the self-keyed
-  injection there is a documented, accepted residual — the handler fires only
+  injection there is a documented, accepted residual. The handler fires only
   on `task`/`subagent` tool results, so child streaming text never receives
   the policy.
 - **Marker placeholders.** The injected paragraph quotes the gate/verdict
@@ -1364,7 +788,7 @@ failed=<n>`, `VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>`) rather
 - **Per-agent instructions** are not injected by the plugin: they live in
   each `agents/<name>.md` installed alongside the plugin.
 
-With the plugin **off**, none of this prose is present anywhere — there is no
+With the plugin **off**, none of this prose is present anywhere; there is no
 AGENTS.md block to fall back on. That is the deliberate tradeoff: loss-proof
 by construction while the plugin loads, and a known, documented gap when it
 does not.
@@ -1373,7 +797,7 @@ A legacy variant once wrote a managed contract block into
 `~/.config/opencode/AGENTS.md`. That block is now orphaned: the plugin no
 longer reads or manages it, and it will coexist with the injected policy
 (duplicate prose until removed). There is deliberately no installer to remove
-it — turnstile no longer owns that file, so it never rewrites it. Delete the
+it; turnstile no longer owns that file, so it never rewrites it. Delete the
 section between the `<!-- turnstile:start -->` and `<!-- turnstile:end -->`
 sentinels by hand, once; after that, the injected policy is the single source
 of orchestrator policy for the session.
@@ -1384,14 +808,14 @@ of orchestrator policy for the session.
 
 Turnstile is a speed bump and an audit trail, not a security boundary.
 
-- Any text matching the gate marker — including a marker an agent
-  hallucinated or copied from documentation — is journaled `verified:false`
+- Any text matching the gate marker, including a marker an agent
+  hallucinated or copied from documentation, is journaled `verified:false`
   under the default `gateEvidence:enforce` mode and does not flip
   `hasGatePass` unless the current task's bash/shell executions contain a
   matching exit-0 test command (plausibility checked against
   `evidencePattern`; the default covers the canonical `npm run ci`
   verification chain). An agent that wants a green gate can no longer emit
-  `GATE: PASS tests=1 passed=1 failed=0` without running anything — but
+  `GATE: PASS tests=1 passed=1 failed=0` without running anything. But
   `gateEvidence:flag` reverts to the historical flip-on-trust semantics
   (still stamped `verified:false`), and `gateEvidence:off` journals without
   the field at all.
@@ -1400,11 +824,11 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
   and `flag`/`off` make a fabricated marker trust-lossless. Tests that run
   outside the observable bash/shell surface (external CI, a differently
   named execution tool) leave enforce mode with no evidence to verify
-  against — operators in that situation use `flag`/`off` at the cost of the
+  against; operators in that situation use `flag`/`off` at the cost of the
   guarantee. The journal records what was _claimed_, never proof.
 - The dispatch-prompt waiver-forgery vector is closed: a `USER WAIVER:` (or
   `PLAN APPROVED:`) substring inside an agent-composed dispatch prompt
-  unlocks nothing — turnstile reads waivers and approvals only from the
+  unlocks nothing. Turnstile reads waivers and approvals only from the
   user's prompt at admission. The residual trust stance is unchanged: the
   journal is still the record of what was _claimed_ (an attacker who can
   write or replay the metrics directory can still craft entries), so the
@@ -1419,12 +843,12 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
   invalid regex _source_ means the operation it guarded is now **allowed**
   (documented so a config typo weakens the policy visibly in the journal rather
   than silently). Both denylists default to empty, so none of this applies
-  unless rules are configured; but gaps remain by design. `git` **aliases** (e.g. `git co main`,
+  unless rules are configured, but gaps remain by design. `git` **aliases** (e.g. `git co main`,
   `git cm -m x`) are not matched, because a rule names `git` plus a literal
-  subcommand only; and the wider base can _over-match_ — e.g. `git commit -m "…
-merge …"` trips the `merge` rule. git/gh consent rides the host permission
+  subcommand only; and the wider base can _over-match_ (e.g. `git commit -m "…
+merge …"` trips the `merge` rule). git/gh consent rides the host permission
   `ask` layer by default; a host `allow` never unblocks a configured turnstile
-  deny — the layers are complementary. `session_move` never blocks.
+  deny, because the layers are complementary. `session_move` never blocks.
 - MCP tools and other tool names not named in `execute.before` (`task`,
   `subagent`, `read`, `bash`, `shell`, `write`, `edit`, `session_move`) remain
   unguarded. Governing them is a follow-on, not part of this policy layer.
@@ -1434,9 +858,9 @@ Treat turnstile's journal as the record of what was _claimed_, and treat the
 journal itself as sensitive data (see SECURITY.md).
 
 There is no audit-only mode: every configured rule blocks. The opt-outs
-are per-feature config keys — `gitGates.commitMessages: false` disables
+are per-feature config keys: `gitGates.commitMessages: false` disables
 commit lint, `gitGates.landingGate: false` disables the landing gate, an
-empty denylist leaves the tool policy idle — and `TURNSTILE OFF:` (the
+empty denylist leaves the tool policy idle, and `TURNSTILE OFF:` (the
 suspend marker) suspends all blocking session-wide. Legacy configs that
 still carry `toolPolicy.mode`, `gitGates.mode`, or `handsOnGate` have
 those keys dropped with a surfaced warning at load; the enforcement stays
@@ -1464,7 +888,7 @@ each maps to a turnstile mechanism:
   per-tool-call decisions; they cannot condition a dispatch on prior
   task state. Turnstile's `GateState` buckets (`src/state.ts`), keyed
   per parent session and reset per prompt, make "executor blocked until
-  this task's plan is approved" and per-leg round caps expressible —
+  this task's plan is approved" and per-leg round caps expressible
   and decidable in `tool.hook("execute.before")`, outside the model
   loop.
 - **Evidence correlation.** No host feature verifies a model's claim
@@ -1520,10 +944,10 @@ are visible in this repo's tests:
 - Verifiable state. `GATE:` and `VERDICT:` markers are parsed from
   child session text (`src/markers.ts`), stored per parent session
   (`src/ledger.ts`), and replayed from the JSONL journal on restart, so
-  replayed gate state survives a restart and the next user prompt, then
+  replayed gate state survives a restart and the next user prompt; then
   every later prompt starts a clean gate cycle rather than living in a
   prompt.
-- Failure posture. Hooks fail open: an internal error is journaled and
+- Failure posture. Hooks fail open (§8): an internal error is journaled and
   the call proceeds. The only refusals are deliberate
   `BLOCKED by turnstile:` throws at a declared gate. A broken
   enforcement plugin should degrade to prompt contracts, not break

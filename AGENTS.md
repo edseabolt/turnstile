@@ -17,7 +17,7 @@
 OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
 file — the authoritative module map (every file + responsibility) is
-`docs/architecture.md` §2; do not hand-copy it here.
+`docs/modules.md`; do not hand-copy it here.
 It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
@@ -262,14 +262,14 @@ devs. It is not a snapshot: when a change alters what the diagrams or
 document describe, update them in the same change set — not as a follow-up.
 
 - **Trigger for updates** — touch the docs when a change affects any of:
-  - the module map: new/renamed/removed files under `src/`, or changed
-    dependency direction between boundaries;
+  - the module map (`docs/modules.md`): new/renamed/removed files under
+    `src/`, or changed dependency direction between boundaries;
   - the hook surface: hooks registered in `src/setup.ts` (session, tool,
     permission, event types handled), or what fires on each hook;
   - enforcement: gates added/removed/renamed, `GateState` fields, block
     reasons, caps/budgets/defaults, marker semantics;
-  - persistence: journal entry types, replay behavior, rotation, the
-    `opencode-turnstile status` output;
+  - persistence (`docs/journal.md`): journal entry types, replay behavior,
+    rotation, the `opencode-turnstile status` output;
   - configuration: keys, defaults, validation, or the layered resolution.
     Refactors that move code without changing behavior (renames aside) don't
     require doc edits.
