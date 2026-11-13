@@ -114,7 +114,7 @@ variant folds only the shared journal and the target session's sink.
 `merklePath`/`merklePathRoot` (`src/chain.ts`) derive a per-row audit
 path under the same Bitcoin-style pairwise/self-hash conventions as
 `merkleRoot` (odd nodes hashed with themselves, a final root self-hash —
-deliberately *not* RFC 6962/9162's copied-node tree, so the proofs verify
+deliberately _not_ RFC 6962/9162's copied-node tree, so the proofs verify
 only against this implementation's verifier); the CLI validates each `prov:*` row's path against its epoch's
 anchored ref root (`merkleOk`, `false` when an anchor disagrees with the
 journal), reports the weakest vouching trust domain per row via the existing
