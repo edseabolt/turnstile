@@ -296,8 +296,8 @@ Each selection form, configured under `tamperEvidence.anchor`:
 {
   "tamperEvidence": {
     "enabled": true,
-    "anchor": "session-state"
-  }
+    "anchor": "session-state",
+  },
 }
 ```
 
@@ -306,8 +306,8 @@ Each selection form, configured under `tamperEvidence.anchor`:
 {
   "tamperEvidence": {
     "enabled": true,
-    "anchor": "git-note"
-  }
+    "anchor": "git-note",
+  },
 }
 ```
 
@@ -318,8 +318,8 @@ Each selection form, configured under `tamperEvidence.anchor`:
 {
   "tamperEvidence": {
     "enabled": true,
-    "anchor": "commit-trailer"
-  }
+    "anchor": "commit-trailer",
+  },
 }
 ```
 
@@ -331,9 +331,9 @@ Each selection form, configured under `tamperEvidence.anchor`:
     "enabled": true,
     "anchor": [
       "session-state",
-      { "plugin": "./my-anchor-sink.mjs", "options": { "bucket": "turnstile-anchors" } }
-    ]
-  }
+      { "plugin": "./my-anchor-sink.mjs", "options": { "bucket": "turnstile-anchors" } },
+    ],
+  },
 }
 ```
 
@@ -350,9 +350,11 @@ export default function factory({ config }) {
   // config is the `options` object verbatim: { bucket: "…" } above.
   const file = `${config.bucket}.anchors.jsonl`
   return {
-    id: "my-anchor",           // string, appears in verdicts
-    trustDomain: "external",   // "host" | "repo" | "external"
-    publish(ref) { fs.appendFileSync(file, JSON.stringify(ref) + "\n") },
+    id: "my-anchor", // string, appears in verdicts
+    trustDomain: "external", // "host" | "repo" | "external"
+    publish(ref) {
+      fs.appendFileSync(file, JSON.stringify(ref) + "\n")
+    },
     verify(ref) {
       // Return { status: "ok", anchoredAt } when this store vouches for
       // the ref, { status: "missing", detail } when it holds nothing for
