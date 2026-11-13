@@ -69,6 +69,15 @@ These rules are enforced on every change, not aspirational. A review that
 spots a violation rejects the change or refactors it in the same change set —
 "cleanup later" is not an option.
 
+### Writing style — ISO 24495-1 (standing instruction — Ed, Nov 2026)
+
+All prose written in this repo must follow ISO 24495-1 (Plain language —
+Part 1: Governing principles and guidelines). This applies everywhere prose
+is written: documentation (README, `docs/`), docstrings/JSDoc, code comments,
+commit messages, and agent/skill definition text. Prioritize the standard's
+core principles: write for your readers, keep it findable and usable, and
+say only what's needed — nothing more.
+
 ### Functional design (function size cap)
 
 Functions should be small, focused, and easy to understand. Hard guideline:
