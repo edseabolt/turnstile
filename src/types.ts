@@ -328,6 +328,92 @@ export interface TurnstileDecisionLedger {
   enabled: boolean
 }
 
+/**
+ * One anchor-sink selection: a builtin sink name (`session-state`,
+ * `git-note`, `commit-trailer`), an external plugin sink, or an array of
+ * those (all selected sinks publish; verify intersects).
+ */
+export type AnchorSelection =
+  | string
+  | { plugin: string; options?: Record<string, unknown> }
+  | Array<string | { plugin: string; options?: Record<string, unknown> }>
+
+/**
+ * Tamper-evidence configuration backing the journal hash chain in
+ * `src/journal.ts` and the anchor-sink boundary in `src/anchor.ts`.
+ */
+export interface TurnstileTamperEvidence {
+  /**
+   * Master switch for the per-record journal hash chain. `false` (the
+   * default) restores the legacy unchained row shape byte-for-byte;
+   * `true` appends `seq`/`prevHash`/`hash` to every row and commits
+   * `chain-epoch` Merkle rows.
+   */
+  enabled: boolean
+  /** Anchor sink(s): a builtin name, an external `{plugin}`, or an array. */
+  anchor: AnchorSelection
+  /** Data rows per Merkle epoch, per journal file family. */
+  epochEntries: number
+  /** Run a chain+anchor verify at session idle; journal the verdict. */
+  verifyOnSessionEnd: boolean
+}
+
+/** Default data rows per Merkle epoch (`tamperEvidence.epochEntries`). */
+export const DEFAULT_EPOCH_ENTRIES = 512
+
+/**
+ * One publishable anchor reference: a committed epoch's Merkle root and
+ * head, published to anchor sinks. `source` names the journal file family
+ * ("shared" or the parent session ID) so verify can match a ref to the
+ * family that produced it; `sink` is filled with the publishing sink's id
+ * at publish time ("" while pending).
+ */
+export interface AnchorRef {
+  /** The publishing sink's id ("" while the ref is pending). */
+  sink: string
+  /** The journal file family the epoch belongs to. */
+  source: string
+  /** 0-based epoch index within the family. */
+  epoch: number
+  /** The committed Merkle root over the epoch's data-row hashes. */
+  root: string
+  /** The last data-row hash of the epoch. */
+  head: string
+  /** The ISO timestamp the epoch row was written at. */
+  ts: string
+}
+
+/** The outcome of verifying one anchor ref against one sink. */
+export type AnchorVerdict =
+  | { status: "ok"; anchoredAt: string }
+  | { status: "mismatch"; detail: string }
+  | { status: "missing"; detail: string }
+
+/**
+ * One anchor sink: a durable store a committed epoch ref is published to
+ * and later verified against. `trustDomain` declares how independently the
+ * store survives a journal rewrite (`host` = same host filesystem,
+ * `repo` = git object store, `external` = outside both).
+ */
+export interface AnchorSink {
+  /** Stable sink identifier (used in error rows and verdicts). */
+  readonly id: string
+  /** The trust domain the sink's store lives in. */
+  readonly trustDomain: "host" | "repo" | "external"
+  /**
+   * Publishes one anchor ref. May be sync or async; a rejection is
+   * journaled fail-open by the caller.
+   * @param ref The anchor ref to publish.
+   */
+  publish(ref: AnchorRef): void | Promise<void>
+  /**
+   * Verifies a previously published ref.
+   * @param ref The anchor ref to look up.
+   * @returns The verdict for this sink.
+   */
+  verify(ref: AnchorRef): AnchorVerdict | Promise<AnchorVerdict>
+}
+
 /** Gate state for one parent session. */
 export interface GateState {
   hasGatePass: boolean
@@ -505,6 +591,13 @@ export interface GateState {
    * `mergeAfterReplay`.
    */
   testRunnerRounds: number
+  /**
+   * Task-scoped requirements-phase dispatch count. Exceeded ⇒ the spec is not
+   * converging; see `maxRequirementsRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  requirementsRounds: number
   /**
    * Every task/subagent dispatch this task across all legs (planner,
    * plan-reviewer, executor, test-runner, reviewer, debugger, unknown),
@@ -738,6 +831,8 @@ export interface TurnstileAgents {
   executor: string
   testRunner: string
   debugger: string
+  /** Requirements: pre-planner spec extraction (opt-in via `requirementsPhase`). */
+  requirements: string
   /** Agents contracted to emit GATE/VERDICT markers (bare-output check). */
   bareOutput: string[]
 }
@@ -794,6 +889,12 @@ export interface TurnstileConfig {
    * regardless of gate state, and is bypassed by an explicit waiver.
    */
   maxTestRunnerRounds: number
+  /**
+   * Max requirements-phase dispatches per task; the cap counts dispatches,
+   * applies regardless of gate state, and is bypassed by an explicit waiver.
+   * Consulted only while `requirementsPhase` is on.
+   */
+  maxRequirementsRounds: number
   /**
    * Total task/subagent dispatches per task across all legs, the global loop
    * backstop; the cap counts dispatches and is bypassed by an explicit waiver.
@@ -932,6 +1033,15 @@ export interface TurnstileConfig {
    */
   planUserReview: boolean
   /**
+   * Requirements phase (opt-in): when true, non-trivial tasks dispatch the
+   * requirements subagent before the planner; the orchestrator relays the
+   * spec's Open Questions to the user and passes the finalized spec verbatim
+   * into the planner dispatch. Soft and ungated: the leg is loop-capped via
+   * `maxRequirementsRounds` but emits no marker and no gate. Default false —
+   * the pipeline is byte-identical when off.
+   */
+  requirementsPhase: boolean
+  /**
    * Literal marker that, appearing in the user's own prompt, accepts the
    * written plan and unblocks the plan-reviewer dispatch (the edited file is
    * what the reviewer reads). Only consulted while `planUserReview` is on.
@@ -998,6 +1108,14 @@ export interface TurnstileConfig {
    * behavior. See `src/decision-ledger.ts`.
    */
   decisionLedger: TurnstileDecisionLedger
+  /**
+   * Tamper-evidence configuration: the per-record journal hash chain
+   * (`enabled`, default false — legacy row shape), the anchor-sink
+   * selection (`anchor`), the Merkle epoch size (`epochEntries`), and the
+   * optional session-end verify (`verifyOnSessionEnd`). See `src/journal.ts`
+   * and `src/anchor.ts`.
+   */
+  tamperEvidence: TurnstileTamperEvidence
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */

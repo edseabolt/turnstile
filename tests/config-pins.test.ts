@@ -23,6 +23,7 @@ const BOOLEAN_KEYS = [
   "alwaysEnforce",
   "planImpactStrict",
   "planUserReview",
+  "requirementsPhase",
 ] as const
 
 /** The non-empty-string-family keys. */
@@ -67,6 +68,7 @@ const NUMERIC_KEYS = [
   "maxPlannerRounds",
   "maxPlanReviewerRounds",
   "maxTestRunnerRounds",
+  "maxRequirementsRounds",
   "maxTotalDispatches",
   "maxSessions",
   "readWarn",

@@ -24,12 +24,15 @@ import type { CompactionDraft, GenerateDraft, PromptHookProperties } from "./typ
  *     prompt counters, and admission state).
  * @returns The prompt, generate, context, and compaction hook bodies.
  */
-export function createSessionHooks(ctx: TurnstileContext): {
+/** The session-surface hook bodies `createSessionHooks` returns. */
+interface SessionHookBodies {
   prompt(properties: PromptHookProperties): void
   generate(draft: GenerateDraft): void
   context(draft: GenerateDraft): void
   compaction(draft: CompactionDraft): void
-} {
+}
+
+export function createSessionHooks(ctx: TurnstileContext): SessionHookBodies {
   return {
     prompt(properties: PromptHookProperties): void {
       sessionPromptBody(ctx, properties)

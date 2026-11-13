@@ -55,6 +55,62 @@ export function deTokenizeMarker(marker: string): string {
 }
 
 /**
+ * Classifies a marker's result from the regex's capture group 1 rather than
+ * substring search, so a custom marker source whose matched span contains the
+ * opposite keyword still classifies by what the regex captured. When group 1
+ * is absent (a capture-less custom source, or a replayed marker from a
+ * since-changed source) the legacy substring classification is the fallback,
+ * preserving pre-existing semantics. Pure; safe on shared /g regexes
+ * (`matchAll` clones, never advances `lastIndex`).
+ * @param marker The full marker match text to classify.
+ * @param re The marker regex that produced (or would produce) the marker;
+ *     must carry the `g` flag (`matchAll` throws on non-global regexes).
+ * @param primary The keyword mapping to the primary result (group 1 === primary).
+ * @param other The keyword mapping to the other result.
+ * @returns `primary` when group 1 (or the fallback substring search) matches
+ *     `primary`, otherwise `other`.
+ */
+function classifyMarkerResult<K extends string>(
+  marker: string,
+  re: RegExp,
+  primary: K,
+  other: K,
+): K {
+  const group = Array.from(marker.matchAll(re), (m) => m[1]).at(0)
+  if (group === primary) return primary
+  if (group === other) return other
+  return marker.includes(primary) ? primary : other
+}
+
+/**
+ * Classifies a gate marker's result from the gate regex's capture group 1
+ * (`PASS`/`FAIL`), falling back to substring classification when group 1 is
+ * absent. See `classifyMarkerResult` for the rationale.
+ * @param marker The full gate marker match text to classify.
+ * @param re The gate marker regex that produced the marker; must carry the
+ *     `g` flag. Defaults to the canonical `GATE_RE`.
+ * @returns `"PASS"` when the capture group (or fallback substring) is `PASS`,
+ *     otherwise `"FAIL"`.
+ */
+export function gateResultOf(marker: string, re: RegExp = GATE_RE): "PASS" | "FAIL" {
+  return classifyMarkerResult(marker, re, "PASS", "FAIL")
+}
+
+/**
+ * Classifies a verdict marker's result from the verdict regex's capture
+ * group 1 (`APPROVE`/`BLOCK`), falling back to substring classification when
+ * group 1 is absent. See `classifyMarkerResult` for the rationale.
+ * @param marker The full verdict marker match text to classify.
+ * @param re The verdict marker regex that produced the marker; must carry
+ *     the `g` flag. Defaults to the canonical `VERDICT_RE`.
+ * @returns `"APPROVE"` when the capture group (or fallback substring) is
+ *     `APPROVE`, otherwise `"BLOCK"`.
+ */
+export function verdictResultOf(marker: string, re: RegExp = VERDICT_RE): "APPROVE" | "BLOCK" {
+  return classifyMarkerResult(marker, re, "APPROVE", "BLOCK")
+}
+
+/**
  * Parses the configured agent names named in a waiver's raw text into its
  * scope. The grammar is literal configured stage names only — a name is in
  * scope iff its configured string occurs (case-insensitively) in the text —

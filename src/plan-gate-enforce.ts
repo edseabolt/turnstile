@@ -211,24 +211,35 @@ function enforceDecomposition(
     const scan = st.cache.get(plansDir)
     const s = ledger ? ledger.state(sessionID) : null
     const target = resolveDecompTarget(scan, prompt, s, projectDir, sessionID, ledger)
-    if (target !== null && scan.decomp.has(target)) {
-      st.journaler.journal({
-        type: "blocked",
-        sessionID,
-        agent: st.config.agents.executor,
-        reason: "missing-chunk-ref",
-        plan: target,
-      })
-      throw new BlockError(
-        `BLOCKED by turnstile: plan "${target}" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.`,
-        "plan-gate",
-      )
-    }
+    if (target !== null && scan.decomp.has(target)) blockMissingChunkRef(st, sessionID, target)
   } catch (e) {
     if (e instanceof BlockError) throw e
     // Journal the fail-open so an unreadable plans dir stays observable.
     journalPlansUnreadable(st.journaler, e)
   }
+}
+
+/**
+ * Journals the `missing-chunk-ref` blocked entry and throws the executor
+ * dispatch block: the resolved plan carries a `## Decomposition` block and
+ * the prompt cites no chunk.
+ * @param st The plan-gate-enforce state.
+ * @param sessionID The dispatching session ID.
+ * @param target The plan name the dispatch resolves to.
+ * @throws BlockError with a `BLOCKED by turnstile:` prefix (always).
+ */
+function blockMissingChunkRef(st: PlanGateEnforceState, sessionID: string, target: string): never {
+  st.journaler.journal({
+    type: "blocked",
+    sessionID,
+    agent: st.config.agents.executor,
+    reason: "missing-chunk-ref",
+    plan: target,
+  })
+  throw new BlockError(
+    `BLOCKED by turnstile: plan "${target}" has a ## Decomposition block — executor dispatches must cite the chunk-N / AC-n they implement.`,
+    "plan-gate",
+  )
 }
 
 /**
@@ -300,19 +311,24 @@ function enforcePlanApproval(
  * @param status The status mirror capability (`planGateStatus`).
  * @returns `enforceDecomposition` and `enforcePlanApproval`.
  */
-export function createPlanGateEnforce(
-  config: TurnstileConfig,
-  journaler: Journaler,
-  cache: { get(dir: string): PlansScan; resolvePlansDir(projectDir: string): string },
-  status: {
-    planGateStatus(
-      projectDir: string,
-      ledger: GateLedger,
-      sessionID: string,
-      prompt?: string,
-    ): { red: false } | PlanGateRed
-  },
-): {
+/** The plans-dir scan cache capability `createPlanGateEnforce` reads. */
+interface PlanGateScanCache {
+  get(dir: string): PlansScan
+  resolvePlansDir(projectDir: string): string
+}
+
+/** The status-mirror capability `createPlanGateEnforce` reads. */
+interface PlanGateStatusView {
+  planGateStatus(
+    projectDir: string,
+    ledger: GateLedger,
+    sessionID: string,
+    prompt?: string,
+  ): { red: false } | PlanGateRed
+}
+
+/** The enforce surfaces `createPlanGateEnforce` returns. */
+interface PlanGateEnforceSurfaces {
   enforceDecomposition(
     sessionID: string,
     prompt: string,
@@ -325,7 +341,14 @@ export function createPlanGateEnforce(
     ledger: GateLedger,
     prompt?: string,
   ): void
-} {
+}
+
+export function createPlanGateEnforce(
+  config: TurnstileConfig,
+  journaler: Journaler,
+  cache: PlanGateScanCache,
+  status: PlanGateStatusView,
+): PlanGateEnforceSurfaces {
   const st: PlanGateEnforceState = {
     config,
     journaler,

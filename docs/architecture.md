@@ -1,7 +1,8 @@
 # Turnstile — Architecture
 
 Turnstile is an OpenCode v2 promise-plugin that mechanically enforces an agent
-pipeline (**planner → plan-reviewer → executor → test-runner → reviewer**) by
+pipeline (**planner → plan-reviewer → executor → test-runner → reviewer**; an
+optional, default-off requirements leg may precede the planner — see §4) by
 interposing on the host's hook surface: every dispatch, read, shell call, and
 user prompt is checked against per-parent gate state before it is allowed to
 proceed. Enforcement is fail-open — internal errors are journaled, never
@@ -252,7 +253,8 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
 **`tool.hook("execute.before")`** (`hooks-tool.ts`) — _all gating lives here_:
 
 - `task`/`subagent`: dispatch budget (16 total), per-leg caps
-  (planner 3 / plan-reviewer 3 / test-runner 4), plan-approval gate,
+  (planner 3 / plan-reviewer 3 / test-runner 4 / requirements 2, the last
+  consulted only while `requirementsPhase` is on), plan-approval gate,
   decomposition gate, reviewer gate (green tests + round cap 2), one-shot
   grants; a waiver-covered dispatch additionally journals one `prov:waiver`
   decision-ledger row at its gate site (§6); the counters advance at guard
@@ -282,7 +284,17 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   agent name first — a configured pipeline name alone exempts — with the
   child→parent edge + emitter fallback behind it, so an unresolved or
   non-pipeline agent fails closed; the denylist decision wins first and the
-  journal reasons stay disjoint. While a plan is bound and the session is
+  journal reasons stay disjoint. Inside the child exemption, a planner
+  child's write/edit is additionally confined to the configured `plansDir`
+  (the planner write-target guard): the agent name resolves by the same
+  precedence (event name first, emitter fallback second; an unresolved name
+  is not a planner — fail-open), scratch targets and empty paths are
+  allowed, and a target outside the configured plans directory (resolved
+  against the session's project dir, relative and absolute `plansDir` both
+  honored) journals `{type:"blocked", reason:"planner-write-outside-plans-dir"}`
+  and throws `BLOCKED by turnstile:` naming the configured directory and the
+  corrective action; an internal error journals `type:"error"` and never
+  blocks. While a plan is bound and the session is
   engaged, the plan-impact advisory runs after the once-grant consume: a
   target overlapping the plan's scope (equality matching on the path; the
   plan file itself is always structural) is allowed with a journaled
@@ -385,7 +397,10 @@ A typical enforced run:
    carries earned flags across a continuation prompt with an unchanged
    worktree fingerprint).
 2. The planner runs (subject only to loop caps); its `AC-n`/`chunk-N` plan
-   lands in `.opencode/plans/`.
+   lands in `.opencode/plans/`. With `requirementsPhase: true` a
+   non-trivial task first dispatches the requirements subagent, whose spec
+   (after the Open Questions round-trip) is passed verbatim into the planner
+   dispatch (§5, "Requirements phase").
 3. The plan-reviewer must APPROVE. A BLOCK dead-ends nothing: the plan is
    revised and re-review is attributed via round-scoped evidence (the newest
    dispatched plan-reviewer round wins within the parent).
@@ -553,6 +568,29 @@ literals are admission-only (never agent-dispatchable) and waivers do not
 bypass the pause; a prompt carrying neither literal leaves the pause armed
 (fail-toward-strict — a lost accept never dispatches an unreviewed plan).
 
+### Requirements phase (opt-in, ungated)
+
+With `requirementsPhase: true` (default `false` — the pipeline is
+byte-identical when off), non-trivial tasks dispatch a `requirements` subagent
+before the planner: it converts the user's request into a spec (objective,
+explicit/implied requirements, constraints, non-goals, numbered acceptance
+criteria `AC-1…AC-n`, and Open Questions each marked blocking or
+non-blocking). The orchestrator relays any remaining Open Questions to the
+user, folds the written answers in (an explicit delegation is recorded with
+its scope), and passes the finalized spec verbatim into the planner dispatch
+prompt. Trivial tasks (small fixes, renames, doc/config changes) skip the
+leg. The phase is soft and ungated: it emits no marker and no gate — the only
+enforcement surface is the loop cap (`maxRequirementsRounds`, default 2,
+counted in `requirementsRounds` and the total dispatch budget, waived
+dispatches exempt) and the injected policy prose
+(`requirementsPhaseSection` in `src/policy.ts`, appended under the
+`planUserReview` precedent). The leg is not a pipeline stage in the
+mechanical `PIPELINE:` successor logic beyond the requirements→planner edge
+(`nextStage` in `src/state.ts`, keyed on the optional `PipelineStages.requirements`
+name); a requirements dispatch in a still-dormant session is admitted without
+engaging enforcement — the planner dispatch that follows engages and runs the
+full chain.
+
 ### Key `GateState` fields (`src/types.ts`)
 
 | Field                                                                                        | Set by                                                                                                                                                                                                                             | Cleared by                                                                                                                                                                                                  | Blocks                                                                                                                                        |
@@ -588,7 +626,7 @@ bypass the pause; a prompt carrying neither literal leaves the pause armed
 
 The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
 
-- **`turnstile.jsonl`** — the always-on audit trail (40 entry types:
+- **`turnstile.jsonl`** — the always-on audit trail (42 entry types:
   `setup`, `dispatch`, `maintenance`, `gate`, `plan`, `verdict`, `ensemble`,
   `blocked`,
   `escalation`, `permission`, `attribution`, `policy`, `config`, `marker`,
@@ -598,7 +636,7 @@ The journal lives outside the repo at `~/.local/share/opencode/metrics/`:
   `session-summary`, `generate-draft`, `compat`, `intent`, `reseed`,
   `task-complete`, `engagement`, `plan-rekey`, `marker-retry`, `plan-impact`,
   `plan-review`, `prov:stated`, `prov:denied`, `prov:waiver`,
-  `prov:override`). A
+  `prov:override`, `chain-epoch`, `chain-verify`). A
   `prov:stated` entry records one admitted parent-session human prompt into
   the decision ledger:
   `{type:"prov:stated", sessionID, text, truncated}` — `text` is the prompt
@@ -835,6 +873,10 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   file count grows with sessions (accepted; the shared-file bound alone is
   unchanged).
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
+- **`anchors.jsonl`** — the session-state anchor store (only written when
+  `tamperEvidence.enabled` is `true`; see the tamper-evidence subsection
+  below): one published epoch ref per line, appended by the `session-state`
+  sink at the task-completion and session-end triggers.
 - **`approved-plans.jsonl`** — the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
@@ -874,6 +916,160 @@ maxBytes`, plus at most `journalRotateEveryEntries × ~2 KB` of overshoot
   pending, and read or write failures are fail-open (journaled, never
   blocking).
 
+### Tamper evidence: the journal hash chain and anchors (opt-in)
+
+When `tamperEvidence.enabled` is `true` (default `false` — the legacy
+unchained row shape stays the default so existing journal consumers are
+untouched), every journaled row carries three chain fields appended after the
+payload: `seq` (per-file monotonic counter starting at 0), `prevHash` (the
+previous row's hash, `""` for the first), and `hash` — the SHA-256 over the
+canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
+`{prevHash, ts, payload}` (`src/chain.ts`, `node:crypto` only, zero runtime
+dependencies). Editing, deleting, or reordering any row breaks every hash
+after it.
+
+Epochs batch the chain for verification and anchoring: every
+`epochEntries` data rows (default 512, matching the rotation cadence) the
+journaler appends a `chain-epoch` row — itself chained like any other —
+carrying `{source, epoch, count, root, head}` where `root` is the Merkle root
+over the epoch's data-row hashes (pairwise `sha256(a + b)`, an odd trailing
+node hashed with itself, the single survivor hashed with itself once more)
+and `head` is the epoch's last data-row hash. Two more entry types ride the
+chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
+verdict, below).
+
+**Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
+the same file an attacker can rewrite proves nothing by itself, so each
+committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is published
+to independent durable stores — anchor sinks — at the task-completion
+trigger, fire-and-forget: every publish runs concurrently, a rejection
+journals an `anchor-publish:` `error` row, and nothing blocks the pipeline.
+Sinks are selected by `tamperEvidence.anchor`:
+
+| Sink                      | Trust domain | Store                                                                                                                                              | Defeats                                                                        |
+| ------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `session-state` (default) | host         | `<metricsDir>/anchors.jsonl`                                                                                                                       | lazy edit-in-place of the journal — a rewriter must also forge the second file |
+| `git-note`                | repo         | git notes on HEAD, `refs/notes/turnstile`                                                                                                          | anything short of rewriting the git object store                               |
+| `commit-trailer`          | repo         | `Turnstile-Anchor:` trailers on landing commits (pending refs parked in `.git/turnstile/trailer-anchors.jsonl` until the landing flow stamps them) | same, plus ties the epoch to project history                                   |
+| `{plugin: "<specifier>"}` | external     | whatever the imported factory implements                                                                                                           | strongest: a store outside the host's control                                  |
+
+An array selects several: all publish, verify intersects (a ref is anchored
+when any sink vouches; the report names the **weakest vouching trust
+domain** — external > repo > host). External plugin sinks are lazy-`import()`ed
+at setup with a factory shape-check; a malformed sink degrades to a journaled
+warning, never a boot failure. **Caveat:** a plugin specifier is code the
+host executes — only point `plugin:` at modules you trust as much as
+turnstile itself.
+
+**Verification.** `verifyJournalChain` (`src/verify.ts`) folds every journal
+file family (shared + per-session sinks) across its rotation generations
+oldest-first, re-derives each row's hash and each epoch's Merkle root, and
+reports the first broken link (`<family>:<line>: prevHash|seq|hash mismatch`
+or an epoch root/head mismatch). Epoch indices are monotonic per family
+across rotations — a seeding or resyncing journaler continues from the max
+committed index in the surviving generations — so a `source#epoch` ref
+identity is stable for the anchor cross-check. When rotation has pruned
+generations — the
+oldest surviving file is a numbered generation other than `.1` — its first
+chained row folds as a **trust root**: its `prevHash` points into a pruned
+generation, so the prevHash continuity check is waived for that row only
+(its own hash and a plausible `seq` are still verified). When
+`tamperEvidence.verifyOnSessionEnd` is
+`true` (default `false`), the session-idle handler runs it once per session
+and journals the `chain-verify` verdict, toasting on failure — shrinking the
+detection window from "whenever someone runs the CLI" to one session. The
+same check is available offline: `opencode-turnstile prov --verify` folds the
+chain and verifies the epoch refs against the configured sinks, exiting 0 on
+an intact anchored chain, 1 on the first broken link or any unanchored ref,
+and 2 on usage errors.
+
+**Row-level inclusion proofs (`prov --verify --session <id>`).** The scoped
+variant folds only the shared journal and the target session's sink.
+`merklePath`/`merklePathRoot` (`src/chain.ts`) derive a per-row RFC
+6962-style audit path under the same pairwise/self-hash conventions as
+`merkleRoot`; the CLI validates each `prov:*` row's path against its epoch's
+anchored ref root (`merkleOk` — `false` when an anchor disagrees with the
+journal), reports the weakest vouching trust domain per row via the existing
+anchor-sink verdicts, and localizes a mutated `prov:*` row (row + epoch)
+while leaving the global verdict and the tamper matrix untouched.
+Open-window rows — written after the last epoch close — are reported as
+not-yet-anchored (`epoch: null`, with a reason) and never flip the exit
+code. The same applies to rows whose epoch window spans a pruned rotation
+generation: the surviving leaf list is partial, so no inclusion proof can
+be derived (`epochRoot`/`merklePath`/`merkleOk` null, an "epoch window
+incomplete" reason), while `epochs[].count` still reports the commit row's
+declared committed count. `--json` is honored in scoped mode only; plain
+`--verify` keeps its human-only output.
+
+**Differential characterization** (integration-tested in
+`tests/tamper-matrix.test.ts`): for each mutation of a captured honest
+journal — built through the real write path with a rotation generation and a
+task-completion anchor — the observed `prov --verify` verdict must equal the
+characterized verdict, so a detector regression (false negative or false
+positive) fails loudly:
+
+| #   | Mutation                                                                                    | Expected result                                                                                                                        | Caught by                                                                                                                                            |
+| --- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | none (control)                                                                              | verify passes                                                                                                                          | —                                                                                                                                                    |
+| 1   | edit one row's payload                                                                      | fail, first broken link reported                                                                                                       | chain fold                                                                                                                                           |
+| 2   | delete a row                                                                                | fail                                                                                                                                   | chain fold                                                                                                                                           |
+| 3   | insert a fabricated row                                                                     | fail                                                                                                                                   | chain fold                                                                                                                                           |
+| 4   | reorder rows                                                                                | fail                                                                                                                                   | chain fold / epoch root                                                                                                                              |
+| 5   | fork (branch from an interior row)                                                          | fail                                                                                                                                   | chain fold / epoch root                                                                                                                              |
+| 6   | rewrite-all with recomputed chain                                                           | chain folds clean, anchor check fails                                                                                                  | anchor                                                                                                                                               |
+| 7   | edit rows within the un-anchored tail                                                       | **passes** — documented residual hole, bounded by the anchor cadence                                                                   | —                                                                                                                                                    |
+| 8   | truncate-and-continue (recurring-cleaner attack: truncate, keep logging into a fresh chain) | fail — previously published epoch roots become underivable from the current file, even though the new chain folds clean and re-anchors | anchor (CLI surfaces it via the unanchored-ref check against the retained store; missing-root detection confirmed at the `verifyJournalChain` level) |
+| 9   | commit a wrong epoch root (row re-hashed honestly)                                          | fail — the per-record fold stays clean, so only the epoch-root check catches it                                                        | chain fold / epoch root                                                                                                                              |
+
+Row 7 is deliberate: characterizing what the mechanism _cannot_ see is part
+of the verification. Its scope is bounded by the anchoring trigger — anything
+written after the last task-completion/session-end anchor is unverifiable
+until the next one; if the anchor cadence changes, re-characterize row 7.
+Row 8 differs from a mid-file deletion (row 2): the surviving file is
+internally valid from a new genesis, so only the anchor comparison catches
+it. The harness also confirms a second task-completion anchor after the
+truncation re-anchors the fresh chain without masking row 8's failure.
+Row 9 isolates the epoch-root limb specifically: the tampered `chain-epoch`
+row is re-hashed honestly, so rows 1–5's per-record detection is bypassed by
+construction and the mismatch is attributable to the root/head check alone.
+Integrity ≠ fidelity: a chain-valid journal that recorded fabricated
+execution hashes fine and passes every row; detecting that class needs
+ground-truth correlation outside the journal (out of scope here).
+
+**Honesty caveats.** Integrity is not fidelity: the chain proves the
+journal bytes are unchanged since they were written — it cannot prove the
+_content_ was true (a gate that lied at write time hashes just as cleanly).
+And detection latency is bounded by verification, not by chaining: an
+attacker who controls the host can recompute the whole chain and forge the
+host-domain `session-state` anchor too; only the repo- and external-domain
+sinks raise the cost above "edit two files", and nothing here stops a
+determined host-level adversary (that is the tamper matrix's problem, out of
+scope here). Deletion and rotation semantics: anchor refs outlive the rows
+they vouch for, so absence detection keys on the committed root (with the
+monotonic epoch index as a bound), not on the ref's presence in the fold.
+An anchored ref is reported absent only when its root matches no retained
+epoch AND its index is at or above the family's lowest retained index — a
+gap within, or truncation of, retained history. An anchored epoch whose
+commit row has rotated out entirely is satisfied silently: after that row
+is pruned, absence is undetectable, the same trust domain as journal
+deletion. Steady-state `verify` exit 0 is the expected signal; a red verify
+means either genuine truncation within retained history or a
+store/journal mismatch worth investigating. The anchor store grows by one
+ref per epoch commit (duplicates skipped by the session-state sink), is
+host-local, and is bounded only by the epoch commit rate. A hostile writer
+can also forge an arbitrarily large epoch index and pollute identity
+numbering, but the forged commit's ref then verifies unanchored — the
+host-trust-domain ceiling already described above. One deletion
+caveat remains: because
+pruning makes the oldest surviving generation's first row a trust root,
+deleting the oldest generations resets the chain root — the same trust
+domain as deleting the journal outright. And verify over an empty or wholly
+deleted journal with an empty anchor store is vacuously ok: absence of rows
+is not evidence of integrity, which is why the anchors live in a second
+file (or sink domain) that still names the epochs the deleted journal
+should have contained — with anchors retained, that deletion is exactly
+what the absence check reports.
+
 On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the file
 exists) and then every `sessions/` file family's generations the same way
@@ -886,7 +1082,15 @@ sorts oldest) and keeps the last `replayTailLines` lines (default 2000)
 globally. Last-wins folds are per-sessionID and each sessionID's rows live
 in exactly one file, so cross-file ordering cannot change any per-session
 fold; the global `ts` sort only preserves the observe-mode global totals'
-last-wins behavior. Per-file reads stay tail-capped with an early stop: the
+last-wins behavior. The global slice is also an inclusion bound: each
+session-sink family is read with the full `replayTailLines` window, but the
+slice keeps the last window overall — with a hot shared journal plus many
+session sinks, a quiet session's entire contribution can fall outside the
+kept tail, so its boot gate restore silently fails toward strict (the same
+eviction spirit as journal rotation). The merge also bounds boot memory, not
+just boot I/O: all read lines are held at once, O((1 + number of
+session-sink families) × `replayTailLines`) lines in the worst case — a
+bound, not a steady-state cost. Per-file reads stay tail-capped with an early stop: the
 walk ends inside the newest
 generation that alone satisfies the tail bound, so boot I/O stays bounded by
 the retained-generation sizes, never the full
@@ -973,18 +1177,18 @@ silently ignored at load) documents every key; the marker keys
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:
 
-| Group       | Keys                                                                                                                                                                                                                                                         | Defaults worth knowing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `journalPerSession`, `replayTailLines`                                                                                                                                              | 5 MB / 5 / 512 / true / 2000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxTotalDispatches`, `maxSessions`                                                                                                                                 | 2 / 3 / 3 / 4 / 16 / 64                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Reads       | `readWarn`, `readBlock`                                                                                                                                                                                                                                      | 8 / 15 (clamped)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Observe     | `observeSessions`                                                                                                                                                                                                                                            | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Compliance  | `agentMarkerRetry`                                                                                                                                                                                                                                           | `1` compliance re-prompt per bare-output child delivery before it counts a violation; `0` disables the retry (first marker-less delivery violates immediately)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `planReviewAcceptMarker`, `planReviewRejectMarker`, `evidencePattern`                                                                                      | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`; the plan-review literals default `PLAN REVIEWED:` / `PLAN REJECTED:`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `escalation`, `plansDir`, `allowSuspend`, `intentNudge`, `alwaysEnforce`, `planImpactStrict`, `planUserReview`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `block`, `.opencode/plans`, `true`, `true`, `false`, `false`, `false`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers; `intentNudge:false` disables the advisory intent nudge entirely; `alwaysEnforce:true` restores the legacy always-armed behavior — the default `false` is dormant-until-engaged, §5; `planImpactStrict:true` restores the parent-hands-on block for structural plan overlap — the default `false` allows overlapping parent write/edit/write-shaped bash calls with a journaled `plan-impact` classification and an advisory, §3; `planUserReview:true` pauses the pipeline after the planner until the user accepts or rejects the written plan via their own prompt, §5) |
-| Tool policy | `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`, `toolPolicy.bashWriteGate`                                                                                                                                                    | both denylists default empty — the empty lists are the off switch; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking; `bashWriteGate` (default `true`) gates confident file-writing bash commands through the hands-on ladder (`false` opts out; write-shaped commands always journal `handsOn` telemetry)                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Git gates   | `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`, `gitGates.commitRetryThreshold` (default 3), `gitGates.commitRetryWindowMs` (default 60000)                                                          | `commitMessages` and `landingGate` default `true` (enforced); `false` is the per-feature opt-out; the retry knobs escalate the commit-lint block with a canonical example after `commitRetryThreshold` same-session failures within `commitRetryWindowMs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Provenance  | `decisionLedger.enabled`                                                                                                                                                                                                                                     | `true` — the observe-only decision ledger: every admitted parent prompt journals a redacted `prov:stated` entry, each human permission denial journals `prov:denied`, each human gate waiver journals `prov:waiver`, and each parent write/edit following a pipeline-child write to the same path journals `prov:override` (§6); `false` disables all `prov:*` journaling with no other behavior change                                                                                                                                                                                                                                                                                                                                                                                          |
+| Group       | Keys                                                                                                                                                                                                                                                                              | Defaults worth knowing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal     | `journalMaxBytes`, `journalMaxGenerations`, `journalRotateEveryEntries`, `journalPerSession`, `replayTailLines`                                                                                                                                                                   | 5 MB / 5 / 512 / true / 2000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Caps        | `maxReviewerRounds`, `maxPlannerRounds`, `maxPlanReviewerRounds`, `maxTestRunnerRounds`, `maxRequirementsRounds`, `maxTotalDispatches`, `maxSessions`                                                                                                                             | 2 / 3 / 3 / 4 / 2 / 16 / 64                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Reads       | `readWarn`, `readBlock`                                                                                                                                                                                                                                                           | 8 / 15 (clamped)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Observe     | `observeSessions`                                                                                                                                                                                                                                                                 | `0` enforces from the first session; `N` = first N admitted sessions journal decisions without blocking                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Compliance  | `agentMarkerRetry`                                                                                                                                                                                                                                                                | `1` compliance re-prompt per bare-output child delivery before it counts a violation; `0` disables the retry (first marker-less delivery violates immediately)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Markers     | `gateMarker`, `verdictMarker`, `waiverMarker`, `approvalMarker`, `suspendMarker`, `resumeMarker`, `planReviewAcceptMarker`, `planReviewRejectMarker`, `evidencePattern`                                                                                                           | built-in regexes; custom sources must compile or fall back (journaled); the suspend/resume literals default `TURNSTILE OFF:` / `TURNSTILE ON:`; the plan-review literals default `PLAN REVIEWED:` / `PLAN REJECTED:`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Behavior    | `gateEvidence` (`enforce`/`flag`/`off`), `reviewEnsemble` (`enforce`/`advise`), `trace`, `continuationCarry`, `sessionSummary`, `escalation`, `plansDir`, `allowSuspend`, `intentNudge`, `alwaysEnforce`, `planImpactStrict`, `planUserReview`, `requirementsPhase`, `metricsDir` | `enforce`, `enforce`, `true`, `true`, `quiet`, `block`, `.opencode/plans`, `true`, `true`, `false`, `false`, `false`, `false`; `metricsDir` is computed at load time (`allowSuspend:false` disables the suspend/resume markers; `intentNudge:false` disables the advisory intent nudge entirely; `alwaysEnforce:true` restores the legacy always-armed behavior — the default `false` is dormant-until-engaged, §5; `planImpactStrict:true` restores the parent-hands-on block for structural plan overlap — the default `false` allows overlapping parent write/edit/write-shaped bash calls with a journaled `plan-impact` classification and an advisory, §3; `planUserReview:true` pauses the pipeline after the planner until the user accepts or rejects the written plan via their own prompt, §5; `requirementsPhase:true` dispatches the requirements subagent before the planner for non-trivial tasks — soft and ungated, loop-capped via `maxRequirementsRounds`, §5) |
+| Tool policy | `toolPolicy.bashDeny`, `toolPolicy.pathDeny`, `toolPolicy.observeSessionMove`, `toolPolicy.bashWriteGate`                                                                                                                                                                         | both denylists default empty — the empty lists are the off switch; `observeSessionMove` (default `true`) journals `session_move` dispatches as telemetry, never blocking; `bashWriteGate` (default `true`) gates confident file-writing bash commands through the hands-on ladder (`false` opts out; write-shaped commands always journal `handsOn` telemetry)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Git gates   | `gitGates.commitMessages`, `gitGates.commitFormat`, `gitGates.landingGate`, `gitGates.emptyDiffExempt`, `gitGates.commitRetryThreshold` (default 3), `gitGates.commitRetryWindowMs` (default 60000)                                                                               | `commitMessages` and `landingGate` default `true` (enforced); `false` is the per-feature opt-out; the retry knobs escalate the commit-lint block with a canonical example after `commitRetryThreshold` same-session failures within `commitRetryWindowMs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Provenance  | `decisionLedger.enabled`                                                                                                                                                                                                                                                          | `true` — the observe-only decision ledger: every admitted parent prompt journals a redacted `prov:stated` entry, each human permission denial journals `prov:denied`, each human gate waiver journals `prov:waiver`, and each parent write/edit following a pipeline-child write to the same path journals `prov:override` (§6); `false` disables all `prov:*` journaling with no other behavior change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns — the ensemble would be mechanically

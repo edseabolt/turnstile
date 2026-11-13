@@ -39,6 +39,9 @@ function captureJournaler(): { journaler: Journaler; entries: any[]; traces: str
     traceEvent(agent, event, detail, sessionID) {
       traces.push(`${agent} | ${event} | ${detail}${sessionID ? ` | ${sessionID}` : ""}`)
     },
+    bindAnchorSinks() {},
+    anchor() {},
+    async anchorAsync() {},
   }
   return { journaler, entries, traces }
 }
@@ -427,6 +430,9 @@ test("observeBashWrite: an internal error fails open", () => {
 test("observeBashWrite: a journal failure fails open", () => {
   const entries: any[] = []
   const journaler: Journaler = {
+    bindAnchorSinks() {},
+    anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",

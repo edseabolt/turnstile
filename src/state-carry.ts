@@ -8,8 +8,10 @@ import type { GateState } from "./types.ts"
 import { isInterruptedReview } from "./task-scope.ts"
 
 /**
- * Builds the fresh boolean/display flag fields of a gate-state bucket.
- * @returns The flag fields at their fresh values.
+ * Builds the fresh boolean/display flag and counter fields of a gate-state
+ * bucket (`suppressedPending` is a numeric cross-child suppression counter,
+ * not a flag).
+ * @returns The flag and counter fields at their fresh values.
  */
 function freshFlags(): Pick<
   GateState,
@@ -126,6 +128,7 @@ function freshCounters(): Pick<
   | "plannerRounds"
   | "planReviewerRounds"
   | "testRunnerRounds"
+  | "requirementsRounds"
   | "totalDispatches"
   | "landingBlocks"
   | "handsOnBlocks"
@@ -143,6 +146,7 @@ function freshCounters(): Pick<
     plannerRounds: 0,
     planReviewerRounds: 0,
     testRunnerRounds: 0,
+    requirementsRounds: 0,
     totalDispatches: 0,
     // Task-scoped landing-gate block counter: fresh 0 on every task-scope reset.
     // Restored by journal replay across a restart.
@@ -312,7 +316,7 @@ function carryWaiverFamily(s: GateState, prior: GateState): void {
  * `pendingOnceGrant` must not outlive its single dispatch, `policyInjected`
  * is per-task policy re-supply, the loop-cap counters (`reviewRounds`,
  * `plannerRounds`, `planReviewerRounds`, `testRunnerRounds`,
- * `totalDispatches`, `landingBlocks`, `handsOnBlocks`) intentionally re-arm
+ * `requirementsRounds`, `totalDispatches`, `landingBlocks`, `handsOnBlocks`) intentionally re-arm
  * on every task-scope reset, and the dedup/telemetry/fingerprint fields
  * (`seenFrom`, `suppressedPending`, `reads`, `readWarned`, `seen`,
  * `replayGrace`, `taskFingerprint`) are intrinsic to this bucket —

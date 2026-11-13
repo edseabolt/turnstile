@@ -26,10 +26,10 @@ tool: "tool.hook (hooks-tool.ts)" {
   after: "execute.after\n(observation only; first surfaces config\nwarnings once per load → type:\"config\",\nnear-miss diagnostics → type:\"marker\")"
 }
 
-before-task: "task/subagent: dispatch budget ▸ per-leg caps ▸\nreviewer gate ▸ once-grant short-circuit ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit\n▸ waiver-covered dispatch → journalProvWaiver →\nprov:waiver (decisionLedger.enabled)"
+before-task: "task/subagent: dispatch budget ▸ per-leg caps\n(planner/plan-reviewer/test-runner/requirements) ▸\nreviewer gate ▸ once-grant short-circuit ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit\n▸ waiver-covered dispatch → journalProvWaiver →\nprov:waiver (decisionLedger.enabled)"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ bash write gate\n(guardBashWrite, default-on) ▸ landing gate"
-before-write: "write/edit: path denylist ▸ pipeline-child\nexempt (child write → childWrite telemetry row\n+ override-adjacency record) or scratch exempt ▸\nhands-on gate (parent sessions only — a registered\npipeline child's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
+before-write: "write/edit: path denylist ▸ pipeline-child\nexempt (child write → childWrite telemetry row\n+ override-adjacency record; planner child confined\nto the configured plansDir — outside it journals\nblocked/planner-write-outside-plans-dir and throws) or scratch exempt ▸\nhands-on gate (parent sessions only — a registered\npipeline child's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
 
 after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ PIPELINE status append\n(per delivery) ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"

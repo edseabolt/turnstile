@@ -23,7 +23,7 @@ import {
   mergeConfigKey,
 } from "./config-merge.ts"
 import { BARE_OUTPUT_UNSET, validateResolved } from "./config-validate.ts"
-import type { TurnstileConfig } from "./types.ts"
+import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "./types.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -47,6 +47,8 @@ export const ENV_KEYS = {
  */
 export const DEFAULT_EVIDENCE_PATTERN =
   "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
+
+export { DEFAULT_EPOCH_ENTRIES } from "./types.ts"
 
 export { BARE_OUTPUT_UNSET } from "./config-validate.ts"
 export { CANONICAL_REVIEWER_AGENT, DEFAULT_COMMIT_FORMAT } from "./config-merge.ts"
@@ -91,6 +93,7 @@ function defaultLoopCaps(): Pick<
   | "maxPlannerRounds"
   | "maxPlanReviewerRounds"
   | "maxTestRunnerRounds"
+  | "maxRequirementsRounds"
   | "maxTotalDispatches"
   | "maxSessions"
   | "agentMarkerRetry"
@@ -104,6 +107,7 @@ function defaultLoopCaps(): Pick<
     maxPlannerRounds: 3,
     maxPlanReviewerRounds: 3,
     maxTestRunnerRounds: 4,
+    maxRequirementsRounds: 2,
     maxTotalDispatches: 16,
     maxSessions: 64,
     // Compliance retry: a marker-less bare-output delivery is re-prompted
@@ -155,7 +159,8 @@ function defaultMarkerScalars(): Pick<
  * defaults.
  * @returns The mode-shaped default fields.
  */
-function defaultModeScalars(): Pick<
+/** The `defaultModeScalars` shape: mode-shaped default config fields. */
+type DefaultModeScalars = Pick<
   TurnstileConfig,
   | "sessionSummary"
   | "escalation"
@@ -164,7 +169,9 @@ function defaultModeScalars(): Pick<
   | "resumeMarker"
   | "taskDoneMarker"
   | "allowSuspend"
-> {
+>
+
+function defaultModeScalars(): DefaultModeScalars {
   return {
     // Session-end summary: "quiet" prints one recap line at session.idle for
     // sessions that did something (silent for zero-activity sessions); "on"
@@ -200,10 +207,13 @@ function defaultModeScalars(): Pick<
  * Builds the enforcement-arming defaults.
  * @returns The enforcement-shaped default fields.
  */
-function defaultEnforcementScalars(): Pick<
+/** The `defaultEnforcementScalars` shape: enforcement-arming default fields. */
+type DefaultEnforcementScalars = Pick<
   TurnstileConfig,
-  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview"
-> {
+  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview" | "requirementsPhase"
+>
+
+function defaultEnforcementScalars(): DefaultEnforcementScalars {
   return {
     // Advisory intent nudge is on by default: an admitted prompt classified
     // as implementation intent with no plan approval journals `{type:"intent"}`
@@ -229,6 +239,12 @@ function defaultEnforcementScalars(): Pick<
     // blocked after a planner dispatch until the user's own prompt carries
     // the accept or reject literal. Default false — fully-automated flow.
     planUserReview: false,
+    // Requirements phase (opt-in): when true, non-trivial tasks dispatch the
+    // requirements subagent before the planner; the orchestrator relays the
+    // spec's Open Questions to the user and passes the finalized spec verbatim
+    // into the planner dispatch. Soft and ungated: the leg is loop-capped via
+    // maxRequirementsRounds but emits no marker and no gate.
+    requirementsPhase: false,
   }
 }
 
@@ -263,6 +279,25 @@ function defaultDecisionLedgerScalars(): Pick<TurnstileConfig, "decisionLedger">
 }
 
 /**
+ * Builds the tamper-evidence defaults. The chain is off by default so
+ * existing journal consumers and exact-shape tests keep the unchained row
+ * shape; `enabled: true` opts in.
+ * @returns The tamper-evidence-shaped default fields.
+ */
+function defaultTamperEvidence(): Pick<TurnstileConfig, "tamperEvidence"> {
+  return {
+    tamperEvidence: {
+      enabled: false,
+      anchor: "session-state",
+      // Matches journalRotateEveryEntries so epoch and rotation cadence
+      // align by default without coupling the keys.
+      epochEntries: DEFAULT_EPOCH_ENTRIES,
+      verifyOnSessionEnd: false,
+    },
+  }
+}
+
+/**
  * Builds the code defaults for every config key.
  * @param env Environment consulted for XDG_DATA_HOME only.
  * @returns The default TurnstileConfig matching the historical hardcoded
@@ -280,6 +315,7 @@ export function defaultConfig(
     ...defaultModeScalars(),
     ...defaultEnforcementScalars(),
     ...defaultDecisionLedgerScalars(),
+    ...defaultTamperEvidence(),
     agents: defaultAgents(),
     ...defaultMarkerSources(),
     toolPolicy: defaultToolPolicy(),
@@ -308,6 +344,7 @@ export function mergeConfig(
     toolPolicy: { ...base.toolPolicy },
     gitGates: { ...base.gitGates },
     decisionLedger: { ...base.decisionLedger },
+    tamperEvidence: { ...base.tamperEvidence },
   }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {

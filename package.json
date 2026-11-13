@@ -1,6 +1,6 @@
 {
   "name": "opencode-turnstile",
-  "version": "0.12.0",
+  "version": "0.14.0",
   "description": "OpenCode promise plugin enforcing a verified agent pipeline with dispatch-blocking gates and journaled evidence",
   "keywords": [
     "opencode",
@@ -18,7 +18,12 @@
     "plan-reviewer",
     "executor",
     "test-runner",
-    "reviewer"
+    "reviewer",
+    "decision-provenance",
+    "provenance",
+    "tamper-evident",
+    "audit-trail",
+    "merkle-tree"
   ],
   "type": "module",
   "license": "MIT",

@@ -1,10 +1,12 @@
 ---
 description: Analyzes requirements, explores the repository, designs implementation approaches by evaluating tradeoffs, and creates implementation plans without modifying source code
 mode: subagent
-# The edit permission below mirrors turnstile's plansDir default
-# (.opencode/plans). If a user reconfigures plansDir in their turnstile
-# config, this allow rule must be updated to match, or the planner cannot
-# write the plan. This shipped frontmatter is a default, not derived config.
+# The edit allow below is turnstile's shipped default (plansDir
+# .opencode/plans). If a user reconfigures plansDir, the plugin's runtime
+# planner-write guard enforces the configured directory mechanically — a
+# write outside it is blocked with a `BLOCKED by turnstile:` error naming
+# the configured path. Update this allow to match a customized plansDir so
+# the planner can write inside it.
 permissions:
   - { action: edit, resource: "*", effect: deny }
   - { action: edit, resource: ".opencode/plans/**", effect: allow }
@@ -22,11 +24,14 @@ once engaged.
 
 You MUST NOT modify application source code. You may write exactly one
 file: the plan. Write it to the plans directory the dispatch prompt
-specifies; if the dispatch prompt names no location, use the default
-`.opencode/plans/<task-slug>.md`, where `<task-slug>` is the task name
-(kebab-case; fall back to a short descriptive slug). The plans directory
-itself is configurable (turnstile's `plansDir`), so honor an explicit path
-over the default. You must ALSO return the full plan text and its path in
+specifies, provided that path lies under turnstile's configured
+`plansDir` (default `.opencode/plans/`; the injected orchestrator policy
+names the configured directory). If the dispatch prompt names a location
+outside the configured plans directory, do NOT follow it — write to
+`<configured plansDir>/<task-slug>.md` instead and say so in your final
+message; turnstile blocks planner writes outside the configured directory.
+`<task-slug>` is the task name (kebab-case; fall back to a short
+descriptive slug). You must ALSO return the full plan text and its path in
 your final message, so the orchestrator can proceed even if the file is
 not read.
 

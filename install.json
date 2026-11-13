@@ -34,6 +34,10 @@
       "dest": "~/.config/opencode/agents/debugger.md"
     },
     {
+      "src": "agents/requirements.md",
+      "dest": "~/.config/opencode/agents/requirements.md"
+    },
+    {
       "src": "skills/turnstile-init/SKILL.md",
       "dest": "~/.config/opencode/skills/turnstile-init/SKILL.md"
     },

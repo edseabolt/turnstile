@@ -11,6 +11,7 @@ import type {
   TurnstileConfig,
   TurnstileGitGates,
   TurnstileDecisionLedger,
+  TurnstileTamperEvidence,
   TurnstileToolPolicy,
 } from "./types.ts"
 
@@ -53,6 +54,7 @@ export function defaultAgents(): TurnstileAgents {
     executor: "executor",
     testRunner: "test-runner",
     debugger: "debugger",
+    requirements: "requirements",
     bareOutput: BARE_OUTPUT_UNSET,
   }
 }
@@ -137,6 +139,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "alwaysEnforce") config.alwaysEnforce = value as boolean
   else if (key === "planImpactStrict") config.planImpactStrict = value as boolean
   else if (key === "planUserReview") config.planUserReview = value as boolean
+  else if (key === "requirementsPhase") config.requirementsPhase = value as boolean
   else if (key === "planReviewAcceptMarker") config.planReviewAcceptMarker = value as string
   else if (key === "planReviewRejectMarker") config.planReviewRejectMarker = value as string
   else if (key === "observeSessions") config.observeSessions = value as number
@@ -217,7 +220,8 @@ export function mergeAgentsPatch(
       continue
     }
     if (typeof agentValue === "string" && agentValue.trim().length > 0) {
-      const name = agentKey as "reviewer" | "planReviewer" | "executor" | "testRunner" | "debugger"
+      const name = agentKey as
+        "reviewer" | "planReviewer" | "executor" | "testRunner" | "debugger" | "requirements"
       config.agents[name] = agentValue
     } else {
       warnings.push(`config: agents.${agentKey} must be a non-empty string; keeping default`)
@@ -534,6 +538,91 @@ export function mergeDecisionLedgerPatch(
 }
 
 /**
+ * Validates one `tamperEvidence.anchor` selection element: a non-empty
+ * string (a builtin sink name) or a plain object carrying a non-empty
+ * string `plugin` (an external sink; `options`, when present, must be an
+ * object).
+ * @param value The candidate selection element.
+ * @returns True when the element is a well-formed selection.
+ */
+function isValidAnchorElement(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
+  const plugin = (value as Record<string, unknown>).plugin
+  const options = (value as Record<string, unknown>).options
+  return (
+    typeof plugin === "string" &&
+    plugin.trim().length > 0 &&
+    (options === undefined || (typeof options === "object" && !Array.isArray(options)))
+  )
+}
+
+/**
+ * Merges one `tamperEvidence` sub-key into the block being built.
+ * @param merged The tamper-evidence block being built.
+ * @param tk The sub-key name.
+ * @param tv The candidate sub-key value.
+ * @param warnings The warning list to append to.
+ */
+function mergeTamperEvidenceKey(
+  merged: TurnstileTamperEvidence,
+  tk: string,
+  tv: unknown,
+  warnings: string[],
+): void {
+  if (tk === "enabled" || tk === "verifyOnSessionEnd") {
+    if (typeof tv === "boolean") {
+      merged[tk] = tv
+    } else {
+      warnings.push(`config: tamperEvidence.${tk} must be a boolean; keeping default`)
+    }
+  } else if (tk === "epochEntries") {
+    if (typeof tv === "number" && Number.isInteger(tv) && tv > 0) {
+      merged.epochEntries = tv
+    } else {
+      warnings.push(
+        "config: tamperEvidence.epochEntries must be a positive integer; keeping default",
+      )
+    }
+  } else if (tk === "anchor") {
+    if (isValidAnchorElement(tv) || (Array.isArray(tv) && tv.every(isValidAnchorElement))) {
+      merged.anchor = tv as TurnstileTamperEvidence["anchor"]
+    } else {
+      warnings.push(
+        "config: tamperEvidence.anchor must be a builtin name, a {plugin} object, or an array of those; keeping default",
+      )
+    }
+  } else {
+    warnings.push(`config: unknown tamperEvidence key "${tk}" ignored`)
+  }
+}
+
+/**
+ * Merges the `tamperEvidence` patch section one level deep like
+ * `decisionLedger`. A non-object keeps all defaults; each known sub-key is
+ * validated individually with a journaled warning so a config typo is
+ * visible, never silent.
+ * @param config The config to mutate.
+ * @param value The `tamperEvidence` patch value.
+ * @param warnings The warning list to append to.
+ */
+export function mergeTamperEvidencePatch(
+  config: TurnstileConfig,
+  value: unknown,
+  warnings: string[],
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    warnings.push("config: tamperEvidence must be an object; keeping defaults")
+    return
+  }
+  const merged: TurnstileTamperEvidence = { ...config.tamperEvidence }
+  for (const [tk, tv] of Object.entries(value as Record<string, unknown>)) {
+    mergeTamperEvidenceKey(merged, tk, tv, warnings)
+  }
+  config.tamperEvidence = merged
+}
+
+/**
  * Merges one top-level patch key into the config: section dispatch for the
  * three sub-objects, the `$schema`/`handsOnGate` conventions, the unknown-key
  * warning, and scalar validation for everything else.
@@ -552,6 +641,7 @@ export function mergeConfigKey(
   if (key === "toolPolicy") return mergeToolPolicyPatch(config, value, warnings)
   if (key === "gitGates") return mergeGitGatesPatch(config, value, warnings)
   if (key === "decisionLedger") return mergeDecisionLedgerPatch(config, value, warnings)
+  if (key === "tamperEvidence") return mergeTamperEvidencePatch(config, value, warnings)
   if (key === "$schema") return mergeSchemaKey(value, warnings)
   if (key === "handsOnGate") {
     // Legacy key from the removed hands-on meta-mode: dropped, never honored,

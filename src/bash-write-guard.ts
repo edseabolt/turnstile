@@ -25,11 +25,13 @@ import type { PlanImpact } from "./plan-scope.ts"
 import { classifyBashWrite } from "./bash-write.ts"
 import { isScratchTarget } from "./scratch.ts"
 import { isEmptyDiffPush } from "./empty-diff.ts"
-import { waiverCovers } from "./gates-common.ts"
+import { BlockError, waiverCovers } from "./gates-common.ts"
 import { isPushLanding } from "./tool-policy.ts"
 import { planImpactAdvisory } from "./policy.ts"
+import { resolvePlansDir } from "./plans-scan.ts"
 import { asSessionID } from "./delivery.ts"
 import type { OverrideAdjacency } from "./override-adjacency.ts"
+import * as path from "node:path"
 
 /**
  * The state the bash/write-guard concern reads and mutates: the shared deps
@@ -50,6 +52,8 @@ export interface BashWriteGuardState {
   sessionDirs: Map<string, string>
   /** Resolves a session's registration status (pipeline-child exemption). */
   childStatus(sid: string, agent: string): "child" | "parent" | "unknown"
+  /** Resolves a session's emitter agent name ("" when unresolved). */
+  emitterAgent(sessionID: string): string
   /** Returns the last-known project directory for a session. */
   currentProjectDir(sessionID: string): string
   /** Whether reactive enforcement is armed for the session's parent. */
@@ -213,6 +217,79 @@ function observeChildWrite(
 }
 
 /**
+ * Resolves whether the write/edit session is a planner child: the event's
+ * agent name first (parents never carry a subagent name), the emitter-
+ * authority fallback second. An unresolved name is not a planner (fail-open).
+ * @param st The bash-write-guard state.
+ * @param event The execute.before tool event (write/edit shape).
+ * @param sid The event's session ID.
+ * @returns True when the session resolves to the configured planner agent.
+ */
+function isPlannerChild(st: BashWriteGuardState, event: ToolHookEvent, sid: string): boolean {
+  const named = typeof event?.agent === "string" ? event.agent : ""
+  const agent = named !== "" ? named : st.emitterAgent(sid)
+  return agent === st.config.agents.planner
+}
+
+/**
+ * Blocks a planner child's write/edit whose target lies outside the
+ * configured plans directory. Scratch targets and empty paths are allowed
+ * (zero-governance work / nothing to inspect). The block is deliberate:
+ * journals `{type:"blocked", reason:"planner-write-outside-plans-dir"}` and
+ * throws `BlockError` naming the configured directory and the corrective
+ * action. Fail-open on an internal error (the caller's catch journals).
+ * @param st The bash-write-guard state.
+ * @param event The execute.before tool event (write/edit shape).
+ * @param sid The child session ID.
+ * @param filePath The raw target-path value.
+ */
+function guardPlannerWriteTarget(
+  st: BashWriteGuardState,
+  event: ToolHookEvent,
+  sid: string,
+  filePath: unknown,
+): void {
+  try {
+    if (!isPlannerChild(st, event, sid)) return
+    const target = typeof filePath === "string" ? filePath : ""
+    if (target === "" || isScratchTarget(target)) return
+    assertPlannerTargetInPlansDir(st, sid, target)
+  } catch (e) {
+    if (e instanceof BlockError) throw e
+    st.journaler.journal({ type: "error", sessionID: sid, error: `planner-write guard: ${e}` })
+  }
+}
+
+/**
+ * The containment half of the planner write-target guard: resolves the
+ * target against the session's project dir and, when it falls outside the
+ * configured plans directory, journals the block row and throws the
+ * deliberate `BlockError` naming the configured directory.
+ * @param st The bash-write-guard state.
+ * @param sid The child session ID.
+ * @param target The non-empty, non-scratch target path.
+ */
+function assertPlannerTargetInPlansDir(st: BashWriteGuardState, sid: string, target: string): void {
+  const projectDir = st.currentProjectDir(sid)
+  const plansDir = resolvePlansDir(st.config, projectDir)
+  const abs = path.resolve(projectDir, target)
+  if (abs === plansDir || abs.startsWith(plansDir + path.sep)) return
+  st.journaler.journal({
+    type: "blocked",
+    sessionID: sid,
+    agent: st.config.agents.planner,
+    reason: "planner-write-outside-plans-dir",
+  })
+  throw new BlockError(
+    `BLOCKED by turnstile: the planner may write only the plan file under the ` +
+      `configured plans directory (${plansDir}); "${target}" is outside it. ` +
+      `Write the plan as a file under ${plansDir} instead (e.g. ` +
+      `${plansDir}/<task-slug>.md), even when the dispatch prompt names another path.`,
+    "plan-gate",
+  )
+}
+
+/**
  * The exemption half of a write/edit dispatch: a registered pipeline child's
  * own write/edit is the executor's work and never gates (a non-empty event
  * agent name in the configured pipeline set is authoritative evidence — edge
@@ -239,6 +316,7 @@ function writeEditExempt(
   // pipeline child's own write/edit (the executor's work) is exempt
   // (agent-name precedence first, then the edge + emitter fallback).
   if (st.childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") {
+    guardPlannerWriteTarget(st, event, sid, filePath)
     observeChildWrite(st, sid, tool, filePath)
     return true
   }
@@ -372,6 +450,30 @@ function classifyParentPlanImpact(
   }
   if (impact === "none") return "allow"
   if (impact === "uninspectable") return "proceed-hands-on"
+  return journalPlanImpactAdvisory(st, parent, tool, target, s, impact)
+}
+
+/**
+ * Journals the plan-impact classification for a real overlap, applies the
+ * strict-mode block for structural impact, and stashes the hands-on
+ * advisory (refreshing the bound-intent nudges).
+ * @param st The bash-write-guard state.
+ * @param parent The parent session (the advisory stash's key).
+ * @param tool The narrowed tool name (for the journal row).
+ * @param target The write/edit file path, or the bash command text.
+ * @param s The parent's gate-state bucket (carries `activePlan`).
+ * @param impact The classified plan impact (never `none`/`uninspectable`).
+ * @returns `"proceed-hands-on"` after a strict structural block, else
+ *     `"allow"` to skip the hands-on ladder.
+ */
+function journalPlanImpactAdvisory(
+  st: BashWriteGuardState,
+  parent: string,
+  tool: string,
+  target: string,
+  s: GateState,
+  impact: PlanImpact,
+): "proceed-hands-on" | "allow" {
   st.journaler.journal({
     type: "plan-impact",
     sessionID: parent,

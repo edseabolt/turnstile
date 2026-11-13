@@ -132,3 +132,17 @@ test("policy config: the text stays echo-safe with custom numeric values", () =>
   const echoed = parseGateMarkers(newState(), policy, GATE_RE, VERDICT_RE)
   assert.equal(echoed.length, 0, "the raw text never parses into a marker")
 })
+
+/** 6. The plan gate names the configured plans dir: the default build
+ *  interpolates `.opencode/plans` and a custom value replaces it verbatim
+ *  (no stale default left behind). */
+test("policy config: the plan gate names the configured plans dir", () => {
+  const policy = expectedPolicy()
+  assert.ok(
+    policy.includes("Plans live in `.opencode/plans` (your `plansDir` config)"),
+    "the default plans dir renders in the plan gate",
+  )
+  const custom = expectedPolicy({ plansDir: "docs/plans" })
+  assert.ok(custom.includes("Plans live in `docs/plans`"), "the custom plans dir renders verbatim")
+  assert.ok(!custom.includes("`.opencode/plans` (your"), "no stale default remains")
+})

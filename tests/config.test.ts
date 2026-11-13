@@ -71,10 +71,13 @@ test("defaultConfig reproduces the historical constants", () => {
     executor: "executor",
     testRunner: "test-runner",
     debugger: "debugger",
+    requirements: "requirements",
     bareOutput: [],
   })
   assert.equal(cfg.agents.bareOutput, BARE_OUTPUT_UNSET)
   assert.equal(cfg.agents.planner, "planner")
+  assert.equal(cfg.maxRequirementsRounds, 2)
+  assert.equal(cfg.requirementsPhase, false)
 })
 
 /** Covers the XDG_DATA_HOME → ~/.local/share fallback for metricsDir. */
@@ -1369,4 +1372,133 @@ test("validateResolved flags a narrower un-anchored gateMarker that matches a pr
   assert.ok(gate[0]!.includes("differs from the default marker regex"))
   assert.ok(gate[0]!.includes(CANONICAL_GATE_MARKER), "the warning names the leading-noise probe")
   assert.ok(!gate[0]!.includes("broader"), "the wording no longer claims breadth")
+})
+
+/** tamperEvidence defaults: the chain is off (legacy row shape), the anchor
+ *  is the builtin session-state sink, and epochs close every 512 rows. */
+test("defaultConfig ships tamperEvidence disabled with the session-state anchor", () => {
+  assert.deepEqual(defaultConfig({}).tamperEvidence, {
+    enabled: false,
+    anchor: "session-state",
+    epochEntries: 512,
+    verifyOnSessionEnd: false,
+  })
+})
+
+/** A non-object tamperEvidence keeps every default and warns once. */
+test("mergeConfig rejects a non-object tamperEvidence and keeps defaults", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { tamperEvidence: "nope" as unknown })
+  assert.deepEqual(config.tamperEvidence, base.tamperEvidence)
+  assert.deepEqual(warnings, ["config: tamperEvidence must be an object; keeping defaults"])
+})
+
+/** A valid tamperEvidence override is applied one level deep; untouched
+ *  sub-keys keep their defaults. */
+test("mergeConfig applies a valid tamperEvidence override one level deep", () => {
+  const { config, warnings } = mergeConfig(defaultConfig({}), {
+    tamperEvidence: { enabled: true, epochEntries: 64 },
+  })
+  assert.deepEqual(config.tamperEvidence, {
+    enabled: true,
+    anchor: "session-state",
+    epochEntries: 64,
+    verifyOnSessionEnd: false,
+  })
+  assert.deepEqual(warnings, [])
+})
+
+/** Non-boolean enabled/verifyOnSessionEnd and non-integer epochEntries keep
+ *  their defaults with one warning each. */
+test("mergeConfig rejects wrongly-typed tamperEvidence sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, {
+    tamperEvidence: { enabled: "yes", verifyOnSessionEnd: 1, epochEntries: 0 },
+  })
+  assert.deepEqual(config.tamperEvidence, base.tamperEvidence)
+  assert.deepEqual(warnings, [
+    "config: tamperEvidence.enabled must be a boolean; keeping default",
+    "config: tamperEvidence.verifyOnSessionEnd must be a boolean; keeping default",
+    "config: tamperEvidence.epochEntries must be a positive integer; keeping default",
+  ])
+})
+
+/** Unknown tamperEvidence sub-keys are ignored with a warning. */
+test("mergeConfig ignores unknown tamperEvidence sub-keys", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { tamperEvidence: { bogus: 1 } })
+  assert.deepEqual(config.tamperEvidence, base.tamperEvidence)
+  assert.deepEqual(warnings, ['config: unknown tamperEvidence key "bogus" ignored'])
+})
+
+/** The anchor selection accepts builtin names, {plugin} objects, and arrays
+ *  of those; anything else keeps the default with a warning. */
+test("mergeConfig validates the tamperEvidence.anchor selection shapes", () => {
+  const base = defaultConfig({})
+  const okString = mergeConfig(base, { tamperEvidence: { anchor: "git-note" } })
+  assert.equal(okString.config.tamperEvidence.anchor, "git-note")
+  assert.deepEqual(okString.warnings, [])
+  const okPlugin = mergeConfig(base, {
+    tamperEvidence: { anchor: { plugin: "./sink.mjs", options: { a: 1 } } },
+  })
+  assert.deepEqual(okPlugin.config.tamperEvidence.anchor, {
+    plugin: "./sink.mjs",
+    options: { a: 1 },
+  })
+  const okArray = mergeConfig(base, {
+    tamperEvidence: { anchor: ["git-note", { plugin: "./sink.mjs" }] },
+  })
+  assert.deepEqual(okArray.config.tamperEvidence.anchor, ["git-note", { plugin: "./sink.mjs" }])
+  const bad = mergeConfig(base, { tamperEvidence: { anchor: 42 } })
+  assert.equal(bad.config.tamperEvidence.anchor, "session-state")
+  assert.deepEqual(bad.warnings, [
+    "config: tamperEvidence.anchor must be a builtin name, a {plugin} object, or an array of those; keeping default",
+  ])
+})
+
+/** Malformed anchor array members (empty string, missing/empty plugin,
+ *  non-object options) reject the whole selection with one warning. */
+test("mergeConfig rejects malformed anchor array members", () => {
+  const base = defaultConfig({})
+  for (const anchor of [
+    [""],
+    [{ plugin: "" }],
+    [{ options: {} }],
+    [{ plugin: "x.mjs", options: "nope" }],
+  ]) {
+    const { config, warnings } = mergeConfig(base, { tamperEvidence: { anchor } })
+    assert.equal(config.tamperEvidence.anchor, "session-state")
+    assert.deepEqual(warnings, [
+      "config: tamperEvidence.anchor must be a builtin name, a {plugin} object, or an array of those; keeping default",
+    ])
+  }
+})
+
+/** validateResolved warns when epochEntries is out of bounds and resets it
+ *  to the default, so the warning's "keeping default" is truthful. */
+test("validateResolved bounds tamperEvidence.epochEntries", () => {
+  assert.equal(
+    validateResolved(defaultConfig({})).filter((w) => w.includes("epochEntries")).length,
+    0,
+  )
+  for (const epochEntries of [0, -1, 1.5, 100_001]) {
+    const cfg = defaultConfig({})
+    cfg.tamperEvidence.epochEntries = epochEntries
+    const warnings = validateResolved(cfg)
+    assert.equal(warnings.length, 1)
+    assert.ok(warnings[0]!.includes("tamperEvidence.epochEntries"))
+    assert.ok(warnings[0]!.includes(String(epochEntries)))
+    assert.equal(cfg.tamperEvidence.epochEntries, 512)
+  }
+})
+
+/** The mergeConfig shallow-copy arm: a patch that skips tamperEvidence still
+ *  yields a fresh sub-object, so mutating the merged config never retro-
+ *  mutates the base. */
+test("mergeConfig copies the tamperEvidence sub-object", () => {
+  const base = defaultConfig({})
+  const { config } = mergeConfig(base, {})
+  assert.notEqual(config.tamperEvidence, base.tamperEvidence)
+  config.tamperEvidence.enabled = true
+  assert.equal(base.tamperEvidence.enabled, false)
 })

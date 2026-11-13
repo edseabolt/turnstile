@@ -21,8 +21,15 @@ replay: "replayGatePasses\nrestores hasGatePass, hasPlanVerdict\n(+ plansSignatu
 ledger: "GateLedger in memory"
 enforce: "execute.before guards"
 cli: "opencode-turnstile status\n(read-only aggregation)"
+chain: "hash chain (tamperEvidence.enabled)\nhash = sha256(canonical(\n  prevHash + ts + payload))\nper row: seq, prevHash, hash"
+epoch: "chain-epoch rows\nper epochEntries (512):\nMerkle root + head\nover the epoch's data rows"
+anchors: "anchors.jsonl\npublished epoch refs\n(session-state sink)" {
+  shape: cylinder
+}
+sinks: "anchor sinks\nsession-state (host)\ngit-note / commit-trailer (repo)\n{plugin} (external)"
+verify: "verifyJournalChain\nsession-end (verifyOnSessionEnd)\n+ prov --verify (offline)\n+ prov --verify --session <id>\n  (scoped, per-row Merkle\n  inclusion proofs)"
 
-writers.hooks -> jsonl: "every decision,\n40 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry)\nno/unknown sessionID → shared"
+writers.hooks -> jsonl: "every decision,\n42 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry /\nchain-epoch / chain-verify)\nno/unknown sessionID → shared"
 writers.hooks -> sessions: "entry with a resolvable\nparent sessionID\n(parentOf → own file)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
@@ -34,3 +41,11 @@ ledger -> enforce
 jsonl -> cli
 jsonl -> summary: "readJournalEntries\n(current file only — rotation\nstraddles undercount visibly)"
 summary: "countSessionActivity\n→ session-summary entry\n(+ toast when the host\noffers tui.toast)"
+writers.hooks -> chain: "task-complete + session-end triggers:\nappend chained rows,\ncommit epoch on cadence"
+chain -> epoch: "every epochEntries rows"
+chain -> jsonl: "rows carry seq/prevHash/hash"
+epoch -> sinks: "publish epoch ref\n(fire-and-forget on task-complete,\nawaited before the session-end\nverify, fail-open)"
+sinks -> anchors: "session-state sink appends"
+jsonl -> verify: "fold families across\ngenerations, re-derive roots"
+anchors -> verify: "verify refs against sinks"
+verify -> sinks: "session idle: anchorAsync\n(session-end) publishes first,\nthen the verify runs"

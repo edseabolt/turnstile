@@ -29,6 +29,9 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
 function captureJournaler(): { journaler: Journaler; entries: any[] } {
   const entries: any[] = []
   const journaler: Journaler = {
+    bindAnchorSinks() {},
+    anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",
@@ -219,6 +222,9 @@ test("observeScratchWrite: bounds the recorded path and redacts non-strings", ()
 test("observeScratchWrite: a journal failure fails open", () => {
   const entries: any[] = []
   const journaler: Journaler = {
+    bindAnchorSinks() {},
+    anchor() {},
+    async anchorAsync() {},
     journalPath: "",
     sessionsDir: "",
     journalPathFor: () => "",
