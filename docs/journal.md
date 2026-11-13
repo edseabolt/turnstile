@@ -286,11 +286,91 @@ the pipeline. Sinks are selected by `tamperEvidence.anchor`:
 
 An array selects several: all publish, verify intersects (a ref is anchored
 when any sink vouches; the report names the **weakest vouching trust
-domain** (external > repo > host)). External plugin sinks are
-lazy-`import()`ed at setup with a factory shape-check; a malformed sink
-degrades to a journaled warning, never a boot failure. **Caveat:** a plugin
-specifier is code the host executes, so only point `plugin:` at modules you
-trust as much as turnstile itself.
+domain** (external > repo > host)). **Caveat:** a plugin specifier is code
+the host executes, so only point `plugin:` at modules you trust as much as
+turnstile itself.
+
+Each selection form, configured under `tamperEvidence.anchor`:
+
+```jsonc
+{
+  "tamperEvidence": {
+    "enabled": true,
+    "anchor": "session-state"
+  }
+}
+```
+
+```jsonc
+// A repo-trust anchor: every committed epoch lands as a git note on HEAD.
+{
+  "tamperEvidence": {
+    "enabled": true,
+    "anchor": "git-note"
+  }
+}
+```
+
+```jsonc
+// Tie epochs to project history: pending refs wait in
+// .git/turnstile/trailer-anchors.jsonl until a landing commit carries the
+// Turnstile-Anchor: trailer; verify reports missing until then.
+{
+  "tamperEvidence": {
+    "enabled": true,
+    "anchor": "commit-trailer"
+  }
+}
+```
+
+```jsonc
+// An external plugin sink, alone or mixed with builtins. `options` is
+// passed through to the plugin factory verbatim.
+{
+  "tamperEvidence": {
+    "enabled": true,
+    "anchor": [
+      "session-state",
+      { "plugin": "./my-anchor-sink.mjs", "options": { "bucket": "turnstile-anchors" } }
+    ]
+  }
+}
+```
+
+### The `{plugin}` sink contract
+
+A plugin sink is a module (resolved by lazy `import()`, so relative paths
+resolve against the config file) whose **default export is a factory**:
+
+```js
+// my-anchor-sink.mjs — minimal example: a second host-domain store.
+import * as fs from "node:fs"
+
+export default function factory({ config }) {
+  // config is the `options` object verbatim: { bucket: "…" } above.
+  const file = `${config.bucket}.anchors.jsonl`
+  return {
+    id: "my-anchor",           // string, appears in verdicts
+    trustDomain: "external",   // "host" | "repo" | "external"
+    publish(ref) { fs.appendFileSync(file, JSON.stringify(ref) + "\n") },
+    verify(ref) {
+      // Return { status: "ok", anchoredAt } when this store vouches for
+      // the ref, { status: "missing", detail } when it holds nothing for
+      // it, or { status: "mismatch", detail } when it holds a differing
+      // root/head for the same source#epoch.
+    },
+  }
+}
+```
+
+The factory is called once at setup with `{ config: <the configured
+`options` object> }`. Its returned sink is shape-checked: a string `id`, a
+`trustDomain` in the union, and callable `publish`/`verify` (both may be
+async — `publish(ref)` receives the anchor ref `{sink, source, epoch,
+root, head, ts}`; `verify(ref)` returns an `AnchorVerdict`). Every
+failure path degrades fail-open: a failed import, a non-function default
+export, a factory throw, or a malformed sink each become a journaled
+`anchor-sink:` warning and the entry is skipped — never a boot failure.
 
 **Verification.** `verifyJournalChain` (`src/verify.ts`) folds every journal
 file family (shared + per-session sinks) across its rotation generations
