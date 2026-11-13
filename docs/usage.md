@@ -1049,8 +1049,6 @@ Captured on this repo, trimmed: the real run prints one `NEW-IN-HEAD` line
 per new cell (68 here), and `…` marks where lines were cut.
 
 ```text
-
-
 > opencode-turnstile@0.12.0 test:differential
 > node --experimental-strip-types scripts/differential.mjs
 
@@ -1138,7 +1136,7 @@ NEW-IN-HEAD: journal.prov:waiver.0
 DIFFERENTIAL: PASS scenarios=6 cells=875 skipped=1 newInHead=68
 ```
 
-Explains of each line:
+What each line means:
 
 - `## <scenario>: PASS|FAIL (cells=<n>)` — one block per scenario, in
   `config`, `markers`, `replay`, `dispatch`, `journal`, `prov` order. A
@@ -1167,8 +1165,8 @@ DIFFERENTIAL: PASS scenarios=1 cells=12 skipped=0 newInHead=0
 
 ### A failing run (illustrative)
 
-A real failure is transient , so this
-shape is illustrative, not captured. A diverged cell prints its first
+A real failing run was not captured for this doc, so this shape is
+illustrative. A diverged cell prints its first
 divergence as a line diff over the stable serializations, then the removal
 lines, then a summary that names the failed scenarios.
 
@@ -1187,7 +1185,7 @@ DIFFERENTIAL: FAIL scenarios=6 cells=875 failed=1 skipped=1 newInHead=68 [replay
 `--- ref <cell>` / `+++ HEAD <cell>` name the cell and the two trees; `-`
 lines exist only in the ref, `+` lines only in HEAD. `REMOVED-IN-HEAD:` is a
 cell the ref had and HEAD lost. The trailing `[replay(2)]` names each failed
-scenario with its diverged-plus-removed cell count.this will exit 1.
+scenario with its diverged-plus-removed cell count. The command exits 1.
 
 ### Drift-tolerance rules
 
@@ -1202,4 +1200,4 @@ as a verdict:
   (`REMOVED-IN-HEAD:`) or holding a different value (the `--- ref`/`+++ HEAD`
   diff) fails its scenario.
 - **Re-point after a deliberate change.** When you change behavior on purpose,
-  point `--ref` at the commit that introduced the change. 
+  point `--ref` at the commit that introduced the change.
