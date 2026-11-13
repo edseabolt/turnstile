@@ -282,7 +282,8 @@ document describe, update them in the same change set — not as a follow-up.
     permission, event types handled), or what fires on each hook;
   - enforcement: gates added/removed/renamed, `GateState` fields, block
     reasons, caps/budgets/defaults, marker semantics;
-  - persistence (`docs/journal.md`): journal entry types, replay behavior,
+  - persistence (`docs/journal.md` entry point and its section files under
+    `docs/journal/`): journal entry types, replay behavior,
     rotation, the `opencode-turnstile status` output;
   - configuration: keys, defaults, validation, or the layered resolution.
     Refactors that move code without changing behavior (renames aside) don't
