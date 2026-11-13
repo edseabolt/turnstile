@@ -234,10 +234,13 @@ export function permissionEvaluate(ctx: TurnstileContext, event: unknown): void 
   const pe = event as PermissionEvaluateEvent
   const sessionID = asSessionID(pe?.sessionID)
   const parent = ctx.ledger.parentOf(sessionID)
-  // Plan-approval arm: the task/subagent dispatch exposes
-  // `action === "task"`; the payload carries no tool input, so
+  // Plan-approval arm: the task/subagent dispatch exposes the action
+  // as "subagent" on current hosts and "task" on older hosts within
+  // the supported compat range; the payload carries no tool input, so
   // escalation is driven purely by the parent's plan-gate state.
-  if (pe?.action === "task") return evaluateTaskArm(ctx, parent, pe)
+  if (pe?.action === "task" || pe?.action === "subagent") {
+    return evaluateTaskArm(ctx, parent, pe)
+  }
   // Landing arm: a bash/shell permission.evaluate whose landing ask is
   // armed (see evaluateLandingArm).
   if (pe?.action === "bash" || pe?.action === "shell") return evaluateLandingArm(ctx, parent, pe)
