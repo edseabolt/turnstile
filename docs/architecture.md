@@ -284,7 +284,17 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   agent name first — a configured pipeline name alone exempts — with the
   child→parent edge + emitter fallback behind it, so an unresolved or
   non-pipeline agent fails closed; the denylist decision wins first and the
-  journal reasons stay disjoint. While a plan is bound and the session is
+  journal reasons stay disjoint. Inside the child exemption, a planner
+  child's write/edit is additionally confined to the configured `plansDir`
+  (the planner write-target guard): the agent name resolves by the same
+  precedence (event name first, emitter fallback second; an unresolved name
+  is not a planner — fail-open), scratch targets and empty paths are
+  allowed, and a target outside the configured plans directory (resolved
+  against the session's project dir, relative and absolute `plansDir` both
+  honored) journals `{type:"blocked", reason:"planner-write-outside-plans-dir"}`
+  and throws `BLOCKED by turnstile:` naming the configured directory and the
+  corrective action; an internal error journals `type:"error"` and never
+  blocks. While a plan is bound and the session is
   engaged, the plan-impact advisory runs after the once-grant consume: a
   target overlapping the plan's scope (equality matching on the path; the
   plan file itself is always structural) is allowed with a journaled

@@ -119,7 +119,11 @@ test("gates-dispatch.ts exposes only createDispatchGates at runtime", async () =
  */
 test("plans-scan.ts exposes the scan-cache factory", async () => {
   const mod = await import("../src/plans-scan.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["createPlansScanCache", "journalPlansUnreadable"])
+  assert.deepEqual(Object.keys(mod).sort(), [
+    "createPlansScanCache",
+    "journalPlansUnreadable",
+    "resolvePlansDir",
+  ])
 })
 
 /**
