@@ -89,7 +89,7 @@ function waiversSection(c: PolicyConfig): string {
  * @returns The plan gate line.
  */
 function planGateSection(c: PolicyConfig): string {
-  return `Plan gate: dispatch executor only after this task's plan-reviewer first line is \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\`, or a human approval (see waivers and approvals above: a \`${c.approvalMarker}\` in the user's prompt, or a \`${c.waiverMarker}\` waiver). If no approval holds, the executor dispatch is blocked — STOP, report back, and obtain the human approval or waiver; do not re-dispatch in a loop or attempt to bypass or auto-approve. plan-file changes invalidate the approval (re-plan, then re-dispatch plan-reviewer before resuming executor work).`
+  return `Plan gate: dispatch executor only after this task's plan-reviewer first line is \`VERDICT: APPROVE crit=<n> high=<n> med=<n> low=<n>\`, or a human approval (see waivers and approvals above: a \`${c.approvalMarker}\` in the user's prompt, or a \`${c.waiverMarker}\` waiver). If no approval holds, the executor dispatch is blocked — STOP, report back, and obtain the human approval or waiver; do not re-dispatch in a loop or attempt to bypass or auto-approve. plan-file changes invalidate the approval (re-plan, then re-dispatch plan-reviewer before resuming executor work). Plans live in \`${c.plansDir}\` (your \`plansDir\` config): dispatch the planner with a prompt naming a path under that directory, never another location — the plugin blocks a planner write outside it.`
 }
 
 /**
