@@ -16,8 +16,6 @@ the suspension map. The `prov:stated` / `prov:denied` / `prov:waiver` /
 `prov:override` decision-ledger rows ride the same journal. Every read
 error is fail-open: the journaler records it and never throws.
 
-The full catalog lives in [journal.md](../journal.md). It lists the 43 entry
-types enumerated by the inventory in docs/journal.md (the old prose count was 42; all
-literals are listed) with their replay folds, the file layout, rotation
-mechanics, and
-the tamper-evidence hash chain.
+The full catalog lives in [journal.md](../journal.md). It lists every entry
+type with its replay fold, the file layout, rotation
+mechanics, and the tamper-evidence hash chain.

@@ -1,14 +1,14 @@
 # AGENTS.md — turnstile
 
-## Branching & releases (standing instruction — Ed, Oct 2026)
+## Branching & releases (standing instruction, Oct 2026)
 
 - `dev` is the default and the only primary development branch; it is
   GitHub-protected (required `ci` status check, no direct pushes). All work
   lands in `dev` via PR — never push directly, never commit to `main`.
 - `main` is release-only. It is promoted exclusively by a `dev` → `main`
-  PR that **Ed merges himself**. Do not merge anything into `main`, and do
-  not click through a dev→main PR merge, unless Ed asks explicitly in the
-  session.
+  PR that a human merges deliberately. Do not merge anything into `main`,
+  and do not click through a dev→main PR merge, unless the user asks
+  explicitly in the session.
 - Keep local `main` as a read-only mirror of `origin/main`; branch feature
   work from `dev`.
 
@@ -69,7 +69,7 @@ These rules are enforced on every change, not aspirational. A review that
 spots a violation rejects the change or refactors it in the same change set —
 "cleanup later" is not an option.
 
-### Writing style — ISO 24495-1 (standing instruction — Ed, Nov 2026)
+### Writing style — ISO 24495-1 (standing instruction, Nov 2026)
 
 All prose written in this repo must follow ISO 24495-1 (Plain language —
 Part 1: Governing principles and guidelines). This applies everywhere prose

@@ -17,7 +17,7 @@ preserve: "append 'preserve verbatim'\n+ gate-state snapshot\n(live ledger; de-t
 
 permission: "permission.hook('evaluate') (hooks-permission.ts)\nnever blocks, forces 'ask'" {
   plan-arm: "action == task\nand plan gate red?"
-  landing-arm: "action == bash/shell\npush without approve + live\npendingLandingAsk latch?\n(armed by the guard only under\nescalation:\"ask\"; inert on\nsuspension/approval)"
+  landing-arm: "action == bash/shell\npush without approve + live\npendingLandingAsk latch?\n(armed by the guard in both\nescalation modes; inert on\nsuspension/approval)"
   handson-arm: "action == write/edit\nlive pendingHandsOnAsk latch?\n(inert on handsOnRelease /\nexecutor waiver or suspension)"
 }
 
@@ -29,7 +29,7 @@ tool: "tool.hook (hooks-tool.ts)" {
 before-task: "task/subagent: dispatch budget ▸ per-leg caps\n(planner/plan-reviewer/test-runner/requirements) ▸\nreviewer gate ▸ once-grant short-circuit ▸ plan-gate ▸\ndecomposition ▸ dispatch counted + journaled at guard exit\n▸ waiver-covered dispatch → journalProvWaiver →\nprov:waiver (decisionLedger.enabled)"
 before-read: "read: parent-keyed horizon — check +\nincrement atomically; warn @8 block @15"
 before-bash: "bash/shell: denylist ▸ commit lint ▸ bash write gate\n(guardBashWrite, default-on) ▸ landing gate"
-before-write: "write/edit: path denylist ▸ pipeline-child\nexempt (child write → childWrite telemetry row\n+ override-adjacency record; planner child confined\nto the configured plansDir — outside it journals\nblocked/planner-write-outside-plans-dir and throws) or scratch exempt ▸\nhands-on gate (parent sessions only — a registered\npipeline child's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask under escalation:\"ask\",\nre-blocks under the default \"block\")"
+before-write: "write/edit: path denylist ▸ pipeline-child\nexempt (child write → childWrite telemetry row\n+ override-adjacency record; planner child confined\nto the configured plansDir — outside it journals\nblocked/planner-write-outside-plans-dir and throws) or scratch exempt ▸\nhands-on gate (parent sessions only — a registered\npipeline child's write/edit never gates; released by\nwaiver/always/once-grant; first block throws,\nrepeat arms the ask in both escalation modes —\nthe block-throw is the no-human fallback)"
 
 after-task: "task delivery: classifyDelivery ▸\nparseMarkers(task-result) ▸\nattributePlanVerdict ▸ ensemble-gated\nhasReviewApprove ▸ PIPELINE status append\n(per delivery) ▸ policy prepend (once)"
 after-read: "read: correct the read-counter charge\nwhen the read produced no output (before\nguard charged it)"
