@@ -63,8 +63,8 @@ tamper evidence. The state-machine view lives in
 
 ## Entry-type catalog
 
-The shared trail carries 42 entry types (the §6 inventory's own count; the
-inventory enumerates 43 literals — all are listed here). The default
+The shared trail carries 43 entry types (the §6 inventory enumerates 43
+literals; its prose count said 42 — all are listed here). The default
 disposition is audit-only: such entries are replay-inert and status-inert.
 The table marks the exceptions.
 
@@ -260,6 +260,7 @@ chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
 verdict, below).
 
 **Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
+the same file an attacker can rewrite proves nothing by itself, so each
 committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is published
 to independent durable stores — anchor sinks — at the task-completion
 trigger, fire-and-forget: every publish runs concurrently, a rejection
