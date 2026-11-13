@@ -37,8 +37,8 @@
  *
  * Module layout — one boundary per file; this file stays the thin entry
  * point (shape + factory only). The authoritative module map (every file
- * + responsibility, kept in sync with `src/`) is `docs/architecture.md`
- * §2 — do not hand-copy the list here.
+ * + responsibility, kept in sync with `src/`) is `docs/modules.md` —
+ * do not hand-copy the list here.
  */
 import { createTurnstile } from "./src/setup.ts"
 import type { Host, TurnstileOptions } from "./src/types.ts"
