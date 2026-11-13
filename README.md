@@ -419,8 +419,9 @@ reports when a newer turnstile is published.
   `docs/architecture/`, with rendered diagrams.
 - [`docs/modules.md`](docs/modules.md) — the authoritative module map: every
   file under `src/` with its responsibility.
-- [`docs/journal.md`](docs/journal.md) — the journal catalog: every entry
-  type with its replay fold, file layout, rotation, and tamper evidence.
+- [`docs/journal.md`](docs/journal.md) — the journal reference entry point:
+  file layout, the entry-type catalog, rotation, replay, and tamper
+  evidence, each in its own section file under `docs/journal/`.
 - [`docs/usage.md`](docs/usage.md) — the usage entry point: a worked
   session, waivers and approvals in full, installing and maintaining, the
   complete configuration table, journals and retention, and the `status`

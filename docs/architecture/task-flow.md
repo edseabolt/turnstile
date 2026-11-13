@@ -25,7 +25,7 @@ A typical enforced run:
    the working-tree diff touches only non-src surfaces) rides a lighter
    path: it skips the plan-approval and decomposition gates and is capped at
    4 per plan. Eligibility is canonical in `src/maintenance.ts`; the journaling
-   semantics are in [journal.md](../journal.md)'s `maintenance` entry.
+   semantics are in [journal/entry-types.md](../journal/entry-types.md)'s `maintenance` entry.
 5. The test-runner's `GATE: PASS` may require corroborating exit-0 bash
    evidence (`gateEvidence:"enforce"`); without it the flag is held as
    `unverifiedPass` and promoted when evidence arrives, including when a
