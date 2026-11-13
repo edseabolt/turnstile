@@ -200,7 +200,8 @@ re-checks when a child→parent edge resolves late (a background dispatch, via
 bounded to the parent's current task window (stamped at prompt admission).
 
 **`permission.hook("evaluate")`** (`hooks-permission.ts`): never blocks. When the plan gate is red on
-a task dispatch, the task arm's behavior follows `escalation`: under `"ask"` it _forces_ an interactive
+a task dispatch (the host exposes the action as `subagent` on current hosts and `task` on older hosts
+within the supported compat range), the task arm's behavior follows `escalation`: under `"ask"` it _forces_ an interactive
 `ask` to the user, while under the default `"block"` it stays inert (the dispatch guard
 (`enforcePlanApproval`) blocks with the stop-and-report instruction and release flows via
 `PLAN APPROVED:` plus the sticky waiver/ask paths. The landing arm does the same when a push lacks reviewer approval and the
