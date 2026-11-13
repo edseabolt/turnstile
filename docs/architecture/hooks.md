@@ -235,7 +235,17 @@ replies, each journal one `prov:denied` entry via `journalProvDenied`
 `decisionLedger.enabled`, replay-inert),
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29; an
 additive channel the host publishes immediately after the prompt hook fires,
-deduped against the hook path on the shared host message id), the
+deduped against the hook path on the shared host message id), background
+subagent-completion parsing on the same event (opencode ≥ 2.0.29: a
+synthetic item with `metadata.source === "subagent"` carries a background
+child's final text, which turnstile parses child-keyed under the
+`subagent-synthetic` source with a per-child dedup scope (so one child's or a
+streamed source's identical marker never suppresses another child's credit,
+while a durable-event replay still dedupes) and credits through the
+child→parent edge, so a
+background plan-reviewer's `VERDICT: APPROVE` moves the plan-approval gate
+the same way a foreground tool result does; on 2.0.22–2.0.28 the event does
+not exist and completions arrive as foreground tool results), the
 session-end summary (`session.idle`, one recap line per session, see the
 `session-summary` entry kind in [persistence](persistence.md)), and error
 telemetry. Streamed child text
