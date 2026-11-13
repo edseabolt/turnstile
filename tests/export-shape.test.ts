@@ -181,6 +181,7 @@ test("delivery.ts exposes only the delivery helpers and key tables at runtime", 
     "readRecordString",
     "shapeOf",
     "structuredPartsOf",
+    "syntheticCompletionOf",
   ])
 })
 

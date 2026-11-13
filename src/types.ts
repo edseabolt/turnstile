@@ -221,9 +221,11 @@ export interface EventProperties {
    * `payload.text` carries the user's words; `"synthetic"` / `"compaction"` /
    * `"move"` are agent/composition arrivals that never carry a user prompt and
    * are never admitted. `payload.text` is the user prompt text when `type` is
-   * `"user"`.
+   * `"user"`; on a `"synthetic"` item `payload.metadata` may name a background
+   * subagent completion (`source:"subagent"`, `childID`, `agent`) whose
+   * `payload.text` is parsed for markers.
    */
-  item?: { type?: unknown; payload?: { text?: unknown } }
+  item?: { type?: unknown; payload?: { text?: unknown; metadata?: unknown } }
 }
 
 /** A single host stream event delivered by `event.subscribe`. */
