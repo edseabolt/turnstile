@@ -4,8 +4,10 @@ One boundary per file under `src/`; dependencies flow one way, no cycles.
 `turnstile.ts` stays a thin entry point (`{ id: "turnstile", server, setup }`;
 `server` is a legacy v1 shim).
 
-This is the developer reference extracted from [architecture.md](architecture.md);
-the narrative (hooks, gates, task flow) lives there.
+This is the developer reference extracted from the architecture docs
+([architecture.md](architecture.md) and the section files under
+[architecture/](architecture/)); the narrative (hooks, gates, task flow)
+lives there.
 
 ![Module map](images/d01-modules.svg)
 

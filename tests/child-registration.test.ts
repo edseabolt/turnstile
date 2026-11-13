@@ -291,7 +291,7 @@ test("agentFromDeliveryEvent: the input echo names the child before event.agent 
 test("a delivery's parent-named event.agent never shadows the child's result echo", async () => {
   // The chunk-1 regression: a structured child-keyed delivery whose dispatch
   // input omitted the agent. `event.agent` there can carry the PARENT's name
-  // (docs/architecture.md hazard); the result's input echo names the child.
+  // (docs/architecture/gates.md hazard); the result's input echo names the child.
   // The child's name must win so the test-runner PASS awaits its edge and
   // verifies at delivery instead of being attributed to the parent's name.
   const records = new Map<string, any>([["c1", { parentID: "p1", agent: "test-runner" }]])

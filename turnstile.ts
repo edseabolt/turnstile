@@ -12,7 +12,8 @@
  * throw.
  *
  * Contract-level rules (the enforced detail — gates, state fields, escape
- * ladders, replay, journal schema — is documented in `docs/architecture.md`,
+ * ladders, replay, journal schema — is documented in `docs/architecture.md`
+ * (the entry-point index into the section files under `docs/architecture/`,
  * the authoritative reference):
  * - Marker authority: a `GATE:` flips state only from the configured
  *   test-runner and a `VERDICT:` only from `reviewer`/`plan-reviewer`

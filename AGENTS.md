@@ -69,6 +69,15 @@ These rules are enforced on every change, not aspirational. A review that
 spots a violation rejects the change or refactors it in the same change set —
 "cleanup later" is not an option.
 
+### Writing style — ISO 24495-1 (standing instruction — Ed, Nov 2026)
+
+All prose written in this repo must follow ISO 24495-1 (Plain language —
+Part 1: Governing principles and guidelines). This applies everywhere prose
+is written: documentation (README, `docs/`), docstrings/JSDoc, code comments,
+commit messages, and agent/skill definition text. Prioritize the standard's
+core principles: write for your readers, keep it findable and usable, and
+say only what's needed — nothing more.
+
 ### Functional design (function size cap)
 
 Functions should be small, focused, and easy to understand. Hard guideline:
@@ -148,7 +157,9 @@ Write comments only when necessary. Code should be self-explanatory through
 clear naming and structure. Comments should explain "why" not "what".
 (All functions carry Google-standard JSDoc with fully typed parameters and
 returns; the doc comment atop `turnstile.ts` is a contract-level summary
-pointing at `docs/architecture.md`, the authoritative detailed reference.)
+pointing at `docs/architecture.md` (the entry-point index into the
+section files under `docs/architecture/`), the authoritative detailed
+reference.)
 
 Comments and docstrings must be self-contained: a reader without the plan,
 the issue, or this session's context must still understand them. Never
@@ -186,9 +197,10 @@ stated feature; devDependencies are tooling only.)
   `{ tool.hook, session.hook, permission.hook, event.subscribe }`, verified
   against opencode v2.0.22. If hooks don't fire, check the host version before
   assuming a logic bug.
-- `docs/architecture.md` is the authoritative reference for enforced
-  contracts; the doc comment atop `turnstile.ts` is a contract-level
-  summary that points at it, and its module list must track `src/`.
+- `docs/architecture.md` is the entry point to the authoritative reference
+  for enforced contracts (the section files live under `docs/architecture/`);
+  the doc comment atop `turnstile.ts` is a contract-level summary that points
+  at it, and its module list must track `src/`.
 
 ## Enforcement behavior (easy to regress)
 
@@ -213,7 +225,8 @@ stated feature; devDependencies are tooling only.)
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
   requires updating both the regexes here and the marker examples in the
-  validated sources — README.md, `docs/usage.md`, `agents/*.md`, and
+  validated sources — README.md, `docs/usage.md` (the usage index, which
+  carries the canonical marker-example block), `agents/*.md`, and
   `src/policy.ts` — checked together by `scripts/check-markers.mjs`.
 - The read-counter keys off the parent session (`childToParent` map); state
   is per parent, not per child subagent session.
@@ -256,7 +269,8 @@ stated feature; devDependencies are tooling only.)
 
 ## Architecture docs (keep in sync when code changes)
 
-`docs/architecture.md` (with `docs/images/*.svg` rendered from
+`docs/architecture.md` (the entry-point index, with the section files under
+`docs/architecture/` and `docs/images/*.svg` rendered from
 `docs/diagrams/*.d2`) is the living architecture reference for new users and
 devs. It is not a snapshot: when a change alters what the diagrams or
 document describe, update them in the same change set — not as a follow-up.
@@ -274,8 +288,8 @@ document describe, update them in the same change set — not as a follow-up.
     Refactors that move code without changing behavior (renames aside) don't
     require doc edits.
 - **How to update** — edit the D2 source in `docs/diagrams/` (not the SVG),
-  re-render the matching image, and update `docs/architecture.md` prose/tables
-  to match:
+  re-render the matching image, and update the matching architecture doc
+  (the index or a section file under `docs/architecture/`) to match:
 
   ```sh
   d2 --theme 200 docs/diagrams/d01-modules.d2 docs/images/d01-modules.svg

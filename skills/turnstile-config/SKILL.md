@@ -7,7 +7,7 @@ description: Show the user's resolved turnstile configuration — the raw config
 
 Display the user's turnstile configuration read-only. Never apply edits —
 point at `examples/turnstile.example.json` (every key except the computed
-`metricsDir`) and the config table in `docs/usage.md` §4 instead.
+`metricsDir`) and the config table in `docs/usage/configuration.md` instead.
 
 ## Steps
 
@@ -25,7 +25,7 @@ point at `examples/turnstile.example.json` (every key except the computed
    `npx opencode-turnstile status --json`) — its `suspension.configPath` and
    `suspension.configFilePresent` confirm which file the CLI consulted.
 
-4. Compare the raw overrides against the defaults table (docs/usage.md §4)
+4. Compare the raw overrides against the defaults table (docs/usage/configuration.md)
    and mark each key as overridden or default.
 
 5. Report `metricsDir` as computed at load time — it is deliberately absent

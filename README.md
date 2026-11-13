@@ -57,7 +57,7 @@ Then **restart OpenCode** (or `opencode service restart`) so the plugin
 loads. Rather skip the agent definitions? Adding just the plugin still
 enforces the gates, but the pipeline needs agents to dispatch against, so
 run `init` (or bring your own, see
-[`docs/usage.md`](docs/usage.md#customizing-the-pipeline-agents)):
+[`docs/usage/install.md`](docs/usage/install.md#customizing-the-pipeline-agents)):
 
 ```jsonc
 // ~/.config/opencode/opencode.json
@@ -153,13 +153,13 @@ Every block, verdict, and gate flip is appended to the journal —
 
 A full annotated session, with every dispatch, block message, waiver, and
 the journal entries behind them, is in
-[`docs/usage.md`](docs/usage.md#a-worked-session).
+[`docs/usage/worked-session.md`](docs/usage/worked-session.md).
 
 ## What it enforces
 
 Gates are decided in `execute.before` hooks; every gate has a human escape
 hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
-[`docs/architecture.md`](docs/architecture.md) (§5 Gate state machine).
+[`docs/architecture/gates.md`](docs/architecture/gates.md) (Gate state machine).
 
 | Gate                   | In one line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -278,7 +278,7 @@ what the text says.
 Do not create, paste, or relay a `USER WAIVER:` / `PLAN APPROVED:` marker to
 open a gate — only the user's own prompt carries a real waiver or approval.
 Full lifecycle semantics (waiver allowances, ensemble interaction, prompt
-channels): [`docs/usage.md`](docs/usage.md#waivers-and-approvals).
+channels): [`docs/usage/waivers.md`](docs/usage/waivers.md).
 
 ## User plan review (opt-in)
 
@@ -454,7 +454,7 @@ Turnstile has no npm lifecycle hooks: installing the package never
 writes to `~/.config/opencode` — that happens only when you run an explicit
 command. Modes, conflicts, the ledger, upgrades, uninstall, and per-agent
 model pins are covered in
-[`docs/usage.md`](docs/usage.md#installing-and-maintaining).
+[`docs/usage/install.md`](docs/usage/install.md).
 
 Verify a clone with:
 
@@ -476,7 +476,7 @@ commit with the full decision ledger — partial-ledger merge-window refs
 fail with a driver error rather than a structured skip). Deliberate
 behavior changes re-point `--ref` at the commit that introduced them. A
 captured run with a line-by-line explaining of the output is in
-[`docs/usage.md`](docs/usage.md#8-differential-characterization-harness--worked-example).
+[`docs/usage/differential-characterization.md`](docs/usage/differential-characterization.md).
 
 **Self-host smoke** — `npm run init && npm run ci:installed`, start a
 fresh OpenCode session with the plugin loaded, and run one
@@ -530,7 +530,7 @@ Invalid keys are ignored, journaled, and summarized once into the session
 context; a malformed config file never breaks the host. The full table —
 every key, default, and environment variable (`TURNSTILE_TRACE`,
 `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`) — is in
-[`docs/usage.md`](docs/usage.md#configuration); `schemas/turnstile.schema.json`
+[`docs/usage/configuration.md`](docs/usage/configuration.md); `schemas/turnstile.schema.json`
 ships with the package for editor completion.
 
 ## Show the evidence on your PR
@@ -566,15 +566,16 @@ Turnstile is a speed bump and an audit trail, not a security boundary. A
 the record of what was _claimed_ and is treated as sensitive data (see
 [SECURITY.md](SECURITY.md)); the denylist is a deterrent, not a sandbox; MCP
 tools remain unguarded. The full threat model:
-[`docs/architecture.md` §10](docs/architecture.md#10-security-posture-and-limits).
+[`docs/architecture/security.md`](docs/architecture/security.md).
 
 ## Behavior contract
 
 - Fail-open by design. Every hook body is guarded; internal errors are
   journaled and the tool call proceeds. The only thrown errors are the
   deliberate `BLOCKED by turnstile:` ones.
-- `docs/architecture.md` is the authoritative reference for enforced
-  contracts; the doc comment atop `turnstile.ts` summarizes it. CI keeps
+- `docs/architecture.md` (with the section files under `docs/architecture/`)
+  is the authoritative reference for enforced contracts; the doc comment atop
+  `turnstile.ts` summarizes it. CI keeps
   the marker examples in this README in sync with the parser regexes.
 - Host API is the OpenCode v2 promise-plugin shape
   (`{ tool.hook, session.hook, permission.hook, event.subscribe }` — the
@@ -601,15 +602,17 @@ reports when a newer turnstile is published.
 
 ## More documentation
 
-- [`docs/architecture.md`](docs/architecture.md) — how the plugin works
-  inside: hook surface, end-to-end task flow, gate state machine, policy
-  injection, security posture, and ecosystem positioning, with rendered
-  diagrams.
+- [`docs/architecture.md`](docs/architecture.md) — the architecture
+  reference entry point: an overview plus links into the section files under
+  `docs/architecture/` (hook surface, end-to-end task flow, gate state
+  machine, policy injection, security posture, ecosystem positioning), with
+  rendered diagrams.
 - [`docs/modules.md`](docs/modules.md) — the authoritative module map: every
   file under `src/` with its responsibility.
 - [`docs/journal.md`](docs/journal.md) — the journal catalog: every entry
   type with its replay fold, file layout, rotation, and tamper evidence.
-- [`docs/usage.md`](docs/usage.md) — day-to-day operation: a worked session,
+- [`docs/usage.md`](docs/usage.md) — the usage entry point: an overview plus
+  links into the section files under `docs/usage/`: a worked session,
   waivers and approvals in full, installing and maintaining (modes, ledger,
   model pins), the complete configuration table, journals and retention, and
   the `status` command.
