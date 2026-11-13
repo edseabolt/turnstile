@@ -104,8 +104,8 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
     nothing ever throws.
 - **`compaction`** → appends a system block demanding verbatim preservation of
   open findings, AC status, and the last GATE/VERDICT markers, then the live
-  gate-state snapshot (`formatGateSnapshot`) from the ledger: concrete state,
-  not just a demand. The snapshot's `GATE:`/`VERDICT:` tokens are de-tokenized
+  gate-state snapshot (`formatGateSnapshot`) from the ledger, so the demand
+  arrives with the concrete state beside it. The snapshot's `GATE:`/`VERDICT:` tokens are de-tokenized
   (leading token lowercased) so it can never re-parse as an authoritative
   marker. It reads, never mints, the parent bucket via `ledger.peek`,
   keyed off `draft.sessionID` and falling back to the last-admitted parent
