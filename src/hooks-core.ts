@@ -17,6 +17,8 @@ import {
   deltaWindowFloorChars,
   formatNearMissDiagnostics,
   GATE_RE,
+  CANONICAL_GATE_MARKER,
+  CANONICAL_VERDICT_MARKER,
   verdictResultOf,
   VERDICT_RE,
 } from "./markers.ts"
@@ -76,12 +78,43 @@ const askLatchTtlMs = 5_000
 /** Cap on tracked per-child marker-retry counters (maxSessions scale). */
 const MAX_TRACKED_MARKER_RETRIES = 64
 
-/** Compliance reminder sent to a child whose delivery carried no marker. */
-const MARKER_RETRY_PROMPT =
-  "[turnstile] Your output was received but contained no `GATE:`/`VERDICT:` " +
-  "marker. Restate your verdict using the required marker (GATE: PASS|FAIL " +
-  "tests=<n> passed=<n> failed=<n> for the test-runner, VERDICT: APPROVE|BLOCK " +
-  "crit=<n> high=<n> med=<n> low=<n> for the reviewer and plan-reviewer)."
+/** Chars of the child's prior delivery quoted in the retry prompt. */
+const TAIL_CHARS = 600
+
+/** Marker the given agent's role owes: GATE for the test-runner,
+ *  VERDICT for the reviewers; unknown agents get both examples. */
+function markerExampleOf(agents: TurnstileConfig["agents"], agent: string): string {
+  if (agent === agents.testRunner) return `\`${CANONICAL_GATE_MARKER}\``
+  if (agent === agents.reviewer || agent === agents.planReviewer)
+    return `\`${CANONICAL_VERDICT_MARKER}\``
+  return `\`${CANONICAL_GATE_MARKER}\` (test-runner) or \`${CANONICAL_VERDICT_MARKER}\` (reviewer)`
+}
+
+/** Bounded tail of the child's prior delivery, quoted in the retry
+ *  prompt so the restatement is mechanical. Empty when the tail trims
+ *  to nothing. */
+function priorOutputTail(priorOutput: string): string {
+  const tail = priorOutput.slice(-TAIL_CHARS).trim()
+  return tail === ""
+    ? ""
+    : ` The end of your previous reply, for reference:\n\`\`\`\n${tail}\n\`\`\``
+}
+
+/** Retry prompt telling the child its output was received and parsed,
+ *  so it restates only the marker plus its existing conclusion. */
+function markerRetryPrompt(
+  agents: TurnstileConfig["agents"],
+  agent: string,
+  priorOutput: string,
+): string {
+  return (
+    "[turnstile] Your output was received and parsed. Your analysis is " +
+    "complete. Do not run any tools and do not repeat the work. Reply " +
+    "with only the required marker as the first line, followed by your " +
+    `existing conclusion. Your marker: ${markerExampleOf(agents, agent)}.` +
+    priorOutputTail(priorOutput)
+  )
+}
 
 /** Shared per-setup context consumed by turnstile's per-surface hook modules. */
 export interface TurnstileContext {
@@ -375,9 +408,11 @@ export interface TurnstileContext {
   admitPrompt(sessionID: string, properties: PromptHookProperties, admissionID: string): void
   /**
    * Attempts one bounded compliance re-prompt for a bare-output child
-   * delivery. Returns true only when the reminder was actually sent.
+   * delivery. The prompt quotes the tail of the child's prior delivery
+   * when one is given. Returns true only when the reminder was actually
+   * sent.
    */
-  retryMarker(child: string, agent: string): Promise<boolean>
+  retryMarker(child: string, agent: string, priorOutput?: string): Promise<boolean>
   // ── methods ───────────────────────────────────────────────────────────────
   /** Binds the host session API for resolveParent. */
   bindHost(session: Host["session"]): void
@@ -673,7 +708,7 @@ interface CoreState {
     outcome: "exhausted" | "skipped-no-api",
   ): false
   /** See {@link retryMarker}. */
-  retryMarker(child: string, agent: string): Promise<boolean>
+  retryMarker(child: string, agent: string, priorOutput?: string): Promise<boolean>
   /** See {@link bumpPromptFires}. */
   bumpPromptFires(): void
   /** See {@link nextTaskDeliverySeq}. */
@@ -1463,7 +1498,12 @@ function noteRetrySkipped(
   return false
 }
 
-async function retryMarker(st: CoreState, child: string, agent: string): Promise<boolean> {
+async function retryMarker(
+  st: CoreState,
+  child: string,
+  agent: string,
+  priorOutput = "",
+): Promise<boolean> {
   if (st.config.agentMarkerRetry === 0) return false
   const used = st.markerRetries.get(child) ?? 0
   if (used >= st.config.agentMarkerRetry)
@@ -1480,7 +1520,10 @@ async function retryMarker(st: CoreState, child: string, agent: string): Promise
   st.markerRetries.set(child, used + 1)
   evictTo(st.markerRetries, MAX_TRACKED_MARKER_RETRIES)
   try {
-    await st.hostSessionRef.current.prompt({ sessionID: child, text: MARKER_RETRY_PROMPT })
+    await st.hostSessionRef.current.prompt({
+      sessionID: child,
+      text: markerRetryPrompt(st.config.agents, agent, priorOutput),
+    })
   } catch (e) {
     st.journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
     return false

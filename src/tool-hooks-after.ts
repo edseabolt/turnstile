@@ -68,6 +68,7 @@ async function awaitEdgeFor(ctx: TurnstileContext, agent: string, child: string)
  * @param agent The dispatch-input agent name.
  * @param child The delivery's child session ID.
  * @param output The classified delivery text ("" when unclassifiable).
+ *   Forwarded to the retry prompt so it can quote the delivery's tail.
  */
 async function handleBareOutput(
   ctx: TurnstileContext,
@@ -81,7 +82,7 @@ async function handleBareOutput(
     !ctx.hasMarker(output) &&
     (agent !== ctx.config.agents.planReviewer || ctx.ledger.childVerdict(child).marker === "")
   if (!bare) return
-  const recovered = await ctx.retryMarker(child, agent)
+  const recovered = await ctx.retryMarker(child, agent, output)
   if (recovered) return
   ctx.journaler.journal({
     type: "violation",
