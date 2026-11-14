@@ -28,7 +28,7 @@
   its key equals the file's spec-region key or its whole-file key; then the
   plan is not pending. The whole-file key is the sha256 of the file's bytes
   at the current plans scan. A cached scan may reflect the bytes at its last
-  refresh rather than the current file: a progress-only edit leaves the
+  refresh rather than the current file. A progress-only edit leaves the
   spec region (and the cached scan signature) unchanged, so a legacy record
   can be honored across such an edit, and the re-key it performs writes the
   current spec key.

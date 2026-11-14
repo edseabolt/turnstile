@@ -2,9 +2,9 @@
 
 Turnstile is a speed bump and an audit trail, not a security boundary.
 
-- Any text matching the gate marker, including a marker an agent
-  hallucinated or copied from documentation, is journaled `verified:false`
-  under the default `gateEvidence:enforce` mode and does not flip
+- Any text matching the gate marker — including a marker an agent
+  hallucinated or copied from documentation — is journaled `verified:false`
+  under the default `gateEvidence:enforce` mode. It does not flip
   `hasGatePass` unless the current task's bash/shell executions contain a
   matching exit-0 test command (plausibility checked against
   `evidencePattern`; the default covers the canonical `npm run ci`
@@ -30,19 +30,20 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
 - `scripts/check-markers.mjs` guards against accidental drift between the
   parser and documented markers; it cannot guard against forgery, because
   the markers are plain prose by design.
-- The `bash`/`shell`/`write`/`edit` denylist is a deterrent, not a sandbox: it
-  matches strings, so `bash -c "$X"`, script files, `eval` indirection, and
-  values sourced from the environment still bypass it. A block names the matched
-  _rule_ (never the raw command, per the redaction contract); a dropped or
-  invalid regex _source_ means the operation it guarded is now **allowed**
-  (documented so a config typo weakens the policy visibly in the journal rather
-  than silently). Both denylists default to empty, so none of this applies
-  unless rules are configured, but gaps remain by design. `git` **aliases** (e.g. `git co main`,
-  `git cm -m x`) are not matched, because a rule names `git` plus a literal
-  subcommand only; and the wider base can _over-match_ (e.g. `git commit -m "…
-merge …"` trips the `merge` rule). git/gh consent rides the host permission
-  `ask` layer by default; a host `allow` never unblocks a configured turnstile
-  deny, because the layers are complementary. `session_move` never blocks.
+- The `bash`/`shell`/`write`/`edit` denylist is a deterrent, not a sandbox:
+  it matches strings, so `bash -c "$X"`, script files, `eval` indirection,
+  and values sourced from the environment still bypass it. A block names the
+  matched _rule_ (never the raw command, per the redaction contract). A
+  dropped or invalid regex _source_ means the operation it guarded is now
+  **allowed** (documented so a config typo weakens the policy visibly in the
+  journal rather than silently). Both denylists default to empty, so none of
+  this applies unless rules are configured, but gaps remain by design.
+  `git` **aliases** (e.g. `git co main`, `git cm -m x`) are not matched,
+  because a rule names `git` plus a literal subcommand only; the wider base
+  can _over-match_ (e.g. `git commit -m "… merge …"` trips the `merge`
+  rule). Git/gh consent rides the host permission `ask` layer by default; a
+  host `allow` never unblocks a configured turnstile deny, because the
+  layers are complementary. `session_move` never blocks.
 - MCP tools and other tool names not named in `execute.before` (`task`,
   `subagent`, `read`, `bash`, `shell`, `write`, `edit`, `session_move`) remain
   unguarded. Governing them is a follow-on, not part of this policy layer.
