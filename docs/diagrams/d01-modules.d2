@@ -111,7 +111,6 @@ core.hookscore -> core.promptadmission
 core.contextsurface -> core.generateinjection
 core.contextsurface -> core.policy
 core.parentresolution -> core.childreg
-core.verdictcapture -> core.gatemarkersparse
 core.verdictcapture -> core.markers
 core.planverdict -> core.plangatestatus
 core.dispatchguard -> core.dispatchbudget
@@ -148,7 +147,7 @@ core.toolpolicyguards -> core.commitargs
 core.bashwrite -> core.shellparse
 core.gatesdispatch -> core.dispatchbudget
 core.gatesdispatch -> core.dispatchreviewgate
-core.gatesdispatch -> core.gatemessages
+core.gatesdispatch -> core.gatemessages: "type-only"
 core.gatesplan -> core.plansscan
 core.gatesplan -> core.plangateenforce
 core.gatesplan -> core.plangatestatus
@@ -169,16 +168,11 @@ core.hookscore -> core.gates
 core.hookscore -> core.gatescommon
 core.hookscore -> core.evidence
 core.hookscore -> core.toolpolicy
-  core.hookscore -> core.bashwrite
-core.hookscore -> core.emptydiff
-core.toolpolicy -> core.emptydiff
   core.toolpolicy -> core.bashwrite
 core.hookscore -> core.state
 core.hookscore -> core.ledger
 core.hookscore -> core.markers
-core.hookscore -> core.childreg
 core.hookstool -> core.childreg
-core.hookscore -> core.fingerprint
 core.hookscore -> core.delivery
 core.hookscore -> core.bounded
 core.hooksevents -> core.summary
@@ -197,10 +191,7 @@ core.hookstool -> core.delivery
 core.hooksevents -> core.hookscore: "type-only"
 core.hooksevents -> core.delivery
 core.hookscore -> core.policy
-core.hookscore -> core.maintenance
-core.hookscore -> core.scratch
 core.hookscore -> core.intent
-core.hookscore -> core.generateinjection
 core.state -> core.taskscope
 core.fingerprint -> core.taskscope
 core.gatesplan -> core.planregion
@@ -219,15 +210,13 @@ core.gates -> core.ledger: "type-only"
 core.gates -> core.journal: "type-only"
 core.gates -> core.types: "type-only"
 core.gates -> core.planscope: "type-only"
-core.gatesdispatch -> core.gatescommon
 core.gatesdispatch -> core.state: "REVIEW_ENSEMBLE_SIZE"
 core.gatesdispatch -> core.ledger: "type-only"
 core.gatesdispatch -> core.journal: "type-only"
 core.gatesdispatch -> core.types: "type-only"
-core.gatesplan -> core.gatescommon
 core.gatesplan -> core.ledger: "type-only"
 core.gatesplan -> core.journal: "type-only"
 core.gatesplan -> core.types: "type-only"
 core.gatescommon -> core.types: "type-only"
-core.toolpolicy -> core.types
+core.toolpolicy -> core.types: "type-only"
 core.config -> core.types

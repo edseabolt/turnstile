@@ -24,10 +24,10 @@
  * so a target typed with non-on-disk casing on a case-insensitive platform
  * (e.g. macOS) also fails toward gating.
  *
- * This boundary owns only the temp-dir question. The write/edit arm consumes
- * it in the hook layer; the bash write classifier is its second consumer
- * (owned by the bash-hands-on-gate plan) — one predicate, two consumers, no
- * second implementation.
+ * This boundary owns only the temp-dir question. The write/edit exemption
+ * and the planner write-target guard consume it (both in
+ * bash-write-guard.ts) — one predicate, two consumers, no second
+ * implementation.
  */
 
 import { existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs"

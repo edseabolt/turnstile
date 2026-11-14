@@ -30,7 +30,7 @@ sinks: "anchor sinks\nsession-state (host)\ngit-note / commit-trailer (repo)\n{p
 verify: "verifyJournalChain\nsession-end (verifyOnSessionEnd)\n+ prov --verify (offline)\n+ prov --verify --session <id>\n  (scoped, per-row Merkle\n  inclusion proofs)"
 
 writers.hooks -> jsonl: "every decision,\n43 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry /\nchain-epoch / chain-verify)\nno/unknown sessionID → shared"
-writers.hooks -> sessions: "entry with a resolvable\nparent sessionID\n(parentOf → own file)"
+writers.hooks -> sessions: "entry with a resolvable\nparent sessionID\n(sinkFor → parent's file)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"
 approval -> ledger: "at ledger creation:\nload, last-wins per (project, plan),\nevict to cap"

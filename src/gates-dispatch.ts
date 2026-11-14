@@ -23,7 +23,7 @@ export type { EvidenceSearch } from "./gate-messages.ts"
 /**
  * Dispatch-domain enforcement functions bound to one resolved config +
  * journaler. The method contracts are documented on the public `Gates`
- * interface in `gates.ts`, which re-exposes these four unchanged.
+ * interface in `gates.ts`, which re-exposes these six unchanged.
  */
 interface DispatchGates {
   guardReviewerDispatch(sessionID: string, ledger: GateLedger, search?: EvidenceSearch): void
@@ -39,7 +39,7 @@ interface DispatchGates {
  * journaler, composing the review gate and the dispatch budget modules.
  * @param config The resolved plugin configuration.
  * @param journaler The telemetry writer for gate and blocked entries.
- * @returns The four dispatch-domain enforcement functions.
+ * @returns The six dispatch-domain enforcement functions.
  */
 export function createDispatchGates(config: TurnstileConfig, journaler: Journaler): DispatchGates {
   return {

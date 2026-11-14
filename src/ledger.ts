@@ -408,7 +408,8 @@ interface ReplayDrop {
   sessionID?: string
 }
 
-/** The six last-wins replay maps, one store per replayed entry kind.
+/** Eleven replay maps: nine last-wins stores, one per replayed entry kind,
+ *  plus childEdges and scopeFolds.
  *  Observe-mode entries (`observe`/`would-block`) fold directly into the
  *  passed-in period state instead of a map here. The task-scope fold
  *  (`scopeFolds`) is NOT last-wins: it is the ordered per-session scope
