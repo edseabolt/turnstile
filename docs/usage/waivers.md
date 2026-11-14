@@ -30,9 +30,9 @@ per load, accepted behavior.
 
 Put the literal marker `USER WAIVER:` in the text of your prompt to waive a
 gate. Your words may name configured agent stages to scope the waiver: the
-grammar is literal configured stage names (the `config.agents` values —
-`planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`), matched
-case-insensitively. The plan gate is covered by either its plan-reviewer or
+grammar is literal configured stage names (any of the `config.agents` values
+— `planner`, `plan-reviewer`, `executor`, `test-runner`, `reviewer`,
+`debugger`, `requirements`), matched case-insensitively. The plan gate is covered by either its plan-reviewer or
 executor stage name; a name with no guarded gate (e.g. `debugger`) names
 nothing the waiver covers — the block message self-explains at runtime.
 

@@ -15,7 +15,8 @@ import { GATE_RE, VERDICT_RE, gateResultOf } from "./markers.ts"
  * marker is a dedup hit), true on first sight. On a dedup hit whose raw
  * session differs from the stored provenance, the pending cross-child
  * suppression counter is incremented — but only for gate-kind keys (see the
- * MED note below); re-delivery by the same raw session stays silent.
+ * provenance note on parseGateMarkers); re-delivery by the same raw session
+ * stays silent.
  * @param state Mutable gate state for the parent session.
  * @param key The dedup key (scope + marker identity).
  * @param raw Raw session ID that produced the marker.

@@ -147,10 +147,12 @@ installer will refuse to touch.
 
 ### Set the agents' models
 
-The six agent definitions in `agents/` ship **without** a `model:`
+The seven agent definitions in `agents/` ship **without** a `model:`
 frontmatter key. Each subagent therefore runs on the model of the session
 that dispatched it — OpenCode v2's documented inheritance rule — so there is
-nothing to configure for the common case.
+nothing to configure for the common case. The `--print-model-config`
+printer covers the six pipeline-stage names; the requirements agent
+inherits the dispatching session's model and needs no pin.
 
 To pin a specific model per agent, paste a block into
 `~/.config/opencode/opencode.json` (**plural** `agents` is the v2 key; v1
@@ -352,6 +354,6 @@ copy-ready prompt — "Send this yourself (do not let the agent send it):
 (the kill switch), the skill says so and stops — it does not compose a
 prompt that would be refused. A renamed marker (`suspendMarker` in the [configuration](configuration.md)
 table) is picked up automatically because the value always comes from the
-CLI, never from the skill text. All eight skills and both commands forward
+CLI, never from the skill text. All nine skills forward
 any options you name to the CLI verbatim and surface usage errors instead
 of retrying.

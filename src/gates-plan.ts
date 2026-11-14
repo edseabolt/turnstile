@@ -24,7 +24,7 @@ export type { PlanGateRed }
 /**
  * Plan-domain enforcement functions bound to one resolved config +
  * journaler. The method contracts are documented on the public `Gates`
- * interface in `gates.ts`, which re-exposes these seven unchanged.
+ * interface in `gates.ts`, which re-exposes these eight unchanged.
  */
 interface PlanGates {
   enforceDecomposition(
@@ -67,7 +67,7 @@ interface PlanGates {
  * fail-open journaling.
  * @param config The resolved plugin configuration.
  * @param journaler The telemetry writer for gate and blocked entries.
- * @returns The seven plan-domain enforcement functions.
+ * @returns The eight plan-domain enforcement functions.
  */
 export function createPlanGates(config: TurnstileConfig, journaler: Journaler): PlanGates {
   const cache = createPlansScanCache(config)
