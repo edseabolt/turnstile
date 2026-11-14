@@ -31,10 +31,10 @@ type DispatchLeg = NonNullable<ReturnType<typeof resolveDispatchLeg>>
 
 /**
  * Resolves the dispatched agent's capped budget leg, if any: the leg of the
- * three capped legs (planner, plan-reviewer, test-runner) — executor,
- * debugger, reviewer, and unknown names all resolve to null and only draw
- * down the total budget. First match wins on agent-name collisions (a
- * pathological config; documented, not defended).
+ * four capped legs (planner, plan-reviewer, test-runner, requirements) —
+ * executor, debugger, reviewer, and unknown names all resolve to null and
+ * only draw down the total budget. First match wins on agent-name collisions
+ * (a pathological config; documented, not defended).
  * @param config The resolved plugin configuration (agent names + caps).
  * @param agent The dispatched agent name.
  * @returns The matching leg, or null.

@@ -408,7 +408,8 @@ interface ReplayDrop {
   sessionID?: string
 }
 
-/** The six last-wins replay maps, one store per replayed entry kind.
+/** Eleven replay maps: nine last-wins stores, one per replayed entry kind,
+ *  plus childEdges and scopeFolds.
  *  Observe-mode entries (`observe`/`would-block`) fold directly into the
  *  passed-in period state instead of a map here. The task-scope fold
  *  (`scopeFolds`) is NOT last-wins: it is the ordered per-session scope
@@ -816,10 +817,12 @@ function sanitizeReplayAgent(agent: unknown): string {
 
 /**
  * Folds a `verdict` entry into the last-wins verdict and agent maps. Only
- * `task-result` sources are credited — the landing gate releases only on a
- * delivery-attributed reviewer verdict, so a verdict streamed in child text
- * never restores the flag (this is how the invariant holds across a restart
- * too) — and a trailing `VERDICT: BLOCK` leaves the flag off (the recency
+ * delivery-attributed sources are credited — `task-result` (the foreground
+ * execute.after delivery) and `subagent-synthetic` (the background
+ * `session.inbox.enqueued` subagent completion, which credits the same way
+ * at runtime) — so a verdict streamed in child text never restores the flag
+ * (this is how the invariant holds across a restart too) — and a trailing
+ * `VERDICT: BLOCK` leaves the flag off (the recency
  * boundary is the last verdict, not task reset). The marker must be a string
  * within the marker bound; a shape violation is a drop, never a silent skip
  * (a hostile marker never folded at runtime either). The emitting agent is
@@ -838,7 +841,7 @@ function foldVerdict(
   lastVerdictAgent: Map<string, string>,
   sessionID: string,
 ): ReplayDrop | null {
-  if (entry.source !== "task-result") return null
+  if (entry.source !== "task-result" && entry.source !== "subagent-synthetic") return null
   const marker = entry.marker
   if (typeof marker !== "string" || marker.length > MAX_REPLAY_MARKER_LEN) {
     return { reason: "entry-shape", sessionID }

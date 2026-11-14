@@ -234,6 +234,39 @@ export function promptTextOf(properties: PromptHookProperties | undefined): stri
 }
 
 /**
+ * The child, agent, and text of a synthetic subagent-completion inbox item:
+ * the background delivery arm of `session.inbox.enqueued` (opencode ≥ 2.0.29).
+ * A synthetic item qualifies when its metadata names the subagent source and
+ * a child session ID, and its payload text is a string; anything else — a
+ * user/compaction/move item, a non-subagent synthetic, a missing child ID, or
+ * a non-string text — is not a subagent completion and returns undefined.
+ * @param item The raw inbox item from the event properties.
+ * @returns The child ID, the metadata agent ("" when absent), and the
+ *     completion text, or undefined when the item is not a subagent
+ *     completion.
+ */
+export function syntheticCompletionOf(
+  item: unknown,
+): { childID: string; agent: string; text: string } | undefined {
+  const it = item as
+    | {
+        type?: unknown
+        payload?: {
+          text?: unknown
+          metadata?: { source?: unknown; childID?: unknown; agent?: unknown }
+        }
+      }
+    | undefined
+  if (it?.type !== "synthetic") return undefined
+  if (it.payload?.metadata?.source !== "subagent") return undefined
+  const childID = it.payload.metadata.childID
+  const agent = it.payload.metadata.agent
+  if (typeof childID !== "string" || childID === "") return undefined
+  if (typeof it.payload.text !== "string") return undefined
+  return { childID, agent: typeof agent === "string" ? agent : "", text: it.payload.text }
+}
+
+/**
  * Message prefix the evaluate handler stamps on every plan-gate ask, so the
  * stream consumer can recognize a plan ask even when the host omits the
  * session id on the `permission.asked` event.

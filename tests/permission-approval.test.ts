@@ -315,6 +315,43 @@ test("evaluate: block mode keeps the red plan-gate task arm inert", async () => 
   }
 })
 
+/** The plan-gate ask arm also fires when the host spells the dispatch
+ *  action `subagent` (current hosts) instead of `task` (older hosts):
+ *  same forced ask naming the plan file, and still inert under the
+ *  default `escalation: "block"`. */
+test("evaluate: the plan-gate ask arm also fires on the 'subagent' action spelling", async () => {
+  const { h, restore, metricsDir } = await bootWithPlan({}, "# Plan\n\nSensitive body line.\n")
+  try {
+    const event: Record<string, any> = { sessionID: "p1", action: "subagent" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, "ask")
+    assert.equal(event.message, "turnstile: plan approval required — plan.md: Sensitive body line.")
+    const ask = journalEntries(metricsDir).find(
+      (l) => l.type === "permission" && l.action === "ask",
+    )
+    assert.ok(ask)
+    assert.equal(ask?.sessionID, "p1")
+    assert.equal(ask?.reason, "plan-gate")
+    assert.equal(ask?.plan, "plan.md")
+  } finally {
+    restore()
+  }
+})
+
+/** Under the default `escalation: "block"` the task arm stays inert on a
+ *  red plan gate even when the action is spelled `subagent`. */
+test("evaluate: block mode keeps the red plan-gate task arm inert on the 'subagent' spelling", async () => {
+  const { h, restore } = await bootWithPlan({ escalation: "block" }, "# Plan\n\nBody line.\n")
+  try {
+    const event: Record<string, any> = { sessionID: "p1", action: "subagent" }
+    await callPermission(h, "evaluate", event)
+    assert.equal(event.effect, undefined, "block mode never forces the ask")
+    assert.equal(event.message, undefined)
+  } finally {
+    restore()
+  }
+})
+
 /** Under trace:false the ask still names the plan file but redacts the body. */
 test("evaluate: trace:false redacts the plan body out of the ask message", async () => {
   const { h, restore } = await bootWithPlan({ trace: false }, "# Plan\n\nSensitive body line.\n")

@@ -189,7 +189,7 @@ function cachedScan(cell: PlansCacheCell, dir: string): PlansScan {
  * @param projectDir The current project directory.
  * @returns The absolute plans directory path.
  */
-function resolvePlansDirIn(config: TurnstileConfig, projectDir: string): string {
+export function resolvePlansDir(config: TurnstileConfig, projectDir: string): string {
   return path.isAbsolute(config.plansDir) ? config.plansDir : path.join(projectDir, config.plansDir)
 }
 
@@ -209,7 +209,7 @@ export function createPlansScanCache(config: TurnstileConfig): {
   const cell: PlansCacheCell = { entry: null }
   return {
     get: (dir) => cachedScan(cell, dir),
-    resolvePlansDir: (projectDir) => resolvePlansDirIn(config, projectDir),
+    resolvePlansDir: (projectDir) => resolvePlansDir(config, projectDir),
   }
 }
 

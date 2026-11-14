@@ -34,7 +34,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const DRIVERS_DIR = path.join(REPO_ROOT, "scripts", "differential")
-const DEFAULT_REF = "138c809^"
+const DEFAULT_REF = "d35b077"
 const SCENARIO_NAMES = ["config", "markers", "replay", "dispatch", "journal", "prov"]
 /** Scenarios driven in-process (pure functions only); the rest subprocess. */
 const INPROCESS_SCENARIOS = new Set(["config", "markers"])

@@ -76,17 +76,18 @@ const JOURNALER_OPTIONS = Object.freeze({
 })
 
 /**
- * Runs `prov --verify` against a temp metrics dir. The spawned CLI reads an
- * empty-JSON temp config instead of the developer's real
- * `~/.config/opencode/turnstile.json` (the `isolatedEnv()` pattern in
+ * Runs `prov --verify` against a temp metrics dir. The spawned CLI reads a
+ * temp config (an empty JSON object by default) instead of the developer's
+ * real `~/.config/opencode/turnstile.json` (the `isolatedEnv()` pattern in
  * tests/helpers.ts), so config resolution stays hermetic.
  * @param dir The metrics directory to verify.
+ * @param config The config object written to the hermetic temp config file.
  * @returns The spawn result with stdout coerced to string.
  */
-function runProvVerify(dir: string) {
+function runProvVerify(dir: string, config: Record<string, unknown> = {}) {
   const cfgDir = mkdtempSync(join(tmpdir(), "turnstile-tamper-cfg-"))
   const configPath = join(cfgDir, "empty-config.json")
-  writeFileSync(configPath, "{}")
+  writeFileSync(configPath, JSON.stringify(config))
   try {
     return spawnSync(process.execPath, [provScript, "--verify"], {
       env: { ...process.env, TURNSTILE_CONFIG: configPath, TURNSTILE_METRICS_DIR: dir },
@@ -374,6 +375,31 @@ async function truncateAndContinue(dir: string): Promise<void> {
   await journaler.anchorAsync("task-complete")
 }
 
+/**
+ * Rewrites one committed `chain-epoch` row's declared root to a foreign
+ * value and re-hashes that row — and every row after it — honestly, so the
+ * per-record fold stays clean: seq/prevHash continuity holds and every row's
+ * hash matches its payload. Only the epoch-root check can see the forgery.
+ * @param dir The metrics directory.
+ */
+function forgeEpochRoot(dir: string): void {
+  mutateFamily(dir, (rows) => {
+    // The builder rotates every append with maxGenerations: 5, so the
+    // earliest epoch rows are evicted; the first surviving committed
+    // chain-epoch row (a complete window) is the tamper target.
+    const idx = rows.findIndex((r) => r.type === "chain-epoch")
+    rows[idx]!.root = "f".repeat(64)
+    let prevHash = rows[idx]!.prevHash as string
+    for (let k = idx; k < rows.length; k++) {
+      const { seq: _s, prevHash: _p, hash: _h, ...payload } = rows[k]!
+      const hash = recordHash(prevHash, rows[k]!.ts, payload)
+      rows[k]!.prevHash = prevHash
+      rows[k]!.hash = hash
+      prevHash = hash
+    }
+  })
+}
+
 /** The characterization table: every mutation of a captured honest journal
  *  and the `prov --verify` verdict it must produce. */
 const ROWS: Row[] = [
@@ -438,6 +464,15 @@ const ROWS: Row[] = [
     name: "truncate-and-continue (recurring-cleaner)",
     mutate: truncateAndContinue,
     expect: { exit: 1, match: /unanchored: shared#0: .*root\/head differ/ },
+  },
+  {
+    id: 9,
+    name: "commit a wrong epoch root (row re-hashed honestly)",
+    mutate: forgeEpochRoot,
+    // Pinned to the observed first-broken-link reason: the per-record fold
+    // is clean, so only the epoch-root check can catch the forged root.
+    // The CLI prints the source without an epoch index here.
+    expect: { exit: 1, match: /chain broken at shared: epoch root\/head mismatch/ },
   },
 ]
 
@@ -536,11 +571,49 @@ test("tamper matrix row 8: the fresh chain folds clean and re-anchors without ma
   }
 })
 
+test("tamper matrix row 9: the forged-epoch chain folds broken at the epoch root check", async () => {
+  const dir = await buildHonestJournal()
+  try {
+    forgeEpochRoot(dir)
+    const report = await verifyJournalChain({
+      metricsDir: dir,
+      sinks: [sessionStateSink({ metricsDir: dir, projectDir: dir })],
+    })
+    assert.equal(report.ok, false)
+    const shared = report.families.find((f) => f.source === "shared")
+    const verdict = shared!.verdict as { status: string; detail?: string }
+    assert.equal(verdict.status, "broken")
+    assert.match(verdict.detail!, /epoch root\/head mismatch/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** The empty git config file backing the hermetic git env — created lazily
+ *  so it exists on every platform git runs on (unlike a device path). */
+let emptyGitConfigFile: string | undefined
+
+/**
+ * Lazily creates (once) an empty temp file for git's global/system config
+ * and registers its cleanup with the test run.
+ * @returns The path of the empty config file.
+ */
+function emptyGitConfig(): string {
+  if (emptyGitConfigFile === undefined) {
+    const dir = mkdtempSync(join(tmpdir(), "turnstile-tamper-gitcfg-"))
+    emptyGitConfigFile = join(dir, "empty-config")
+    writeFileSync(emptyGitConfigFile, "")
+    test.after(() => rmSync(dir, { recursive: true, force: true }))
+  }
+  return emptyGitConfigFile
+}
+
 /** The git env that isolates the sink tests from the developer's global and
  *  system git config.
  *  @returns The hermetic env map. */
 function hermeticGitEnv(): Record<string, string> {
-  return { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" }
+  const empty = emptyGitConfig()
+  return { ...process.env, GIT_CONFIG_GLOBAL: empty, GIT_CONFIG_SYSTEM: empty }
 }
 
 /**
@@ -561,7 +634,7 @@ function hermeticExec(
 
 /**
  * Creates a throwaway git repo with one commit, configured hermetically
- * (repo-local identity, global/system config pointed at /dev/null).
+ * (repo-local identity, global/system config pointed at an empty temp file).
  * @returns The repo directory (caller removes it).
  */
 function initHermeticRepo(): string {
@@ -640,15 +713,12 @@ test("commit-trailer sink: missing before the trailer, ok after, mismatch on a f
   }
 })
 
-test("a plugin anchor sink participates in verification and can fail it", async () => {
-  const dir = await buildHonestJournal()
-  try {
-    // The negative control: a registered external sink whose verify rejects
-    // any head it did not publish itself.
-    const mod = join(dir, "negative-control-sink.mjs")
-    writeFileSync(
-      mod,
-      `export default () => {
+/**
+ * The negative-control plugin source: a registered external sink whose verify
+ * rejects any head it did not publish itself. Shared by the in-process test
+ * and the CLI-level test so both exercise the same module bytes.
+ */
+const NEGATIVE_CONTROL_SINK_MJS = `export default () => {
   const published = new Map()
   return {
     id: "negative-control",
@@ -662,8 +732,14 @@ test("a plugin anchor sink participates in verification and can fail it", async 
       return { status: "ok", anchoredAt: ref.ts }
     },
   }
-}\n`,
-    )
+}
+`
+
+test("a plugin anchor sink participates in verification and can fail it", async () => {
+  const dir = await buildHonestJournal()
+  try {
+    const mod = join(dir, "negative-control-sink.mjs")
+    writeFileSync(mod, NEGATIVE_CONTROL_SINK_MJS)
     const { sinks, warnings } = await resolveAnchorSinks(
       [{ plugin: pathToFileURL(mod).href, options: {} }],
       { metricsDir: dir, projectDir: dir },
@@ -681,6 +757,30 @@ test("a plugin anchor sink participates in verification and can fail it", async 
     assert.equal(after.ok, true, "the plugin vouches for the refs it published")
     const { weakest } = await verifyAnchors([sink], [{ ...before.refs[0]!, head: "f".repeat(64) }])
     assert.equal(weakest[0]!.domain, null, "a mismatched head is unanchored")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a mismatched plugin sink fails the real prov --verify CLI", async () => {
+  const dir = await buildHonestJournal()
+  try {
+    const mod = join(dir, "negative-control-sink.mjs")
+    writeFileSync(mod, NEGATIVE_CONTROL_SINK_MJS)
+    // Pins the CLI's standalone anchor-sink mirror (scripts/chain-read.mjs):
+    // it resolves a {plugin} selection from the config file, loads the module,
+    // and folds its mismatch verdict into the exit-1 report — the CLI-side
+    // counterpart of the in-process negative control above. The positive
+    // ("ok") direction cannot cross the process boundary here: the plugin's
+    // published refs live in an in-process Map, so a spawned CLI always sees
+    // an unpublished head. The ok-direction equivalence is pinned in-process
+    // by the test above, and the builtin sinks' CLI coverage lives in the
+    // matrix rows 0-9.
+    const r = runProvVerify(dir, {
+      tamperEvidence: { anchor: [{ plugin: pathToFileURL(mod).href, options: {} }] },
+    })
+    assert.equal(code(r), 1, r.stdout)
+    assert.match(r.stdout, /unanchored: shared#\d+: head not published by this sink/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

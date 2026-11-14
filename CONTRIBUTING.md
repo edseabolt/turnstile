@@ -35,7 +35,8 @@ to re-point `--ref` after a deliberate behavior change.
 ## Repo rules
 
 1. **Marker drift:** the regex literals in `src/markers.ts` and the marker
-   examples in `README.md`, `docs/usage.md`, `agents/*.md`, and the policy
+   examples in `README.md`, `docs/usage.md` (the usage index), `agents/*.md`,
+   and the policy
    templates in `src/policy.ts` are synced by `scripts/check-markers.mjs`,
    which extracts the literals by name and asserts every example parses.
    Edit all sides together; `prettier-ignore` comments on the literals
@@ -69,7 +70,8 @@ event.subscribe }` — permission registered when the host exposes it),
    in the dispatch prompt and names the key. See the "Enforcement behavior"
    section of AGENTS.md; when a config default changes, check
    `agents/*.md` in the same change set.
-9. **Architecture docs stay in sync:** `docs/architecture.md` (with
+9. **Architecture docs stay in sync:** `docs/architecture.md` (the entry
+   point, with section files under `docs/architecture/` and
    `docs/images/*.svg` rendered from `docs/diagrams/*.d2`) is the living
    architecture reference. When a change alters what it describes — module
    map, hook surface, gates/`GateState`, journal/replay, config surface —
@@ -105,8 +107,8 @@ to run through the plugin's own pipeline (planner → plan-reviewer → executor
 → test-runner → reviewer) with the gates and journal on, and to land via the
 same evidence rules it enforces on users. Hand-edits are fine for docs,
 formatting, and trivial fixes; if a change skips the pipeline, say so in the
-commit body. The §7 statistics in `docs/usage.md` ("Field-tested on
-itself") show what the journal records about this in practice.
+commit body. The statistics in `docs/usage/field-tested.md` ("Field-tested
+on itself") show what the journal records about this in practice.
 
 That includes published evidence: `.github/workflows/turnstile-evidence.yml`
 is a copy of `examples/turnstile-evidence.yml` with two deltas — the

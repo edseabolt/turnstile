@@ -3,7 +3,8 @@
  * by `startEventStream` (`src/hooks-events.ts`) — child→parent resolution and
  * marker parsing from child sessions (created/text/ended/delta), permission
  * ask/reply bookkeeping (plan-gate, landing-gate, and hands-on-gate latches),
- * inbox prompt admission, and the session-idle summary. Extracted from
+ * inbox prompt admission plus synthetic subagent-completion marker parsing
+ * (opencode ≥ 2.0.29), and the session-idle summary. Extracted from
  * `src/hooks-events.ts`; every handler reads only the shared context, and the
  * supervision loop (restart budget, clean-end note) stays in the factory.
  * Per-event failures are journaled by the outer loop, never fatal to the
@@ -13,6 +14,7 @@
 import {
   asSessionID,
   readRecordString,
+  syntheticCompletionOf,
   DIRECTORY_KEYS,
   HANDSON_ASK_MESSAGE_PREFIX,
   LANDING_ASK_MESSAGE_PREFIX,
@@ -555,22 +557,95 @@ function handlePermissionReplied(ctx: TurnstileContext, properties: EventPropert
 }
 
 /**
+ * Credits a parsed synthetic completion through the gate-moving paths, gated
+ * on the seeded effective agent exactly as the foreground task-result
+ * delivery does: only a plan-reviewer child moves the plan gate (via
+ * `attributePlanVerdict`, whose journaled `plan` entry carries the
+ * replay-creditable source), and only a reviewer child credits the
+ * reviewer-approval (landing-gate) signal from the first-sight marker
+ * events. Parsing itself never credits — crediting is the caller's job.
+ * @param ctx The shared per-setup context.
+ * @param c The parsed synthetic completion (child ID, agent, text).
+ * @param markerEvents The first-sight marker events the parse journaled
+ *     (empty on a dedup hit — a replayed durable event — so the credits
+ *     are skipped and the approval stays single).
+ */
+async function creditSyntheticCompletion(
+  ctx: TurnstileContext,
+  c: { childID: string; agent: string; text: string },
+  markerEvents: ReturnType<TurnstileContext["parseMarkers"]>,
+): Promise<void> {
+  // Dedup gate: a replayed durable event re-parses to zero first-sight
+  // events, so its credits are skipped and the approval stays single.
+  if (markerEvents.length === 0) return
+  const effectiveAgent = c.agent || ctx.emitterAgent(c.childID)
+  if (effectiveAgent === ctx.config.agents.planReviewer) {
+    await ctx.attributePlanVerdict(c.childID, c.text)
+  }
+  if (effectiveAgent === ctx.config.agents.reviewer) {
+    ctx.creditReviewApproval(c.childID, markerEvents)
+  }
+}
+
+/**
+ * Handles a synthetic subagent completion on the inbox stream (opencode
+ * ≥ 2.0.29): a background child's final text arrives as a
+ * `session.inbox.enqueued` item with `metadata.source === "subagent"` and
+ * never passes through the foreground task-result hook, so its
+ * `VERDICT:`/`GATE:` markers must be parsed here. The child's emitter is
+ * seeded from the item metadata (the always-firing authority source), the
+ * child→parent edge is resolved, the text is parsed child-keyed under the
+ * `subagent-synthetic` source with a per-child dedup scope (first-sight
+ * journaling + streamed-verdict records only), and the gate-moving credits
+ * then run gated on the seeded effective agent (see
+ * {@link creditSyntheticCompletion}). The per-child scope keeps the
+ * `(scope, marker)` dedup from colliding across children or with the
+ * streaming sources (whose verdict markers are near-identical boilerplate)
+ * while still making a durable-event replay — the same scope and marker —
+ * a no-op. Non-subagent or malformed items return
+ * silently; a throw propagates to the outer loop's fail-open journaling.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleSyntheticCompletion(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const c = syntheticCompletionOf(properties.item)
+  if (!c) return
+  ctx.seedEmitter(c.childID, c.agent)
+  await ctx.resolveParent(c.childID)
+  const markerEvents = ctx.parseMarkers(
+    c.text,
+    c.childID,
+    "subagent-synthetic",
+    `subagent-synthetic\u0000${c.childID}\u0000`,
+  )
+  await creditSyntheticCompletion(ctx, c, markerEvents)
+}
+
+/**
  * Handles a session.inbox.enqueued event: prompt admission via the
  * inbox stream — the transport adopted because its publication is exact
  * host-admission parity: the host publishes it inside its own admit
  * region, immediately after the prompt hook fires. A user-authored
- * prompt (type "user") carrying non-empty text is admitted;
- * agent/composition arrivals (synthetic / compaction / move) never
- * carry a user prompt, so they stay inert (provenance invariant). The
- * inbox id dedupes against the hook path on the shared host message id.
- * `delivered`/`cancelled` are intentionally unhandled — the captured
- * admission point is the host's own publish, and a later drain or cancel
- * cannot retroactively un-admit it. Fail-open — the outer loop journals
- * any throw.
+ * prompt (type "user") carrying non-empty text is admitted; a synthetic
+ * subagent completion (opencode ≥ 2.0.29, `metadata.source === "subagent"`)
+ * is parsed for markers and credited through the child→parent edge (see
+ * {@link handleSyntheticCompletion}); other agent/composition arrivals
+ * (compaction / move, or a synthetic without subagent metadata) stay
+ * inert (provenance invariant). The inbox id dedupes against the hook
+ * path on the shared host message id. `delivered`/`cancelled` are
+ * intentionally unhandled — the captured admission point is the host's
+ * own publish, and a later drain or cancel cannot retroactively un-admit
+ * it. Fail-open — the outer loop journals any throw.
  * @param ctx The shared per-setup context.
  * @param properties The resolved event properties.
  */
-function handleInboxEnqueued(ctx: TurnstileContext, properties: EventProperties): void {
+async function handleInboxEnqueued(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
   const sid = properties.sessionID
   const inboxID = properties.inboxID
   const item = properties.item
@@ -583,6 +658,13 @@ function handleInboxEnqueued(ctx: TurnstileContext, properties: EventProperties)
     text !== ""
   ) {
     ctx.admitPrompt(sid, { sessionID: sid, text }, inboxID)
+    return
+  }
+  // The synthetic arm shares the user arm's session/inbox id guard: an
+  // event without both ids is not a deliverable inbox item and stays
+  // inert (fail-open) before any parse.
+  if (typeof sid === "string" && typeof inboxID === "string") {
+    await handleSyntheticCompletion(ctx, properties)
   }
 }
 

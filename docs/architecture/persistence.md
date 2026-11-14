@@ -1,0 +1,21 @@
+# Persistence: journal and restart
+
+![Journal and replay](../images/d05-persistence.svg)
+
+The journal is the plugin's only persistence edge. It lives outside the
+repo at `~/.local/share/opencode/metrics/`. The store is a shared
+`turnstile.jsonl` plus a per-session `sessions/<parentID>.jsonl` sink
+(`journalPerSession`, default on). `gate-events.log` (trace only),
+`anchors.jsonl`, and `approved-plans.jsonl` sit beside them. Retention is
+bounded: 5 MB per file, 5 generations per file. `replayTailLines` (default 2000) bounds the boot window.
+
+On restart, `replayGatePasses` (`src/ledger.ts`) walks the generations
+newest-first. It merges by `ts` and folds last-wins per session. It
+restores gate flags, verdicts, ensemble counts, the observe period, and
+the suspension map. The `prov:stated` / `prov:denied` / `prov:waiver` /
+`prov:override` decision-ledger rows ride the same journal. Every read
+error is fail-open: the journaler records it and never throws.
+
+The full catalog lives in [journal/entry-types.md](../journal/entry-types.md). It lists every entry
+type with its replay fold, the file layout, rotation
+mechanics, and the tamper-evidence hash chain.

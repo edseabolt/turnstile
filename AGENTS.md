@@ -1,14 +1,14 @@
 # AGENTS.md — turnstile
 
-## Branching & releases (standing instruction — Ed, Oct 2026)
+## Branching & releases (standing instruction, Oct 2026)
 
 - `dev` is the default and the only primary development branch; it is
   GitHub-protected (required `ci` status check, no direct pushes). All work
   lands in `dev` via PR — never push directly, never commit to `main`.
 - `main` is release-only. It is promoted exclusively by a `dev` → `main`
-  PR that **Ed merges himself**. Do not merge anything into `main`, and do
-  not click through a dev→main PR merge, unless Ed asks explicitly in the
-  session.
+  PR that a human merges deliberately. Do not merge anything into `main`,
+  and do not click through a dev→main PR merge, unless the user asks
+  explicitly in the session.
 - Keep local `main` as a read-only mirror of `origin/main`; branch feature
   work from `dev`.
 
@@ -17,7 +17,7 @@
 OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
 file — the authoritative module map (every file + responsibility) is
-`docs/architecture.md` §2; do not hand-copy it here.
+`docs/modules.md`; do not hand-copy it here.
 It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
@@ -68,6 +68,15 @@ npm run ci:installed # install:check — install-drift, run after npm run init
 These rules are enforced on every change, not aspirational. A review that
 spots a violation rejects the change or refactors it in the same change set —
 "cleanup later" is not an option.
+
+### Writing style — ISO 24495-1 (standing instruction, Nov 2026)
+
+All prose written in this repo must follow ISO 24495-1 (Plain language —
+Part 1: Governing principles and guidelines). This applies everywhere prose
+is written: documentation (README, `docs/`), docstrings/JSDoc, code comments,
+commit messages, and agent/skill definition text. Prioritize the standard's
+core principles: write for your readers, keep it findable and usable, and
+say only what's needed — nothing more.
 
 ### Functional design (function size cap)
 
@@ -148,7 +157,9 @@ Write comments only when necessary. Code should be self-explanatory through
 clear naming and structure. Comments should explain "why" not "what".
 (All functions carry Google-standard JSDoc with fully typed parameters and
 returns; the doc comment atop `turnstile.ts` is a contract-level summary
-pointing at `docs/architecture.md`, the authoritative detailed reference.)
+pointing at `docs/architecture.md` (the entry-point index into the
+section files under `docs/architecture/`), the authoritative detailed
+reference.)
 
 Comments and docstrings must be self-contained: a reader without the plan,
 the issue, or this session's context must still understand them. Never
@@ -186,9 +197,10 @@ stated feature; devDependencies are tooling only.)
   `{ tool.hook, session.hook, permission.hook, event.subscribe }`, verified
   against opencode v2.0.22. If hooks don't fire, check the host version before
   assuming a logic bug.
-- `docs/architecture.md` is the authoritative reference for enforced
-  contracts; the doc comment atop `turnstile.ts` is a contract-level
-  summary that points at it, and its module list must track `src/`.
+- `docs/architecture.md` is the entry point to the authoritative reference
+  for enforced contracts (the section files live under `docs/architecture/`);
+  the doc comment atop `turnstile.ts` is a contract-level summary that points
+  at it, and its module list must track `src/`.
 
 ## Enforcement behavior (easy to regress)
 
@@ -213,7 +225,8 @@ stated feature; devDependencies are tooling only.)
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
   requires updating both the regexes here and the marker examples in the
-  validated sources — README.md, `docs/usage.md`, `agents/*.md`, and
+  validated sources — README.md, `docs/usage.md` (the usage index, which
+  carries the canonical marker-example block), `agents/*.md`, and
   `src/policy.ts` — checked together by `scripts/check-markers.mjs`.
 - The read-counter keys off the parent session (`childToParent` map); state
   is per parent, not per child subagent session.
@@ -256,26 +269,28 @@ stated feature; devDependencies are tooling only.)
 
 ## Architecture docs (keep in sync when code changes)
 
-`docs/architecture.md` (with `docs/images/*.svg` rendered from
+`docs/architecture.md` (the entry-point index, with the section files under
+`docs/architecture/` and `docs/images/*.svg` rendered from
 `docs/diagrams/*.d2`) is the living architecture reference for new users and
 devs. It is not a snapshot: when a change alters what the diagrams or
 document describe, update them in the same change set — not as a follow-up.
 
 - **Trigger for updates** — touch the docs when a change affects any of:
-  - the module map: new/renamed/removed files under `src/`, or changed
-    dependency direction between boundaries;
+  - the module map (`docs/modules.md`): new/renamed/removed files under
+    `src/`, or changed dependency direction between boundaries;
   - the hook surface: hooks registered in `src/setup.ts` (session, tool,
     permission, event types handled), or what fires on each hook;
   - enforcement: gates added/removed/renamed, `GateState` fields, block
     reasons, caps/budgets/defaults, marker semantics;
-  - persistence: journal entry types, replay behavior, rotation, the
-    `opencode-turnstile status` output;
+  - persistence (`docs/journal.md` entry point and its section files under
+    `docs/journal/`): journal entry types, replay behavior,
+    rotation, the `opencode-turnstile status` output;
   - configuration: keys, defaults, validation, or the layered resolution.
     Refactors that move code without changing behavior (renames aside) don't
     require doc edits.
 - **How to update** — edit the D2 source in `docs/diagrams/` (not the SVG),
-  re-render the matching image, and update `docs/architecture.md` prose/tables
-  to match:
+  re-render the matching image, and update the matching architecture doc
+  (the index or a section file under `docs/architecture/`) to match:
 
   ```sh
   d2 --theme 200 docs/diagrams/d01-modules.d2 docs/images/d01-modules.svg
