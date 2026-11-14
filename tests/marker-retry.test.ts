@@ -60,8 +60,84 @@ test("retry fires once and prompts the child", async () => {
     assert.equal(retries[0]!.sessionID, "c1")
     assert.equal(h.sessionPrompts.length, 1)
     assert.equal(h.sessionPrompts[0]!.sessionID, "c1")
-    assert.match(h.sessionPrompts[0]!.text, /GATE:|VERDICT:/)
+    assert.match(h.sessionPrompts[0]!.text, /GATE: PASS tests=3 passed=3 failed=0/)
+    assert.doesNotMatch(h.sessionPrompts[0]!.text, /VERDICT:/)
+    assert.match(h.sessionPrompts[0]!.text, /received and parsed/)
+    assert.match(h.sessionPrompts[0]!.text, /Do not run any tools/)
     assert.ok(journalEntries(metricsDir).every((l) => l.type !== "violation"))
+  } finally {
+    dispose()
+  }
+})
+
+/** A reviewer's bare delivery gets the VERDICT example only, plus the
+ *  "received and parsed" guidance and the quoted tail of its own output. */
+test("retry prompt tells the reviewer its analysis is complete and quotes the tail", async () => {
+  const { h, dispose } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "reviewer" },
+      result: { output: "review done. verdict: approve" },
+    })
+    const p = h.sessionPrompts[0]!
+    assert.match(p.text, /VERDICT: APPROVE crit=0 high=0 med=0 low=0/)
+    assert.doesNotMatch(p.text, /GATE:/)
+    assert.match(p.text, /Do not run any tools/)
+    assert.match(p.text, /verdict: approve/)
+  } finally {
+    dispose()
+  }
+})
+
+/** A bareOutput agent outside the known roles gets both marker examples
+ *  in the retry prompt. */
+test("retry prompt for an unknown bareOutput agent shows both examples", async () => {
+  const { h, dispose } = await boot({ agents: { bareOutput: ["custom"] } })
+  try {
+    await deliverBare(h, "custom", "c1")
+    const p = h.sessionPrompts[0]!
+    assert.match(p.text, /GATE: PASS tests=3 passed=3 failed=0/)
+    assert.match(p.text, /VERDICT: APPROVE crit=0 high=0 med=0 low=0/)
+  } finally {
+    dispose()
+  }
+})
+
+/** A whitespace-only prior output trims to an empty tail, so the retry
+ *  prompt omits the quoted-tail block (no code fence). The fixture relies
+ *  on bare-output classification accepting any non-empty string. */
+test("retry prompt omits the tail block when the prior output trims empty", async () => {
+  const { h, dispose } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "test-runner" },
+      result: { output: "   " },
+    })
+    assert.doesNotMatch(h.sessionPrompts[0]!.text, /```/)
+  } finally {
+    dispose()
+  }
+})
+
+/** A prior output longer than the tail cap quotes only its last 600
+ *  characters in the retry prompt. */
+test("retry prompt quotes only the tail of a long prior output", async () => {
+  const { h, dispose } = await boot()
+  try {
+    const long = "x".repeat(700) + "final conclusion"
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "test-runner" },
+      result: { output: long },
+    })
+    const p = h.sessionPrompts[0]!
+    assert.match(p.text, /final conclusion/)
+    assert.ok(!p.text.includes("x".repeat(601)))
   } finally {
     dispose()
   }
