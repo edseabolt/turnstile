@@ -11,12 +11,12 @@ dependencies). Editing, deleting, or reordering any row breaks every hash
 after it.
 
 Epochs batch the chain for verification and
-[anchoring](anchors.md): every `epochEntries`
-data rows (default 512, matching the rotation cadence) the journaler
+[anchoring](anchors.md). Every `epochEntries`
+data rows (default 512, matching the rotation cadence), the journaler
 appends a `chain-epoch` row, itself chained like any other, carrying
-`{source, epoch, count, root, head}` where `root` is the Merkle root over
+`{source, epoch, count, root, head}`. The `root` is the Merkle root over
 the epoch's data-row hashes (pairwise `sha256(a + b)`, an odd trailing node
-hashed with itself, the single survivor hashed with itself once more) and
+hashed with itself, the single survivor hashed with itself once more). The
 `head` is the epoch's last data-row hash. Two more entry types ride the
 chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
 verdict; verification is described below, anchor sinks in
@@ -32,11 +32,11 @@ committed index in the surviving generations, so a `source#epoch` ref
 identity is stable for the anchor cross-check. When rotation has pruned
 generations (the oldest surviving file is a numbered generation other than
 `.1`), its first chained row folds as a **trust root**: its `prevHash`
-points into a pruned generation, so the prevHash continuity check is waived
+points into a pruned generation. The prevHash continuity check is waived
 for that row only (its own hash and a plausible `seq` are still verified).
 When `tamperEvidence.verifyOnSessionEnd` is `true` (default `false`), the
 session-idle handler runs it once per session and journals the
-`chain-verify` verdict, toasting on failure, which shrinks the detection
+`chain-verify` verdict, toasting on failure. That shrinks the detection
 window from "whenever someone runs the CLI" to one session. The same check
 is available offline: `opencode-turnstile prov --verify` folds the chain
 and verifies the epoch refs against the configured sinks, exiting 0 on an
@@ -108,7 +108,7 @@ One deletion caveat remains: because pruning makes the oldest surviving
 generation's first row a trust root, deleting the oldest generations resets
 the chain root, the same trust domain as deleting the journal outright. And
 verify over an empty or wholly deleted journal with an empty anchor store
-is vacuously ok: absence of rows is not evidence of integrity, which is why
+is vacuously ok: absence of rows is not evidence of integrity. That is why
 the anchors live in a second file (or sink domain) that still names the
 epochs the deleted journal should have contained. With anchors retained,
 that deletion is exactly what the absence check reports.

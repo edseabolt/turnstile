@@ -2,11 +2,11 @@
 
 Config resolves in four layers: code defaults ⊕ `~/.config/opencode/turnstile.json`
 ⊕ environment (`TURNSTILE_TRACE`, `TURNSTILE_METRICS_DIR`, `TURNSTILE_CONFIG`)
-⊕ injected options, with per-key validation; invalid values are warned into
+⊕ injected options, with per-key validation. Invalid values are warned into
 the journal (never thrown) and summarized once into the session context at
 startup (a `[turnstile] config:` block). A shipped JSON schema
 (`schemas/turnstile.schema.json`, editor opt-in via a `$schema` key that is
-silently ignored at load) documents every key; the marker keys
+silently ignored at load) documents every key. The marker keys
 (`gateMarker`/`verdictMarker`) are additionally breadth-checked against the
 canonical defaults, so a user regex that matches text the default rejects is
 warned. Highlights:

@@ -53,8 +53,8 @@ landing gate red — it is released only by the human, never by
 the waived verdict. The landing gate is never waiver-released at all: a
 `USER WAIVER:` in your prompt covers the dispatch gates but does not release
 `git push` — only the credited reviewer verdict or your explicit approval
-(prompt marker, or your permission reply under `escalation: "ask"`)
-does (a waiver aimed at landing is captured at admission and inert there).
+(prompt marker, or your permission reply under `escalation: "ask"`) does.
+A waiver aimed at landing is captured at admission and inert there.
 
 Only the reviewer stage meters waiver exemptions; a waiver covering another
 stage exempts that leg's loop cap and the total dispatch budget without
@@ -78,9 +78,9 @@ Repeat-attempt escalation of the landing and hands-on gates is controlled by
   dispatch/edit), or `reject` (gate stays red). The block-throw with the
   stop-and-report instruction is only the fallback for the no-human cases:
   when no one answers the ask, or when a re-arm inside the ask-latch TTL
-  journals no second ask row (same-tick dedupe collapses parallel tool
-  batches that escalate together into one ask row) and re-blocks instead,
-  while the already-armed latch still forces the ask. Release also flows via
+  journals no second ask row and re-blocks instead, while the already-armed
+  latch still forces the ask. (Same-tick dedupe collapses parallel tool
+  batches that escalate together into one ask row.) Release also flows via
   a user-authored prompt marker (`USER WAIVER:` for hands-on / dispatch
   gates, `PLAN APPROVED:` for the plan gate) or an earned reviewer
   `VERDICT: APPROVE` (landing).

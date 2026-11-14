@@ -5,15 +5,14 @@ makes that policy available by injecting it at runtime. The primary channel is
 the pre-first-model-call `session.context` hook: `injectContextPolicy` in
 `src/context-surface.ts` appends the policy head (and any pending intent nudge)
 into the parent's primary-turn draft `system` array before the first model
-call, parent-guarded and latched (see the `context` hook in [hooks](hooks.md)). The
-`execute.after` body in `src/hooks-tool.ts` stays armed as the fallback: it
-prepends the orchestrator policy paragraph from `src/policy.ts` (via
-`src/delivery.ts`) to the first `task` (or `subagent`) result delivery per
-task, once per task, and appends a per-delivery `PIPELINE:` status tail to
-every
-pipeline-stage delivery (see Pipeline continuation below), via the
-`tool.hook("execute.after")` handler (the same hook the plugin already uses
-to rewrite tool output reaching the model). Each
+call, parent-guarded and latched (see the `context` hook in [hooks](hooks.md)).
+The `execute.after` body in `src/hooks-tool.ts` stays armed as the fallback.
+Via the `tool.hook("execute.after")` handler (the same hook the plugin already
+uses to rewrite tool output reaching the model), it prepends the orchestrator
+policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to the first
+`task` (or `subagent`) result delivery per task — once per task — and appends
+a per-delivery `PIPELINE:` status tail to every
+pipeline-stage delivery (see Pipeline continuation below). Each
 delivery is classified once by `classifyDelivery` into its host shape: the
 v1 string shape (child-keyed event, text in `result.output`, the child
 optionally named by a string `metadata.sessionID`) or the v2 structured shape
@@ -33,7 +32,7 @@ string, so a structured delivery parses and attributes to the real child
 exactly like its string twin. Attribution is
 edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
 via `session.get` in `resolveParent`) decides where the policy lands, so both
-shapes inject on the receiving parent; the `policyInjected` flag and the
+shapes inject on the receiving parent. The `policyInjected` flag and the
 `injected:true` journal entry key on that resolved parent. The source of truth
 is code shipped with the plugin, so a fresh install can never lose it, and it
 follows the plugin through updates and uninstall–reinstall cycles.

@@ -16,17 +16,17 @@ can make is `--check-updates`' cache file (`<metricsDir>/update-check.json`,
 Per session it
 replays the same gate/plan last-wins rules the runtime uses (a trailing
 `GATE: FAIL` keeps the gate red; a `verified:false` PASS never
-flips), plus last markers, waiver events (with channel; the reviewer gate's
-WAIVED entry also carries a scope in the journal, which status does not
-currently render), and dispatch/block/permission counts. Blocked dispatches are
-journaled with a `reason` (`round-limit`, `loop-cap`, `dispatch-budget`, …)
-and every loop-cap exhaustion additionally writes a paired `escalation`
-entry, so a stuck pipeline leaves a visible trail in the journal. Blocked
-entries — including `loop-cap` and `dispatch-budget` reasons — are counted
-in the BLK column, but status does not yet break them out by reason, and it
-does not parse or render the paired `escalation` entries — that is a
-documented gap, not a silence: the entries are written, they are just not
-rendered by status yet. The journal reflects the last prompt-cycle;
+flips), plus last markers, waiver events, and dispatch/block/permission
+counts. Waiver events carry their channel; the reviewer gate's WAIVED entry
+also carries a scope in the journal, which status does not currently render.
+Blocked dispatches are journaled with a `reason` (`round-limit`, `loop-cap`,
+`dispatch-budget`, …) and every loop-cap exhaustion additionally writes a
+paired `escalation` entry, so a stuck pipeline leaves a visible trail in the
+journal. Blocked entries — including `loop-cap` and `dispatch-budget`
+reasons — are counted in the BLK column, but status does not yet break them
+out by reason, and it does not parse or render the paired `escalation`
+entries. That is a documented gap, not a silence: the entries are written;
+they are just not rendered by status yet. The journal reflects the last prompt-cycle;
 in-memory state can be fresher (a session that has prompted since is newer
 than the journal records), so treat status as the durable state of the
 previous cycle rather than a live snapshot. The `--json` document also
@@ -48,7 +48,7 @@ renders the sticky-comment body; `--out` writes `<name>.json` and the sibling
 `<name>.md`; `--validate` re-checks a committed artifact without writing. The
 `review` section reports against the ensemble bar the runtime credits at — two
 unwaived reviewer dispatches under the default `reviewEnsemble: "enforce"`, one
-under `"advise"` — not against `maxReviewerRounds`, which only caps dispatches;
-a refusal stamp keeps the section red, and a human release satisfies it, the
+under `"advise"` — not against `maxReviewerRounds`, which only caps dispatches.
+A refusal stamp keeps the section red, and a human release satisfies it — the
 same credit rule the landing gate applies. It
 is a correlated claim, not proof — say so in the comment you post.
