@@ -13,8 +13,9 @@
 #                       committed artifact files through the Contents API,
 #                       asserts two byte-level invariants on the .md, appends
 #                       a fixed amber notice when the evidence predates the
-#                       PR head commit, and upserts one comment keyed on the
-#                       `turnstile:evidence` marker it searches for.
+#                       latest non-evidence commit (the head, or its parent
+#                       when the head touches only `.turnstile/`), and upserts
+#                       one comment keyed on the `turnstile:evidence` marker.
 #
 # Contributor bytes may be read; they are never executed. GitHub asks a
 # maintainer to approve the first run from a new fork contributor, so a first
@@ -131,12 +132,18 @@ jobs:
             //     never refresh the artifact — it can only notice when it is
             //     old. Read the committed JSON (the emitter's sibling of the
             //     .md), take the newest journal timestamp it reports
-            //     (plan.at / tests.at), and compare it with the PR head
-            //     commit's date. When the evidence predates the latest
-            //     commit, append a fixed amber notice — never any document
-            //     bytes — so a stale badge warns instead of reading as
-            //     current. Best-effort: any failure to read the JSON or the
-            //     commit skips the notice, and the .md alone still posts.
+            //     (plan.at / tests.at), and compare it with the latest commit
+            //     that could have changed code: the head commit, or — when
+            //     the head touches only .turnstile/ files, the normal
+            //     emit-and-commit refresh path — its parent. When the
+            //     evidence predates that commit, append a fixed amber notice
+            //     — never any document bytes — so a stale badge warns instead
+            //     of reading as current. Best-effort: any failure to read the
+            //     JSON or a commit skips the notice, and the .md alone still
+            //     posts. Edge cases: an empty commit (no files) and a 300+-file
+            //     commit (GitHub truncates the files list) are both treated
+            //     as not evidence-only, so they compare against the head
+            //     date — conservative, at worst a spurious notice.
             let staleNote = null;
             if (violation === null) {
               try {
@@ -159,17 +166,41 @@ jobs:
                     repo: context.repo.repo,
                     ref: context.payload.pull_request.head.sha,
                   });
-                  const commitDate =
+                  // An evidence-only head commit is the normal refresh path:
+                  // the bundle predates the commit that carries it by
+                  // construction, so the meaningful comparison is against
+                  // the parent — the last commit that could have changed
+                  // code. Evidence emitted after the parent is fresh.
+                  const files = commit.data.files ?? [];
+                  const evidenceOnly =
+                    files.length > 0 &&
+                    files.every(
+                      (f) =>
+                        typeof f.filename === "string" &&
+                        f.filename.startsWith(".turnstile/"),
+                    );
+                  let compareRef = context.payload.pull_request.head.sha;
+                  let comparedDate =
                     commit.data.commit.committer?.date ?? commit.data.commit.author?.date;
+                  if (evidenceOnly && commit.data.parents?.length > 0) {
+                    compareRef = commit.data.parents[0].sha;
+                    const parent = await github.rest.repos.getCommit({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      ref: compareRef,
+                    });
+                    comparedDate =
+                      parent.data.commit.committer?.date ?? parent.data.commit.author?.date;
+                  }
                   if (
-                    typeof commitDate === "string" &&
-                    Date.parse(ts) < Date.parse(commitDate)
+                    typeof comparedDate === "string" &&
+                    Date.parse(ts) < Date.parse(comparedDate)
                   ) {
                     staleNote =
                       `> ⚠ Stale: the last journaled event (${ts}) predates the ` +
-                      `PR head commit (${commitDate}). Re-run the evidence ` +
-                      `emitter and commit both .turnstile/ files to refresh ` +
-                      `the badge.`;
+                      `latest non-evidence commit (${comparedDate}). Re-run the ` +
+                      `evidence emitter and commit both .turnstile/ files to ` +
+                      `refresh the badge.`;
                   }
                 }
               } catch (e) {
