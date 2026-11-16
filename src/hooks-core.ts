@@ -1334,10 +1334,18 @@ function observeActive(st: CoreState, sessionID: string): boolean {
   }
 }
 
+/**
+ * True when enforcement is armed for the session's parent: `alwaysEnforce`
+ * short-circuits to true; otherwise the parent bucket's `engaged` flag is
+ * read. A pure read — the probe runs on every read-budget and
+ * policy-injection decision, so it must not mint a bucket (dormant sessions
+ * would otherwise churn the LRU on each check); a missing bucket reads as
+ * not armed. Journals `engagement read:` and fails toward false on error.
+ */
 function enforcementArmed(st: CoreState, sessionID: string): boolean {
   if (st.config.alwaysEnforce) return true
   try {
-    return st.ledger.state(st.ledger.parentOf(sessionID)).engaged
+    return st.ledger.peek(st.ledger.parentOf(sessionID))?.engaged ?? false
   } catch (e) {
     st.journaler.journal({ type: "error", sessionID, error: `engagement read: ${e}` })
     return false
