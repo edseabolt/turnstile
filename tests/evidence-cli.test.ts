@@ -31,7 +31,7 @@ import * as crypto from "node:crypto"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -108,7 +108,9 @@ function code(res: { status: number | null; exitCode?: number | null }): number 
 
 /** Writes a journal file (current or a rotated generation) from JSONL lines. */
 function writeJournal(dir: string, file: string, lines: Entry[]): void {
-  writeFileSync(join(dir, file), lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
+  const target = join(dir, file)
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
 }
 
 /** Builds a journal entry with a monotonic ISO timestamp. */
@@ -845,6 +847,36 @@ test("evidence: a rotated-only journal still folds and names the generation", ()
   }
 })
 
+test("evidence: --validate accepts the per-session sink basenames the emitter reports", () => {
+  // docstring: the sessions/ layout names each sink <sessionID>.jsonl, and
+  // readJournal walks and reports those basenames — the validator's
+  // journal.files rule must accept them, or every artifact from a
+  // sessions/-layout machine fails --validate (emitter/validator drift).
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-sess"))
+    writeJournal(dir, join("sessions", "ses_abc123.jsonl"), greenTask("sp-sess"))
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "sp-sess", "--out", p])
+    const emitted = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    assert.ok(
+      emitted.journal.files.some((f) => f.startsWith("ses_")),
+      "emitter reports the session sink",
+    )
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 0, `session basenames validate: ${res.stderr}`)
+    // A basename outside the session-ID alphabet is still rejected.
+    const tampered = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    tampered.journal.files = ["bad name!.jsonl"]
+    writeFileSync(p, JSON.stringify(tampered))
+    const bad = runEvidence(dir, ["--validate", p])
+    assert.equal(code(bad), 1)
+    assert.match(bad.stderr, /bad basename/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("evidence: the replay-tail bound limits the folded window", () => {
   // docstring: the fold honors the configured replay tail, so entries outside
   // the tail are not felt by the summary.
@@ -1009,6 +1041,26 @@ test("evidence: --validate rejects a path-shaped value in a permitted key", () =
     const res = runEvidence(dir, ["--validate", p])
     assert.equal(code(res), 1)
     assert.match(res.stderr, /plan\.source/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: --validate accepts the subagent-synthetic plan provenance", () => {
+  // docstring: the runtime journals `subagent-synthetic` as the plan source
+  // when a plan verdict is captured from a subagent task result (src/ledger.ts),
+  // so the emitter's provenance whitelist must accept it or every artifact
+  // from a subagent-driven task fails --validate (emitter/validator drift).
+  const dir = metricsDir()
+  try {
+    const entries = greenTask("sp-sub").map((e) =>
+      e.type === "verdict" ? { ...e, source: "subagent-synthetic" } : e,
+    )
+    writeJournal(dir, "turnstile.jsonl", entries)
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "sp-sub", "--out", p])
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 0, `subagent-synthetic validates: ${res.stderr}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

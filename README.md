@@ -367,7 +367,12 @@ lines, and shas, never session IDs or prompts:
 
 Commit the JSON and Markdown and a GitHub Action upserts one sticky comment
 per PR. `evidence --validate` re-checks a committed artifact in CI. The
-comment states what it is: a correlated claim, not proof. One workflow
+comment states what it is: a correlated claim, not proof. Re-emit and commit
+both files before every push to a PR: the journal is per-machine, so CI can
+post the committed badge but never refresh it. To keep a stale badge from
+reading as current, the posting job compares the committed evidence's newest
+journaled timestamp with the PR head commit and appends an amber "Stale"
+notice when the evidence predates the change. One workflow
 detail: validation runs on the pull request itself, while the comment posts
 from a trusted `pull_request_target` run; GitHub asks a maintainer to approve
 that run for a first-time contributor's fork PR, so an outside

@@ -38,3 +38,20 @@ elsewhere `npx opencode-turnstile evidence`.
 If the user names any other options, forward them to the CLI invocation
 verbatim. If the CLI rejects an option, surface the usage error verbatim;
 never retry blind, never drop the flag.
+
+## Refresh before every PR push
+
+The journal is per-machine, so CI can post a committed artifact but never
+refresh it: the badge is whatever `.turnstile/evidence.json` and the sibling
+`.md` said when they were last committed. Before opening a PR — and before
+every push that adds commits to one — re-emit and commit both files:
+
+1. Run the emitter: `evidence --task latest --out .turnstile/evidence.json`
+   (this writes the sibling `.md` too).
+2. `git add .turnstile/evidence.json .turnstile/evidence.md` and include them
+   in the commit you push.
+
+CI now flags the stale case for you: when the committed evidence predates the
+PR head commit, the posted badge carries an amber "Stale" notice instead of
+reading as current. Treat that notice the same way as a red gate — re-emit
+and push the refreshed pair.
