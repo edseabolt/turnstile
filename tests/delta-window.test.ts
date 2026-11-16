@@ -12,7 +12,13 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
-import { GATE_RE, VERDICT_RE, deltaWindowFloorChars } from "../src/markers.ts"
+import { createEventHandlers } from "../src/event-stream-handlers.ts"
+import {
+  GATE_RE,
+  VERDICT_RE,
+  deltaWindowFloorChars,
+  findTruncatedMarkerSpans,
+} from "../src/markers.ts"
 import type { TurnstileConfig } from "../src/types.ts"
 import { turnstile } from "../turnstile.ts"
 import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
@@ -111,4 +117,81 @@ test("a marker past the floor still reassembles across two deltas", async () => 
   assert.equal(gates.length, 1)
   assert.equal(gates[0]?.marker, LONG_GATE_MARKER)
   dispose()
+})
+
+/** The default marker fits the window, so no truncation is reported. */
+test("findTruncatedMarkerSpans returns nothing when the buffer fits the window", () => {
+  const buffer = "GATE: PASS tests=1 passed=1 failed=1"
+  assert.deepEqual(findTruncatedMarkerSpans(buffer, buffer, GATE_RE), [])
+})
+
+/** A match whose head was tail-sliced away is reported; a match starting at
+ *  or after the cut point is fully inside the window and not reported. */
+test("findTruncatedMarkerSpans reports a match whose head was tail-sliced away", () => {
+  // A non-anchored custom source, so the match start is a plain index.
+  const custom = /GATE: (PASS|FAIL) tests=\d+/g
+  const gateText = "GATE: PASS tests=1"
+  const buffer = "xx" + gateText
+  assert.deepEqual(findTruncatedMarkerSpans(buffer, buffer.slice(5), custom), [gateText])
+  // A match starting exactly at the cut point is fully inside the window.
+  assert.deepEqual(findTruncatedMarkerSpans(buffer, buffer.slice(2), custom), [])
+})
+
+/** Two regexes matching the same span (or a repeated match) dedupe to one
+ *  entry, in first-seen order. */
+test("findTruncatedMarkerSpans dedupes a span matched by both regexes", () => {
+  const buffer = "GATE: PASS tests=1 passed=1 failed=1"
+  const window = buffer.slice(3)
+  assert.deepEqual(findTruncatedMarkerSpans(buffer, window, GATE_RE, GATE_RE), [
+    "GATE: PASS tests=1 passed=1 failed=1",
+  ])
+})
+
+/**
+ * A streamed marker longer than the default 512 window is tail-sliced by the
+ * fold; the loss journals one `delta-truncated` marker entry carrying the
+ * de-tokenized span, and no gate flip is parsed from streaming (the
+ * task-result delivery re-parse owns that credit).
+ */
+test("a marker longer than the window journals a delta-truncated entry", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  const handlers = createEventHandlers(ctx)
+  const long = `GATE: PASS tests=1 passed=1 failed=1 ${"z".repeat(600)}`
+  handlers["session.created"]!({ sessionID: "c1", parentID: "p1", agent: "test-runner" })
+  handlers["session.text.delta"]!({ sessionID: "c1", delta: long.slice(0, 400) })
+  handlers["session.text.delta"]!({ sessionID: "c1", delta: long.slice(400) })
+  const truncated = journalEntries(metricsDir).filter(
+    (l) => l.type === "marker" && l.event === "delta-truncated",
+  )
+  assert.equal(truncated.length, 1)
+  assert.equal(truncated[0]?.sessionID, "c1")
+  assert.equal(truncated[0]?.marker, "gate: PASS tests=1 passed=1 failed=1")
+  assert.equal(
+    journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+    false,
+    "streaming never credits a truncated marker",
+  )
+})
+
+/**
+ * A journaler that throws on the diagnostic entry fails open: the delta
+ * handler completes, and the internal failure lands as an `error` entry.
+ */
+test("a throwing journaler fails open on the delta-truncated probe", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  const inner = ctx.journaler.journal.bind(ctx.journaler)
+  ctx.journaler.journal = (entry: Record<string, unknown>): void => {
+    if (entry.event === "delta-truncated") throw new Error("sink down")
+    inner(entry)
+  }
+  const handlers = createEventHandlers(ctx)
+  const long = `GATE: PASS tests=1 passed=1 failed=1 ${"z".repeat(600)}`
+  handlers["session.created"]!({ sessionID: "c1", parentID: "p1", agent: "test-runner" })
+  handlers["session.text.delta"]!({ sessionID: "c1", delta: long.slice(0, 400) })
+  await handlers["session.text.delta"]!({ sessionID: "c1", delta: long.slice(400) })
+  const errors = journalEntries(metricsDir).filter(
+    (l) => l.type === "error" && String(l.error).startsWith("delta-window truncation probe"),
+  )
+  assert.equal(errors.length, 1)
+  assert.equal(errors[0]?.sessionID, "c1")
 })

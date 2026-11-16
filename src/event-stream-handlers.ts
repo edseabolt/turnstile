@@ -32,6 +32,7 @@ import {
   isInactive,
 } from "./summary.ts"
 import type { EventProperties } from "./types.ts"
+import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
 
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 export type EventHandler = (properties: EventProperties) => void | Promise<void>
@@ -49,19 +50,65 @@ const FAST_REPLY_MS = 1000
 const SUMMARY_TEXT_BOUND = 300
 
 /**
+ * Bound (in chars) for the de-tokenized marker text carried by a
+ * `delta-truncated` diagnostic, matching the trace's and delivery-proof
+ * bounds so no journal row carries an unbounded streamed span.
+ */
+const DELTA_TRUNCATED_MARKER_BOUND = 300
+
+/**
+ * Journals a `marker`/`event:"delta-truncated"` diagnostic for each marker
+ * match the window fold just tail-sliced away. Diagnostic only: the span is
+ * never parsed as authoritative — the task-result delivery re-parse owns
+ * gate credit. Fail-open: an internal error journals an `error` entry and
+ * never throws from the event hook.
+ * @param ctx The shared per-setup context.
+ * @param sid The child session the folded window belongs to.
+ * @param buffer The window text before tail-slicing.
+ * @param window The surviving window text after tail-slicing.
+ */
+function journalTruncatedSpans(
+  ctx: TurnstileContext,
+  sid: string,
+  buffer: string,
+  window: string,
+): void {
+  try {
+    for (const span of findTruncatedMarkerSpans(buffer, window, ctx.gateRe, ctx.verdictRe)) {
+      ctx.journaler.journal({
+        type: "marker",
+        event: "delta-truncated",
+        sessionID: sid,
+        marker: deTokenizeMarker(span).slice(0, DELTA_TRUNCATED_MARKER_BOUND),
+      })
+    }
+  } catch (cause) {
+    ctx.journaler.journal({
+      type: "error",
+      sessionID: sid,
+      error: `delta-window truncation probe: ${String(cause)}`.slice(0, SUMMARY_TEXT_BOUND),
+    })
+  }
+}
+
+/**
  * Folds a text delta into the session's tail-bounded sliding window and
  * returns the folded window. Reassembles a possibly-split marker: the
  * shared-empty dedup scope suppresses every re-fire, so only a newly
- * completed marker across chunks is first-sighted.
+ * completed marker across chunks is first-sighted. When the fold tail-slices
+ * a completed marker span out of the window, a `delta-truncated` diagnostic
+ * is journaled (the delivery re-parse still credits the gate).
  * @param ctx The shared per-setup context.
  * @param sid The child session the delta belongs to.
  * @param delta The newly arrived delta text.
  * @returns The window after appending the delta and tail-bounding it.
  */
 function foldDeltaWindow(ctx: TurnstileContext, sid: string, delta: string): string {
-  const window = ((ctx.deltaWindows.get(sid) ?? "") + delta).slice(-ctx.maxDeltaWindowChars)
+  const pending = ctx.deltaWindows.get(sid) ?? ""
+  const window = (pending + delta).slice(-ctx.maxDeltaWindowChars)
   ctx.deltaWindows.set(sid, window)
   ctx.boundDeltaWindows()
+  journalTruncatedSpans(ctx, sid, pending + delta, window)
   return window
 }
 

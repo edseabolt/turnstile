@@ -203,6 +203,33 @@ export function deltaWindowFloorChars(gateSource: string, verdictSource: string)
 }
 
 /**
+ * Finds marker matches present in the pre-truncation buffer but no longer
+ * fully inside the surviving window — a match whose start was tail-sliced
+ * away. Pure; safe on shared /g regexes (`matchAll` clones, never advances
+ * `lastIndex`). Empty when the window was not truncated or nothing was cut.
+ * @param buffer The window text before tail-slicing.
+ * @param window The surviving window text after tail-slicing.
+ * @param res The marker regexes to probe (each must carry the `g` flag).
+ * @returns The truncated match texts, first-seen order, deduped.
+ */
+export function findTruncatedMarkerSpans(
+  buffer: string,
+  window: string,
+  ...res: RegExp[]
+): string[] {
+  if (window.length >= buffer.length) return []
+  const cut = buffer.length - window.length
+  const found: string[] = []
+  for (const re of res) {
+    for (const match of buffer.matchAll(re)) {
+      if (match.index === undefined || match.index >= cut) continue
+      if (!found.includes(match[0])) found.push(match[0])
+    }
+  }
+  return found
+}
+
+/**
  * Escapes one space-separated word of a marker literal for embedding in a
  * RegExp source, neutralizing the metacharacters `[.*+?^${}()|[\]\\]` so a
  * custom literal cannot throw at compile time.
