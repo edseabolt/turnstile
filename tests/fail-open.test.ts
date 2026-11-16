@@ -635,6 +635,25 @@ test("generate hook journals an internal error from a hostile draft", async () =
   }
 })
 
+/** A hostile prompt payload journals and never throws. */
+test("prompt hook journals an internal error from a hostile payload", async () => {
+  const h = makeFakeHost()
+  const { dispose, metricsDir } = await boot(h.host)
+  try {
+    const properties: Record<string, unknown> = {}
+    Object.defineProperty(properties, "sessionID", {
+      get() {
+        throw new Error("hostile payload")
+      },
+    })
+    await callSession(h, "prompt", properties)
+    const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
+    assert.ok(errors.some((e) => String(e.error).includes("prompt hook")))
+  } finally {
+    dispose()
+  }
+})
+
 /** The compaction hook appends the preserve-verbatim instruction. */
 test("compaction hook injects the preserve-verbatim instruction", async () => {
   const h = makeFakeHost()
