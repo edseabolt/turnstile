@@ -144,8 +144,8 @@ function guardBashGates(
   // gate are never reached by a child dispatch).
   if (st.childStatus(sid, typeof event?.agent === "string" ? event.agent : "") === "child") return
   const parent = st.ledger.parentOf(sid)
-  const s = st.ledger.state(parent)
   if (!armed) return
+  const s = st.ledger.state(parent)
   // Plan-impact advisory for gate-tier write shapes: with a plan bound, a
   // write-shaped bash command naming a scope path skips ONLY the bash-write
   // block (strict mode falls through to it for structural overlap) — the
@@ -348,12 +348,12 @@ function handleWriteEditDispatchBody(
   st.toolPolicy.guardPath(tool, filePath, sid)
   if (writeEditExempt(st, event, tool, sid, filePath)) return
   const parent = st.ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
-  const s = st.ledger.state(parent)
   // Dormant-until-engaged: the denylist above and the scratch exemption ran
   // unconditionally; the hands-on ladder sleeps until the parent engages (a
   // dormant session cannot hold a pending once-grant — grants are earned
   // inside engaged scopes — so skipping the consume is safe).
   if (!st.enforcementArmed(parent)) return
+  const s = st.ledger.state(parent)
   if (consumeHandsOnGrant(s)) return // once-grant: released for this one edit
   // Plan-impact advisory: with a plan bound, an overlapping write/edit is
   // allowed with a journaled classification instead of the hands-on block
