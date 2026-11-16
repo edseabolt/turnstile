@@ -1374,6 +1374,66 @@ test("validateResolved flags a narrower un-anchored gateMarker that matches a pr
   assert.ok(!gate[0]!.includes("broader"), "the wording no longer claims breadth")
 })
 
+/** (9) A capture-less gateMarker whose match would classify via the substring
+ *  fallback warns once, naming the key and the probe. */
+test("validateResolved warns for a capture-less gateMarker that misclassifies via the substring fallback", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: [A-Z]+ tests=\\d+ passed=\\d+ failed=\\d+ --[\\s\\S]*"
+  const warnings = validateResolved(config)
+  const gate = warnings.filter((w) => w.includes("gateMarker"))
+  assert.equal(gate.length, 1)
+  assert.ok(gate[0]!.includes("has no capture group"))
+  assert.ok(gate[0]!.includes("GATE: FAIL tests=3 passed=3 failed=0 -- see PASS criteria"))
+})
+
+/** (10) A capture-less but exactly-default-shaped source (non-capturing group)
+ *  never matches the primary in prose, so it stays silent. */
+test("validateResolved stays silent for a capture-less source that cannot misclassify", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "^\\s*[`>#*\\s]*GATE: (?:PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+"
+  const warnings = validateResolved(config)
+  assert.ok(!warnings.some((w) => w.includes("gateMarker")))
+})
+
+/** (11) A capture-ful custom source that diverges only in breadth produces the
+ *  breadth wording, never the capture-less wording. (This source hits the
+ *  breadth probe first — the helper is never reached; it pins the wording
+ *  split, not the helper's group-defined branch.) */
+test("validateResolved keeps the wording separate for capture-ful sources", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: (FAIL|PASS) tests=\\d+ passed=\\d+ failed=\\d+"
+  const warnings = validateResolved(config)
+  const gate = warnings.filter((w) => w.includes("gateMarker"))
+  assert.equal(gate.length, 1)
+  assert.ok(gate[0]!.includes("differs from the default marker regex"))
+  assert.ok(!gate[0]!.includes("has no capture group"))
+})
+
+/** (12) A capture-ful, breadth-silent source that still differs from the
+ *  default reaches the capture-less probe and matches it with group 1 defined
+ *  ("FAIL"), so it stays silent via the group-defined branch. The mandatory
+ *  " --" separator keeps both breadth probes (and the default-shaped
+ *  canonical, whose probe swaps in "FAIL" only at the keyword position)
+ *  unmatched-or-default-matched. */
+test("validateResolved stays silent for a capture-ful breadth-silent source on the capture-less probe", () => {
+  const config = defaultConfig({})
+  config.gateMarker = "GATE: (PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+ --"
+  const warnings = validateResolved(config)
+  assert.ok(!warnings.some((w) => w.includes("gateMarker")))
+})
+
+/** (13) The verdict call site threads APPROVE/BLOCK: a capture-less verdict
+ *  source warns naming APPROVE and the verdict probe. */
+test("validateResolved warns for a capture-less verdictMarker", () => {
+  const config = defaultConfig({})
+  config.verdictMarker = "VERDICT: [A-Z]+ crit=\\d+ high=\\d+ med=\\d+ low=\\d+ --[\\s\\S]*"
+  const warnings = validateResolved(config)
+  const verdict = warnings.filter((w) => w.includes("verdictMarker"))
+  assert.equal(verdict.length, 1)
+  assert.ok(verdict[0]!.includes("has no capture group"))
+  assert.ok(verdict[0]!.includes("APPROVE"))
+})
+
 /** tamperEvidence defaults: the chain is off (legacy row shape), the anchor
  *  is the builtin session-state sink, and epochs close every 512 rows. */
 test("defaultConfig ships tamperEvidence disabled with the session-state anchor", () => {

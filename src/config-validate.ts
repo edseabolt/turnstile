@@ -177,19 +177,27 @@ export function isValidScalar(key: keyof TurnstileConfig, value: unknown): boole
  * the canonical marker with junk; a `.*` end broadening is caught by a probe
  * that trails it. A source that matches neither probe (a disjoint custom
  * syntax) stays silent, so an intentional re-skinning never trips a false
- * positive.
+ * positive. A second probe category checks capture-less-ness: a source whose
+ * match on a probe carrying the primary keyword only in trailing prose would
+ * classify as the primary via the substring fallback in `classifyMarkerResult`
+ * is warned to add a capture group.
  * @param label The config key name to surface in the warning.
  * @param source The user-provided regex source string.
  * @param defaultRe The compiled canonical regex to compare against.
  * @param canonical A canonical example the default regex must match.
+ * @param primary The keyword mapping to the primary result.
+ * @param other The keyword mapping to the other result.
  * @returns One warning string when the source matches a probe the default
- *     rejects, otherwise undefined.
+ *     rejects or would misclassify via the substring fallback, otherwise
+ *     undefined.
  */
 function warnIfBroaderMarker(
   label: string,
   source: string,
   defaultRe: RegExp,
   canonical: string,
+  primary: string,
+  other: string,
 ): string | undefined {
   if (source === defaultRe.source) return undefined
   let compiled: RegExp
@@ -210,6 +218,42 @@ function warnIfBroaderMarker(
       return `config: ${label} differs from the default marker regex: it matches "${probe}" which the default does not match`
     }
   }
+  return warnIfCapturelessMarker(label, compiled, canonical, primary, other)
+}
+
+/**
+ * Warns when a custom marker source is capture-less in a way that makes the
+ * substring fallback in `classifyMarkerResult` load-bearing: on a probe where
+ * the primary keyword appears only in trailing prose (after the other
+ * keyword's canonical position), a match with no capture group classifies as
+ * the primary purely because its matched span contains the keyword. The
+ * compiled source is assumed valid and different from the default (the caller
+ * guards both). Diagnostic-only: runtime classification is unchanged.
+ * @param label The config key name to surface in the warning.
+ * @param compiled The user's compiled marker regex (`gm` flags).
+ * @param canonical A canonical example the default regex matches.
+ * @param primary The keyword mapping to the primary result.
+ * @param other The keyword mapping to the other result.
+ * @returns One warning string when a capture-less match would misclassify,
+ *     otherwise undefined.
+ */
+function warnIfCapturelessMarker(
+  label: string,
+  compiled: RegExp,
+  canonical: string,
+  primary: string,
+  other: string,
+): string | undefined {
+  const probe = `${canonical.replace(primary, other)} -- see ${primary} criteria`
+  const userMatches: string[] = probe.match(compiled) ?? []
+  for (const match of userMatches) {
+    // Recompute group 1 the way `classifyMarkerResult` does (matchAll on a
+    // cloned global regex), so the probe mirrors the runtime fallback.
+    const group = Array.from(match.matchAll(compiled), (m) => m[1]).at(0)
+    if (group === undefined && match.includes(primary)) {
+      return `config: ${label} has no capture group for the result keyword: a match whose text merely contains "${primary}" (e.g. "${probe}") classifies as ${primary} via the substring fallback; add a capture group around the result keyword`
+    }
+  }
   return undefined
 }
 
@@ -225,6 +269,8 @@ function markerWarnings(config: TurnstileConfig): string[] {
     config.gateMarker,
     GATE_RE,
     CANONICAL_GATE_MARKER,
+    "PASS",
+    "FAIL",
   )
   if (gateWarning) warnings.push(gateWarning)
   const verdictWarning = warnIfBroaderMarker(
@@ -232,6 +278,8 @@ function markerWarnings(config: TurnstileConfig): string[] {
     config.verdictMarker,
     VERDICT_RE,
     CANONICAL_VERDICT_MARKER,
+    "APPROVE",
+    "BLOCK",
   )
   if (verdictWarning) warnings.push(verdictWarning)
   return warnings
