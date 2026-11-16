@@ -29,4 +29,6 @@ Known guarded interactions: `reviewEnsemble:"enforce"` with
 `maxReviewerRounds < 2` warns: the ensemble would be mechanically
 unsatisfiable. A user `gateMarker`/`verdictMarker` that matches text the
 shipped default rejects is warned as different from the default (a match-oracle
-probe; a disjoint custom syntax stays silent).
+probe; a disjoint custom syntax stays silent), and a capture-less source whose
+match would classify through the substring fallback is warned to add a capture
+group.
