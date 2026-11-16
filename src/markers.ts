@@ -205,24 +205,33 @@ export function deltaWindowFloorChars(gateSource: string, verdictSource: string)
 /**
  * Finds marker matches present in the pre-truncation buffer but no longer
  * fully inside the surviving window — a match whose start was tail-sliced
- * away. Pure; safe on shared /g regexes (`matchAll` clones, never advances
- * `lastIndex`). Empty when the window was not truncated or nothing was cut.
+ * away — and never seen complete in the previous window. The previous-window
+ * filter keeps the diagnostic honest in streaming: a marker already fully
+ * inside the window at an earlier fold was credited then, so a later fold
+ * tail-slicing it out is not a truncation. Pure; each regex is defensively
+ * cloned with the `g` flag, so a non-global regex cannot make `matchAll`
+ * throw. Empty when the window was not truncated or nothing new was cut.
  * @param buffer The window text before tail-slicing.
  * @param window The surviving window text after tail-slicing.
- * @param res The marker regexes to probe (each must carry the `g` flag).
+ * @param previousWindow The window text before the delta that triggered this
+ *     fold (a prefix of `buffer`); matches fully inside it are already seen.
+ * @param res The marker regexes to probe.
  * @returns The truncated match texts, first-seen order, deduped.
  */
 export function findTruncatedMarkerSpans(
   buffer: string,
   window: string,
+  previousWindow: string,
   ...res: RegExp[]
 ): string[] {
   if (window.length >= buffer.length) return []
   const cut = buffer.length - window.length
   const found: string[] = []
   for (const re of res) {
-    for (const match of buffer.matchAll(re)) {
+    const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`)
+    for (const match of buffer.matchAll(global)) {
       if (match.index === undefined || match.index >= cut) continue
+      if (match.index + match[0].length <= previousWindow.length) continue
       if (!found.includes(match[0])) found.push(match[0])
     }
   }

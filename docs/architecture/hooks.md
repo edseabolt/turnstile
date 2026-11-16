@@ -254,8 +254,10 @@ is ingested through a per-session sliding window: a marker the host splits
 across `session.text.delta` chunks is reassembled and re-parsed so a completed
 marker is first-sighted once (dedup-suppressing the re-parse), then the window
 ages out on the next task dispatch. A marker longer than the window is not
-reassembled in streaming; the fold journals a `delta-truncated` marker entry,
-and the task-result delivery re-parse still credits the gate. A marker that
+reassembled in streaming; the fold journals a `delta-truncated` marker entry
+for a span never seen complete in streaming (a span already credited by
+streaming first-sight is not reported), and gate credit is unaffected — it
+arrives from streaming first-sight or the task-result delivery re-parse. A marker that
 never completes within any pre-truncation buffer stays undetectable until
 delivery. A subscription that throws is
 journaled per death and the consumer re-subscribes under a cumulative
