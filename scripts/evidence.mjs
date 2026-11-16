@@ -105,7 +105,8 @@ const HEAD_RE = /^sha256:[0-9a-f]{12}$/
 const TS_RE = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$/
 
 /** The journaled plan provenance literals the emitter may copy into `plan.source`. */
-const SOURCE_OK = /^(?:session-prompt|task-result|child-message|child-text|child-text-delta)$/
+const SOURCE_OK =
+  /^(?:session-prompt|task-result|child-message|child-text|child-text-delta|subagent-synthetic)$/
 
 /** The gate-evidence modes the runtime journals on a gate entry. */
 const GATE_MODE_OK = /^(?:enforce|flag|off)$/
@@ -114,8 +115,15 @@ const GATE_MODE_OK = /^(?:enforce|flag|off)$/
 const PLAN_VERDICT_OK = /^(?:APPROVE|BLOCK|STALE)$/
 const TEST_RESULT_OK = /^(?:PASS|FAIL)$/
 
-/** The rotated-generation basenames the journal may report. */
-const JOURNAL_FILE_OK = /^turnstile\.jsonl(?:\.\d+)?$/
+/**
+ * The journal file basenames the artifact may report: the shared file and its
+ * rotated generations (`turnstile.jsonl(.N)`), plus every per-session sink —
+ * the same basenames `readJournal` itself walks and reports (the sessions/
+ * layout names each sink `<sessionID>.jsonl`, session IDs drawn from the
+ * REPLAY_SESSION_RE alphabet). The validator's set must track the emitter's
+ * walk, or every artifact from a sessions/-layout machine fails --validate.
+ */
+const JOURNAL_FILE_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.jsonl(?:\.\d+)?$/
 
 /**
  * Keys that must never appear anywhere in a published artifact: they name the
