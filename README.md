@@ -377,7 +377,10 @@ artifact write journals an `event:"emit"` row that lands in the artifact as
 walking back from the PR head to the first commit touching anything outside
 `.turnstile/`. Badge staleness therefore means exactly one thing: a code
 commit landed and nobody has re-emitted since — the normal re-emit → commit →
-push cycle is never flagged, on merge commits and mixed commits included. One
+push cycle is never flagged, on merge commits and mixed commits included.
+The emitter scopes its read to the task's session tree, so another agent's
+journal activity on the same machine cannot refresh the badge's freshness
+signal. One
 workflow
 detail: validation runs on the pull request itself, while the comment posts
 from a trusted `pull_request_target` run; GitHub asks a maintainer to approve

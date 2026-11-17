@@ -43,7 +43,10 @@ replay-parity window with the same shape checks, then emits only derived
 counts, canonical marker lines, and shas — session IDs, prompts, dispatch
 descriptions, and bash command text are absent by construction, because the
 document is built key by key rather than filtered. A task is named by a
-one-way handle (`t-<8 hex>`), the journal by its head sha. `--format markdown`
+one-way handle (`t-<8 hex>`), the journal by its head sha. The window is
+scoped to the task's session tree, so on a machine running several agents,
+another session's journal activity can neither enter the artifact nor
+refresh its freshness signal. `--format markdown`
 renders the sticky-comment body; `--out` writes `<name>.json` and the sibling
 `<name>.md`; `--validate` re-checks a committed artifact without writing. The
 orchestrator policy and the executor definition both instruct the refresh:

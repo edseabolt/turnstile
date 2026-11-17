@@ -23,8 +23,8 @@ so wherever it is posted**.
 - The plan/tests/review sections carry the journaled counts: the reviewer
   ensemble must show 2 unwaived reviewer approvals under the default
   `reviewEnsemble: enforce`, plus the waiver/block/dispatch counts.
-- `journal.head` is the sha integrity anchor for the journal tail the bundle
-  was built from.
+- `journal.head` is the sha integrity anchor for the task's session-scoped
+  journal tail — the tail the bundle was built from.
 
 ## Publishing
 
