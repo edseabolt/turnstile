@@ -468,7 +468,7 @@ test("plan-verdict.ts exposes only createPlanVerdict at runtime", async () => {
  */
 test("dispatch-guard.ts exposes only createDispatchGuard at runtime", async () => {
   const mod = await import("../src/dispatch-guard.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGuard"])
+  assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGuard", "dispatchStampKey"])
 })
 
 /**

@@ -29,7 +29,18 @@ stringifies into the transcript).
 The classified child and text also drive marker parsing, the bare-output
 check, and the reviewer capture, always from the canonical `output.output`
 string, so a structured delivery parses and attributes to the real child
-exactly like its string twin. Attribution is
+exactly like its string twin. The bare-output compliance re-prompt restates,
+never quotes, markers: its quoted prior-output tail strips any `GATE:`/
+`VERDICT:` line, and the prompt directs the child to recompute counts from
+its own recorded results — never to copy or invent them. Dispatch and
+injection texts are hash-stamped for tamper attribution: every `dispatch`
+journal row carries the sha256-16 of the dispatch prompt (`promptHash`), the
+`marker-retry` prompted row carries the sha256-16 of the injected text
+(`textHash`), and a structured delivery whose echoed prompt hashes
+differently journals one `dispatch-tamper` audit row (best-effort, inert to
+gate state; the stamp is keyed by the dispatching parent and the resolved
+agent, so concurrent dispatches from one parent never cross-match).
+Attribution is
 edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
 via `session.get` in `resolveParent`) decides where the policy lands, so both
 shapes inject on the receiving parent. The `policyInjected` flag and the

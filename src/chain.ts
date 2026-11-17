@@ -59,6 +59,17 @@ export function recordHash(prevHash: string, ts: string, payload: Record<string,
 }
 
 /**
+ * Computes the 16-char truncated sha256 hex used as an injection-provenance
+ * stamp: journaled for dispatch prompts and model-facing injected texts so a
+ * reported "injected instruction" can be attributed by hash comparison.
+ * @param text The text to stamp.
+ * @returns The first 16 hex chars of the digest.
+ */
+export function sha256Hex16(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16)
+}
+
+/**
  * Computes the Merkle root over a list of hex hashes. Each level reduces
  * pairwise via `sha256(a + b)`; an odd trailing node is hashed with itself
  * (Bitcoin-style promotion), and the single surviving node is hashed with

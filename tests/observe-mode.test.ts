@@ -428,7 +428,14 @@ test("an observe-period executor dispatch suppresses the plan-gate block and jou
       },
     ])
     assert.deepEqual(entriesOf(metricsDir, "dispatch"), [
-      { ts: undefined, type: "dispatch", sessionID: "p1", agent: "executor", description: "" },
+      {
+        ts: undefined,
+        type: "dispatch",
+        sessionID: "p1",
+        agent: "executor",
+        description: "",
+        promptHash: entriesOf(metricsDir, "dispatch")[0]!.promptHash,
+      },
     ])
   } finally {
     restore()
@@ -458,6 +465,7 @@ test("an enforce-period executor dispatch enforces the plan-gate block and journ
         sessionID: "p1",
         agent: "executor",
         description: "",
+        promptHash: entriesOf(metricsDir, "dispatch")[0]!.promptHash,
         blocked: true,
       },
     ])
@@ -580,7 +588,14 @@ test("a suppressed loop-cap block falls back to the agent name as its would-bloc
     },
   ])
   assert.deepEqual(entriesOf(metricsDir, "dispatch"), [
-    { ts: undefined, type: "dispatch", sessionID: "p1", agent: "planner", description: "" },
+    {
+      ts: undefined,
+      type: "dispatch",
+      sessionID: "p1",
+      agent: "planner",
+      description: "",
+      promptHash: entriesOf(metricsDir, "dispatch")[0]!.promptHash,
+    },
   ])
   assert.equal(
     ctx.ledger.state("p1").totalDispatches,
@@ -640,6 +655,7 @@ test("a failing observer fails the dispatch path toward enforce", async () => {
       sessionID: "p1",
       agent: "planner",
       description: "",
+      promptHash: entriesOf(metricsDir, "dispatch")[0]!.promptHash,
       blocked: true,
     },
   ])
