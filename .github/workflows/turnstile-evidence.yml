@@ -13,8 +13,12 @@
 #                       committed artifact files through the Contents API,
 #                       asserts two byte-level invariants on the .md, appends
 #                       a fixed amber notice when the evidence predates the
-#                       latest non-evidence commit (the head, or its parent
-#                       when the head touches only `.turnstile/`), and upserts
+#                       latest non-evidence commit — found by walking back
+#                       from the head (bounded at 100 commits) to the first
+#                       commit that touches anything outside `.turnstile/`,
+#                       falling back to the head date when the walk is
+#                       exhausted, blocked, or the file list is empty or
+#                       truncated — and upserts
 #                       one comment keyed on the `turnstile:evidence` marker.
 #
 # Contributor bytes may be read; they are never executed. GitHub asks a
@@ -132,18 +136,22 @@ jobs:
             //     never refresh the artifact — it can only notice when it is
             //     old. Read the committed JSON (the emitter's sibling of the
             //     .md), take the newest journal timestamp it reports
-            //     (plan.at / tests.at), and compare it with the latest commit
-            //     that could have changed code: the head commit, or — when
-            //     the head touches only .turnstile/ files, the normal
-            //     emit-and-commit refresh path — its parent. When the
-            //     evidence predates that commit, append a fixed amber notice
-            //     — never any document bytes — so a stale badge warns instead
-            //     of reading as current. Best-effort: any failure to read the
-            //     JSON or a commit skips the notice, and the .md alone still
-            //     posts. Edge cases: an empty commit (no files) and a
-            //     truncated files list (GitHub caps it at 300 entries) are
-            //     both treated as not evidence-only, so they compare against
-            //     the head date — conservative, at worst a spurious notice.
+            //     (plan.at / tests.at / emittedAt — the emit-time event the
+            //     emitter journals on every artifact write), and compare it
+            //     with the latest commit that could have changed code:
+            //     walking back from the head (bounded at 100 commits) to the
+            //     first commit that touches anything outside .turnstile/ —
+            //     evidence-only commits are the normal emit-and-commit
+            //     refresh path. When the evidence predates that commit,
+            //     append a fixed amber notice — never any document bytes —
+            //     so a stale badge warns instead of reading as current.
+            //     Best-effort: any failure to read the JSON or a commit skips
+            //     the notice, and the .md alone still posts. Conservative
+            //     fallbacks to the head date: walk exhaustion at the bound,
+            //     an API failure mid-walk, a parentless evidence-only root,
+            //     and an empty or truncated files list (GitHub caps it at
+            //     300 entries, and a full list is required to prove a commit
+            //     is evidence-only) — at worst a spurious notice.
             let staleNote = null;
             if (violation === null) {
               try {
@@ -156,45 +164,57 @@ jobs:
                 const doc = JSON.parse(
                   Buffer.from(res.data.content, res.data.encoding).toString("utf8"),
                 );
-                const ts = [doc?.plan?.at, doc?.tests?.at]
+                const ts = [doc?.plan?.at, doc?.tests?.at, doc?.emittedAt]
                   .filter((t) => typeof t === "string" && t && !Number.isNaN(Date.parse(t)))
                   .sort()
                   .at(-1);
                 if (ts !== undefined) {
-                  const commit = await github.rest.repos.getCommit({
+                  const MAX_WALK = 100;
+                  const isEvOnly = (c) => {
+                    const files = c.data.files ?? [];
+                    return (
+                      files.length > 0 &&
+                      files.length < 300 &&
+                      files.every(
+                        (f) =>
+                          typeof f.filename === "string" &&
+                          f.filename.startsWith(".turnstile/"),
+                      )
+                    );
+                  };
+                  let commit = await github.rest.repos.getCommit({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     ref: context.payload.pull_request.head.sha,
                   });
-                  // An evidence-only head commit is the normal refresh path:
-                  // the bundle predates the commit that carries it by
-                  // construction, so the meaningful comparison is against
-                  // the parent — the last commit that could have changed
-                  // code. Evidence emitted after the parent is fresh.
-                  const files = commit.data.files ?? [];
-                  // GitHub truncates the files list at 300 entries; a full
-                  // list is required to prove the commit is evidence-only,
-                  // so a truncated list falls back to the head date.
-                  const evidenceOnly =
-                    files.length > 0 &&
-                    files.length < 300 &&
-                    files.every(
-                      (f) =>
-                        typeof f.filename === "string" &&
-                        f.filename.startsWith(".turnstile/"),
-                    );
-                  let compareRef = context.payload.pull_request.head.sha;
-                  let comparedDate =
+                  const headDate =
                     commit.data.commit.committer?.date ?? commit.data.commit.author?.date;
-                  if (evidenceOnly && commit.data.parents?.length > 0) {
-                    compareRef = commit.data.parents[0].sha;
-                    const parent = await github.rest.repos.getCommit({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      ref: compareRef,
-                    });
-                    comparedDate =
-                      parent.data.commit.committer?.date ?? parent.data.commit.author?.date;
+                  // Walk back through evidence-only commits (the normal
+                  // emit-and-commit refresh path) to the first commit that
+                  // could have changed code. Every fallback keeps
+                  // comparedDate at the head date: conservative, at worst a
+                  // spurious notice.
+                  let comparedDate = headDate;
+                  let sha = context.payload.pull_request.head.sha;
+                  for (let i = 0; i < MAX_WALK && isEvOnly(commit); i++) {
+                    if (!commit.data.parents?.length) break; // whole visible history is evidence-only
+                    sha = commit.data.parents[0].sha;
+                    try {
+                      commit = await github.rest.repos.getCommit({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        ref: sha,
+                      });
+                      const d =
+                        commit.data.commit.committer?.date ?? commit.data.commit.author?.date;
+                      if (!isEvOnly(commit)) {
+                        comparedDate = d;
+                        break;
+                      }
+                    } catch (walkErr) {
+                      core.info(`Walk-back stopped at ${sha}: ${walkErr instanceof Error ? walkErr.message : String(walkErr)}`);
+                      break;
+                    }
                   }
                   if (
                     typeof comparedDate === "string" &&

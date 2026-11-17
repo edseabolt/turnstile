@@ -96,5 +96,8 @@ task and projected key by key into `turnstile-evidence/v1`: derived
 counts, canonical marker lines, and two shas (a one-way task handle, and
 `sha256` of the last journaled line). Nothing is filtered out of a larger
 object: the document is built from whitelisted keys, so a journal field
-cannot leak into a public artifact by oversight. It adds no entry type,
-changes no replay rule, and writes nothing to the journal.
+cannot leak into a public artifact by oversight. It adds no entry type and
+changes no replay rule; an artifact write (`--out`) appends one unchained
+`evidence` `event:"emit"` row to the task's journal sink, so a re-emit is
+visible in the audit trail and carries the emit timestamp into the committed
+artifact's `emittedAt` field.
