@@ -14,11 +14,11 @@ import type { GateState } from "./types.ts"
 import { isInterruptedReview } from "./task-scope.ts"
 
 /**
- * The child_process options shared by both rev-parse calls: bound the hang
- * mode and silence git's stdio so a stuck or noisy binary can never stall or
- * block the hook.
+ * The child_process options for the single rev-parse invocation: bounds the
+ * hang mode and silences git's stdio so a stuck or noisy binary can never
+ * stall or block the hook.
  */
-const GIT_EXEC_OPTS: ExecOptions = { timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }
+const GIT_EXEC_OPTS: ExecOptions = { timeout: 250, stdio: ["ignore", "pipe", "ignore"] }
 
 /**
  * The command-execution seam: a `child_process.execFileSync`-shaped function.
@@ -48,41 +48,39 @@ function realExec(command: string, args: ReadonlyArray<string>, options?: ExecOp
 }
 
 /**
- * Builds the two `git rev-parse` argvs `worktreeFingerprint` runs to read the
- * worktree root and the short branch name. The `-C <dir>` prefix is built once
- * here rather than duplicated at each call site.
+ * Builds the single `git rev-parse` argv `worktreeFingerprint` runs to read
+ * the worktree root and the short branch name in one process (rev-parse
+ * prints each requested value in argv order, one per line).
  * @param projectDir The absolute project directory to run against.
- * @returns The `--show-toplevel` argv followed by the `--abbrev-ref HEAD` argv.
+ * @returns The `rev-parse --show-toplevel --abbrev-ref HEAD` argv.
  */
-function gitRevParseArgvs(projectDir: string): [string[], string[]] {
-  return [
-    ["-C", projectDir, "rev-parse", "--show-toplevel"],
-    ["-C", projectDir, "rev-parse", "--abbrev-ref", "HEAD"],
-  ]
+function gitRevParseArgv(projectDir: string): string[] {
+  return ["-C", projectDir, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"]
 }
 
 /**
  * Returns a stable identity for the worktree/branch a task was admitted
- * against. Runs `git rev-parse --show-toplevel` then `--abbrev-ref HEAD` and
- * joins the two trimmed outputs with a NUL separator; both outputs are
- * non-empty for a real worktree, so the identity is well-formed. On any
- * failure (a non-git directory, no git binary, the timeout, or an injected
- * throw) it returns `path.resolve(projectDir)`, so continuation still works
- * inside any stable directory. This is the only continuation-vs-new-task
+ * against. Runs one `git rev-parse --show-toplevel --abbrev-ref HEAD`
+ * invocation and joins the two output lines (toplevel, then branch), trimmed,
+ * with a NUL separator; both lines are non-empty for a real worktree, so the
+ * identity is well-formed. On any failure (a non-git directory, no git
+ * binary, the timeout, an injected throw, or a clean exit printing fewer than
+ * two lines) it returns `path.resolve(projectDir)`, so continuation still
+ * works inside any stable directory. This is the only continuation-vs-new-task
  * signal, so it must not throw.
  * @param projectDir The project directory to fingerprint.
  * @param exec Optional exec seam; defaults to `realExec` (the real
- *     `execFileSync`). Tests inject a throw to cover the fallback branch
+ *     `execFileSync`). Tests inject output or a throw to cover the branches
  *     without mocking the binary.
  * @returns `` `${show-toplevel}\u0000${abbrev-ref HEAD}` `` for a git worktree,
  *     otherwise the resolved project directory.
  */
 export function worktreeFingerprint(projectDir: string, exec: ExecFile = realExec): string {
   try {
-    const argvs = gitRevParseArgvs(projectDir)
-    const top = exec("git", argvs[0], GIT_EXEC_OPTS).trim()
-    const branch = exec("git", argvs[1], GIT_EXEC_OPTS).trim()
-    return `${top}\u0000${branch}`
+    const lines = exec("git", gitRevParseArgv(projectDir), GIT_EXEC_OPTS).trim().split("\n")
+    if (lines.length < 2) return path.resolve(projectDir)
+    const [top = "", branch = ""] = lines
+    return `${top.trim()}\u0000${branch.trim()}`
   } catch {
     return path.resolve(projectDir)
   }
