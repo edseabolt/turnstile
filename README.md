@@ -371,8 +371,11 @@ comment states what it is: a correlated claim, not proof. Re-emit and commit
 both files before every push to a PR: the journal is per-machine, so CI can
 post the committed badge but never refresh it. To keep a stale badge from
 reading as current, the posting job compares the committed evidence's newest
-journaled timestamp with the PR head commit and appends an amber "Stale"
-notice when the evidence predates the change. One workflow
+journaled timestamp with the latest commit that could have changed code — the
+PR head, or its parent when the head commit touches only `.turnstile/` files,
+which is exactly what a normal re-emit → commit → push looks like — and
+appends an amber "Stale" notice when the evidence predates it. A normal emit →
+commit → push cycle is therefore never flagged. One workflow
 detail: validation runs on the pull request itself, while the comment posts
 from a trusted `pull_request_target` run; GitHub asks a maintainer to approve
 that run for a first-time contributor's fork PR, so an outside

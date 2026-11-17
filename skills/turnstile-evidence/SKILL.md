@@ -52,6 +52,8 @@ every push that adds commits to one — re-emit and commit both files:
    in the commit you push.
 
 CI now flags the stale case for you: when the committed evidence predates the
-PR head commit, the posted badge carries an amber "Stale" notice instead of
-reading as current. Treat that notice the same way as a red gate — re-emit
-and push the refreshed pair.
+latest non-evidence commit (the head, or its parent when the head commit only
+touches `.turnstile/`), the posted badge carries an amber "Stale" notice
+instead of reading as current. A normal re-emit → commit → push cycle is never
+flagged. Treat a stale notice the same way as a red gate — re-emit and push
+the refreshed pair.
