@@ -265,6 +265,10 @@ export interface TurnstileContext {
   hasLiveLandingAsk(sid: string): boolean
   /** True when a live (unexpired) pending-hands-on-ask latch exists. */
   hasLiveHandsOnAsk(sid: string): boolean
+  /** Arms the landing ask latch; false when deduped inside the TTL window. */
+  armLandingAsk(parent: string): boolean
+  /** Arms the hands-on ask latch; false when deduped inside the TTL window. */
+  armHandsOnAsk(parent: string): boolean
   /** Returns the last-known project directory for a session. */
   currentProjectDir(sessionID: string): string
   /** Resolves the project directory via session.get, caching per session. */
@@ -800,14 +804,71 @@ function boundAwaitingAsks(st: CoreState): void {
   evictTo(st.awaitingPlanAsk, st.maxTrackedPlanAsks)
 }
 
-function hasLiveAwaitingAsk(st: CoreState, sid: string): boolean {
-  const at = st.awaitingPlanAsk.get(sid)
+/** The maps and TTL one ask-latch family reads and expires against. */
+interface AskLatchMaps {
+  /** Parent → arm time (ms) for the family's live ask latch. */
+  latch: Map<string, number>
+  /** Latch TTL in ms: an arm older than this is expired on read. */
+  ttl: number
+  /** Dedupe map (parent → last escalate time); expiry mirror-deletes it. */
+  dedupe?: Map<string, number>
+}
+
+/** Read one family's latch: live, expired (deleted), or absent. */
+function latchHasLive(maps: AskLatchMaps, sid: string): boolean {
+  const at = maps.latch.get(sid)
   if (at === undefined) return false
-  if (Date.now() - at > st.awaitingPlanAskTtlMs) {
-    st.awaitingPlanAsk.delete(sid)
+  if (Date.now() - at > maps.ttl) {
+    maps.latch.delete(sid)
+    // Mirror the expiry on the dedupe map too: a stale timestamp must not
+    // suppress a legitimate new ask row after the latch expired.
+    maps.dedupe?.delete(sid)
     return false
   }
   return true
+}
+
+/** Arm one family's latch; false when a dedupe stamp is inside the TTL. */
+function latchArm(
+  maps: AskLatchMaps & { dedupe: Map<string, number> },
+  bound: () => void,
+  parent: string,
+): boolean {
+  const now = Date.now()
+  const last = maps.dedupe.get(parent)
+  maps.latch.set(parent, now)
+  bound()
+  if (last !== undefined && now - last < maps.ttl) return false
+  maps.dedupe.set(parent, now)
+  bound()
+  return true
+}
+
+/** The awaiting family's latch maps: no dedupe map, so expiry deletes only the latch. */
+function awaitingAskMaps(st: CoreState): AskLatchMaps {
+  return { latch: st.awaitingPlanAsk, ttl: st.awaitingPlanAskTtlMs }
+}
+
+/** The landing family's latch and dedupe maps. */
+function landingAskMaps(st: CoreState): AskLatchMaps & { dedupe: Map<string, number> } {
+  return {
+    latch: st.pendingLandingAsk,
+    ttl: st.pendingLandingAskTtlMs,
+    dedupe: st.lastLandingEscalateAt,
+  }
+}
+
+/** The hands-on family's latch and dedupe maps. */
+function handsOnAskMaps(st: CoreState): AskLatchMaps & { dedupe: Map<string, number> } {
+  return {
+    latch: st.pendingHandsOnAsk,
+    ttl: st.pendingHandsOnAskTtlMs,
+    dedupe: st.lastHandsOnEscalateAt,
+  }
+}
+
+function hasLiveAwaitingAsk(st: CoreState, sid: string): boolean {
+  return latchHasLive(awaitingAskMaps(st), sid)
 }
 
 function boundLandingAsks(st: CoreState): void {
@@ -829,29 +890,11 @@ function boundLandingGateAsks(st: CoreState): void {
 }
 
 function hasLiveLandingAsk(st: CoreState, sid: string): boolean {
-  const at = st.pendingLandingAsk.get(sid)
-  if (at === undefined) return false
-  if (Date.now() - at > st.pendingLandingAskTtlMs) {
-    st.pendingLandingAsk.delete(sid)
-    // Mirror the expiry on the dedupe map too: a stale timestamp must not
-    // suppress a legitimate new ask row after the latch expired.
-    st.lastLandingEscalateAt.delete(sid)
-    return false
-  }
-  return true
+  return latchHasLive(landingAskMaps(st), sid)
 }
 
 function hasLiveHandsOnAsk(st: CoreState, sid: string): boolean {
-  const at = st.pendingHandsOnAsk.get(sid)
-  if (at === undefined) return false
-  if (Date.now() - at > st.pendingHandsOnAskTtlMs) {
-    st.pendingHandsOnAsk.delete(sid)
-    // Mirror the expiry on the dedupe map too: a stale timestamp must not
-    // suppress a legitimate new ask row after the latch expired.
-    st.lastHandsOnEscalateAt.delete(sid)
-    return false
-  }
-  return true
+  return latchHasLive(handsOnAskMaps(st), sid)
 }
 
 function promoteOnEvidence(st: CoreState, parent: string): void {
@@ -1406,25 +1449,11 @@ function dispatchBlockOutcome(
 }
 
 function armLandingAsk(st: CoreState, parent: string): boolean {
-  const now = Date.now()
-  const last = st.lastLandingEscalateAt.get(parent)
-  st.pendingLandingAsk.set(parent, now)
-  st.boundLandingAsks()
-  if (last !== undefined && now - last < askLatchTtlMs) return false
-  st.lastLandingEscalateAt.set(parent, now)
-  st.boundLandingAsks()
-  return true
+  return latchArm(landingAskMaps(st), st.boundLandingAsks, parent)
 }
 
 function armHandsOnAsk(st: CoreState, parent: string): boolean {
-  const now = Date.now()
-  const last = st.lastHandsOnEscalateAt.get(parent)
-  st.pendingHandsOnAsk.set(parent, now)
-  st.boundHandsOnAsks()
-  if (last !== undefined && now - last < askLatchTtlMs) return false
-  st.lastHandsOnEscalateAt.set(parent, now)
-  st.boundHandsOnAsks()
-  return true
+  return latchArm(handsOnAskMaps(st), st.boundHandsOnAsks, parent)
 }
 
 function suspendBlock(st: CoreState, event: ToolHookEvent, e: BlockError): boolean {
@@ -2339,6 +2368,8 @@ type CoreServiceViews1 = Pick<
   | "hasLiveAwaitingAsk"
   | "hasLiveLandingAsk"
   | "hasLiveHandsOnAsk"
+  | "armLandingAsk"
+  | "armHandsOnAsk"
   | "currentProjectDir"
   | "resolveProjectDir"
   | "resolveParent"
@@ -2359,6 +2390,8 @@ function coreServiceViews1(st: CoreState): CoreServiceViews1 {
     hasLiveAwaitingAsk: st.hasLiveAwaitingAsk,
     hasLiveLandingAsk: st.hasLiveLandingAsk,
     hasLiveHandsOnAsk: st.hasLiveHandsOnAsk,
+    armLandingAsk: st.armLandingAsk,
+    armHandsOnAsk: st.armHandsOnAsk,
     currentProjectDir: st.currentProjectDir,
     resolveProjectDir: st.resolveProjectDir,
     resolveParent: st.resolveParent,
