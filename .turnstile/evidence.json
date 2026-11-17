@@ -3,22 +3,23 @@
   "generatedAt": "1970-01-01T00:00:00.000Z",
   "noJournal": false,
   "noTask": false,
-  "task": "t-57289b4c",
+  "task": "t-e7b74d17",
   "green": true,
+  "emittedAt": "2026-11-17T14:36:22.956Z",
   "plan": {
     "verdict": "APPROVE",
-    "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=1",
-    "at": "2026-11-17T00:04:27.895Z",
+    "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+    "at": "2026-11-17T14:24:51.857Z",
     "source": "subagent-synthetic",
     "stale": false
   },
   "tests": {
     "result": "PASS",
-    "marker": "GATE: PASS tests=1868 passed=1868 failed=0",
-    "at": "2026-11-17T00:52:58.694Z",
+    "marker": "GATE: PASS tests=1877 passed=1877 failed=0",
+    "at": "2026-11-17T14:20:43.993Z",
     "verified": true,
     "mode": "enforce",
-    "exitZeroRuns": 2
+    "exitZeroRuns": 0
   },
   "review": {
     "approves": 2,
@@ -26,11 +27,44 @@
   },
   "waivers": 0,
   "blocks": 0,
-  "dispatches": 7,
+  "dispatches": 6,
   "journal": {
     "files": [
       "turnstile.jsonl",
       "p1.jsonl",
+      "ses_e161df9ecffeIPB22MKwW1aMvR.jsonl",
+      "ses_e161df9edfferWDv9txhB57RTF.jsonl",
+      "ses_e16215b22ffeKO6nT4xgl3GzdN.jsonl",
+      "ses_e1624311affeUT1sc8HA1R557p.jsonl",
+      "ses_e1625eb09ffeKKcgzNd5I3Etem.jsonl",
+      "ses_e162b0472ffeOTsiIB1H5efkf5.jsonl",
+      "ses_e162b792dffemIo7TZMmEtrQob.jsonl",
+      "ses_e162b7afcffeOgLZuOZ1XtaZLU.jsonl",
+      "ses_e1640f24dffds0UKMBkRRuRs1R.jsonl",
+      "ses_e1640f24dffeWqT9vofiZWiep3.jsonl",
+      "ses_e16431c41ffe7WfHwmg4wuM7rL.jsonl",
+      "ses_e164e1ea9ffe5RjZBZqFB0TdxB.jsonl",
+      "ses_e164f209fffekxd1GbSRGDPTz0.jsonl",
+      "ses_e1659fe5fffe7gmnzb6UTduLZg.jsonl",
+      "ses_e18c1c5c2ffe641399DlRLPWDG.jsonl",
+      "ses_e18c24cfeffeVftDo0F2Xdx0P2.jsonl",
+      "ses_e18c24ea8ffeHFlSkrRs3q5JCd.jsonl",
+      "ses_e18cc35f4ffedPHwR23UDHo2Mq.jsonl",
+      "ses_e18cc37eeffeeDwsWaUSgLbmBO.jsonl",
+      "ses_e18d1d4aeffeUPd7eNwNzhSFWI.jsonl",
+      "ses_e18d27cfdffeD4vgAXj553CQ26.jsonl",
+      "ses_e18d9ad72ffePkKu0Nj8bcqp2O.jsonl",
+      "ses_e18d9aeefffel6bIto6jRhrE4J.jsonl",
+      "ses_e18dbf5e7ffeUCJuu24MHOAXlq.jsonl",
+      "ses_e18dc183dffeLQmOwrUzPj0gk3.jsonl",
+      "ses_e18dd0917ffejAcG1qozxRc0T0.jsonl",
+      "ses_e18dd0ae5ffereXok9I9V7ueRx.jsonl",
+      "ses_e18e4c0a2ffe7YttyAF9sUrDQ4.jsonl",
+      "ses_e18ed9f39ffeLmZLQ6be0oKv0J.jsonl",
+      "ses_e18eddab9ffeGhsefYgYeviaxM.jsonl",
+      "ses_e18f450c1ffeMbCmpDx8FDxryD.jsonl",
+      "ses_e18f652bfffen4dI66Mmjo004u.jsonl",
+      "ses_e18f6cfb4ffeKi7hFyATPyC7aC.jsonl",
       "ses_e1905da6bffe9EoMwhhdlQwRwY.jsonl",
       "ses_e193157bdffeP0qdhv7p1M7MsQ.jsonl",
       "ses_e1931a039ffeUBYq8HOvhwDpBD.jsonl",
@@ -720,6 +754,6 @@
       "ses_e68b840b8ffeawVK0MPl5Qbw0M.jsonl"
     ],
     "lines": 2000,
-    "head": "sha256:a2dbee4d67b6"
+    "head": "sha256:7a9ad55be2f7"
   }
 }

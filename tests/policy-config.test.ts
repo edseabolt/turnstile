@@ -146,3 +146,13 @@ test("policy config: the plan gate names the configured plans dir", () => {
   assert.ok(custom.includes("Plans live in `docs/plans`"), "the custom plans dir renders verbatim")
   assert.ok(!custom.includes("`.opencode/plans` (your"), "no stale default remains")
 })
+
+/** 7. The Worktree/commit line carries the evidence-refresh rule: the
+ *  executor is told to re-emit and commit the .turnstile/ pair before every
+ *  push that adds commits to an open PR. */
+test("policy config: the worktree/commit line instructs the evidence refresh", () => {
+  const policy = expectedPolicy()
+  const line = policy.split("\n").find((l) => l.startsWith("Worktree/commit:"))
+  assert.ok(line!.includes("before every push that adds commits to an open PR"))
+  assert.ok(line!.includes(".turnstile/evidence.json"))
+})
