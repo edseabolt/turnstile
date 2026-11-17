@@ -38,7 +38,9 @@ journal row carries the sha256-16 of the dispatch prompt (`promptHash`), the
 `marker-retry` prompted row carries the sha256-16 of the injected text
 (`textHash`), and a structured delivery whose echoed prompt hashes
 differently journals one `dispatch-tamper` audit row (best-effort, inert to
-gate state). Attribution is
+gate state; the stamp is keyed by the dispatching parent and the resolved
+agent, so concurrent dispatches from one parent never cross-match).
+Attribution is
 edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
 via `session.get` in `resolveParent`) decides where the policy lands, so both
 shapes inject on the receiving parent. The `policyInjected` flag and the

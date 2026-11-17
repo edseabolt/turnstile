@@ -152,9 +152,10 @@ export interface TurnstileContext {
   sessionDirs: Map<string, string>
   /** Child session ID → marker-retry attempts already used. */
   markerRetries: Map<string, number>
-  /** Dispatching session ID → sha256-16 of its latest dispatch prompt
+  /** Parent + agent stamp key → sha256-16 of that dispatch's prompt
    *  (delivery-time tamper check; the child ID does not exist yet at
-   *  execute.before, so the stamp is keyed by the dispatching parent). */
+   *  execute.before, so the stamp is keyed by the dispatching parent and
+   *  the resolved agent, keeping concurrent dispatches distinct). */
   dispatchPromptHashes: Map<string, string>
   /** Per-session sliding window of streamed child text. */
   deltaWindows: Map<string, string>

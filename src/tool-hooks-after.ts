@@ -10,6 +10,7 @@
  */
 
 import { agentFromDeliveryEvent } from "./child-registration.ts"
+import { dispatchStampKey } from "./dispatch-guard.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
 import { provOverrideEntry } from "./decision-ledger.ts"
 import { sha256Hex16 } from "./chain.ts"
@@ -220,7 +221,9 @@ function markResolvedParent(ctx: TurnstileContext, child: string): void {
 function checkDispatchTamper(ctx: TurnstileContext, event: ToolHookEvent, child: string): void {
   const echoed = (event.result?.input as { prompt?: unknown } | undefined)?.prompt
   if (typeof echoed !== "string" || echoed === "") return
-  const expected = ctx.dispatchPromptHashes.get(ctx.ledger.parentOf(child))
+  const expected = ctx.dispatchPromptHashes.get(
+    dispatchStampKey(ctx.ledger.parentOf(child), agentFromDeliveryEvent(event)),
+  )
   if (expected === undefined) return
   const actual = sha256Hex16(echoed)
   if (actual === expected) return

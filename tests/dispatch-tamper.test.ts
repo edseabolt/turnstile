@@ -30,7 +30,10 @@ import {
 async function boot(): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string }> {
   const metricsDir = tmpDir()
   const h = makeFakeHost({
-    sessionRecords: new Map([["c1", { parentID: "p1", agent: "test-runner" }]]),
+    sessionRecords: new Map([
+      ["c1", { parentID: "p1", agent: "test-runner" }],
+      ["c2", { parentID: "p1", agent: "reviewer" }],
+    ]),
   })
   const setup = turnstile(h.host, {
     env: isolatedEnv(metricsDir),
@@ -131,6 +134,46 @@ test("a missing echo or unrecorded child journals no dispatch-tamper row", async
         input: { prompt: "unrecorded" },
       },
     })
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "dispatch-tamper"))
+  } finally {
+    dispose()
+  }
+})
+
+/** Two concurrent dispatches from one parent (different agents, different
+ *  prompts) keep distinct stamps: each child's delivery is matched against
+ *  its own dispatch prompt and neither journals a tamper row — the second
+ *  dispatch must not overwrite the first's stamp. */
+test("concurrent dispatches match each delivery against its own prompt", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await Promise.all([
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "test-runner", prompt: "first prompt", description: "d1" },
+      }).catch(() => {}),
+      callTool(h, "execute.before", {
+        tool: "task",
+        sessionID: "p1",
+        input: { agent: "reviewer", prompt: "second prompt", description: "d2" },
+      }).catch(() => {}),
+    ])
+    for (const [child, agent, prompt] of [
+      ["c1", "test-runner", "first prompt"],
+      ["c2", "reviewer", "second prompt"],
+    ] as const) {
+      await callTool(h, "execute.after", {
+        tool: "subagent",
+        sessionID: "p1",
+        input: { agent },
+        result: {
+          output: { output: "ran, no marker", sessionID: child },
+          metadata: { sessionID: child },
+          input: { prompt },
+        },
+      })
+    }
     assert.ok(!journalEntries(metricsDir).some((l) => l.type === "dispatch-tamper"))
   } finally {
     dispose()

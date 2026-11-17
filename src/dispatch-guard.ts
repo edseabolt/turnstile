@@ -65,8 +65,8 @@ export interface DispatchGuardState {
     blocked: boolean,
     promptHash: string,
   ): void
-  /** Dispatching session ID → sha256-16 of its latest dispatch prompt
-   *  (delivery-time tamper check). */
+  /** Dispatch stamp key (parent + agent) → sha256-16 of that dispatch's
+   *  prompt (delivery-time tamper check). */
   dispatchPromptHashes: Map<string, string>
   /** Whether reactive enforcement is armed for the session's parent. */
   enforcementArmed(sessionID: string): boolean
@@ -87,6 +87,21 @@ export interface DispatchGuardState {
     waived: boolean,
     promptHash: string,
   ): boolean
+}
+
+/**
+ * The dispatch-prompt-hash stamp key: the dispatching parent joined with the
+ * resolved agent name. Keying by parent alone would let two concurrent
+ * dispatches (parallel task calls in one message) overwrite each other's
+ * stamp and cause a spurious tamper row on the first child's delivery; the
+ * agent name is available at both dispatch time (agentFromDispatchEvent) and
+ * delivery time (agentFromDeliveryEvent), so the pair disambiguates.
+ * @param sessionID The dispatching parent session.
+ * @param agent The resolved agent name.
+ * @returns The composite stamp key.
+ */
+export function dispatchStampKey(sessionID: string, agent: string): string {
+  return `${sessionID}\u0000${agent}`
 }
 
 /**
@@ -619,11 +634,12 @@ async function guardedTaskDispatchBody(
 ): Promise<void> {
   let waived = false
   const promptHash = sha256Hex16(prompt)
-  // Tamper-check anchor: record the dispatch prompt's hash per dispatching
-  // session so the delivery-time check (tool-hooks-after) can compare the
-  // echoed prompt through the child's resolved parent. Bounded like the
-  // other per-session maps.
-  st.dispatchPromptHashes.set(sessionID, promptHash)
+  // Tamper-check anchor: record the dispatch prompt's hash keyed by parent
+  // + resolved agent so the delivery-time check (tool-hooks-after) can
+  // compare the echoed prompt through the child's resolved parent, and so
+  // two concurrent dispatches from one parent keep distinct stamps.
+  // Bounded like the other per-session maps.
+  st.dispatchPromptHashes.set(dispatchStampKey(sessionID, agent), promptHash)
   evictTo(st.dispatchPromptHashes, st.config.maxSessions)
   try {
     if (dormantDispatchArm(st, sessionID, agent, description, promptHash)) return
