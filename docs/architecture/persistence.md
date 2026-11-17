@@ -8,6 +8,8 @@ repo at `~/.local/share/opencode/metrics/`. The store is a shared
 (`journalPerSession`, default on). `gate-events.log` (trace only),
 `anchors.jsonl`, and `approved-plans.jsonl` sit beside them. Retention is
 bounded: 5 MB per file, 5 generations per file. `replayTailLines` (default 2000) bounds the boot window.
+The standalone `evidence` emitter is the one external writer: each
+artifact write appends one unchained `event:"emit"` row.
 
 On restart, `replayGatePasses` (`src/ledger.ts`) walks the generations
 newest-first. It merges by `ts` and folds last-wins per session. It

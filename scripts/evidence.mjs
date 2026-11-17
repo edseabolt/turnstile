@@ -25,8 +25,10 @@
 //
 // `--task` defaults to `latest` (the session owning the last journaled line);
 // `--format` defaults to `json`. `--out` writes the artifact (and, for a
-// `.json` path, the sibling `.md` the Action posts) instead of stdout.
-// `--validate` re-checks a committed artifact and writes nothing. An absent
+// `.json` path, the sibling `.md` the Action posts) instead of stdout, and
+// journals one unchained `event:"emit"` row for the task (stdout output
+// journals nothing). `--validate` re-checks a committed artifact and writes
+// nothing. An absent
 // journal emits a `noJournal` document and exits 0; the default `latest`
 // selector with no session rows in the tail emits `noTask` and exits 0, while
 // an explicit `--task <id>` naming no session is an input error and exits 2.
@@ -40,8 +42,9 @@ import * as path from "node:path"
 const USAGE = `Usage: opencode-turnstile evidence [--task <session|latest>] [--format json|markdown]
                                      [--out <path>] [--validate <path>] [--help]
 
-Emit a shareable evidence summary for one task. Read-only: nothing is written
-to the journal. The summary is a whitelist projection — derived counts,
+Emit a shareable evidence summary for one task. An artifact write (--out)
+appends one unchained emit event to the journal; stdout output is read-only.
+The summary is a whitelist projection — derived counts,
 canonical marker lines, and shas; session IDs, prompts, and command text never
 appear.
 
@@ -399,8 +402,8 @@ function reviewCredit(state, expected) {
  * the plan red. Malformed lines and lines whose sessionID fails the shape
  * check are skipped before any fold.
  * @param {Record<string, unknown>} acc The task-window accumulator.
- * @returns {{ plan: Record<string, unknown>, tests: Record<string, unknown>, review: Record<string, number>, waivers: number, blocks: number, dispatches: number, exitZeroRuns: number }}
- *     The folded sections and running counts.
+ * @returns {{ plan: Record<string, unknown>, tests: Record<string, unknown>, review: Record<string, number>, waivers: number, blocks: number, dispatches: number, exitZeroRuns: number, emitTs: string }}
+ *     The folded sections, running counts, and the last emit-event timestamp.
  */
 function foldTask(acc) {
   let planResult = null
@@ -420,6 +423,7 @@ function foldTask(acc) {
   let blocks = 0
   let waivers = 0
   let exitZeroRuns = 0
+  let emitTs = ""
   // The ensemble fold mirrors src/ledger.ts's replay (foldEnsemble +
   // restoreHumanGrants): `ensemble` entries carry the RUNNING dispatch count,
   // so last-wins — not summation — is the honest read. Summing the running
@@ -465,6 +469,10 @@ function foldTask(acc) {
     } else if (type === "blocked") {
       blocks++
     } else if (type === "evidence") {
+      // An `event:"emit"` row records an artifact write: its ts becomes the
+      // document's `emittedAt` (last-wins). It carries no `exit`, so
+      // `isExitZero` is false and it never counts into `exitZeroRuns`.
+      if (e.event === "emit") emitTs = typeof e.ts === "string" ? e.ts : ""
       if (isExitZero(e)) exitZeroRuns++
     } else if (type === "ensemble") {
       foldEnsembleEntry(e, acc.expected, ensemble)
@@ -513,6 +521,7 @@ function foldTask(acc) {
     blocks,
     dispatches,
     exitZeroRuns,
+    emitTs,
   }
 }
 
@@ -529,7 +538,7 @@ function foldTask(acc) {
  */
 function buildDoc(window, sessionID) {
   const hash = (s) => crypto.createHash("sha256").update(s).digest("hex")
-  const { plan, tests, review, waivers, blocks, dispatches } = foldTask(window)
+  const { plan, tests, review, waivers, blocks, dispatches, emitTs } = foldTask(window)
   return {
     schema: SCHEMA,
     generatedAt: new Date(0).toISOString(),
@@ -537,6 +546,7 @@ function buildDoc(window, sessionID) {
     noTask: false,
     task: "t-" + hash(sessionID).slice(0, 8),
     green: greenRule(plan, tests, review),
+    emittedAt: emitTs || "",
     plan,
     tests,
     review,
@@ -566,6 +576,7 @@ function emptyDoc(info) {
     noTask: info.noTask,
     task: null,
     green: false,
+    emittedAt: "",
     plan: { verdict: null, marker: null, at: "", source: null, stale: false },
     tests: { result: null, marker: null, at: "", verified: null, mode: null, exitZeroRuns: 0 },
     review: { approves: 0, expected: info.expected },
@@ -695,6 +706,7 @@ function checkShapes(doc) {
     "noTask",
     "task",
     "green",
+    "emittedAt",
     "plan",
     "tests",
     "review",
@@ -710,6 +722,13 @@ function checkShapes(doc) {
   if (!bool(doc.noJournal) || !bool(doc.noTask)) v.push("noJournal/noTask must be booleans")
   if (doc.task !== null && !TASK_RE.test(doc.task)) v.push(`task ${doc.task}: bad handle`)
   if (!bool(doc.green)) v.push("green must be a boolean")
+  // Legacy artifacts predate `emittedAt`; the rule is conditional on the key's
+  // presence so they stay valid, and `""` (a fold that saw no emit) is allowed.
+  if (
+    doc.emittedAt !== undefined &&
+    (!str(doc.emittedAt) || (doc.emittedAt !== "" && !TS_RE.test(doc.emittedAt)))
+  )
+    v.push("emittedAt: bad timestamp")
 
   for (const k of ["waivers", "blocks", "dispatches"])
     if (!isCount(doc[k])) v.push(`${k}: must be a non-negative integer`)
@@ -987,6 +1006,70 @@ async function writeOut(out, format, doc) {
 }
 
 /**
+ * Appends one unchained `event:"emit"` journal row for an artifact write. The
+ * row routes to the task's session sink (`sessions/<sid>.jsonl`) when the
+ * sessions dir holds a family root for that id, else the shared
+ * `turnstile.jsonl` — mirroring how the task's other rows route. The row is
+ * the unchained legacy shape (no `hash` field), so it is inert to the hash
+ * chain and to the host's chain seeding. Fail-open: an append failure writes
+ * a one-line stderr note and the artifact is still emitted (without a fresh
+ * `emittedAt`).
+ * @param {string} metricsDir The resolved metrics directory.
+ * @param {string} sessionID The task's parent session ID.
+ * @returns {string} The row's ISO timestamp (the value folded into
+ *     `emittedAt` when the append succeeded).
+ */
+function journalEmit(metricsDir, sessionID) {
+  const row = { ts: new Date().toISOString(), type: "evidence", event: "emit", sessionID }
+  let sink = path.join(metricsDir, "turnstile.jsonl")
+  try {
+    const sessionsDir = path.join(metricsDir, "sessions")
+    const hasFamily = fs
+      .readdirSync(sessionsDir)
+      .some((name) => name === sessionID + ".jsonl" || name.startsWith(sessionID + ".jsonl."))
+    if (hasFamily) sink = path.join(sessionsDir, sessionID + ".jsonl")
+  } catch {
+    // No sessions dir (legacy layout) or unreadable: the shared file is the sink.
+  }
+  try {
+    fs.appendFileSync(sink, JSON.stringify(row) + "\n")
+  } catch (e) {
+    process.stderr.write(
+      `evidence: could not journal the emit event: ${e instanceof Error ? e.message : String(e)}\n`,
+    )
+  }
+  return row.ts
+}
+
+/**
+ * Rebuilds one session's task window from journal lines — the same parse and
+ * session-ID shape checks the grouping in `main` applies, narrowed to a
+ * single session. Used after an emit row is appended, so the folded window
+ * contains the emit row and `journal.head` reflects the post-append tail.
+ * @param {string[]} lines The journal lines, oldest-first.
+ * @param {string} sid The session ID to rebuild the window for.
+ * @returns {{ entries: Record<string, unknown>[], head: string | null } | null}
+ *     The window, or null when the session has no valid rows in the lines.
+ */
+function sessionWindow(lines, sid) {
+  const win = { entries: [], head: null }
+  for (const line of lines) {
+    let e
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!e || typeof e !== "object" || Array.isArray(e)) continue
+    if (e.sessionID !== sid || !REPLAY_SESSION_RE.test(sid)) continue
+    if (win.head === null) win.head = line
+    win.entries.push(e)
+    win.head = line
+  }
+  return win.head === null ? null : win
+}
+
+/**
  * Entry point. Parses args, resolves the journal, selects the task, folds and
  * renders the document, and prints or writes it (or validates, when given).
  * @param {string[]} argv Arguments after the `evidence` subcommand.
@@ -1081,16 +1164,31 @@ async function main(argv) {
   }
 
   const win = bySession.get(picked.sid)
-  const doc = buildDoc(
-    {
-      entries: win.entries,
-      head: win.head,
-      expected: bar,
-      files,
-      lines: lines.length,
-    },
-    picked.sid,
-  )
+  let window = {
+    entries: win.entries,
+    head: win.head,
+    expected: bar,
+    files,
+    lines: lines.length,
+  }
+  // An artifact write journals one emit event, then the journal is re-read so
+  // the emit row is inside the folded window and `journal.head` reflects the
+  // post-append tail. The task selection stays from the first read.
+  if (flags.out !== null) {
+    journalEmit(metricsDir, picked.sid)
+    const reread = readJournal(journalPath, path.join(metricsDir, "sessions"), replayTailLines)
+    const win2 = sessionWindow(reread.lines, picked.sid)
+    if (win2 !== null) {
+      window = {
+        entries: win2.entries,
+        head: win2.head,
+        expected: bar,
+        files: reread.files,
+        lines: reread.lines.length,
+      }
+    }
+  }
+  const doc = buildDoc(window, picked.sid)
   return emit(flags, doc)
 }
 
