@@ -12,6 +12,7 @@
 import { agentFromDeliveryEvent } from "./child-registration.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
 import { provOverrideEntry } from "./decision-ledger.ts"
+import { sha256Hex16 } from "./chain.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import type { MarkerEvent, ToolHookEvent, ToolResult } from "./types.ts"
 
@@ -204,6 +205,29 @@ function markResolvedParent(ctx: TurnstileContext, child: string): void {
 }
 
 /**
+ * Delivery-time tamper check (best-effort, fail-open): when the host's
+ * structured delivery echoes the dispatch input prompt
+ * (`result.input.prompt`) and the dispatch guard recorded a hash for this
+ * child, a mismatch journals one `dispatch-tamper` audit row — the signal
+ * that the prompt the child received differs from what was dispatched. A
+ * missing echo or an unrecorded child journals nothing (no false
+ * positives); the row is replay-inert and never touches gate state.
+ * @param ctx The shared per-setup context.
+ * @param event The execute.after payload.
+ * @param child The delivery's child session ID (resolved to its dispatching
+ *     parent to find the dispatch-time stamp).
+ */
+function checkDispatchTamper(ctx: TurnstileContext, event: ToolHookEvent, child: string): void {
+  const echoed = (event.result?.input as { prompt?: unknown } | undefined)?.prompt
+  if (typeof echoed !== "string" || echoed === "") return
+  const expected = ctx.dispatchPromptHashes.get(ctx.ledger.parentOf(child))
+  if (expected === undefined) return
+  const actual = sha256Hex16(echoed)
+  if (actual === expected) return
+  ctx.journaler.journal({ type: "dispatch-tamper", sessionID: child, expected, actual })
+}
+
+/**
  * The task/subagent delivery body: classifies the delivery once
  * (marker parsing, the bare-output check, and policy injection all
  * read the same classified child + text), seeds the emitter-authority
@@ -217,6 +241,7 @@ function markResolvedParent(ctx: TurnstileContext, child: string): void {
  */
 async function afterTaskDelivery(ctx: TurnstileContext, event: ToolHookEvent): Promise<void> {
   const { delivery, output, child, agent, effectiveAgent } = await classifyAndSeed(ctx, event)
+  checkDispatchTamper(ctx, event, child)
   const markerEvents = ctx.parseMarkers(
     output,
     child,

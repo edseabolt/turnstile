@@ -9,6 +9,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
+import { markerRetryPrompt } from "../src/markers.ts"
 import {
   callTool,
   isolatedEnv,
@@ -63,7 +64,9 @@ test("retry fires once and prompts the child", async () => {
     assert.match(h.sessionPrompts[0]!.text, /GATE: PASS tests=3 passed=3 failed=0/)
     assert.doesNotMatch(h.sessionPrompts[0]!.text, /VERDICT:/)
     assert.match(h.sessionPrompts[0]!.text, /received and parsed/)
-    assert.match(h.sessionPrompts[0]!.text, /Do not run any tools/)
+    assert.match(h.sessionPrompts[0]!.text, /Do not start new work/)
+    assert.doesNotMatch(h.sessionPrompts[0]!.text, /Do not run any tools/)
+    assert.match(h.sessionPrompts[0]!.text, /never invent or estimate counts/)
     assert.ok(journalEntries(metricsDir).every((l) => l.type !== "violation"))
   } finally {
     dispose()
@@ -84,7 +87,7 @@ test("retry prompt tells the reviewer its analysis is complete and quotes the ta
     const p = h.sessionPrompts[0]!
     assert.match(p.text, /VERDICT: APPROVE crit=0 high=0 med=0 low=0/)
     assert.doesNotMatch(p.text, /GATE:/)
-    assert.match(p.text, /Do not run any tools/)
+    assert.match(p.text, /Do not start new work/)
     assert.match(p.text, /verdict: approve/)
   } finally {
     dispose()
@@ -211,6 +214,57 @@ test("a failed retry prompt fails open and counts a violation", async () => {
     )
     assert.ok(entries.some((l) => l.type === "error" && String(l.error).includes("marker-retry")))
     assert.equal(entries.filter((l) => l.type === "violation").length, 1)
+  } finally {
+    dispose()
+  }
+})
+
+/** A prior output whose tail carries GATE/VERDICT marker lines has them
+ *  stripped from the quoted tail: the prompt never repeats a marker line
+ *  (or its counts), so it cannot read as a pre-supplied marker. Unit-level:
+ *  the bare-output path never delivers a marker-bearing tail (a marker-bearing
+ *  delivery is not bare), so the stripping arms are only reachable here. */
+test("retry prompt never quotes a marker line from the prior output", () => {
+  const agents = {
+    testRunner: "test-runner",
+    reviewer: "reviewer",
+    planReviewer: "plan-reviewer",
+  } as never
+  const prompt = markerRetryPrompt(
+    agents,
+    "test-runner",
+    /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ failed=\d+/gm,
+    /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm,
+    "GATE: PASS tests=9 passed=9 failed=0\nanalysis of the run\nVERDICT: APPROVE crit=1 high=0 med=0 low=0",
+  )
+  assert.match(prompt, /analysis of the run/)
+  assert.doesNotMatch(prompt, /tests=9/)
+  assert.doesNotMatch(prompt, /crit=1/)
+})
+
+/** A prior output that is ONLY marker lines strips to an empty tail, so the
+ *  quoted-tail block is omitted entirely. */
+test("retry prompt omits the tail block when only marker lines remain", () => {
+  const agents = { testRunner: "test-runner" } as never
+  const prompt = markerRetryPrompt(
+    agents,
+    "test-runner",
+    /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ failed=\d+/gm,
+    /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm,
+    "GATE: PASS tests=9 passed=9 failed=0",
+  )
+  assert.doesNotMatch(prompt, /```/)
+})
+
+/** The prompted marker-retry row carries textHash: the sha256-16 of the
+ *  exact retry prompt text sent to the child (injection provenance). */
+test("prompted marker-retry row carries the injected text hash", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await deliverBare(h, "test-runner", "c1")
+    const row = journalEntries(metricsDir).find((l) => l.type === "marker-retry")
+    assert.equal(row!.outcome, "prompted")
+    assert.match(String(row!.textHash), /^[0-9a-f]{16}$/)
   } finally {
     dispose()
   }

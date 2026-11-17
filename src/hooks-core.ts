@@ -11,14 +11,14 @@
 
 import { evictTo } from "./bounded.ts"
 import { loadConfig } from "./config.ts"
+import { sha256Hex16 } from "./chain.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
   compileMarkerRegex,
   deltaWindowFloorChars,
   formatNearMissDiagnostics,
   GATE_RE,
-  CANONICAL_GATE_MARKER,
-  CANONICAL_VERDICT_MARKER,
+  markerRetryPrompt,
   verdictResultOf,
   VERDICT_RE,
 } from "./markers.ts"
@@ -77,44 +77,6 @@ const askLatchTtlMs = 5_000
 
 /** Cap on tracked per-child marker-retry counters (maxSessions scale). */
 const MAX_TRACKED_MARKER_RETRIES = 64
-
-/** Chars of the child's prior delivery quoted in the retry prompt. */
-const TAIL_CHARS = 600
-
-/** Marker the given agent's role owes: GATE for the test-runner,
- *  VERDICT for the reviewers; unknown agents get both examples. */
-function markerExampleOf(agents: TurnstileConfig["agents"], agent: string): string {
-  if (agent === agents.testRunner) return `\`${CANONICAL_GATE_MARKER}\``
-  if (agent === agents.reviewer || agent === agents.planReviewer)
-    return `\`${CANONICAL_VERDICT_MARKER}\``
-  return `\`${CANONICAL_GATE_MARKER}\` (test-runner) or \`${CANONICAL_VERDICT_MARKER}\` (reviewer)`
-}
-
-/** Bounded tail of the child's prior delivery, quoted in the retry
- *  prompt so the restatement is mechanical. Empty when the tail trims
- *  to nothing. */
-function priorOutputTail(priorOutput: string): string {
-  const tail = priorOutput.slice(-TAIL_CHARS).trim()
-  return tail === ""
-    ? ""
-    : ` The end of your previous reply, for reference:\n\`\`\`\n${tail}\n\`\`\``
-}
-
-/** Retry prompt telling the child its output was received and parsed,
- *  so it restates only the marker plus its existing conclusion. */
-function markerRetryPrompt(
-  agents: TurnstileConfig["agents"],
-  agent: string,
-  priorOutput: string,
-): string {
-  return (
-    "[turnstile] Your output was received and parsed. Your analysis is " +
-    "complete. Do not run any tools and do not repeat the work. Reply " +
-    "with only the required marker as the first line, followed by your " +
-    `existing conclusion. Your marker: ${markerExampleOf(agents, agent)}.` +
-    priorOutputTail(priorOutput)
-  )
-}
 
 /** Shared per-setup context consumed by turnstile's per-surface hook modules. */
 export interface TurnstileContext {
@@ -190,6 +152,10 @@ export interface TurnstileContext {
   sessionDirs: Map<string, string>
   /** Child session ID → marker-retry attempts already used. */
   markerRetries: Map<string, number>
+  /** Dispatching session ID → sha256-16 of its latest dispatch prompt
+   *  (delivery-time tamper check; the child ID does not exist yet at
+   *  execute.before, so the stamp is keyed by the dispatching parent). */
+  dispatchPromptHashes: Map<string, string>
   /** Per-session sliding window of streamed child text. */
   deltaWindows: Map<string, string>
   /** Child session ID → resolved agent name (emitter authority). */
@@ -275,8 +241,15 @@ export interface TurnstileContext {
   surfaceObserveSummary(event: ToolHookEvent): void
   /** True when text contains at least one GATE or VERDICT marker. */
   hasMarker(text: string): boolean
-  /** Journals one task/subagent dispatch entry. */
-  recordDispatch(sessionID: string, agent: string, description: string, blocked: boolean): void
+  /** Journals one task/subagent dispatch entry (with the dispatch prompt's
+   *  sha256-16 provenance hash). */
+  recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+    promptHash: string,
+  ): void
   /** Surfaces pending near-miss diagnostics into the first tool delivery. */
   surfaceNearMissDiagnostics(event: ToolHookEvent): void
   /** Seeds (or refreshes) a child session's emitter agent. */
@@ -479,6 +452,7 @@ interface CoreState {
   maxTrackedSessionDirs: number
   sessionDirs: Map<string, string>
   markerRetries: Map<string, number>
+  dispatchPromptHashes: Map<string, string>
   deltaWindows: Map<string, string>
   maxDeltaWindowChars: number
   maxTrackedDeltaWindows: number
@@ -542,7 +516,13 @@ interface CoreState {
   /** See {@link hasMarker}. */
   hasMarker(text: string): boolean
   /** See {@link recordDispatch}. */
-  recordDispatch(sessionID: string, agent: string, description: string, blocked: boolean): void
+  recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+    promptHash: string,
+  ): void
   /** See {@link boundNearMissPending}. */
   boundNearMissPending(): void
   /** See {@link surfaceNearMissDiagnostics}. */
@@ -665,6 +645,7 @@ interface CoreState {
     agent: string,
     description: string,
     waived: boolean,
+    promptHash: string,
   ): boolean
   /** See {@link blockCause}. */
   blockCause(e: BlockError, agent: string): string
@@ -675,6 +656,7 @@ interface CoreState {
     agent: string,
     description: string,
     waived: boolean,
+    promptHash: string,
   ): boolean
   /** See {@link armLandingAsk}. */
   armLandingAsk(parent: string): boolean
@@ -735,12 +717,14 @@ function recordDispatch(
   agent: string,
   description: string,
   blocked: boolean,
+  promptHash: string,
 ): void {
   st.journaler.journal({
     type: "dispatch",
     sessionID,
     agent,
     description,
+    promptHash,
     ...(blocked ? { blocked: true } : {}),
   })
   st.journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
@@ -1386,10 +1370,11 @@ function suspendDispatchOutcome(
   agent: string,
   description: string,
   waived: boolean,
+  promptHash: string,
 ): boolean {
   if (!st.suspendSuppressionActive(sessionID)) return false
   st.journalSuspendedWouldBlock(sessionID, st.blockCause(e, agent))
-  st.allowDispatch(sessionID, agent, description, waived)
+  st.allowDispatch(sessionID, agent, description, waived, promptHash)
   return true
 }
 
@@ -1404,17 +1389,18 @@ function dispatchBlockOutcome(
   agent: string,
   description: string,
   waived: boolean,
+  promptHash: string,
 ): boolean {
   if (!(e instanceof BlockError)) return false
   if (st.observeActive(sessionID)) {
     const cause = st.blockCause(e, agent)
     const totals = st.ledger.noteWouldBlock(sessionID)
     st.journaler.journal(wouldBlockEntry(sessionID, cause, totals.observed, totals.wouldBlocks))
-    st.allowDispatch(sessionID, agent, description, waived)
+    st.allowDispatch(sessionID, agent, description, waived, promptHash)
     return true
   }
-  if (st.suspendDispatchOutcome(e, sessionID, agent, description, waived)) return true
-  st.recordDispatch(sessionID, agent, description, true)
+  if (st.suspendDispatchOutcome(e, sessionID, agent, description, waived, promptHash)) return true
+  st.recordDispatch(sessionID, agent, description, true, promptHash)
   return false
 }
 
@@ -1518,19 +1504,21 @@ async function retryMarker(
     return st.noteRetrySkipped(child, agent, used, "exhausted")
   if (typeof st.hostSessionRef.current?.prompt !== "function")
     return st.noteRetrySkipped(child, agent, used, "skipped-no-api")
+  const text = markerRetryPrompt(st.config.agents, agent, st.gateRe, st.verdictRe, priorOutput)
   st.journaler.journal({
     type: "marker-retry",
     sessionID: child,
     agent,
     attempt: used,
     outcome: "prompted",
+    textHash: sha256Hex16(text),
   })
   st.markerRetries.set(child, used + 1)
   evictTo(st.markerRetries, MAX_TRACKED_MARKER_RETRIES)
   try {
     await st.hostSessionRef.current.prompt({
       sessionID: child,
-      text: markerRetryPrompt(st.config.agents, agent, priorOutput),
+      text,
     })
   } catch (e) {
     st.journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
@@ -1698,6 +1686,11 @@ function buildCoreDeliveryMaps(st: CoreState): void {
 
   /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
   st.markerRetries = new Map<string, number>()
+  // Dispatching session ID → sha256-16 of its latest dispatch prompt,
+  // recorded by the dispatch guard and compared against the delivery's
+  // echoed prompt by the tamper check (tool-hooks-after, keyed through the
+  // child's resolved parent). Bounded like markerRetries.
+  st.dispatchPromptHashes = new Map<string, string>()
   st.taskDeliverySeq = { current: 0 }
 }
 
@@ -2207,6 +2200,7 @@ type CoreMapViews = Pick<
   | "handsOnGateAsks"
   | "sessionDirs"
   | "markerRetries"
+  | "dispatchPromptHashes"
   | "deltaWindows"
   | "sessionAgents"
   | "admittedIds"
@@ -2233,6 +2227,7 @@ function coreMapViews(st: CoreState): CoreMapViews {
     handsOnGateAsks: st.handsOnGateAsks,
     sessionDirs: st.sessionDirs,
     markerRetries: st.markerRetries,
+    dispatchPromptHashes: st.dispatchPromptHashes,
     deltaWindows: st.deltaWindows,
     sessionAgents: st.sessionAgents,
     admittedIds: st.admittedIds,

@@ -152,7 +152,13 @@ test("suspend: TURNSTILE OFF journals action:off and suppresses a dispatch block
       cause: "plan-gate",
     })
     assert.deepEqual(entriesOf(metricsDir, "dispatch"), [
-      { type: "dispatch", sessionID: "p1", agent: "executor", description: "" },
+      {
+        type: "dispatch",
+        sessionID: "p1",
+        agent: "executor",
+        description: "",
+        promptHash: entriesOf(metricsDir, "dispatch")[0]!.promptHash,
+      },
     ])
   } finally {
     restore()
