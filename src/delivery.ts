@@ -31,6 +31,15 @@ export type Delivery =
   | { kind: "structured"; child: string; text: string } // v2 subagent: structured output, parent-keyed event
   | { kind: "unknown"; child: string; text: ""; shape: string } // present but unclassifiable — journaled loudly
   | { kind: "absent"; child: string; text: "" } // nothing to deliver — documented silent case
+  | {
+      // a tool result emitted by a session other than the resolved child (the
+      // parent-side background-subagent acknowledgment among them): text
+      // authored by the emitting session, never the child's output; a
+      // documented silent case like `absent`.
+      kind: "parent-authored"
+      child: string
+      text: ""
+    }
 
 /**
  * Whether a value is a plain object (neither null nor array-like): the guard
@@ -114,7 +123,12 @@ export function structuredPartsOf(result: ToolResult): { child: string; text: st
  * event, the child on `metadata.sessionID` (or `output.sessionID`), the
  * canonical child text in `output.output`, and model-visible `content` as a
  * string or a block array (absent `content` is fine too: the host then
- * stringifies `output`). A present result matching neither shape is
+ * stringifies `output`). String-shape text is child output when the event
+ * origin (`event.sessionID`) is the child or is absent; a non-empty origin
+ * that differs from the resolved child means the text belongs to the emitting
+ * session's tool result (the parent-side background-subagent acknowledgment
+ * among them) and classifies as `parent-authored`. A present result matching
+ * neither shape is
  * `unknown` (the caller journals it loudly); an absent result is `absent`
  * (a documented silent case).
  * @param event The execute.after payload.
@@ -124,9 +138,12 @@ export function classifyDelivery(event: ToolHookEvent): Delivery {
   const result = event.result
   if (!result) return { kind: "absent", child: asSessionID(event.sessionID), text: "" }
   if (typeof result.output === "string") {
+    const child = metadataChildOf(result) || asSessionID(event.sessionID)
+    const origin = asSessionID(event.sessionID)
+    if (origin !== "" && child !== origin) return { kind: "parent-authored", child, text: "" }
     return {
       kind: "string",
-      child: metadataChildOf(result) || asSessionID(event.sessionID),
+      child,
       text: result.output,
     }
   }

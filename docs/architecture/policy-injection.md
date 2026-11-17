@@ -19,7 +19,13 @@ optionally named by a string `metadata.sessionID`) or the v2 structured shape
 (parent-keyed event, structured `result.output`, the child on
 `metadata.sessionID` or the structured `output.sessionID`, the canonical
 child text in `output.output`, model-visible `content` as a string or a block
-array). The policy head and the status tail both land on that shape's
+array). String-shape text is child output only when the event origin
+(`event.sessionID`) is the child or is absent; a non-empty origin that differs
+from the resolved child means the text was authored by the emitting session
+(the parent-side background-subagent acknowledgment among them) and
+classifies as a third, silent `parent-authored` shape — it parses zero
+markers, credits nothing, fires no bare-output retry, and receives no policy
+head or status tail. The policy head and the status tail both land on that shape's
 model-visible text through the shared shape ladder (`mutateDeliveryText`):
 `result.output` for the string shape; string or block-array `result.content`
 for the structured one (a string carries both mutations in place, a block
@@ -56,6 +62,9 @@ follows the plugin through updates and uninstall–reinstall cycles.
   independent policy head still lands (and vice versa). The only silent skips
   are the once-flag (which gates only the policy head; the tail lands on
   every pipeline-stage delivery) and an absent result (nothing to deliver);
+  a parent-authored delivery (a non-empty event origin differing from the
+  resolved child — the emitting session's own tool-result text, never the
+  child's output) is the other silent skip, beside `absent`;
   a present-but-unclassifiable result journals loudly on EVERY such delivery
   (the once-flag no longer gates it) as
   `{type:"policy", injected:false, reason:"unknown-shape", shape:<descriptor>}`,
