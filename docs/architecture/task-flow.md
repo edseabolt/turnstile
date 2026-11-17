@@ -36,3 +36,6 @@ A typical enforced run:
 7. `git push` is blocked until reviewer approval exists; the interactive
    landing ask arms immediately when the session carries a credited reviewer
    APPROVE that the prompt reset just dropped, and on a repeat push otherwise.
+   The policy text also instructs the executor to refresh the evidence bundle
+   (re-emit and commit the .turnstile/ pair) before every push that adds
+   commits to an open PR; this is prose enforcement, not a gate.

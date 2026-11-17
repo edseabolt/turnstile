@@ -46,6 +46,9 @@ document is built key by key rather than filtered. A task is named by a
 one-way handle (`t-<8 hex>`), the journal by its head sha. `--format markdown`
 renders the sticky-comment body; `--out` writes `<name>.json` and the sibling
 `<name>.md`; `--validate` re-checks a committed artifact without writing. The
+orchestrator policy and the executor definition both instruct the refresh:
+before every push that adds commits to an open PR, re-emit and commit the
+pair so the badge stays current. The
 `review` section reports against the ensemble bar the runtime credits at — two
 unwaived reviewer dispatches under the default `reviewEnsemble: "enforce"`, one
 under `"advise"` — not against `maxReviewerRounds`, which only caps dispatches.
