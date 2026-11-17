@@ -1139,7 +1139,10 @@ function applyPolicyResult(
   delivery: Delivery,
   agent: string,
 ): void {
+  // `absent` and `parent-authored` are documented silent cases: nothing to
+  // deliver, or text authored by the emitting session rather than the child.
   if (delivery.kind === "absent") return
+  if (delivery.kind === "parent-authored") return
   if (delivery.kind === "unknown") {
     st.journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
     return

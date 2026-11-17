@@ -323,3 +323,117 @@ test("plan-reviewer suppression survives the retry path", async () => {
     dispose()
   }
 })
+
+/** The incident shape (issue #376): a parent-keyed string delivery whose
+ *  metadata names the child — the parent-side background-subagent
+ *  acknowledgment — is parent-authored, so no retry, no prompt, no violation. */
+test("parent-keyed string delivery is never treated as child output", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: {
+        output:
+          "The subagent is working in the background " +
+          "(sessionID: ses_child123). You will receive a <subagent> message.",
+        metadata: { sessionID: "ses_child123" },
+      },
+    })
+    assert.equal(h.sessionPrompts.length, 0)
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "marker-retry"))
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "violation"))
+  } finally {
+    dispose()
+  }
+})
+
+/** Any parent-keyed string delivery is parent-authored regardless of wording:
+ *  the event origin, not the text, decides the classification. */
+test("any parent-keyed string delivery is parent-authored regardless of wording", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: {
+        output: "accepted for background execution",
+        metadata: { sessionID: "ses_child123" },
+      },
+    })
+    assert.equal(h.sessionPrompts.length, 0)
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "marker-retry"))
+  } finally {
+    dispose()
+  }
+})
+
+/** A child-keyed event whose metadata child matches the origin stays on the
+ *  string path: the bare-output retry still fires. */
+test("child-keyed delivery with matching metadata still classifies as child output", async () => {
+  const { h, dispose } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "test-runner" },
+      result: { output: "ran, no marker", metadata: { sessionID: "c1" } },
+    })
+    assert.equal(h.sessionPrompts.length, 1)
+  } finally {
+    dispose()
+  }
+})
+
+/** The `origin !== ""` guard: an event with no sessionID but a metadata child
+ *  (the supported metadataChildOf fallback shape) stays on the string path
+ *  and the retry still fires. */
+test("empty-origin delivery with a metadata child still classifies as child output", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      input: { agent: "test-runner" },
+      result: { output: "ran, no marker", metadata: { sessionID: "c1" } },
+    })
+    assert.equal(h.sessionPrompts.length, 1)
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "violation"))
+  } finally {
+    dispose()
+  }
+})
+
+/** Unit assertions on classifyDelivery's origin rule: the incident payload is
+ *  parent-authored with empty text; child-keyed and empty-origin payloads
+ *  stay on the string path. */
+test("classifyDelivery applies the origin rule", async () => {
+  const { classifyDelivery } = await import("../src/delivery.ts")
+  const incident = classifyDelivery({
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: {
+      output: "The subagent is working in the background (sessionID: ses_child123).",
+      metadata: { sessionID: "ses_child123" },
+    },
+  } as any)
+  assert.equal(incident.kind, "parent-authored")
+  assert.equal(incident.text, "")
+  assert.equal(incident.child, "ses_child123")
+  const childKeyed = classifyDelivery({
+    tool: "task",
+    sessionID: "c1",
+    input: { agent: "test-runner" },
+    result: { output: "ran, no marker" },
+  } as any)
+  assert.equal(childKeyed.kind, "string")
+  const emptyOrigin = classifyDelivery({
+    tool: "task",
+    input: { agent: "test-runner" },
+    result: { output: "ran, no marker", metadata: { sessionID: "c1" } },
+  } as any)
+  assert.equal(emptyOrigin.kind, "string")
+  assert.equal(emptyOrigin.child, "c1")
+})
