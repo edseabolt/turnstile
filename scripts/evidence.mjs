@@ -23,12 +23,16 @@
 // `child-edge` rows name, and the shared file filtered to those sessions —
 // another session's journal activity can neither enter the artifact nor
 // refresh its freshness signal. `latest` selection still scans the global
-// tail; an explicit `--task` reads only that session's tree.
+// tail; a child-keyed last line (a `child-edge` row) resolves to the parent
+// session whose tree the window reads. An explicit `--task` reads only that
+// session's tree.
 //
 //   opencode-turnstile evidence [--task <session|latest>] [--format json|markdown]
 //                               [--out <path>] [--validate <path>] [--help]
 //
-// `--task` defaults to `latest` (the session owning the last journaled line);
+// `--task` defaults to `latest` (the session owning the last journaled line,
+// resolved to its parent through `child-edge` rows when that line is
+// child-keyed);
 // `--format` defaults to `json`. `--out` writes the artifact (and, for a
 // `.json` path, the sibling `.md` the Action posts) instead of stdout, and
 // journals one unchained `event:"emit"` row for the task (stdout output
@@ -1263,12 +1267,15 @@ async function main(argv) {
   }
 
   const bySession = new Map()
+  const parentOf = new Map()
   let last = null
   for (const line of lines) {
     const e = parseLine(line)
     if (e === null) continue
     const sid = e.sessionID
     if (typeof sid !== "string" || !REPLAY_SESSION_RE.test(sid)) continue
+    if (e.type === "child-edge" && typeof e.parent === "string" && REPLAY_SESSION_RE.test(e.parent))
+      parentOf.set(sid, e.parent)
     if (!bySession.has(sid)) bySession.set(sid, { entries: [], head: line })
     const w = bySession.get(sid)
     w.entries.push(e)
@@ -1293,18 +1300,23 @@ async function main(argv) {
   }
 
   const sid = last.sid
+  // A child-keyed last line (a `child-edge` row) names the child, but the
+  // fold rows (gate/verdict/plan) are parent-keyed: resolve the task session
+  // to the parent so the scoped tree read covers the rows that carry the
+  // freshness signal. An unresolved id (no edge row) is used as-is.
+  const taskSid = parentOf.get(sid) ?? sid
   // The window is scoped to the task's session tree, not the global walk.
-  let window = taskWindow(readSessionTree(metricsDir, sid, replayTailLines), sid, bar)
+  let window = taskWindow(readSessionTree(metricsDir, taskSid, replayTailLines), taskSid, bar)
   // An artifact write journals one emit event, then the tree is re-read so
   // the emit row is inside the folded window and `journal.head` reflects the
   // post-append tail. The task selection stays from the global read.
   if (flags.out !== null) {
-    journalEmit(metricsDir, sid)
-    const reread = readSessionTree(metricsDir, sid, replayTailLines)
-    if (reread.lines.length > 0) window = taskWindow(reread, sid, bar)
+    journalEmit(metricsDir, taskSid)
+    const reread = readSessionTree(metricsDir, taskSid, replayTailLines)
+    if (reread.lines.length > 0) window = taskWindow(reread, taskSid, bar)
   }
-  const doc = buildDoc(window, sid)
-  return emit(flags, doc, metricsDir, sid)
+  const doc = buildDoc(window, taskSid)
+  return emit(flags, doc, metricsDir, taskSid)
 }
 
 /**

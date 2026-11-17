@@ -99,7 +99,10 @@ task's session tree — its per-session sink, the child sinks its
 `child-edge` rows name, and the shared file filtered to those sessions —
 so another session's journal activity can neither enter the artifact nor
 refresh its freshness signal, and a quiet session's rows cannot be evicted
-by a hot shared tail. `latest` selection still scans the global tail; an
+by a hot shared tail. `latest` selection still scans the global tail; a
+child-keyed last line (a `child-edge` row) resolves to the parent session
+whose tree the window reads, because the fold rows (gate/verdict/plan) are
+parent-keyed. An
 explicit `--task` reads only that session's tree. Nothing is filtered out
 of a larger object: the document is built from whitelisted keys, so a
 journal field cannot leak into a public artifact by oversight. It adds no

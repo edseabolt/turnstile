@@ -1557,6 +1557,39 @@ test("evidence: child-edge rows pull child sinks into the session tree", () => {
   }
 })
 
+test("evidence: --task latest resolves a child-keyed last line to the parent session", () => {
+  // docstring: the newest global line can be child-keyed (a `child-edge`
+  // row), but the fold rows (gate/verdict/plan) are parent-keyed — so the
+  // latest selection resolves the child to its parent and the window reads
+  // the parent's tree. Without the resolution the artifact is hollow: a task
+  // handle for the child with `plan.at: ""` and no tests result, which fails
+  // `--validate` (the issue-368 CI regression).
+  const dir = metricsDir()
+  try {
+    const rows = greenTask("sp-par")
+    writeJournal(dir, join("sessions", "sp-par.jsonl"), rows)
+    writeJournal(dir, "turnstile.jsonl", [
+      ...rows,
+      line(10, { type: "child-edge", sessionID: "sp-chi", parent: "sp-par" }),
+    ])
+    const res = runEvidence(dir, ["--format", "json"])
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as EvidenceDoc
+    assert.equal(obj.task, taskHandle("sp-par"), "the parent session is the task")
+    assert.match(obj.plan.at, /^\d{4}-\d{2}-\d{2}T/, "plan.at carries the parent's verdict ts")
+    assert.equal(obj.tests.result, "PASS", "the parent's gate row is folded")
+    assert.equal(obj.green, true, "the artifact is not hollow")
+    // The emitted artifact must pass --validate (the committed-artifact CI step).
+    const out = join(dir, "evidence.json")
+    const wres = runEvidence(dir, ["--task", "latest", "--out", out])
+    assert.equal(code(wres), 0, `stderr: ${wres.stderr}`)
+    const vres = runEvidence(dir, ["--validate", out])
+    assert.equal(code(vres), 0, `validate stderr: ${vres.stderr}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("evidence: an explicit task with rows only in another session exits 2", () => {
   // docstring: an explicit id whose session tree holds no rows anywhere — no
   // sink, no shared rows — is an input error, so it exits 2 loudly.
