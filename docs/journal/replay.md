@@ -94,10 +94,18 @@ byte-identically too.
 half of that view: the same tail window and shape checks, folded to one
 task and projected key by key into `turnstile-evidence/v1`: derived
 counts, canonical marker lines, and two shas (a one-way task handle, and
-`sha256` of the last journaled line). Nothing is filtered out of a larger
-object: the document is built from whitelisted keys, so a journal field
-cannot leak into a public artifact by oversight. It adds no entry type and
-changes no replay rule; an artifact write (`--out`) appends one unchained
-`evidence` `event:"emit"` row to the task's journal sink, so a re-emit is
-visible in the audit trail and carries the emit timestamp into the committed
-artifact's `emittedAt` field.
+`sha256` of the task's last journaled line). The window is scoped to the
+task's session tree — its per-session sink, the child sinks its
+`child-edge` rows name, and the shared file filtered to those sessions —
+so another session's journal activity can neither enter the artifact nor
+refresh its freshness signal, and a quiet session's rows cannot be evicted
+by a hot shared tail. `latest` selection still scans the global tail; an
+explicit `--task` reads only that session's tree. Nothing is filtered out
+of a larger object: the document is built from whitelisted keys, so a
+journal field cannot leak into a public artifact by oversight. It adds no
+entry type and changes no replay rule; an artifact write (`--out`) appends
+one unchained `evidence` `event:"emit"` row to the task's journal sink, so
+a re-emit is visible in the audit trail and carries the emit timestamp
+into the committed artifact's `emittedAt` field, and mirrors the artifact
+to `sessions/<parentID>/evidence.json` beside the sink (best-effort,
+fail-open).

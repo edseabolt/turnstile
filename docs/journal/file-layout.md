@@ -10,6 +10,10 @@
   so one session's dispatches, verdicts, gates, blocks, and waivers read
   top-to-bottom in one file. Entries without a sessionID, or with an ID
   failing the session-ID shape rule, land in the shared `turnstile.jsonl`.
+- **`sessions/<parentID>/evidence.json`** — the local evidence mirror written
+  by the standalone `evidence` emitter on every `--out` artifact write
+  (best-effort): the same bytes as the committed artifact, co-located with
+  the producing session's sink for audit.
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
 - **`anchors.jsonl`** — the session-state anchor store, written only when
   `tamperEvidence.enabled` is `true` (see [tamper evidence: the hash
