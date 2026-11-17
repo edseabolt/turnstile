@@ -140,10 +140,10 @@ jobs:
             //     — never any document bytes — so a stale badge warns instead
             //     of reading as current. Best-effort: any failure to read the
             //     JSON or a commit skips the notice, and the .md alone still
-            //     posts. Edge cases: an empty commit (no files) and a 300+-file
-            //     commit (GitHub truncates the files list) are both treated
-            //     as not evidence-only, so they compare against the head
-            //     date — conservative, at worst a spurious notice.
+            //     posts. Edge cases: an empty commit (no files) and a
+            //     truncated files list (GitHub caps it at 300 entries) are
+            //     both treated as not evidence-only, so they compare against
+            //     the head date — conservative, at worst a spurious notice.
             let staleNote = null;
             if (violation === null) {
               try {
@@ -172,8 +172,12 @@ jobs:
                   // the parent — the last commit that could have changed
                   // code. Evidence emitted after the parent is fresh.
                   const files = commit.data.files ?? [];
+                  // GitHub truncates the files list at 300 entries; a full
+                  // list is required to prove the commit is evidence-only,
+                  // so a truncated list falls back to the head date.
                   const evidenceOnly =
                     files.length > 0 &&
+                    files.length < 300 &&
                     files.every(
                       (f) =>
                         typeof f.filename === "string" &&
