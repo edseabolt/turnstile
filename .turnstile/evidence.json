@@ -3,44 +3,46 @@
   "generatedAt": "1970-01-01T00:00:00.000Z",
   "noJournal": false,
   "noTask": false,
-  "task": "t-9a63df08",
-  "green": true,
-  "emittedAt": "2026-11-17T21:43:44.734Z",
+  "task": "t-891b63a8",
+  "green": false,
+  "emittedAt": "2026-11-18T20:44:42.436Z",
   "plan": {
     "verdict": "APPROVE",
-    "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=1",
-    "at": "2026-11-17T21:27:56.438Z",
+    "marker": "VERDICT: APPROVE crit=0 high=0 med=2 low=0",
+    "at": "2026-11-18T19:32:08.355Z",
     "source": "subagent-synthetic",
     "stale": false
   },
   "tests": {
     "result": "PASS",
-    "marker": "GATE: PASS tests=1900 passed=1900 failed=0",
-    "at": "2026-11-17T21:20:48.224Z",
+    "marker": "GATE: PASS tests=1921 passed=1921 failed=0",
+    "at": "2026-11-18T20:37:39.316Z",
     "verified": true,
     "mode": "enforce",
-    "exitZeroRuns": 1
+    "exitZeroRuns": 0
   },
   "review": {
-    "approves": 2,
+    "approves": 0,
     "expected": 2
   },
   "waivers": 0,
-  "blocks": 1,
-  "dispatches": 7,
+  "blocks": 3,
+  "dispatches": 16,
   "journal": {
     "files": [
-      "ses_e14c49cd6ffeqt6onD81lKgJ1m.jsonl",
-      "ses_e14c4376cffejcnLtdn2YycApW.jsonl",
-      "ses_e14ac7649ffe3snYmLLU9KxUdx.jsonl",
-      "ses_e14ab0e10ffed0T6a00rmGFwae.jsonl",
-      "ses_e149fbd03ffezExkRYUxq1BbIp.jsonl",
-      "ses_e149d9d9fffeXCFeMyuls0EVHS.jsonl",
-      "ses_e149d6757ffeMNmdY28j7TpZnQ.jsonl",
-      "ses_e1491de01ffeKinasRELZbzW0W.jsonl",
+      "ses_e1359f1b1ffedYknYRth1Y85n3.jsonl",
+      "ses_e135686a2ffeiYlzPoMRJMvDyz.jsonl",
+      "ses_e112ab7a8ffes90oaFdufGIA8V.jsonl",
+      "ses_e10099319ffeQOPU2aLqR4LhbD.jsonl",
+      "ses_e1007b51bffeZ5Z0FLJp3b377N.jsonl",
+      "ses_e0fe9ababffenjSM5MbqecL6WJ.jsonl",
+      "ses_e0fe73a00ffeuTB25l7Zs8tEPl.jsonl",
+      "ses_e0fe739ffffewDuU7Vl73yEV2I.jsonl",
+      "ses_e0faf7c32ffe6Zy7cS55pJvXB9.jsonl",
+      "ses_e0fa0cf55ffeucAQxUA4Sag9YT.jsonl",
       "turnstile.jsonl"
     ],
-    "lines": 551,
-    "head": "sha256:bde637a46e0d"
+    "lines": 802,
+    "head": "sha256:e46b6a78f838"
   }
 }
