@@ -20,6 +20,7 @@ import {
   sessionJournalPath,
 } from "./journal-sinks.ts"
 import type { JournalSinks } from "./journal-sinks.ts"
+import { withFileLock } from "./lockfile.ts"
 import type { AnchorRef, AnchorSink } from "./types.ts"
 
 export {
@@ -166,6 +167,21 @@ interface FamilyChain {
   epochIndex: number
   /** Data-row hashes accumulated in the current (possibly partial) epoch. */
   epochHashes: string[]
+}
+
+/** A chained append's `<file>.lock` staleness bound: the critical section
+ *  spans one tail read plus one append (milliseconds-wide), so a lock older
+ *  than this marks a crashed holder. */
+const APPEND_LOCK_STALE_MS = 10_000
+
+/** The lock options a chained append passes to the file-lock boundary. */
+interface AppendLockOptions {
+  /** Max milliseconds to retry acquiring before degrading (see
+   *  `createJournaler`'s `lockTimeoutMs`). */
+  timeoutMs?: number
+  /** Test seam invoked inside the critical section, before the head
+   *  re-read (see `createJournaler`'s `lockSeam`). */
+  onAcquired?: () => void
 }
 
 /**
@@ -390,7 +406,7 @@ function resyncFamilyHead(file: string, chain: FamilyChain, maxGenerations: numb
  * @param epochEntries Data rows per Merkle epoch.
  * @param maxGenerations The rotation generation count (for chain seeding).
  */
-function appendChainedEntry(
+function appendChainedEntryLocked(
   sinks: JournalSinks,
   chains: Map<string, FamilyChain>,
   pendingRefs: AnchorRef[],
@@ -403,7 +419,9 @@ function appendChainedEntry(
   if (chain) {
     // Another host process sharing the metrics dir may have appended since
     // our last write: re-validate the head against the file's tail so
-    // interleaved writers continue one chain instead of forking it.
+    // interleaved writers continue one chain instead of forking it. Inside
+    // the append lock this re-read is unconditional — the disk tail is the
+    // only trusted chain head; the in-memory chain is a cache.
     chain = resyncFamilyHead(file, chain, maxGenerations)
   } else {
     chain = seedFamilyChain(file, maxGenerations)
@@ -413,6 +431,74 @@ function appendChainedEntry(
   const hash = appendChainedRow(file, ts, { ...entry, ts }, chain)
   chain.epochHashes.push(hash)
   if (chain.epochHashes.length >= epochEntries) closeEpoch(sinks, file, chain, pendingRefs)
+}
+
+/**
+ * Creates the parent directory of a journal file before its append lock is
+ * taken (the lock mkdir needs the parent to exist; `appendLine` would
+ * create it later, inside the critical section — too late). Fail-open: a
+ * failure here surfaces again at the append and is swallowed there.
+ * @param file The journal file whose parent must exist.
+ */
+function ensureParentDir(file: string): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+  } catch {
+    // unwritable parent: the append path reports it (silently)
+  }
+}
+
+/**
+ * Journals one `journal-lock:` error row onto a journal file (unchained,
+ * like the rotation error rows: the fold skips rows without a `hash`).
+ * @param file The journal file to append the row to.
+ * @param detail The lock-failure detail.
+ */
+function journalLockError(file: string, detail: string): void {
+  appendLine(file, JSON.stringify({ ts: now(), type: "error", error: `journal-lock: ${detail}` }))
+}
+
+/**
+ * Appends one chained entry under the file-lock boundary: the resync (head
+ * re-read from disk) and the append both run inside a per-file
+ * `<file>.lock` critical section, closing the read-tail → append window
+ * two concurrent hosts otherwise race through. Fail-open: when the lock
+ * cannot be acquired within the retry bound, the append degrades to the
+ * unlocked resync-then-append sequence (the pre-lock behavior) with a
+ * journaled `journal-lock:` warning — no append is ever blocked or dropped.
+ * A stale lock stolen on the way in is journaled too.
+ * @param sinks The sink capability.
+ * @param chains The per-file chain states (created on first write).
+ * @param pendingRefs The pending anchor-ref list (appended to).
+ * @param file The resolved journal file.
+ * @param entry The journal entry; a `ts` field is prepended.
+ * @param epochEntries Data rows per Merkle epoch.
+ * @param maxGenerations The rotation generation count (for chain seeding).
+ * @param lock The lock options (retry bound + test seam).
+ */
+function appendChainedEntry(
+  sinks: JournalSinks,
+  chains: Map<string, FamilyChain>,
+  pendingRefs: AnchorRef[],
+  file: string,
+  entry: Record<string, unknown>,
+  epochEntries: number,
+  maxGenerations: number,
+  lock: AppendLockOptions,
+): void {
+  const write = (): void =>
+    appendChainedEntryLocked(sinks, chains, pendingRefs, file, entry, epochEntries, maxGenerations)
+  ensureParentDir(file)
+  const result = withFileLock(
+    file,
+    { timeoutMs: lock.timeoutMs, staleMs: APPEND_LOCK_STALE_MS, onAcquired: lock.onAcquired },
+    write,
+  )
+  if (result.stoleStale) journalLockError(file, `stale lock stolen: ${file}`)
+  if (!result.held) {
+    journalLockError(file, `append lock unavailable: ${file}`)
+    write()
+  }
 }
 
 /**
@@ -476,6 +562,8 @@ async function publishPendingRefsAwait(
  * @param chains The per-file chain states, mutated in place.
  * @param pendingRefs The pending anchor-ref list, mutated in place.
  * @param tamper The tamper-evidence options (enabled + epoch cadence).
+ * @param maxGenerations The rotation generation count (for chain seeding).
+ * @param lock The chained-append lock options (retry bound + test seam).
  * @param entry The journal entry; a `ts` field is prepended.
  */
 function writeJournalEntry(
@@ -485,11 +573,21 @@ function writeJournalEntry(
   pendingRefs: AnchorRef[],
   tamper: { enabled: boolean; epochEntries: number } | undefined,
   maxGenerations: number,
+  lock: AppendLockOptions,
   entry: Record<string, unknown>,
 ): void {
   const file = sinks.sinkFor(entry)
   if (tamper?.enabled) {
-    appendChainedEntry(sinks, chains, pendingRefs, file, entry, tamper.epochEntries, maxGenerations)
+    appendChainedEntry(
+      sinks,
+      chains,
+      pendingRefs,
+      file,
+      entry,
+      tamper.epochEntries,
+      maxGenerations,
+      lock,
+    )
   } else {
     appendLine(file, JSON.stringify({ ts: now(), ...entry }))
   }
@@ -523,6 +621,13 @@ function writeJournalEntry(
  *     `chain-epoch` Merkle row commits every `epochEntries` data rows per
  *     file family. Omitted or `enabled: false` restores the legacy
  *     unchained row shape.
+ * @param options.lockTimeoutMs Max milliseconds the chained-append lock
+ *     retries before degrading to an unlocked append with a journaled
+ *     `journal-lock:` warning (default 1000).
+ * @param options.lockSeam Test seam invoked inside the append lock's
+ *     critical section, after the lock is acquired and before the chain
+ *     head is re-read from disk. Production callers omit it; the
+ *     contention test injects one to force a deterministic interleave.
  * @returns A Journaler writing `turnstile.jsonl` (and, when `perSession` is
  *     on, `sessions/<parentID>.jsonl`) plus `gate-events.log` under
  *     `options.metricsDir`.
@@ -536,6 +641,8 @@ export function createJournaler(options: {
   perSession?: boolean
   sinkFor?: (sessionID: string) => string
   tamper?: { enabled: boolean; epochEntries: number }
+  lockTimeoutMs?: number
+  lockSeam?: () => void
 }): Journaler {
   const sinks = createJournalSinks(options)
   // Counters per file, never shared: the journal, each session sink, and the
@@ -564,6 +671,7 @@ export function createJournaler(options: {
         pendingRefs,
         options.tamper,
         options.maxGenerations,
+        { timeoutMs: options.lockTimeoutMs, onAcquired: options.lockSeam },
         entry,
       )
     },
