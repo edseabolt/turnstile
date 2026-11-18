@@ -159,24 +159,75 @@ function repairTornTail(file: string): void {
   }
 }
 
+/** Directories this process has already ensured exist (per-process memo:
+ * mkdir is an open-time cost, not a per-row cost). Invalidated by the
+ * retry-once path when an append fails. */
+const ensuredDirs = new Set<string>()
+/** Journal files this process has already torn-tail-repaired (the first
+ * write by this process; a torn tail can only be left by a prior
+ * process's crash, which the next process's first write repairs). */
+const repairedFiles = new Set<string>()
+
 /**
- * Appends one line to a file, creating the parent directory first. The
- * caller is responsible for rotating when a size bound applies (the journaler's
- * `journal()`/`traceEvent()` call `tickRotate` on an entry-count tick, under a
- * lock-guarded rename). A torn final line (no trailing newline, left by a
- * crash mid-append) is separated with one `\n` first so the new line always
- * parses on its own. Silent on any failure: journaling must never break
- * execution.
+ * Creates the parent directory for a journal file, at most once per
+ * directory per process.
+ * @param dir The directory to ensure exists.
+ */
+function ensureDirOnce(dir: string): void {
+  if (ensuredDirs.has(dir)) return
+  fs.mkdirSync(dir, { recursive: true })
+  ensuredDirs.add(dir)
+}
+
+/**
+ * Runs the torn-tail repair for a journal file, at most once per file per
+ * process (the first write by this process).
+ * @param file The file to repair before its first append in this process.
+ */
+function repairOnce(file: string): void {
+  if (repairedFiles.has(file)) return
+  repairTornTail(file)
+  repairedFiles.add(file)
+}
+
+/**
+ * Appends one line to a file, creating the parent directory once per process
+ * and running the torn-tail repair once per file per process (a torn tail can
+ * only be left by a prior process's crash, which the next process's first
+ * write repairs); a failed append drops both memos for the path and retries
+ * once. The caller is still responsible for rotating when a size bound applies
+ * (the journaler's `journal()`/`traceEvent()` call `tickRotate` on an
+ * entry-count tick, under a lock-guarded rename). A torn final line (no
+ * trailing newline, left by a crash mid-append) is separated with one `\n`
+ * first so the new line always parses on its own. Silent on any failure:
+ * journaling must never break execution.
  * @param file Path of the file to append to.
  * @param text The line to append (a trailing newline is added).
  */
 export function appendLine(file: string, text: string): void {
+  if (tryAppend(file, text)) return
+  // A failure usually means a memo is stale (the directory was removed
+  // mid-session). Drop the memos for this path and retry exactly once.
+  ensuredDirs.delete(path.dirname(file))
+  repairedFiles.delete(file)
+  tryAppend(file, text)
+}
+
+/**
+ * Performs one append attempt with the memoized directory-ensure and
+ * torn-tail repair, swallowing any I/O error.
+ * @param file Path of the file to append to.
+ * @param text The line to append (a trailing newline is added).
+ * @returns True when the append succeeded.
+ */
+function tryAppend(file: string, text: string): boolean {
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    repairTornTail(file)
+    ensureDirOnce(path.dirname(file))
+    repairOnce(file)
     fs.appendFileSync(file, text + "\n")
+    return true
   } catch {
-    // journaling must never break execution
+    return false // journaling must never break execution
   }
 }
 
