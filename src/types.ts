@@ -852,6 +852,12 @@ export interface TurnstileConfig {
   /** Number of rotated journal generations to keep. */
   journalMaxGenerations: number
   /**
+   * Archived generations kept per journal file family in the sibling
+   * archive/ directory; 0 disables archiving. Default 5, matching
+   * journalMaxGenerations.
+   */
+  journalArchiveGenerations: number
+  /**
    * Size-check/rotation cadence: the journal append hot path only stats and
    * rotates once per this many appends; entries between the check and the
    * rename are the bounded overshoot.

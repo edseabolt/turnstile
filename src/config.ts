@@ -67,6 +67,7 @@ function defaultJournalScalars(
   | "metricsDir"
   | "journalMaxBytes"
   | "journalMaxGenerations"
+  | "journalArchiveGenerations"
   | "journalRotateEveryEntries"
   | "journalPerSession"
   | "replayTailLines"
@@ -76,6 +77,10 @@ function defaultJournalScalars(
     metricsDir: defaultMetricsDir(env),
     journalMaxBytes: 5 * 1024 * 1024,
     journalMaxGenerations: 5,
+    // Archive-on-rotate is on by default at the same depth as the live
+    // window: pruned generations are gzip-archived instead of destroyed;
+    // 0 restores prune-only.
+    journalArchiveGenerations: 5,
     journalRotateEveryEntries: 512,
     journalPerSession: true,
     replayTailLines: 2000,

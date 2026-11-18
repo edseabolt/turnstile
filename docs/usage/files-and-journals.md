@@ -5,7 +5,9 @@
     entries without a sessionID); hot path is append-only and rotates
     once per `journalRotateEveryEntries` (default 512) writes under a
     lock-guarded rename, keeps `journalMaxGenerations` (default 5)
-    generations; a lock left behind by a crash between create and remove of
+    generations; pruned generations are gzip-archived under `archive/`
+    (default depth 5, `journalArchiveGenerations: 0` disables); a lock left
+    behind by a crash between create and remove of
     `<file>.lock` is stolen once its age passes a staleness bound
     (`ROTATION_LOCK_STALE_MS`, 60s) and the rotation proceeds, and journaling
     keeps appending through fresh contention

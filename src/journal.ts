@@ -637,6 +637,7 @@ export function createJournaler(options: {
   trace: boolean
   maxBytes: number
   maxGenerations: number
+  archiveGenerations: number
   rotateEveryEntries: number
   perSession?: boolean
   sinkFor?: (sessionID: string) => string

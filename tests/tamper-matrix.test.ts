@@ -71,6 +71,8 @@ const JOURNALER_OPTIONS = Object.freeze({
   trace: false,
   maxBytes: 1,
   maxGenerations: 5,
+
+  archiveGenerations: 0,
   rotateEveryEntries: 1,
   tamper: { enabled: true, epochEntries: 4 },
 })

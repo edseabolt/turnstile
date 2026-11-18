@@ -333,6 +333,8 @@ test("plan gate: an absolute plansDir blocks the executor decomposition check", 
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const config = defaultConfig()
@@ -1033,6 +1035,8 @@ function dirSignature(project: string): string {
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const gates = createGates(defaultConfig(), journaler)
@@ -1505,6 +1509,8 @@ test("plan gate: plansSignature is a content signature (name:sha256hex)", async 
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const gates = createGates(config, journaler)
@@ -1836,6 +1842,8 @@ function bootUnitPlans(planFiles: Record<string, string>): {
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const gates = createGates({ ...defaultConfig(process.env), metricsDir }, journaler)

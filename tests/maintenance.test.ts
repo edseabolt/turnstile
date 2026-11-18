@@ -545,6 +545,8 @@ test("plan keying: a spec-region edit invalidates the bound approval (plan-edite
       trace: false,
       maxBytes: 1_000_000,
       maxGenerations: 1,
+
+      archiveGenerations: 0,
       rotateEveryEntries: 0,
     }),
   )

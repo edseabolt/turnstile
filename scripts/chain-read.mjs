@@ -11,6 +11,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as childProcess from "node:child_process"
+import * as zlib from "node:zlib"
 import { createHash } from "node:crypto"
 
 /**
@@ -319,18 +320,39 @@ function consumeRow(row, ctx, source) {
 }
 
 /**
- * Lists one file family's generations oldest-first (numbered generations
- * that exist, then the current file), plus whether the family folds with a
- * trust root: the oldest surviving file is a numbered generation other than
- * `.1` only when the journaler pruned. Mirrors `familyFiles` in
- * src/verify.ts.
+ * Lists a family's archived generations oldest-first (the `.gz` files in the
+ * sibling `archive/` directory), or nothing when it is missing/unreadable.
+ * Mirrors `archiveFiles` in src/verify.ts.
+ * @param {string} file Absolute path of the current journal file.
+ * @returns {string[]} The archive paths, lexicographically sorted.
+ */
+function archiveFiles(file) {
+  try {
+    const dir = path.join(path.dirname(file), "archive")
+    const base = path.basename(file)
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.startsWith(`${base}.`) && name.endsWith(".gz"))
+      .sort()
+      .map((name) => path.join(dir, name))
+  } catch {
+    return [] // no archive dir (opt-out or nothing rotated yet)
+  }
+}
+
+/**
+ * Lists one file family's generations oldest-first (archived generations,
+ * then the numbered generations that exist, then the current file), plus
+ * whether the family folds with a trust root: the oldest surviving file is
+ * neither the current file nor `.1` only when the journaler pruned (or
+ * archived). Mirrors `familyFiles` in src/verify.ts.
  * @param {string} file Absolute path of the current journal file.
  * @param {number} maxGenerations The generation count convention.
  * @returns {{ files: string[], chainRootAtStart: boolean }} The existing
  *     file paths oldest-first plus the trust-root flag.
  */
 export function familyFiles(file, maxGenerations) {
-  const files = []
+  const files = archiveFiles(file)
   for (let gen = maxGenerations; gen >= 1; gen--) {
     if (fs.existsSync(`${file}.${gen}`)) files.push(`${file}.${gen}`)
   }
@@ -350,7 +372,8 @@ export function familyFiles(file, maxGenerations) {
 export function readFamilyRows(file) {
   let text
   try {
-    text = fs.readFileSync(file, "utf8")
+    const raw = fs.readFileSync(file)
+    text = (file.endsWith(".gz") ? zlib.gunzipSync(raw) : raw).toString("utf8")
   } catch {
     return []
   }
