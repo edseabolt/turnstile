@@ -246,8 +246,14 @@ stated feature; devDependencies are tooling only.)
 - Journals live outside the repo at `~/.local/share/opencode/metrics/`
   (`turnstile.jsonl` and each `sessions/<parentID>.jsonl` rotate at 5 MB,
   5 generations per file). Retention is bounded:
-  2 files × (1 current + 5 generations) × 5 MB ≈ ~30 MB per journal, worst
-  case ~60 MB total, plus one bounded sink per live parent session. With
+  2 files × (1 current + 5 generations) × 5 MB ≈ ~30 MB per journal family;
+  with archive-on-rotate (default `journalArchiveGenerations: 5`) each family
+  additionally keeps up to 5 gzip-compressed pruned generations
+  (~5 MB ÷ ~10 compression each, ≈ ~2.5 MB per family), so the worst case
+  per journal family is ≈ ~32.5 MB. Archiving starts with the first
+  rotation after the feature is present; no backfill. The archive is cold
+  storage only — replay never reads it, verify and the CLI surfaces do.
+  Plus one bounded sink per live parent session. With
   `trace: false` the trace file is never written,
   roughly halving that; the JSONL journal is the audit trail and always
   writes.

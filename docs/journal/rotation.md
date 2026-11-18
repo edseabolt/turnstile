@@ -19,6 +19,22 @@ current file, but the replay scan walks all retained generations, so such
 an entry simply joins the tail window when it is read back (the window is
 small and clock-free). Files rotate at 5 MB, 5 generations.
 
+## Archive-on-rotate
+
+By default (`journalArchiveGenerations: 5`), rotation archives the
+outgoing final generation instead of destroying it: the generation is
+gzip-compressed into `archive/` next to the journal file (for
+per-session sinks, `sessions/archive/`). At most
+`journalArchiveGenerations` archives are kept per file family; the
+oldest is deleted when the bound is exceeded. Set
+`journalArchiveGenerations: 0` to restore prune-only behavior.
+Archived generations remain verifiable: `turnstile verify` and the
+CLI surfaces fold them with a trust root at the archive boundary
+(`windowIncomplete` marking preserved), and `--tail` walks into
+archives after the live generations. Archiving starts with the first
+rotation after the feature is present; history pruned before then is
+not recoverable (no backfill).
+
 ## Per-session sink rules
 
 Each `sessions/<parentID>.jsonl` file carries the same rotation bounds as

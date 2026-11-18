@@ -14,6 +14,12 @@
   by the standalone `evidence` emitter on every `--out` artifact write
   (best-effort): the same bytes as the committed artifact, co-located with
   the producing session's sink for audit.
+- **`archive/`** (and **`sessions/archive/`**) — gzip-archived pruned
+  generations, one directory per journal family. By default
+  (`journalArchiveGenerations: 5`) rotation archives the outgoing final
+  generation instead of destroying it; at most `journalArchiveGenerations`
+  archives are kept per family (0 disables). Cold storage only: replay
+  never reads it, verify and the CLI surfaces do.
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
 - **`<file>.lock`** — transient lock directories (never data): one per
   guarded file (`turnstile.jsonl.lock`, a session sink's `.lock`, the

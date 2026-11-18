@@ -29,7 +29,10 @@ cost). Per-file reads stay tail-capped with an early stop: the walk ends
 inside the newest generation that alone satisfies the tail bound, so boot
 I/O stays bounded by the retained-generation sizes, never the full
 `journalMaxGenerations × journalMaxBytes` envelope (the file count grows
-with live sessions; see [the retention note](rotation.md)).
+with live sessions; see [the retention note](rotation.md)). Archived
+generations (`journalArchiveGenerations`, default 5) sit outside this
+envelope and are not read by replay — replay needs only `replayTailLines` —
+but are read by verify and the CLI surfaces.
 
 The journal is treated as untrusted data on the read side. A line folds
 into the last-wins maps only if its `sessionID` passes the replay ID-shape

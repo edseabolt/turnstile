@@ -7,7 +7,9 @@ repo at `~/.local/share/opencode/metrics/`. The store is a shared
 `turnstile.jsonl` plus a per-session `sessions/<parentID>.jsonl` sink
 (`journalPerSession`, default on). `gate-events.log` (trace only),
 `anchors.jsonl`, and `approved-plans.jsonl` sit beside them. Retention is
-bounded: 5 MB per file, 5 generations per file. `replayTailLines` (default 2000) bounds the boot window.
+bounded: 5 MB per file, 5 generations per file, plus gzip-archived pruned
+generations (`journalArchiveGenerations`, default 5 — cold storage; replay
+never reads them, verify and the CLI surfaces do). `replayTailLines` (default 2000) bounds the boot window.
 The standalone `evidence` emitter is the one external writer: each
 artifact write appends one unchained `event:"emit"` row and mirrors the
 artifact to `sessions/<parentID>/evidence.json` beside the session's sink

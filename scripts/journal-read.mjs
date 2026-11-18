@@ -13,6 +13,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import * as zlib from "node:zlib"
 
 /**
  * Host session-ID alphabet, length-capped. Standalone-script copy of the
@@ -138,9 +139,32 @@ export function requireSessionShape(id) {
 }
 
 /**
- * Reads one journal file family (current file plus rotated generations) as
- * oldest-first blocks: a newest-first walk stopping at the first missing
- * generation, silently tolerating missing files.
+ * Lists a family's archived generations newest-first (reverse
+ * lexicographic), or nothing when the archive dir is missing/unreadable.
+ * @param {string} file Absolute path of the current journal file.
+ * @returns {string[]} The archive `.gz` paths, newest-first.
+ */
+function archivePathsNewestFirst(file) {
+  try {
+    const dir = path.join(path.dirname(file), "archive")
+    const base = path.basename(file)
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.startsWith(`${base}.`) && name.endsWith(".gz"))
+      .sort()
+      .reverse()
+      .map((name) => path.join(dir, name))
+  } catch {
+    return [] // no archive dir (opt-out or nothing rotated yet)
+  }
+}
+
+/**
+ * Reads one journal file family (current file plus rotated generations, then
+ * the family's gzip-archived generations) as oldest-first blocks: a
+ * newest-first walk stopping at the first missing generation, continuing
+ * into the archives while the tail bound is unmet, silently tolerating
+ * missing or corrupt files.
  * @param {string} file Absolute path of the current journal file.
  * @param {number} tailLines The per-file tail bound in lines to keep.
  * @returns {{ name: string, lines: string[] }[]} The blocks, oldest-first.
@@ -157,6 +181,19 @@ export function readFileGenerations(file, tailLines) {
     })
     if (blocks.reduce((total, b) => total + b.lines.length, 0) >= tailLines) break
     generation++
+  }
+  if (blocks.reduce((total, b) => total + b.lines.length, 0) >= tailLines) return blocks
+  for (const archive of archivePathsNewestFirst(file)) {
+    try {
+      const lines = zlib
+        .gunzipSync(fs.readFileSync(archive))
+        .toString("utf8")
+        .split("\n")
+        .filter(Boolean)
+      blocks.unshift({ name: `archive/${path.basename(archive)}`, lines })
+    } catch {
+      // corrupt archive: contributes nothing
+    }
   }
   return blocks
 }

@@ -1595,6 +1595,7 @@ function buildCoreJournaler(st: CoreState): void {
     trace: st.config.trace,
     maxBytes: st.config.journalMaxBytes,
     maxGenerations: st.config.journalMaxGenerations,
+    archiveGenerations: st.config.journalArchiveGenerations,
     rotateEveryEntries: st.config.journalRotateEveryEntries,
     perSession: st.config.journalPerSession,
     sinkFor: (sessionID) => st.ledger.parentOf(sessionID),

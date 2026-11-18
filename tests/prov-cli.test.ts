@@ -23,6 +23,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { gzipSync } from "node:zlib"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -400,6 +401,34 @@ test("the prov subcommand is routed from the CLI router", () => {
     })
     assert.equal(code(cli), 0)
     assert.equal(cli.stdout, "")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("archived generations are read after the live ones, oldest-first", () => {
+  const dir = metricsDir()
+  try {
+    // The live window holds only the newest row; the older row sits in a
+    // gzip-archived generation (as rotation leaves it). A tail larger than
+    // the live rows must walk into the archive and render its row first.
+    writeSessionJournal(dir, "ses1", [
+      { ts: "2026-01-01T10:00:20Z", type: "prov:stated", sessionID: "ses1", text: "newest" },
+    ])
+    mkdirSync(join(dir, "sessions", "archive"), { recursive: true })
+    const archived = [
+      { ts: "2026-01-01T10:00:05Z", type: "prov:stated", sessionID: "ses1", text: "archived" },
+    ]
+    writeFileSync(
+      join(dir, "sessions", "archive", "ses1.jsonl.1.000000000000001-000.gz"),
+      gzipSync(Buffer.from(archived.map((l) => JSON.stringify(l)).join("\n") + "\n")),
+    )
+    const r = runProv(dir, ["ses1", "--tail", "10"])
+    assert.equal(code(r), 0)
+    const lines = r.stdout.trim().split("\n")
+    assert.equal(lines.length, 2, `expected archived + live rows, got: ${r.stdout}`)
+    assert.match(lines[0]!, /archived/)
+    assert.match(lines[1]!, /newest/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -9,6 +9,7 @@
 
 import * as fs from "node:fs"
 import * as path from "node:path"
+import * as zlib from "node:zlib"
 
 import { withFileLock } from "./lockfile.ts"
 
@@ -31,17 +32,26 @@ export function now(): string {
 
 /**
  * Rotates a journal file when it grows past the size limit, keeping at
- * most `maxGenerations` numbered generations. Silent on any failure.
+ * most `maxGenerations` numbered generations. When `archiveGenerations` is
+ * positive, the outgoing final generation is gzip-archived before the prune.
+ * Silent on any failure.
  * @param file Path of the journal file to check and rotate.
  * @param maxBytes Rotation threshold in bytes.
  * @param maxGenerations Number of numbered generations to keep.
+ * @param archiveGenerations Archived generations kept per family; 0 = off.
  */
-export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: number): void {
+export function rotateIfLarge(
+  file: string,
+  maxBytes: number,
+  maxGenerations: number,
+  archiveGenerations: number,
+): void {
   try {
     const stat = fs.statSync(file)
     if (stat.size <= maxBytes) return
     // prune the oldest generation first so the shift below has a free slot
     const oldest = `${file}.${maxGenerations}`
+    if (archiveGenerations > 0) archiveGeneration(oldest, archiveGenerations)
     try {
       fs.unlinkSync(oldest)
     } catch {
@@ -57,6 +67,68 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
     fs.renameSync(file, `${file}.1`)
   } catch {
     // missing file or stat failure: nothing to rotate
+  }
+}
+
+/**
+ * Lists a family's existing archive files oldest-first.
+ * @param archiveDir The family's `archive/` directory.
+ * @param prefix The archive-name prefix (the journal file's basename).
+ * @returns The matching `.gz` paths, lexicographically sorted.
+ */
+function listArchives(archiveDir: string, prefix: string): string[] {
+  return fs
+    .readdirSync(archiveDir)
+    .filter((name) => name.startsWith(`${prefix}.`) && name.endsWith(".gz"))
+    .sort()
+    .map((name) => path.join(archiveDir, name))
+}
+
+/**
+ * Prunes the oldest archives beyond the keep bound for one family.
+ * @param archiveDir The family's `archive/` directory.
+ * @param prefix The archive-name prefix (the journal file's basename).
+ * @param keep Maximum number of archives to retain.
+ */
+function pruneArchives(archiveDir: string, prefix: string, keep: number): void {
+  const archives = listArchives(archiveDir, prefix)
+  for (const stale of archives.slice(0, Math.max(0, archives.length - keep))) {
+    try {
+      fs.unlinkSync(stale)
+    } catch {
+      // already gone: nothing to prune
+    }
+  }
+}
+
+/**
+ * Gzip-archives one outgoing generation into `<dir>/archive/` next to its
+ * journal, then prunes archives beyond the keep bound. The archive name
+ * embeds a zero-padded epoch-ms timestamp plus a collision-bumped sequence
+ * (`-001`, `-002`, … within one millisecond), so lexicographic order equals
+ * chronological order and no archive is ever silently overwritten. Runs
+ * under the caller's rotation lock. Silent on any failure: an archive
+ * problem never breaks rotation or journaling.
+ * @param gen Path of the outgoing generation file.
+ * @param keep Maximum number of archives to retain for the family.
+ */
+function archiveGeneration(gen: string, keep: number): void {
+  try {
+    const text = fs.readFileSync(gen, "utf8")
+    const dir = path.join(path.dirname(gen), "archive")
+    const base = path.basename(gen)
+    fs.mkdirSync(dir, { recursive: true })
+    const ts = String(Date.now()).padStart(15, "0")
+    let seq = 0
+    let target = path.join(dir, `${base}.${ts}-${String(seq).padStart(3, "0")}.gz`)
+    while (fs.existsSync(target)) {
+      seq++
+      target = path.join(dir, `${base}.${ts}-${String(seq).padStart(3, "0")}.gz`)
+    }
+    fs.writeFileSync(target, zlib.gzipSync(text))
+    pruneArchives(dir, base, keep)
+  } catch {
+    // archiving must never break rotation
   }
 }
 
@@ -135,6 +207,10 @@ export interface JournalSinksOptions {
   maxBytes: number
   /** Rotated generations kept per journal file. */
   maxGenerations: number
+  /** Archived generations kept per family in the sibling `archive/`
+   *  directory; 0 = off. Threaded from config (`journalArchiveGenerations`,
+   *  default 5) — no fallback here, so a missing thread is a type error. */
+  archiveGenerations: number
   /** Hot path is append-only; the size check and rotation run once per this
    *  many appends. Entries between the check and the rename are the bounded
    *  overshoot. */
@@ -225,7 +301,7 @@ function tickRotate(
           JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
         ),
     },
-    () => rotateIfLarge(file, options.maxBytes, options.maxGenerations),
+    () => rotateIfLarge(file, options.maxBytes, options.maxGenerations, options.archiveGenerations),
   )
 }
 

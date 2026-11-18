@@ -132,7 +132,11 @@ function isValidLiteralKey(key: keyof TurnstileConfig, value: unknown): boolean 
  * @returns True when the value is an integer in the key's allowed range.
  */
 function isValidNumberKey(key: keyof TurnstileConfig, value: unknown): boolean {
-  if (key === "observeSessions" || key === "agentMarkerRetry") {
+  if (
+    key === "observeSessions" ||
+    key === "agentMarkerRetry" ||
+    key === "journalArchiveGenerations"
+  ) {
     return typeof value === "number" && Number.isInteger(value) && value >= 0
   }
   return typeof value === "number" && Number.isInteger(value) && value > 0

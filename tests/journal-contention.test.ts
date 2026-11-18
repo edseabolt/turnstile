@@ -27,6 +27,7 @@ interface ContentionOpts {
   trace: boolean
   maxBytes: number
   maxGenerations: number
+  archiveGenerations: number
   rotateEveryEntries: number
   tamper: { enabled: boolean; epochEntries: number }
 }
@@ -42,6 +43,8 @@ function baseOpts(metricsDir: string): ContentionOpts {
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     tamper: { enabled: true, epochEntries: 8 },
   }
