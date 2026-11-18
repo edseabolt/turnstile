@@ -652,3 +652,115 @@ test("a session-less re-key row omits the sessionID", () => {
   assert.ok(!("sessionID" in rekeys[0]!), "the session-less row omits sessionID")
   assert.ok(!("sessionID" in rekeys[1]!), "the replay-invalid row omits sessionID")
 })
+
+/** A record appended to the sidecar by a concurrent host after this
+ *  process booted (never loaded into memory) survives a persist and folds
+ *  into the in-memory store: the in-lock re-read makes a concurrent
+ *  appender's record visible instead of ignored. */
+test("a concurrent host's appended record folds into the store on persist", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(tmpDir(), project)
+  const ledger = boot(metricsDir)
+  // The concurrent host appends after the boot load, before the persist.
+  const concurrent = { name: "concurrent.md", key: keyOf("c"), project: scope, scheme: "spec" }
+  fs.appendFileSync(sidecarPath(metricsDir), `${JSON.stringify(concurrent)}\n`)
+  ledger.recordPlanApprovalDurable("plan.md", keyOf("a"), project)
+  const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
+  assert.equal(lines.length, 2, "both records are on disk")
+  assert.equal(
+    ledger.planApprovalState("concurrent.md", keyOf("c"), keyOf("b"), project),
+    "live",
+    "the concurrent record folded into memory",
+  )
+})
+
+/** A concurrent host's record appended before an eviction-triggered rewrite
+ *  is folded into the compacted file instead of clobbered by it. */
+test("a concurrent record survives a compaction rewrite", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(tmpDir(), project)
+  const ledger = boot(metricsDir)
+  const key = keyOf("a")
+  recordMany(ledger, "n", 0, 256, project) // the store holds exactly the cap
+  // The concurrent host appends after the boot load, before the rewrite.
+  const concurrent = { name: "concurrent.md", key: keyOf("c"), project: scope, scheme: "spec" }
+  fs.appendFileSync(sidecarPath(metricsDir), `${JSON.stringify(concurrent)}\n`)
+  ledger.recordPlanApprovalDurable("n-256.md", key, project) // 257th: evict + rewrite
+  const lines = fs.readFileSync(sidecarPath(metricsDir), "utf8").split("\n").filter(Boolean)
+  assert.equal(lines.length, 256, "the rewrite stays compacted to the cap")
+  assert.equal(
+    ledger.planApprovalState("concurrent.md", keyOf("c"), keyOf("b"), project),
+    "live",
+    "the concurrent record was folded in, not clobbered",
+  )
+  assert.equal(
+    ledger.planApprovalState("n-0.md", key, keyOf("b"), project),
+    "absent",
+    "the evicted record is not resurrected by the fold",
+  )
+})
+
+/** A fresh `<sidecar>.lock` held by another process degrades the persist to
+ *  the unlocked write with one journaled `journal-lock:` row: the sidecar
+ *  is audit state, never worth blocking on. */
+test("an unavailable sidecar lock degrades to an unlocked write with a journaled row", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const ledger = boot(metricsDir)
+  fs.mkdirSync(`${sidecarPath(metricsDir)}.lock`) // held by "another process"
+  ledger.recordPlanApprovalDurable("plan.md", keyOf("a"), project)
+  assert.equal(
+    ledger.planApprovalState("plan.md", keyOf("a"), keyOf("b"), project),
+    "live",
+    "the degraded write still landed",
+  )
+  const errors = journalEntries(metricsDir).filter(
+    (e) => e.type === "error" && String(e.error).startsWith("journal-lock:"),
+  )
+  assert.equal(errors.length, 1)
+  assert.match(String(errors[0]!.error), /^journal-lock: approval lock unavailable: /)
+  assert.equal(fs.existsSync(`${sidecarPath(metricsDir)}.lock`), true)
+})
+
+/** A re-approval of a previously evicted identity clears the eviction
+ *  memory: a concurrent host's record for that identity, appended after the
+ *  eviction rewrite, folds into the store on the next persist instead of
+ *  being skipped as evicted. The re-approval's own persist fails here (the
+ *  sidecar is a directory at that moment), so the in-memory entry rolls
+ *  back and the fold — not the re-approval — is what keeps the concurrent
+ *  record visible. */
+test("a re-approval clears the eviction memory so a concurrent record for the key survives", () => {
+  const metricsDir = tmpDir()
+  const project = tmpDir()
+  const scope = scopeOf(tmpDir(), project)
+  const ledger = boot(metricsDir)
+  const key = keyOf("a")
+  recordMany(ledger, "n", 0, 256, project) // the store holds exactly the cap
+  ledger.recordPlanApprovalDurable("n-256.md", key, project) // evicts n-0 + rewrite
+  // The concurrent host re-approves the evicted identity with fresh bytes.
+  const concurrent = { name: "n-0.md", key: keyOf("c"), project: scope, scheme: "spec" }
+  fs.appendFileSync(sidecarPath(metricsDir), `${JSON.stringify(concurrent)}\n`)
+  // This process re-approves the same identity, but the persist fails (the
+  // sidecar is a directory now): the in-memory entry rolls back while the
+  // eviction memory is cleared.
+  fs.rmSync(sidecarPath(metricsDir))
+  fs.mkdirSync(sidecarPath(metricsDir))
+  ledger.recordPlanApprovalDurable("n-0.md", key, project)
+  // Restore the sidecar to the concurrent host's view and record again: the
+  // persist folds the concurrent record in instead of skipping it.
+  fs.rmSync(sidecarPath(metricsDir), { recursive: true })
+  fs.appendFileSync(sidecarPath(metricsDir), `${JSON.stringify(concurrent)}\n`)
+  ledger.recordPlanApprovalDurable("n-257.md", key, project)
+  assert.equal(
+    ledger.planApprovalState("n-0.md", keyOf("c"), keyOf("b"), project),
+    "live",
+    "the concurrent record for the re-approved identity survived the fold",
+  )
+  assert.equal(
+    ledger.planApprovalState("n-1.md", key, keyOf("b"), project),
+    "absent",
+    "the identity evicted by the failed re-approval stays evicted",
+  )
+})

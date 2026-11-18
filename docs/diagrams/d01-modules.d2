@@ -67,7 +67,8 @@ core: "src/ — one concern per boundary" {
   ledgerregistry: "ledger-registry.ts\nchild→parent edge maps, live-parent\nregistry, credit-bearing APPROVE trace"
   gatemarkersparse: "gate-markers-parse.ts\nGATE/VERDICT parse arms (pure; caller\njournals the events)"
   evidencehits: "evidence-hits.ts\nhits-map ops behind the evidence tracker\n(record, correlate, snapshot, clear)"
-  journalsinks: "journal-sinks.ts\nappend/rotate primitives, sink resolution,\nrotation locking, trace formatting"
+  journalsinks: "journal-sinks.ts\nappend/rotate primitives, sink resolution,\nrotation locking via the shared lockfile\nboundary, trace formatting"
+  lockfile: "lockfile.ts\nwithFileLock: atomic mkdir mutex at\n<file>.lock, bounded retry, mtime stale\nsteal — shared by append, sidecar, rotation"
   toolpolicyguards: "tool-policy-guards.ts\ndenylist guards, commit lint, landing +\nhands-on gates, telemetry observers"
   dispatchbudget: "dispatch-budget.ts\nper-leg loop caps, total-dispatch budget,\nread horizon"
   dispatchreviewgate: "dispatch-review-gate.ts\nreviewer round-cap + gate-evidence gate,\nwaiver consumption, ensemble credit"
@@ -141,6 +142,9 @@ core.state -> core.statecarry
 core.ledger -> core.ledgerregistry
 core.evidence -> core.evidencehits
 core.journal -> core.journalsinks
+core.journal -> core.lockfile
+core.journalsinks -> core.lockfile
+core.ledger -> core.lockfile
 core.toolpolicy -> core.toolpolicyguards
 core.toolpolicyguards -> core.shellparse
 core.toolpolicyguards -> core.commitargs

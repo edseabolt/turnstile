@@ -10,6 +10,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
+import { withFileLock } from "./lockfile.ts"
+
 /**
  * Host session-ID alphabet, length-capped: the only shapes that may name a
  * per-session journal file (and the only shapes replay accepts as bucket
@@ -184,33 +186,20 @@ function sinkFor(
 }
 
 /**
- * Steals a lock directory whose mtime proves its creator crashed
- * mid-rotation. A stat or rmdir failure throws to the caller's catch, so a
- * lock in an unexpected state (a file, a non-empty directory, a vanished
- * path) is never forced open — it just skips the tick.
- * @param lock Path of the contended `<file>.lock` directory.
- * @returns True when the stale lock was removed (a steal happened).
- */
-function stealStaleLock(lock: string): boolean {
-  if (Date.now() - fs.statSync(lock).mtimeMs < ROTATION_LOCK_STALE_MS) return false
-  fs.rmdirSync(lock)
-  return true
-}
-
-/**
  * Rotates `file` once per `rotateEveryEntries` writes, under a created
  * `<file>.lock` directory that is an atomic mutex (mkdir fails with EEXIST
  * while another session holds it) so concurrent sessions never both rename
- * the shared file. A stale lock — its mtime past the staleness bound,
- * proving its creator crashed — is stolen (journaled as a
- * `rotation-lock-stale:` error entry) and the mkdir retried once; a fresh
- * contention is a silent return. Non-EEXIST mkdir errors and steal-path
- * throws land in the single outer catch. The error row always lands on the
- * shared journal file, even when the contended file is a session sink (one
- * fixed audit location for rotation errors). Fail-open: the outer catch
- * swallows every steal-path throw and the finally's failed rmdir, so a
- * throw inside the finally (a failed rmdir) or the rotate cannot propagate
- * out of `journal()` into the hook. The per-write hot path never calls
+ * the shared file. The lock protocol is the shared `withFileLock` boundary:
+ * a single attempt (`timeoutMs: 0` — a fresh contention is a silent skip,
+ * not a retry), a stale lock — its mtime past the staleness bound, proving
+ * its creator crashed — stolen once (journaled as a `rotation-lock-stale:`
+ * error entry via the steal seam, before the rotation rename so the row
+ * lands in the rotated generation). Non-EEXIST mkdir errors and steal-path
+ * throws degrade to `{held:false}` inside the boundary, which skips the
+ * tick. The error row always lands on the shared journal file, even when
+ * the contended file is a session sink (one fixed audit location for
+ * rotation errors). Fail-open: a failed release or any lock-state error
+ * never propagates out of `journal()`. The per-write hot path never calls
  * this past the counter gate.
  * @param options The journaler options (rotation bounds).
  * @param journalPath The shared journal file path (the error row's sink).
@@ -225,27 +214,19 @@ function tickRotate(
 ): void {
   if (++counter.n < options.rotateEveryEntries) return
   counter.n = 0
-  try {
-    const lock = `${file}.lock`
-    try {
-      fs.mkdirSync(lock)
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
-      if (!stealStaleLock(lock)) return
-      appendLine(
-        journalPath,
-        JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
-      )
-      fs.mkdirSync(lock) // raced again: the throw lands in the outer catch
-    }
-    try {
-      rotateIfLarge(file, options.maxBytes, options.maxGenerations)
-    } finally {
-      fs.rmdirSync(`${file}.lock`)
-    }
-  } catch {
-    // steal-path throw, non-EEXIST mkdir error, or failed rmdir: skip the tick
-  }
+  withFileLock(
+    file,
+    {
+      timeoutMs: 0,
+      staleMs: ROTATION_LOCK_STALE_MS,
+      onStaleSteal: () =>
+        appendLine(
+          journalPath,
+          JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
+        ),
+    },
+    () => rotateIfLarge(file, options.maxBytes, options.maxGenerations),
+  )
 }
 
 /**

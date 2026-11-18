@@ -20,6 +20,14 @@ the suspension map. The `prov:stated` / `prov:denied` / `prov:waiver` /
 `prov:override` decision-ledger rows ride the same journal. Every read
 error is fail-open: the journaler records it and never throws.
 
+Concurrent OpenCode instances sharing the metrics dir append safely:
+chained journal rows and the approval sidecar write inside a per-file
+`<file>.lock` mkdir mutex (`src/lockfile.ts`) with the chain head (or
+sidecar) re-read from disk inside the critical section; contention past
+the retry bound degrades to an unlocked write with a journaled
+`journal-lock:` row — never a blocked or dropped row. See
+[journal/chain.md](../journal/chain.md) for the locking contract.
+
 The full catalog lives in [journal/entry-types.md](../journal/entry-types.md). It lists every entry
 type with its replay fold, the file layout, rotation
 mechanics, and the tamper-evidence hash chain.

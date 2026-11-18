@@ -46,6 +46,44 @@ and 2 on usage errors.
 Row-level inclusion proofs (`prov --verify --session <id>`) are described in
 [anchors.md](anchors.md).
 
+**Cross-process append locking.** Two OpenCode instances sharing a metrics
+dir append to the same journal files. Without coordination, both could read
+the same chain tail and both append — a forked chain (two rows with the
+same `seq` and `prevHash`), which the verify fold reports as broken. The
+append path closes that window (`src/lockfile.ts`, `src/journal.ts`):
+
+- Every chained append runs inside an advisory mkdir mutex at
+  `<journal>.lock` (`withFileLock`), and the chain head is **re-read from
+  disk inside the critical section** — the disk tail inside the lock is the
+  only trusted chain head; the in-process `FamilyChain` is a cache,
+  revalidated on every append.
+- **One lock at a time.** No code path holds two `<file>.lock` mutexes at
+  once: the append lock is acquired and released entirely within the
+  chained append, and rotation's lock is taken only after the append has
+  returned. No deadlock by construction.
+- **Bounds.** A lock older than 10 s (append) or 60 s (rotation) is stale —
+  its holder crashed — and is stolen once; the steal is journaled
+  (`journal-lock: stale lock stolen:` for appends,
+  `rotation-lock-stale:` for rotation). Acquisition retries are bounded
+  (1 s for appends; rotation makes a single attempt).
+- **Fail-open degradation.** When the lock cannot be acquired within the
+  bound, the append proceeds unlocked (the pre-lock resync-then-append
+  sequence) and journals one `journal-lock: append lock unavailable:` error
+  row. No append is ever blocked or dropped; the race window is narrowed,
+  not closed, and the degradation is visible. The durable approved-plan
+  sidecar uses the same protocol (`journal-lock: approval lock unavailable:`
+  on degradation), with an in-lock re-read that folds a concurrent host's
+  records into both memory and any compaction rewrite.
+- **Follow-up.** If a fork is ever detected in the wild (the lock protocol
+  proving insufficient — a stolen live lock, an NFS edge case), the
+  escalation path is per-writer partitioned journal files with a
+  cross-writer linkage field: that turns a fork into a detectable event
+  instead of a prevented one, at the cost of a larger replay and verify
+  change. It is deliberately not implemented now.
+
+Unchained rows (tamper evidence off, the default) are not locked: the
+defect is chain forking, which only exists under tamper evidence.
+
 **Differential characterization** (integration-tested in
 `tests/tamper-matrix.test.ts`): for each mutation of a captured honest
 journal, built through the real write path with a rotation generation and a

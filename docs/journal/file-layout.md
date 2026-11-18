@@ -15,6 +15,14 @@
   (best-effort): the same bytes as the committed artifact, co-located with
   the producing session's sink for audit.
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
+- **`<file>.lock`** — transient lock directories (never data): one per
+  guarded file (`turnstile.jsonl.lock`, a session sink's `.lock`, the
+  sidecar's `.lock`), the atomic mkdir mutex of the cross-process append,
+  sidecar, and rotation protocol. A lock older than its staleness bound
+  (10 s for appends and the sidecar, 60 s for rotation) is stolen once as a
+  crashed holder's; the steal is journaled. Released (rmdir) when the
+  guarded write returns; a lock left behind means a crashed process and
+  disappears on the next contended write past the bound.
 - **`anchors.jsonl`** — the session-state anchor store, written only when
   `tamperEvidence.enabled` is `true` (see [tamper evidence: the hash
   chain](chain.md) and [anchors](anchors.md)). One published epoch ref per
@@ -24,7 +32,9 @@
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
   the approval was recorded under (derived from the resolved project
-  directory).
+  directory). Writes run inside an advisory `<file>.lock` mutex with an
+  in-lock re-read (see [the chain doc](chain.md)); lock contention degrades
+  to an unlocked write with a journaled `journal-lock:` row.
 
   New records carry a `scheme: "spec"` tag; the key is the plan's
   spec-region sha256. A record without the tag was written under the legacy

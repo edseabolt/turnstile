@@ -24,6 +24,7 @@ import { evictTo } from "./bounded.ts"
 import { CANONICAL_REVIEWER_AGENT } from "./config.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now, REPLAY_SESSION_RE } from "./journal.ts"
+import { withFileLock } from "./lockfile.ts"
 import { verdictResultOf } from "./markers.ts"
 import { REVIEW_ENSEMBLE_SIZE, mergeAfterReplay, newState } from "./state.ts"
 import {
@@ -385,6 +386,14 @@ const APPROVAL_LEDGER_FILE = "approved-plans.jsonl"
 /** Cap on durable approval records; over-cap, the oldest record is evicted
  *  and the sidecar is rewritten compacted (bounded growth, like the journal). */
 const MAX_APPROVAL_RECORDS = 256
+/** The sidecar append lock's staleness bound: the critical section spans
+ *  one sidecar read plus one append or rewrite, far shorter than this. */
+const APPROVAL_LOCK_STALE_MS = 10_000
+/** Cap on the remembered evicted-record keys (the rewrite fold skips
+ *  sidecar records this process deliberately evicted, so they never
+ *  resurrect); beyond the cap the oldest memories are dropped — a record
+ *  evicted this long ago cannot be on disk anyway (it was rewritten out). */
+const MAX_EVICTED_KEYS = 512
 /** Upper bound on a replayed emitter agent name (a real agent name fits
  *  well under this; anything longer is hostile padding). */
 const MAX_REPLAY_AGENT_LEN = 128
@@ -1622,20 +1631,81 @@ function parseApprovalLine(line: string): ApprovalRecord | null {
 }
 
 /**
+ * Evicts entries from the oldest-inserted end of the map until it is within
+ * `cap`, remembering every evicted key in `evicted` (bounded): the sidecar
+ * rewrite fold skips records the store deliberately evicted, so a rewrite
+ * never resurrects them from disk.
+ * @param map The record map to trim (mutated in place).
+ * @param cap The maximum number of records to retain.
+ * @param evicted The evicted-key memory (appended to, bounded).
+ */
+function evictTracked(map: Map<string, ApprovalRecord>, cap: number, evicted: Set<string>): void {
+  if (map.size <= cap) return
+  for (const k of map.keys()) {
+    if (map.size <= cap) break
+    evicted.add(k)
+    map.delete(k)
+  }
+  evictTo(evicted, MAX_EVICTED_KEYS)
+}
+
+/**
+ * Parses raw sidecar lines into the record map (untrusted input: a torn or
+ * hostile line sanitizes away). Last-wins per (project, name); insertion
+ * order is the eviction order. No capping here — the callers cap according
+ * to their own eviction tracking.
+ * @param raw The raw sidecar text.
+ * @returns The parsed record map.
+ */
+function parseSidecarLines(raw: string): Map<string, ApprovalRecord> {
+  const map = new Map<string, ApprovalRecord>()
+  for (const line of raw.split("\n")) {
+    if (line === "") continue
+    const record = parseApprovalLine(line)
+    if (record !== null) map.set(`${record.project}:${record.name}`, record)
+  }
+  return map
+}
+
+/**
+ * Reads the sidecar's records silently (no journaling): the in-lock fold
+ * uses it, where a read failure must not add a spurious boot-style error
+ * row to the persist's own failure reporting.
+ * @param sidecarPath Absolute path of the sidecar file.
+ * @returns The parsed record map (empty when the file is missing or
+ *     unreadable).
+ */
+function readSidecarRecords(sidecarPath: string): Map<string, ApprovalRecord> {
+  let raw: string
+  try {
+    raw = fs.readFileSync(sidecarPath, "utf8")
+  } catch {
+    // missing or unreadable sidecar: fold nothing
+    return new Map()
+  }
+  return parseSidecarLines(raw)
+}
+
+/**
  * Loads the durable approved-plan sidecar into the in-memory store at boot.
  * A missing file is the fresh state (empty store, nothing journaled); any
  * other read failure journals one error and leaves the store empty (the
  * non-durable wall then applies). Lines are untrusted input: a torn or
  * hostile line sanitizes away (see `parseApprovalLine`). Last-wins per
  * (project, name); insertion order is the eviction order. An over-cap file
- * (a torn tail or concurrent appends) still bounds the memory store; the file
- * recompacts on the next eviction-triggered rewrite.
+ * (a torn tail or concurrent appends) still bounds the memory store; the
+ * evicted keys are remembered so a later rewrite fold never resurrects
+ * them, and the file recompacts on the next eviction-triggered rewrite.
  * @param sidecarPath Absolute path of the sidecar file.
  * @param journalPath Absolute path of the journal a read failure journals into.
+ * @param evicted The evicted-key memory (appended to, bounded).
  * @returns The loaded store (empty when nothing valid was read).
  */
-function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string, ApprovalRecord> {
-  const map = new Map<string, ApprovalRecord>()
+function loadApprovedPlans(
+  sidecarPath: string,
+  journalPath: string,
+  evicted: Set<string>,
+): Map<string, ApprovalRecord> {
   let raw: string
   try {
     raw = fs.readFileSync(sidecarPath, "utf8")
@@ -1644,14 +1714,10 @@ function loadApprovedPlans(sidecarPath: string, journalPath: string): Map<string
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       journalApprovalLedgerError(journalPath, `read failed: ${e}`)
     }
-    return map
+    return new Map()
   }
-  for (const line of raw.split("\n")) {
-    if (line === "") continue
-    const record = parseApprovalLine(line)
-    if (record !== null) map.set(`${record.project}:${record.name}`, record)
-  }
-  evictTo(map, MAX_APPROVAL_RECORDS)
+  const map = parseSidecarLines(raw)
+  evictTracked(map, MAX_APPROVAL_RECORDS, evicted)
   return map
 }
 
@@ -1847,6 +1913,8 @@ interface LedgerMaps {
   sidecarPath: string
   /** The durable approved-plan store loaded from the sidecar at boot. */
   approvedPlans: Map<string, ApprovalRecord>
+  /** Keys of records evicted at boot (bounded; see `evictTracked`). */
+  evictedKeys: Set<string>
 }
 
 /**
@@ -1871,7 +1939,8 @@ function createLedgerMaps(journalPath: string, approvalLedgerPath?: string): Led
   // missing file is the fresh state; an unreadable one journals one error).
   const sidecarPath =
     approvalLedgerPath ?? path.join(path.dirname(journalPath), APPROVAL_LEDGER_FILE)
-  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath)
+  const evictedKeys = new Set<string>()
+  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath, evictedKeys)
   return {
     journalPath,
     states,
@@ -1880,6 +1949,7 @@ function createLedgerMaps(journalPath: string, approvalLedgerPath?: string): Led
     suspended,
     sidecarPath,
     approvedPlans,
+    evictedKeys,
   }
 }
 
@@ -2261,15 +2331,74 @@ interface ApprovalStoreState {
   journalPath: string
   /** The durable approved-plan store (project:name → record). */
   approvedPlans: Map<string, ApprovalRecord>
+  /** Keys of records this process evicted (bounded): the rewrite fold
+   *  skips these on disk so an eviction is never undone by a fold. */
+  evictedKeys: Set<string>
+}
+
+/**
+ * Folds the sidecar's on-disk records into the in-memory store inside the
+ * persist lock: a concurrent host's appends land in memory instead of being
+ * lost to a rewrite or ignored by later lookups. Records this process
+ * deliberately evicted are skipped (an eviction is never undone by a fold);
+ * the merged store is re-capped with eviction tracking.
+ * @param st The approval-store state (mutated in place).
+ */
+function foldSidecarInto(st: ApprovalStoreState): void {
+  for (const [k, v] of readSidecarRecords(st.sidecarPath)) {
+    if (!st.approvedPlans.has(k) && !st.evictedKeys.has(k)) st.approvedPlans.set(k, v)
+  }
+  evictTracked(st.approvedPlans, MAX_APPROVAL_RECORDS, st.evictedKeys)
+}
+
+/**
+ * Writes the sidecar inside the persist lock: the in-lock fold first, then
+ * either the compacted rewrite (the file holds exactly the bounded store)
+ * or the one-record append.
+ * @param st The approval-store state.
+ * @param record The just-recorded entry (the append payload).
+ * @param rewrite True when an eviction just happened (the file is rewritten).
+ */
+function writeSidecar(st: ApprovalStoreState, record: ApprovalRecord, rewrite: boolean): void {
+  foldSidecarInto(st)
+  if (rewrite) {
+    const lines = [...st.approvedPlans.values()].map((r) => JSON.stringify(r))
+    fs.writeFileSync(st.sidecarPath, `${lines.join("\n")}\n`)
+  } else {
+    fs.appendFileSync(st.sidecarPath, `${JSON.stringify(record)}\n`)
+  }
+}
+
+/**
+ * Journals one `journal-lock:` row for a degraded (unlocked) sidecar write.
+ * The sidecar is audit state, not enforcement: the write proceeds unlocked
+ * and the degradation is made visible instead of blocking.
+ * @param journalPath The journal path the row appends to.
+ * @param sidecarPath The sidecar whose lock was unavailable.
+ */
+function journalApprovalLockError(journalPath: string, sidecarPath: string): void {
+  appendLine(
+    journalPath,
+    JSON.stringify({
+      ts: now(),
+      type: "error",
+      error: `journal-lock: approval lock unavailable: ${sidecarPath}`,
+    }),
+  )
 }
 
 /**
  * Persists the sidecar after a record: a plain append (the appended line is
  * the store's most-recent entry) or, when an eviction just happened, a full
- * compacted rewrite so the file holds exactly the bounded store. Creates the
- * parent directory. Any fs failure journals one `approval ledger:` error and
- * reports false — the record rolls its in-memory entry back (an unpersisted
- * approval must not exempt in-process).
+ * compacted rewrite so the file holds exactly the bounded store. Both
+ * shapes run inside a `<sidecar>.lock` critical section with an in-lock
+ * re-read, so a concurrent host's records are folded in — never lost to a
+ * rewrite or clobbered by one. Creates the parent directory. Fail-open:
+ * when the lock cannot be acquired within the retry bound the write
+ * degrades to the unlocked sequence with a journaled `journal-lock:` row;
+ * any fs failure journals one `approval ledger:` error and reports false —
+ * the record rolls its in-memory entry back (an unpersisted approval must
+ * not exempt in-process).
  * @param st The approval-store state.
  * @param record The just-recorded entry (the append payload).
  * @param rewrite True when an eviction just happened (the file is rewritten).
@@ -2282,11 +2411,12 @@ function persistApprovalStore(
 ): boolean {
   try {
     fs.mkdirSync(path.dirname(st.sidecarPath), { recursive: true })
-    if (rewrite) {
-      const lines = [...st.approvedPlans.values()].map((r) => JSON.stringify(r))
-      fs.writeFileSync(st.sidecarPath, `${lines.join("\n")}\n`)
-    } else {
-      fs.appendFileSync(st.sidecarPath, `${JSON.stringify(record)}\n`)
+    const result = withFileLock(st.sidecarPath, { staleMs: APPROVAL_LOCK_STALE_MS }, () =>
+      writeSidecar(st, record, rewrite),
+    )
+    if (!result.held) {
+      journalApprovalLockError(st.journalPath, st.sidecarPath)
+      writeSidecar(st, record, rewrite)
     }
     return true
   } catch (e) {
@@ -2405,7 +2535,10 @@ function planApprovalStateOf(
  * Records a durable, project-scoped plan approval in the sidecar store.
  * delete+set keeps a re-record most-recent (a plain set would age the
  * entry out on its first-insertion slot); an eviction triggers the
- * compacted rewrite. An unpersisted record must not exempt in-process
+ * compacted rewrite. Re-approving an identity this process previously
+ * evicted also clears its eviction memory, so a concurrent host's record
+ * for the same identity folds in on the next persist instead of being
+ * skipped as evicted. An unpersisted record must not exempt in-process
  * (fail toward the non-durable wall): the entry rolls back when the
  * write failed.
  * @param st The approval-store state.
@@ -2426,8 +2559,11 @@ function recordPlanApprovalDurableIn(
   const mapKey = `${record.project}:${record.name}`
   st.approvedPlans.delete(mapKey)
   st.approvedPlans.set(mapKey, record)
+  // A fresh approval of a formerly evicted identity supersedes the eviction:
+  // forget it so the next fold no longer skips the identity's sidecar rows.
+  st.evictedKeys.delete(mapKey)
   const overCap = st.approvedPlans.size > MAX_APPROVAL_RECORDS
-  if (overCap) evictTo(st.approvedPlans, MAX_APPROVAL_RECORDS)
+  if (overCap) evictTracked(st.approvedPlans, MAX_APPROVAL_RECORDS, st.evictedKeys)
   if (!persistApprovalStore(st, record, overCap)) st.approvedPlans.delete(mapKey)
 }
 
@@ -2551,6 +2687,7 @@ function composeLedger(
       sidecarPath: maps.sidecarPath,
       journalPath: maps.journalPath,
       approvedPlans: maps.approvedPlans,
+      evictedKeys: maps.evictedKeys,
     }),
     ...credit,
     ...createObserveCap(observeSessions, maps.observePeriod),
