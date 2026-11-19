@@ -605,9 +605,13 @@ function writeJournalEntry(
  * @param options.trace Whether trace lines are written (journal always is).
  * @param options.maxBytes Rotation threshold per journal file.
  * @param options.maxGenerations Rotated generations kept per journal file.
+ * @param options.archiveGenerations Gzip-compressed pruned generations kept
+ *     per journal file family in `archive/` (cold storage; replay never
+ *     reads it). 0 disables archiving.
  * @param options.rotateEveryEntries Hot path is append-only; the size check
- *     and rotation run once per this many appends (documented in the
- *     rotation-bound comment above). Entries between the check and the
+ *     and rotation run once per this many appends (the rotation-bound
+ *     rationale is documented on `JournalSinksOptions` in
+ *     `journal-sinks.ts`). Entries between the check and the
  *     rename are the bounded overshoot.
  * @param options.perSession When true, entries carrying a resolvable parent
  *     sessionID route to `sessions/<parentID>.jsonl`; everything else stays

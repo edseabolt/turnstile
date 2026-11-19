@@ -168,7 +168,8 @@ function nextStage(s: GateState, stages: PipelineStages, justCompleted: string):
  * philosophy the injected policy follows.
  *
  * Capped-leg residual (documented, not threaded): the other legs carry
- * dispatch caps too (planner 3, plan-reviewer 3, test-runner 4). On a capped
+ * dispatch caps too (planner 3, plan-reviewer 3, test-runner 4, requirements 2
+ * when the phase is on). On a capped
  * round the line may name a stage the dispatch gate will refuse; it reports
  * the pipeline's nominal successor, not the gate's cap check.
  * @param s The gate state bucket after the just-arrived delivery.
