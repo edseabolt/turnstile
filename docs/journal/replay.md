@@ -44,7 +44,9 @@ drop). Each dropped line journals one replay-drop `suppressed` entry
 permission failure) folds nothing from its lines: it journals one
 message-free `{ts, type:"replay", error:true}` entry on the shared
 `turnstile.jsonl` (bounded by the generation count) and the walk continues
-with the next-older generation.
+with the next-older generation. A journaler-backed ledger appends that
+entry chained through the journaler; the legacy shape appends it unchained
+([entry-type catalog](entry-types.md)).
 
 The walk then restores per session, last-wins: `hasGatePass`,
 `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove` (task-result

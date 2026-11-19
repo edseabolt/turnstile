@@ -1665,6 +1665,8 @@ function buildCoreLedger(opts: TurnstileOptions, st: CoreState): void {
     opts.approvalLedgerPath,
     st.config.observeSessions,
     st.config.agents.reviewer,
+    st.journaler.sessionsDir,
+    st.journaler,
   )
 
   // Evidence tracker: correlates a GATE: PASS against journaled exit-0

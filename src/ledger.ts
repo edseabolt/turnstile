@@ -24,6 +24,7 @@ import { evictTo } from "./bounded.ts"
 import { CANONICAL_REVIEWER_AGENT } from "./config.ts"
 import type { ChildVerdict, GateState } from "./types.ts"
 import { appendLine, now, REPLAY_SESSION_RE } from "./journal.ts"
+import type { Journaler } from "./journal.ts"
 import { withFileLock } from "./lockfile.ts"
 import { verdictResultOf } from "./markers.ts"
 import { REVIEW_ENSEMBLE_SIZE, mergeAfterReplay, newState } from "./state.ts"
@@ -36,6 +37,14 @@ import {
   type LedgerRegistry,
 } from "./ledger-registry.ts"
 import type { StickyReleaseKind } from "./gates-common.ts"
+
+/**
+ * The slice of the journaler the ledger needs: the chained `journal` append
+ * (chained under tamper evidence, rotation-ticked). Declared here so the
+ * ledger depends on the journal boundary's type without importing its
+ * factory.
+ */
+type LedgerJournaler = Pick<Journaler, "journal">
 
 /**
  * The observe-mode admission phase of a session: `observe` (gate decisions
@@ -568,6 +577,25 @@ function newReplayMaps(): ReplayMaps {
 }
 
 /**
+ * Journals one message-free `replay` error telemetry row for an unreadable
+ * journal generation. When a journaler is supplied the row appends through
+ * it (chained under tamper evidence, rotation-ticked; the journaler routes
+ * the sessionID-less row to the shared journal itself); otherwise the legacy
+ * unchained append to `errorSink` is kept. Fail-open either way.
+ * @param journaler The journaler when the ledger is journaler-backed;
+ *     undefined keeps the legacy unchained append.
+ * @param errorSink Absolute path of the legacy fallback append target (the
+ *     shared journal).
+ */
+function journalReplayError(journaler: LedgerJournaler | undefined, errorSink: string): void {
+  if (journaler) {
+    journaler.journal({ type: "replay", error: true })
+    return
+  }
+  appendLine(errorSink, JSON.stringify({ ts: now(), type: "replay", error: true }))
+}
+
+/**
  * Reads the retained journal lines of one file family (the current file plus
  * its rotated generations), oldest-first, up to `remaining` lines.
  * Walks generations newest-first (`file`, then `${file}.1`, `.2`, …, stopping
@@ -583,11 +611,19 @@ function newReplayMaps(): ReplayMaps {
  *     positive bound).
  * @param errorSink Absolute path of the file that receives the `replay`
  *     error telemetry row when a generation is unreadable (the shared
- *     journal, never the file being read).
+ *     journal, never the file being read) on the legacy fallback path.
+ * @param journaler When supplied, the error row appends through the
+ *     journaler (chained under tamper evidence, rotation-ticked) instead of
+ *     the legacy unchained append to `errorSink`.
  * @returns The file's tail-window lines, oldest-first (empty when nothing is
  *     read).
  */
-function readReplayFileLines(file: string, remaining: number, errorSink: string): string[] {
+function readReplayFileLines(
+  file: string,
+  remaining: number,
+  errorSink: string,
+  journaler: LedgerJournaler | undefined,
+): string[] {
   const blocks: string[][] = []
   let generation = fs.existsSync(file) ? 0 : 1
   for (;;) {
@@ -600,7 +636,7 @@ function readReplayFileLines(file: string, remaining: number, errorSink: string)
       // One unreadable generation must not sink the replay of the rest:
       // journal a message-free error entry on the shared sink, fold
       // nothing, keep walking.
-      appendLine(errorSink, JSON.stringify({ ts: now(), type: "replay", error: true }))
+      journalReplayError(journaler, errorSink)
       block = []
     }
     blocks.unshift(block)
@@ -643,11 +679,18 @@ function replayTsKey(line: string): string {
  * @param journalPath Absolute path of the current shared journal file.
  * @param sessionsDir Absolute path of the per-session journal directory.
  * @param tailLines The tail bound in lines (non-positive reads nothing).
+ * @param journaler When supplied, replay-error rows append through the
+ *     journaler (chained) instead of the legacy unchained append.
  * @returns The tail-window lines, oldest-first (empty when nothing is read).
  */
-function readReplayLines(journalPath: string, sessionsDir: string, tailLines: number): string[] {
+function readReplayLines(
+  journalPath: string,
+  sessionsDir: string,
+  tailLines: number,
+  journaler: LedgerJournaler | undefined,
+): string[] {
   if (tailLines <= 0) return []
-  const lines = readReplayFileLines(journalPath, tailLines, journalPath)
+  const lines = readReplayFileLines(journalPath, tailLines, journalPath, journaler)
   let sessionFiles: string[] = []
   try {
     sessionFiles = [
@@ -661,7 +704,8 @@ function readReplayLines(journalPath: string, sessionsDir: string, tailLines: nu
   } catch {
     // No sessions dir (legacy layout) or unreadable: replay the shared file only.
   }
-  for (const file of sessionFiles) lines.push(...readReplayFileLines(file, tailLines, journalPath))
+  for (const file of sessionFiles)
+    lines.push(...readReplayFileLines(file, tailLines, journalPath, journaler))
   return lines
     .map((line, i) => ({ line, key: replayTsKey(line), i }))
     .sort((a, b) => (a.key === b.key ? a.i - b.i : a.key < b.key ? -1 : 1))
@@ -1577,11 +1621,23 @@ function sanitizePlansSig(sig: unknown): string {
  * Journals one `approval ledger:` error entry for a failed sidecar operation
  * (one per failed operation — bounded). The entries are replay-inert and
  * status-inert by construction: neither the boot replay nor the status chain
- * reads them for state.
- * @param journalPath Absolute path of the journal to append to.
+ * reads them for state. When a journaler is supplied the row appends through
+ * it (chained under tamper evidence, rotation-ticked); otherwise the legacy
+ * unchained append to `journalPath` is kept.
+ * @param journaler The journaler when the ledger is journaler-backed;
+ *     undefined keeps the legacy unchained append.
+ * @param journalPath Absolute path of the legacy fallback append target.
  * @param detail The failure detail (no plan content, no prompt text).
  */
-function journalApprovalLedgerError(journalPath: string, detail: string): void {
+function journalApprovalLedgerError(
+  journaler: LedgerJournaler | undefined,
+  journalPath: string,
+  detail: string,
+): void {
+  if (journaler) {
+    journaler.journal({ type: "error", error: `approval ledger: ${detail}` })
+    return
+  }
   appendLine(
     journalPath,
     JSON.stringify({ ts: now(), type: "error", error: `approval ledger: ${detail}` }),
@@ -1699,12 +1755,15 @@ function readSidecarRecords(sidecarPath: string): Map<string, ApprovalRecord> {
  * @param sidecarPath Absolute path of the sidecar file.
  * @param journalPath Absolute path of the journal a read failure journals into.
  * @param evicted The evicted-key memory (appended to, bounded).
+ * @param journaler When supplied, the read-failed error row appends through
+ *     the journaler (chained) instead of the legacy unchained append.
  * @returns The loaded store (empty when nothing valid was read).
  */
 function loadApprovedPlans(
   sidecarPath: string,
   journalPath: string,
   evicted: Set<string>,
+  journaler: LedgerJournaler | undefined,
 ): Map<string, ApprovalRecord> {
   let raw: string
   try {
@@ -1712,7 +1771,7 @@ function loadApprovedPlans(
   } catch (e) {
     // ENOENT is the fresh-install state: nothing to journal.
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-      journalApprovalLedgerError(journalPath, `read failed: ${e}`)
+      journalApprovalLedgerError(journaler, journalPath, `read failed: ${e}`)
     }
     return new Map()
   }
@@ -1832,6 +1891,8 @@ function loadApprovedPlans(
  * @param childEdges The map the restored `child-edge` records (last-wins per
  *     child) are parked into for the setup re-seed; filled at the end of the
  *     walk, never applied here.
+ * @param journaler When supplied, replay-error rows append through the
+ *     journaler (chained) instead of the legacy unchained append.
  */
 function replayGatePasses(
   states: Map<string, GateState>,
@@ -1843,10 +1904,20 @@ function replayGatePasses(
   observePeriod: ObservePeriod,
   suspended: Map<string, true>,
   childEdges: Map<string, { parent: string; agent: string }>,
+  journaler: LedgerJournaler | undefined,
 ): void {
   const maps = newReplayMaps()
   const drops: ReplayDrop[] = []
-  replayJournalTail(maps, journalPath, sessionsDir, tailLines, observePeriod, suspended, drops)
+  replayJournalTail(
+    maps,
+    journalPath,
+    sessionsDir,
+    tailLines,
+    observePeriod,
+    suspended,
+    drops,
+    journaler,
+  )
   restoreBuckets(states, maps, reviewerAgent, creditedApprovals)
   for (const [child, edge] of maps.childEdges) childEdges.set(child, edge)
   journalReplayDrops(journalPath, drops)
@@ -1864,6 +1935,8 @@ function replayGatePasses(
  * @param observePeriod The observe-mode period state.
  * @param suspended The suspension map (fold target).
  * @param drops The accumulator the dropped lines are pushed to.
+ * @param journaler When supplied, replay-error rows append through the
+ *     journaler (chained) instead of the legacy unchained append.
  */
 function replayJournalTail(
   maps: ReturnType<typeof newReplayMaps>,
@@ -1873,8 +1946,9 @@ function replayJournalTail(
   observePeriod: ObservePeriod,
   suspended: Map<string, true>,
   drops: ReplayDrop[],
+  journaler: LedgerJournaler | undefined,
 ): void {
-  for (const line of readReplayLines(journalPath, sessionsDir, tailLines)) {
+  for (const line of readReplayLines(journalPath, sessionsDir, tailLines, journaler)) {
     const entry = parseReplayLine(line)
     if (entry === null) continue
     if (entry === "malformed") {
@@ -1901,6 +1975,12 @@ function replayJournalTail(
 interface LedgerMaps {
   /** The journal path (the edge rows' and persist errors' append target). */
   journalPath: string
+  /**
+   * The journaler when the ledger is journaler-backed: telemetry rows
+   * (replay error, approval-ledger error, approval-lock error, plan-rekey)
+   * append chained through it; undefined keeps the legacy unchained append.
+   */
+  journaler: LedgerJournaler | undefined
   /** Session buckets, LRU-capped at `maxSessions`. */
   states: Map<string, GateState>
   /** Latest VERDICT marker observation per child session. */
@@ -1923,9 +2003,17 @@ interface LedgerMaps {
  * the fresh state; an unreadable one journals one error).
  * @param journalPath The journal path (the sidecar's default sibling).
  * @param approvalLedgerPath Optional explicit sidecar path override.
+ * @param journaler When supplied, the ledger's telemetry rows (replay error,
+ *     approval-ledger error, approval-lock error, plan-rekey) append through
+ *     the journaler (chained under tamper evidence, rotation-ticked) instead
+ *     of the legacy unchained append.
  * @returns The ledger's maps and sidecar state (see {@link LedgerMaps}).
  */
-function createLedgerMaps(journalPath: string, approvalLedgerPath?: string): LedgerMaps {
+function createLedgerMaps(
+  journalPath: string,
+  approvalLedgerPath?: string,
+  journaler?: LedgerJournaler,
+): LedgerMaps {
   const states = new Map<string, GateState>()
   // Latest VERDICT marker observation per child session (rationale at
   // recordChildVerdict); the observe period and suspension map are restored
@@ -1940,9 +2028,10 @@ function createLedgerMaps(journalPath: string, approvalLedgerPath?: string): Led
   const sidecarPath =
     approvalLedgerPath ?? path.join(path.dirname(journalPath), APPROVAL_LEDGER_FILE)
   const evictedKeys = new Set<string>()
-  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath, evictedKeys)
+  const approvedPlans = loadApprovedPlans(sidecarPath, journalPath, evictedKeys, journaler)
   return {
     journalPath,
+    journaler,
     states,
     childVerdicts,
     observePeriod,
@@ -2329,6 +2418,12 @@ interface ApprovalStoreState {
   sidecarPath: string
   /** The journal path the persist-error row appends to. */
   journalPath: string
+  /**
+   * The journaler when the ledger is journaler-backed: error and plan-rekey
+   * rows append chained through it; undefined keeps the legacy unchained
+   * append.
+   */
+  journaler: LedgerJournaler | undefined
   /** The durable approved-plan store (project:name → record). */
   approvedPlans: Map<string, ApprovalRecord>
   /** Keys of records this process evicted (bounded): the rewrite fold
@@ -2372,19 +2467,27 @@ function writeSidecar(st: ApprovalStoreState, record: ApprovalRecord, rewrite: b
 /**
  * Journals one `journal-lock:` row for a degraded (unlocked) sidecar write.
  * The sidecar is audit state, not enforcement: the write proceeds unlocked
- * and the degradation is made visible instead of blocking.
+ * and the degradation is made visible instead of blocking. When a journaler
+ * is supplied the row appends through it (chained under tamper evidence,
+ * rotation-ticked) — the `journal-lock:` payload prefix does not make it a
+ * sanctioned unchained row; it is written from the ledger, not from inside
+ * the chained path. Otherwise the legacy unchained append is kept.
+ * @param journaler The journaler when the ledger is journaler-backed;
+ *     undefined keeps the legacy unchained append.
  * @param journalPath The journal path the row appends to.
  * @param sidecarPath The sidecar whose lock was unavailable.
  */
-function journalApprovalLockError(journalPath: string, sidecarPath: string): void {
-  appendLine(
-    journalPath,
-    JSON.stringify({
-      ts: now(),
-      type: "error",
-      error: `journal-lock: approval lock unavailable: ${sidecarPath}`,
-    }),
-  )
+function journalApprovalLockError(
+  journaler: LedgerJournaler | undefined,
+  journalPath: string,
+  sidecarPath: string,
+): void {
+  const error = `journal-lock: approval lock unavailable: ${sidecarPath}`
+  if (journaler) {
+    journaler.journal({ type: "error", error })
+    return
+  }
+  appendLine(journalPath, JSON.stringify({ ts: now(), type: "error", error }))
 }
 
 /**
@@ -2415,12 +2518,12 @@ function persistApprovalStore(
       writeSidecar(st, record, rewrite),
     )
     if (!result.held) {
-      journalApprovalLockError(st.journalPath, st.sidecarPath)
+      journalApprovalLockError(st.journaler, st.journalPath, st.sidecarPath)
       writeSidecar(st, record, rewrite)
     }
     return true
   } catch (e) {
-    journalApprovalLedgerError(st.journalPath, `persist failed: ${e}`)
+    journalApprovalLedgerError(st.journaler, st.journalPath, `persist failed: ${e}`)
     return false
   }
 }
@@ -2468,7 +2571,11 @@ function rekeyApprovalRecord(
 /**
  * Appends the `plan-rekey` journal row for a transparently re-keyed durable
  * approval record; the row's `sessionID` is omitted when the caller's
- * provenance ID is missing or fails the replay ID shape.
+ * provenance ID is missing or fails the replay ID shape. When the store's
+ * journaler is supplied the row appends through it (chained under tamper
+ * evidence, rotation-ticked; under per-session segmentation it routes to the
+ * owning session's sink); otherwise the legacy unchained append to the
+ * shared journal is kept.
  * @param st The approval-store state.
  * @param record The original (pre-rekey) record.
  * @param key The plan's current spec-region sha256 key.
@@ -2483,18 +2590,19 @@ function journalPlanRekey(
 ): void {
   const sid =
     typeof sessionID === "string" && REPLAY_SESSION_RE.test(sessionID) ? sessionID : undefined
-  appendLine(
-    st.journalPath,
-    JSON.stringify({
-      ts: now(),
-      type: "plan-rekey",
-      ...(sid !== undefined ? { sessionID: sid } : {}),
-      plan: record.name,
-      reason: "durable-key-scheme",
-      from: record.key,
-      to: key,
-    }),
-  )
+  const payload = {
+    type: "plan-rekey",
+    ...(sid !== undefined ? { sessionID: sid } : {}),
+    plan: record.name,
+    reason: "durable-key-scheme",
+    from: record.key,
+    to: key,
+  }
+  if (st.journaler) {
+    st.journaler.journal(payload)
+    return
+  }
+  appendLine(st.journalPath, JSON.stringify({ ts: now(), ...payload }))
 }
 
 /**
@@ -2603,6 +2711,8 @@ function createApprovalStore(
  * @param replayTailLines How many tail lines of each generation the replay walks.
  * @param reviewerAgent The canonical reviewer agent name for replay folds.
  * @param sessionsDir The per-session journal sink directory.
+ * @param journaler When supplied, replay-error rows append through the
+ *     journaler (chained) instead of the legacy unchained append.
  */
 function replayLedgerMaps(
   maps: LedgerMaps,
@@ -2614,6 +2724,7 @@ function replayLedgerMaps(
   replayTailLines: number,
   reviewerAgent: string,
   sessionsDir: string,
+  journaler: LedgerJournaler | undefined,
 ): void {
   replayGatePasses(
     maps.states,
@@ -2625,6 +2736,7 @@ function replayLedgerMaps(
     maps.observePeriod,
     maps.suspended,
     reseededEdges,
+    journaler,
   )
   cap(maps.states, maxSessions, isParent)
   cap(creditedApprovals, maxSessions)
@@ -2686,6 +2798,7 @@ function composeLedger(
     ...createApprovalStore({
       sidecarPath: maps.sidecarPath,
       journalPath: maps.journalPath,
+      journaler: maps.journaler,
       approvedPlans: maps.approvedPlans,
       evictedKeys: maps.evictedKeys,
     }),
@@ -2742,6 +2855,11 @@ function ledgerEdgeViews(
  * @param observeSessions The observe-mode admission period (0 disables).
  * @param reviewerAgent The canonical reviewer agent name for replay folds.
  * @param sessionsDir The per-session journal sink directory.
+ * @param journaler Optional journaler: when supplied, the ledger's telemetry
+ *     rows (replay error, approval-ledger error, approval-lock error,
+ *     plan-rekey) append through it — chained under tamper evidence and
+ *     rotation-ticked like every other row. When omitted, the legacy
+ *     unchained append shape is kept.
  * @returns The live gate ledger (see {@link GateLedger}).
  */
 export function createLedger(
@@ -2752,8 +2870,9 @@ export function createLedger(
   observeSessions = 0,
   reviewerAgent: string = CANONICAL_REVIEWER_AGENT,
   sessionsDir: string = path.join(path.dirname(journalPath), "sessions"),
+  journaler?: LedgerJournaler,
 ): GateLedger {
-  const maps = createLedgerMaps(journalPath, approvalLedgerPath)
+  const maps = createLedgerMaps(journalPath, approvalLedgerPath, journaler)
   const registry = bootLedgerRegistry(maps, journalPath, maxSessions)
   const credit = createCreditTrace({ maxSessions })
   replayLedgerMaps(
@@ -2766,6 +2885,7 @@ export function createLedger(
     replayTailLines,
     reviewerAgent,
     sessionsDir,
+    journaler,
   )
   return composeLedger(maps, registry, credit, maxSessions, observeSessions)
 }
