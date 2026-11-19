@@ -240,9 +240,8 @@ function applyVerdictMarker(
  * surface as a gate-event suppression). Streaming VERDICT dedup keys on
  * `(scope, marker)`, so identical re-delivery and a cross-source same-marker
  * replay are both suppressed here, and only a marker flip is emitted for the
- * setup layer to journal; the store records source changes for attribution but
- * journaling stays marker-gated (the store records source changes for
- * attribution; the journal sees only marker flips).
+ * setup layer to journal; the store records source changes for attribution,
+ * while the journal sees only marker flips.
  *
  * @param state Mutable gate state for the parent session.
  * @param text The assistant text to scan.
@@ -319,8 +318,10 @@ function lastMarkerMatches(text: string, re: RegExp): { match: string | null; co
  * @param verdict The last verdict marker match + count.
  * @param dedupScope Dedup scope shared by both kinds.
  * @param raw The raw child session ID (provenance).
- * @param passVerified Journal stamp for the PASS event, or undefined.
- * @param stampVerified Journal stamp for the verdict event, or undefined.
+ * @param passVerified PASS flip switch: false (enforce-only) flags the last
+ *     unverified claim without flipping; undefined (flag/off) or true flips.
+ * @param stampVerified Journal stamp for the PASS event, or undefined when the
+ *     event must stay byte-identical to legacy output (the `"off"` mode).
  * @param stampMode Evidence mode at stamp time.
  * @param kindAllowed Optional kind-authority predicate.
  * @param events The accumulator the first-sight events are pushed to.

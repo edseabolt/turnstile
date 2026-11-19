@@ -1720,9 +1720,11 @@ function buildCoreDeliveryMaps(st: CoreState): void {
   // resolution via `session.get`.
   st.hostSessionRef = { current: undefined }
 
-  /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
+  /** Per-child marker-retry attempts used; bounded by the inline
+   *  `evictTo(st.markerRetries, MAX_TRACKED_MARKER_RETRIES)` trim. */
   st.markerRetries = new Map<string, number>()
-  // Dispatching session ID → sha256-16 of its latest dispatch prompt,
+  // Parent+agent dispatch pair (see dispatchStampKey in dispatch-guard.ts)
+  // → sha256-16 of its latest dispatch prompt,
   // recorded by the dispatch guard and compared against the delivery's
   // echoed prompt by the tamper check (tool-hooks-after, keyed through the
   // child's resolved parent). Bounded like markerRetries.
@@ -1939,7 +1941,8 @@ function buildCoreIntentMaps(st: CoreState): void {
   st.intentNudgePending = new Map<string, IntentKind>()
 
   // Pending plan-impact advisories, keyed by parent session ID: the text
-  // stashed by the plan-impact classifier (hooks-core) for one classified
+  // stashed by the plan-impact classifier (classifyParentPlanImpact in
+  // bash-write-guard.ts) for one classified
   // parent write/edit/write-shaped bash call, consumed one-shot by the next
   // parent-facing delivery (same channel as the intent nudge). Latest-wins
   // when a second classification lands before delivery; a task-scope reset
@@ -1995,7 +1998,8 @@ function buildCoreSessionDirMaps(st: CoreState): void {
 function buildCorePromptHolders(st: CoreState): void {
   // Prompt-channel waiver capture: the waiver must
   // provenance from the user's prompt, never the dispatch prompt. A counter
-  // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
+  // tracks prompts where NONE of the candidate text keys (`text`, `prompt`,
+  // `prompt.text`) holds a
   // non-empty string, so an unresolvable source is reported once (keylessPrompts hits
   // 1 exactly once) as a misconfiguration (mirrors the bash `command ?? cmd`
   // telemetry).

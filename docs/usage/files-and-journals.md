@@ -41,7 +41,8 @@
     Fail-open: read/write errors are journaled and the gate
     degrades to journal-replay semantics
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
-  ~30 MB per journal, worst case ~60 MB total, plus the approved-plan
+  ~30 MB per journal, plus gzip archives (≤ 5 pruned generations,
+  ~2.5 MB per journal) — worst case ~65 MB total — plus the approved-plan
   sidecar (≤ 256 short records). With `journalPerSession` on, each live
   session adds its own `sessions/<parentID>.jsonl` with the same per-file
   bounds, so aggregate retention and boot replay read cost scale with the
