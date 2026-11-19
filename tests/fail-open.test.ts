@@ -121,6 +121,8 @@ test("traceEvent without a session ID omits the trailing segment", () => {
     trace: true,
     maxBytes: 1024 * 1024,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   j.traceEvent("agent", "event", "detail")
@@ -140,6 +142,8 @@ test("journal appends without renaming below the rotate tick", () => {
     trace: false,
     maxBytes: 100,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 2,
   })
   // Writes 1 and 2: the write-2 tick fires, but the file is under maxBytes, so
@@ -169,6 +173,8 @@ test("a held .lock directory skips the rotation tick and never loses an entry", 
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
   })
   // Pre-create the lock so the first tick's mkdir fails (EEXIST); the tick
@@ -193,6 +199,8 @@ test("a stale rotation lock is stolen and rotation resumes", () => {
     trace: false,
     maxBytes: 1,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
   })
   const lock = `${journalPath}.lock`
@@ -230,6 +238,8 @@ test("a stale non-empty lock directory fails the steal and skips the tick", () =
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
   })
   const lock = `${journalPath}.lock`
@@ -256,6 +266,8 @@ test("a stale lock that is not a directory fails the steal and skips the tick", 
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
   })
   const lock = `${journalPath}.lock`
@@ -280,6 +292,8 @@ test("a lock whose stat fails skips the tick", () => {
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
   })
   const lock = `${journalPath}.lock`
@@ -302,6 +316,8 @@ test("an unexpected lock-creation error never escapes journal()", () => {
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
   })
   // The first entry creates the journal file; its tick succeeds (no lock).
@@ -331,6 +347,8 @@ test("plansSignature fails open on an unreadable plans dir", () => {
       trace: false,
       maxBytes: 1e6,
       maxGenerations: 1,
+
+      archiveGenerations: 0,
       rotateEveryEntries: 512,
     }),
   )
@@ -361,6 +379,8 @@ test("tool-policy guards journal their internal failure when the sink throws", (
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const hostile = {
@@ -397,6 +417,8 @@ test("git-side guards journal their internal failure when the sink throws", () =
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const hostile = {
@@ -440,6 +462,8 @@ test("observeSessionMove is a no-op when disabled and redacts under trace:false"
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const config = defaultConfig()
@@ -630,6 +654,25 @@ test("generate hook journals an internal error from a hostile draft", async () =
     await callSession(h, "generate", draft)
     const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
     assert.ok(errors.some((e) => String(e.error).includes("generate hook")))
+  } finally {
+    dispose()
+  }
+})
+
+/** A hostile prompt payload journals and never throws. */
+test("prompt hook journals an internal error from a hostile payload", async () => {
+  const h = makeFakeHost()
+  const { dispose, metricsDir } = await boot(h.host)
+  try {
+    const properties: Record<string, unknown> = {}
+    Object.defineProperty(properties, "sessionID", {
+      get() {
+        throw new Error("hostile payload")
+      },
+    })
+    await callSession(h, "prompt", properties)
+    const errors = journalEntries(metricsDir).filter((e) => e.type === "error")
+    assert.ok(errors.some((e) => String(e.error).includes("prompt hook")))
   } finally {
     dispose()
   }

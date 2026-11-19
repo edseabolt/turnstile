@@ -10,7 +10,25 @@
   so one session's dispatches, verdicts, gates, blocks, and waivers read
   top-to-bottom in one file. Entries without a sessionID, or with an ID
   failing the session-ID shape rule, land in the shared `turnstile.jsonl`.
+- **`sessions/<parentID>/evidence.json`** — the local evidence mirror written
+  by the standalone `evidence` emitter on every `--out` artifact write
+  (best-effort): the same bytes as the committed artifact, co-located with
+  the producing session's sink for audit.
+- **`archive/`** (and **`sessions/archive/`**) — gzip-archived pruned
+  generations, one directory per journal family. By default
+  (`journalArchiveGenerations: 5`) rotation archives the outgoing final
+  generation instead of destroying it; at most `journalArchiveGenerations`
+  archives are kept per family (0 disables). Cold storage only: replay
+  never reads it, verify and the CLI surfaces do.
 - **`gate-events.log`** — human-readable trace, only when `trace:true`.
+- **`<file>.lock`** — transient lock directories (never data): one per
+  guarded file (`turnstile.jsonl.lock`, a session sink's `.lock`, the
+  sidecar's `.lock`), the atomic mkdir mutex of the cross-process append,
+  sidecar, and rotation protocol. A lock older than its staleness bound
+  (10 s for appends and the sidecar, 60 s for rotation) is stolen once as a
+  crashed holder's; the steal is journaled. Released (rmdir) when the
+  guarded write returns; a lock left behind means a crashed process and
+  disappears on the next contended write past the bound.
 - **`anchors.jsonl`** — the session-state anchor store, written only when
   `tamperEvidence.enabled` is `true` (see [tamper evidence: the hash
   chain](chain.md) and [anchors](anchors.md)). One published epoch ref per
@@ -20,7 +38,9 @@
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
   the approval was recorded under (derived from the resolved project
-  directory).
+  directory). Writes run inside an advisory `<file>.lock` mutex with an
+  in-lock re-read (see [the chain doc](chain.md)); lock contention degrades
+  to an unlocked write with a journaled `journal-lock:` row.
 
   New records carry a `scheme: "spec"` tag; the key is the plan's
   spec-region sha256. A record without the tag was written under the legacy
@@ -28,14 +48,16 @@
   its key equals the file's spec-region key or its whole-file key; then the
   plan is not pending. The whole-file key is the sha256 of the file's bytes
   at the current plans scan. A cached scan may reflect the bytes at its last
-  refresh rather than the current file: a progress-only edit leaves the
+  refresh rather than the current file. A progress-only edit leaves the
   spec region (and the cached scan signature) unchanged, so a legacy record
   can be honored across such an edit, and the re-key it performs writes the
   current spec key.
 
   The first legacy match is transparently re-keyed to the current scheme:
   in-memory, sidecar append, and one replay-inert `plan-rekey` journal row
-  with `reason: "durable-key-scheme"`. A record matching neither key leaves
+  with `reason: "durable-key-scheme"` (chained through the journaler on a
+  journaler-backed ledger; under per-session segmentation it routes to the
+  owning session's sink). A record matching neither key leaves
   the plan pending with cause `durable-key-stale`: the enforcing dispatch
   journals the blocked row with that reason and a recovery message (one
   re-approval re-keys it) instead of the `no-plan-verdict` never-approved

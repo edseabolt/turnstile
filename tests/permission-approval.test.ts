@@ -18,6 +18,7 @@ import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
 import { turnstile } from "../turnstile.ts"
+import { createHooksCore } from "../src/hooks-core.ts"
 import { BlockError, createGates } from "../src/gates.ts"
 import { defaultConfig } from "../src/config.ts"
 import { createJournaler } from "../src/journal.ts"
@@ -151,6 +152,8 @@ function makeGates(metricsDir: string): {
     trace: false,
     maxBytes: 1_000_000,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   const ledger = createLedger(journaler.journalPath, 64, 2000)
@@ -2867,4 +2870,36 @@ test("hands-on dispatch: a scratch write does not consume the pending once-grant
     fs.rmSync(scratch, { recursive: true, force: true })
     restore()
   }
+})
+
+test("ask latches: landing, hands-on, and awaiting arms never cross-consume", () => {
+  // Each family owns its own latch and dedupe maps; arming, dedupe, and
+  // expiry in one family must leave the other two untouched.
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({ env: isolatedEnv(metricsDir) })
+  assert.equal(ctx.armLandingAsk("p1"), true, "first landing arm succeeds")
+  assert.equal(
+    ctx.armHandsOnAsk("p1"),
+    true,
+    "hands-on arm succeeds despite the fresh landing dedupe stamp",
+  )
+  assert.ok(
+    ctx.pendingLandingAsk.has("p1") && ctx.pendingHandsOnAsk.has("p1"),
+    "each family's latch map is armed",
+  )
+  assert.equal(ctx.hasLiveLandingAsk("p1"), true)
+  assert.equal(ctx.hasLiveHandsOnAsk("p1"), true)
+  assert.equal(ctx.hasLiveAwaitingAsk("p1"), false, "the awaiting family is untouched")
+  // Repeat arms inside the TTL are deduped per family, not via a shared stamp.
+  assert.equal(ctx.armLandingAsk("p1"), false, "landing re-arm is deduped")
+  assert.equal(ctx.armHandsOnAsk("p1"), false, "hands-on re-arm is deduped by its own stamp")
+  // Expiry mirror-delete is per family: expiring landing leaves hands-on live.
+  ctx.pendingLandingAsk.set("p1", Date.now() - 6_000)
+  assert.equal(ctx.hasLiveLandingAsk("p1"), false, "the expired landing latch is deleted")
+  assert.equal(
+    ctx.lastLandingEscalateAt.has("p1"),
+    false,
+    "the landing dedupe stamp is mirror-deleted",
+  )
+  assert.equal(ctx.hasLiveHandsOnAsk("p1"), true, "the hands-on latch stays live")
 })

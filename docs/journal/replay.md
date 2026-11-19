@@ -29,7 +29,10 @@ cost). Per-file reads stay tail-capped with an early stop: the walk ends
 inside the newest generation that alone satisfies the tail bound, so boot
 I/O stays bounded by the retained-generation sizes, never the full
 `journalMaxGenerations × journalMaxBytes` envelope (the file count grows
-with live sessions; see [the retention note](rotation.md)).
+with live sessions; see [the retention note](rotation.md)). Archived
+generations (`journalArchiveGenerations`, default 5) sit outside this
+envelope and are not read by replay — replay needs only `replayTailLines` —
+but are read by verify and the CLI surfaces.
 
 The journal is treated as untrusted data on the read side. A line folds
 into the last-wins maps only if its `sessionID` passes the replay ID-shape
@@ -41,7 +44,9 @@ drop). Each dropped line journals one replay-drop `suppressed` entry
 permission failure) folds nothing from its lines: it journals one
 message-free `{ts, type:"replay", error:true}` entry on the shared
 `turnstile.jsonl` (bounded by the generation count) and the walk continues
-with the next-older generation.
+with the next-older generation. A journaler-backed ledger appends that
+entry chained through the journaler; the legacy shape appends it unchained
+([entry-type catalog](entry-types.md)).
 
 The walk then restores per session, last-wins: `hasGatePass`,
 `hasPlanVerdict` (+ `plansSignature`), `hasReviewApprove` (task-result
@@ -94,7 +99,21 @@ byte-identically too.
 half of that view: the same tail window and shape checks, folded to one
 task and projected key by key into `turnstile-evidence/v1`: derived
 counts, canonical marker lines, and two shas (a one-way task handle, and
-`sha256` of the last journaled line). Nothing is filtered out of a larger
-object: the document is built from whitelisted keys, so a journal field
-cannot leak into a public artifact by oversight. It adds no entry type,
-changes no replay rule, and writes nothing to the journal.
+`sha256` of the task's last journaled line). The window is scoped to the
+task's session tree — its per-session sink, the child sinks its
+`child-edge` rows name, and the shared file filtered to those sessions —
+so another session's journal activity can neither enter the artifact nor
+refresh its freshness signal, and a quiet session's rows cannot be evicted
+by a hot shared tail. `latest` selection still scans the global tail; a
+child-keyed last line (a `child-edge` row) resolves to the parent session
+whose tree the window reads, because the fold rows (gate/verdict/plan) are
+parent-keyed. An
+explicit `--task` reads only that session's tree. Nothing is filtered out
+of a larger object: the document is built from whitelisted keys, so a
+journal field cannot leak into a public artifact by oversight. It adds no
+entry type and changes no replay rule; an artifact write (`--out`) appends
+one unchained `evidence` `event:"emit"` row to the task's journal sink, so
+a re-emit is visible in the audit trail and carries the emit timestamp
+into the committed artifact's `emittedAt` field, and mirrors the artifact
+to `sessions/<parentID>/evidence.json` beside the sink (best-effort,
+fail-open).

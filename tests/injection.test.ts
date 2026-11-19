@@ -917,16 +917,16 @@ test("injection: a structured background ack fires the bare check like the v1 ac
 })
 
 /** 23. String-shape child attribution via `metadata.sessionID`: a v1
- *  string delivery whose metadata names a real child attributes the
- *  violation to that child and keys the policy on the edge-resolved
- *  parent, not the event's session ID. */
+ *  string delivery whose metadata names a real child (matching the
+ *  child-keyed event origin) attributes the violation to that child and
+ *  keys the policy on the edge-resolved parent, not the child session. */
 test("injection: a string delivery with a metadata child keys the violation on the real child", async () => {
   const { h, dispose, metricsDir } = await boot({ agentMarkerRetry: 0 })
   try {
     await resolveEdgeViaCreated(h, "c5", "p1", metricsDir)
     const event = {
       tool: "task",
-      sessionID: "p1",
+      sessionID: "c5",
       input: { agent: "test-runner", prompt: "run it" },
       result: { output: "marker-less body", metadata: { sessionID: "c5" } },
     }

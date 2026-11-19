@@ -288,7 +288,7 @@ test("a failing engagement read journals the error row and fails toward the conf
   const metricsDir = tmpDir()
   const ctx = createHooksCore({ env: isolatedEnv(metricsDir), config: { metricsDir } })
   const ledger = ctx.ledger as unknown as Record<string, unknown>
-  ledger.state = (): unknown => {
+  ledger.peek = (): unknown => {
     throw new Error("bucket broken")
   }
   // The read-budget choke point consults engagement before any other ledger
@@ -299,6 +299,28 @@ test("a failing engagement read journals the error row and fails toward the conf
     errors.some((e) => typeof e.error === "string" && e.error.startsWith("engagement read:")),
     "the engagement-read failure is journaled",
   )
+})
+
+test("a dormant read-budget check never mints a gate bucket", () => {
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({ env: isolatedEnv(metricsDir), config: { metricsDir } })
+  try {
+    ctx.handleReadBudget("p1")
+    assert.equal(ctx.ledger.peek("p1"), undefined, "the armed probe is a pure read")
+  } finally {
+    fs.rmSync(metricsDir, { recursive: true, force: true })
+  }
+})
+
+test("a dormant write never mints a gate bucket", () => {
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({ env: isolatedEnv(metricsDir), config: { metricsDir } })
+  try {
+    ctx.handleWriteEditDispatch({ sessionID: "p1", input: { filePath: "/repo/a.ts" } }, "write")
+    assert.equal(ctx.ledger.peek("p1"), undefined, "the armed gate precedes the mint")
+  } finally {
+    fs.rmSync(metricsDir, { recursive: true, force: true })
+  }
 })
 
 // ── planner dispatch arms (AC-2) ─────────────────────────────────────────────

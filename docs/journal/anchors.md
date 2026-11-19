@@ -5,9 +5,9 @@ verification is described in [chain.md](chain.md). This file covers the
 anchor sinks.
 
 **Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
-the same file an attacker can rewrite proves nothing by itself, so each
+the same file an attacker can rewrite proves nothing by itself. So each
 committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is
-published to independent durable stores, the anchor sinks, at the
+published to independent durable stores — the anchor sinks — at the
 task-completion trigger, fire-and-forget: every publish runs concurrently,
 a rejection journals an `anchor-publish:` `error` row, and nothing blocks
 the pipeline. Sinks are selected by `tamperEvidence.anchor`:
@@ -102,9 +102,9 @@ export default function factory({ config }) {
 
 The factory is called once at setup with `{ config: <the configured
 `options` object> }`. Its returned sink is shape-checked: a string `id`, a
-`trustDomain` in the union, and callable `publish`/`verify` (both may be
+`trustDomain` in the union, and callable `publish`/`verify`. Both may be
 async — `publish(ref)` receives the anchor ref `{sink, source, epoch,
-root, head, ts}`; `verify(ref)` returns an `AnchorVerdict`). Every
+root, head, ts}`; `verify(ref)` returns an `AnchorVerdict`. Every
 failure path degrades fail-open: a failed import, a non-function default
 export, a factory throw, or a malformed sink each become a journaled
 `anchor-sink:` warning and the entry is skipped — never a boot failure.

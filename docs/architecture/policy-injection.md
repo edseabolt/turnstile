@@ -5,22 +5,27 @@ makes that policy available by injecting it at runtime. The primary channel is
 the pre-first-model-call `session.context` hook: `injectContextPolicy` in
 `src/context-surface.ts` appends the policy head (and any pending intent nudge)
 into the parent's primary-turn draft `system` array before the first model
-call, parent-guarded and latched (see the `context` hook in [hooks](hooks.md)). The
-`execute.after` body in `src/hooks-tool.ts` stays armed as the fallback: it
-prepends the orchestrator policy paragraph from `src/policy.ts` (via
-`src/delivery.ts`) to the first `task` (or `subagent`) result delivery per
-task, once per task, and appends a per-delivery `PIPELINE:` status tail to
-every
-pipeline-stage delivery (see Pipeline continuation below), via the
-`tool.hook("execute.after")` handler (the same hook the plugin already uses
-to rewrite tool output reaching the model). Each
+call, parent-guarded and latched (see the `context` hook in [hooks](hooks.md)).
+The `execute.after` body in `src/hooks-tool.ts` stays armed as the fallback.
+Via the `tool.hook("execute.after")` handler (the same hook the plugin already
+uses to rewrite tool output reaching the model), it prepends the orchestrator
+policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to the first
+`task` (or `subagent`) result delivery per task — once per task — and appends
+a per-delivery `PIPELINE:` status tail to every
+pipeline-stage delivery (see Pipeline continuation below). Each
 delivery is classified once by `classifyDelivery` into its host shape: the
 v1 string shape (child-keyed event, text in `result.output`, the child
 optionally named by a string `metadata.sessionID`) or the v2 structured shape
 (parent-keyed event, structured `result.output`, the child on
 `metadata.sessionID` or the structured `output.sessionID`, the canonical
 child text in `output.output`, model-visible `content` as a string or a block
-array). The policy head and the status tail both land on that shape's
+array). String-shape text is child output only when the event origin
+(`event.sessionID`) is the child or is absent; a non-empty origin that differs
+from the resolved child means the text was authored by the emitting session
+(the parent-side background-subagent acknowledgment among them) and
+classifies as a third, silent `parent-authored` shape — it parses zero
+markers, credits nothing, fires no bare-output retry, and receives no policy
+head or status tail. The policy head and the status tail both land on that shape's
 model-visible text through the shared shape ladder (`mutateDeliveryText`):
 `result.output` for the string shape; string or block-array `result.content`
 for the structured one (a string carries both mutations in place, a block
@@ -30,10 +35,21 @@ stringifies into the transcript).
 The classified child and text also drive marker parsing, the bare-output
 check, and the reviewer capture, always from the canonical `output.output`
 string, so a structured delivery parses and attributes to the real child
-exactly like its string twin. Attribution is
+exactly like its string twin. The bare-output compliance re-prompt restates,
+never quotes, markers: its quoted prior-output tail strips any `GATE:`/
+`VERDICT:` line, and the prompt directs the child to recompute counts from
+its own recorded results — never to copy or invent them. Dispatch and
+injection texts are hash-stamped for tamper attribution: every `dispatch`
+journal row carries the sha256-16 of the dispatch prompt (`promptHash`), the
+`marker-retry` prompted row carries the sha256-16 of the injected text
+(`textHash`), and a structured delivery whose echoed prompt hashes
+differently journals one `dispatch-tamper` audit row (best-effort, inert to
+gate state; the stamp is keyed by the dispatching parent and the resolved
+agent, so concurrent dispatches from one parent never cross-match).
+Attribution is
 edge-first: the `childToParent` edge (seeded by `session.created`, back-filled
 via `session.get` in `resolveParent`) decides where the policy lands, so both
-shapes inject on the receiving parent; the `policyInjected` flag and the
+shapes inject on the receiving parent. The `policyInjected` flag and the
 `injected:true` journal entry key on that resolved parent. The source of truth
 is code shipped with the plugin, so a fresh install can never lose it, and it
 follows the plugin through updates and uninstall–reinstall cycles.
@@ -46,6 +62,9 @@ follows the plugin through updates and uninstall–reinstall cycles.
   independent policy head still lands (and vice versa). The only silent skips
   are the once-flag (which gates only the policy head; the tail lands on
   every pipeline-stage delivery) and an absent result (nothing to deliver);
+  a parent-authored delivery (a non-empty event origin differing from the
+  resolved child — the emitting session's own tool-result text, never the
+  child's output) is the other silent skip, beside `absent`;
   a present-but-unclassifiable result journals loudly on EVERY such delivery
   (the once-flag no longer gates it) as
   `{type:"policy", injected:false, reason:"unknown-shape", shape:<descriptor>}`,

@@ -18,15 +18,26 @@
 // The journal file is `turnstile.jsonl`; its rotated generations
 // (`${journal}.1`, `.2`, …) are walked newest-first with an early stop, so the
 // `replayTailLines` replay tail (default 2000) holds across all retained
-// generations — replay parity with src/ledger.ts.
+// generations — replay parity with src/ledger.ts. The task window is scoped
+// to the task's session tree: its per-session sink, the child sinks its
+// `child-edge` rows name, and the shared file filtered to those sessions —
+// another session's journal activity can neither enter the artifact nor
+// refresh its freshness signal. `latest` selection still scans the global
+// tail; a child-keyed last line (a `child-edge` row) resolves to the parent
+// session whose tree the window reads. An explicit `--task` reads only that
+// session's tree.
 //
 //   opencode-turnstile evidence [--task <session|latest>] [--format json|markdown]
 //                               [--out <path>] [--validate <path>] [--help]
 //
-// `--task` defaults to `latest` (the session owning the last journaled line);
+// `--task` defaults to `latest` (the session owning the last journaled line,
+// resolved to its parent through `child-edge` rows when that line is
+// child-keyed);
 // `--format` defaults to `json`. `--out` writes the artifact (and, for a
-// `.json` path, the sibling `.md` the Action posts) instead of stdout.
-// `--validate` re-checks a committed artifact and writes nothing. An absent
+// `.json` path, the sibling `.md` the Action posts) instead of stdout, and
+// journals one unchained `event:"emit"` row for the task (stdout output
+// journals nothing). `--validate` re-checks a committed artifact and writes
+// nothing. An absent
 // journal emits a `noJournal` document and exits 0; the default `latest`
 // selector with no session rows in the tail emits `noTask` and exits 0, while
 // an explicit `--task <id>` naming no session is an input error and exits 2.
@@ -40,8 +51,9 @@ import * as path from "node:path"
 const USAGE = `Usage: opencode-turnstile evidence [--task <session|latest>] [--format json|markdown]
                                      [--out <path>] [--validate <path>] [--help]
 
-Emit a shareable evidence summary for one task. Read-only: nothing is written
-to the journal. The summary is a whitelist projection — derived counts,
+Emit a shareable evidence summary for one task. An artifact write (--out)
+appends one unchained emit event to the journal; stdout output is read-only.
+The summary is a whitelist projection — derived counts,
 canonical marker lines, and shas; session IDs, prompts, and command text never
 appear.
 
@@ -105,7 +117,8 @@ const HEAD_RE = /^sha256:[0-9a-f]{12}$/
 const TS_RE = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$/
 
 /** The journaled plan provenance literals the emitter may copy into `plan.source`. */
-const SOURCE_OK = /^(?:session-prompt|task-result|child-message|child-text|child-text-delta)$/
+const SOURCE_OK =
+  /^(?:session-prompt|task-result|child-message|child-text|child-text-delta|subagent-synthetic)$/
 
 /** The gate-evidence modes the runtime journals on a gate entry. */
 const GATE_MODE_OK = /^(?:enforce|flag|off)$/
@@ -114,8 +127,15 @@ const GATE_MODE_OK = /^(?:enforce|flag|off)$/
 const PLAN_VERDICT_OK = /^(?:APPROVE|BLOCK|STALE)$/
 const TEST_RESULT_OK = /^(?:PASS|FAIL)$/
 
-/** The rotated-generation basenames the journal may report. */
-const JOURNAL_FILE_OK = /^turnstile\.jsonl(?:\.\d+)?$/
+/**
+ * The journal file basenames the artifact may report: the shared file and its
+ * rotated generations (`turnstile.jsonl(.N)`), plus every per-session sink —
+ * the same basenames `readJournal` itself walks and reports (the sessions/
+ * layout names each sink `<sessionID>.jsonl`, session IDs drawn from the
+ * REPLAY_SESSION_RE alphabet). The validator's set must track the emitter's
+ * walk, or every artifact from a sessions/-layout machine fails --validate.
+ */
+const JOURNAL_FILE_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.jsonl(?:\.\d+)?$/
 
 /**
  * Keys that must never appear anywhere in a published artifact: they name the
@@ -291,6 +311,104 @@ function readJournal(journalPath, sessionsDir, tailLines) {
 }
 
 /**
+ * Parses one raw JSONL journal line into an object, or null when the line is
+ * not JSON or not a plain object (fail-open: malformed rows are skipped).
+ * @param {string} line A raw JSONL journal line.
+ * @returns {Record<string, unknown> | null} The parsed entry, or null.
+ */
+function parseLine(line) {
+  try {
+    const e = JSON.parse(line)
+    return e && typeof e === "object" && !Array.isArray(e) ? e : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Collects the child session IDs of one parent from `child-edge` rows
+ * (mirroring scripts/log.mjs's `childIDsOf`): child-keyed rows carry the
+ * child session ID, so the session-tree read must walk their sinks too.
+ * @param {Record<string, unknown>[]} entries Parsed shared-file entries.
+ * @param {string} sessionID The requested parent session ID.
+ * @returns {Set<string>} The valid child IDs whose parent is the session.
+ */
+function childIDsOf(entries, sessionID) {
+  const children = new Set()
+  for (const e of entries) {
+    if (
+      e.type === "child-edge" &&
+      e.parent === sessionID &&
+      typeof e.sessionID === "string" &&
+      REPLAY_SESSION_RE.test(e.sessionID)
+    ) {
+      children.add(e.sessionID)
+    }
+  }
+  return children
+}
+
+/**
+ * Drops exact duplicate lines (a row can exist in both a sink and the shared
+ * file after a routing change). Local copy for standalone use — the canonical
+ * implementation is `dedupeSinks` in scripts/journal-read.mjs.
+ * @param {string[]} lines Journal lines, any order.
+ * @returns {string[]} The deduplicated lines, first-occurrence order.
+ */
+function dedupeLines(lines) {
+  return [...new Set(lines)]
+}
+
+/**
+ * Reads one session's journal tree: the session's per-session sink family,
+ * the sink families of the child sessions its shared-file `child-edge` rows
+ * name, and the shared file filtered to those sessions (parse-failed lines
+ * dropped, fail-open). Merged lines are exact-deduped, `ts`-ordered (missing/
+ * unparseable sorts oldest) — a quiet session's rows are not evicted by a
+ * hot shared tail because its sink family is walked in full (rotation already
+ * bounds it), while the shared file stays within the replay tail. Fail-open:
+ * unreadable or absent files contribute nothing.
+ * @param {string} metricsDir The resolved metrics directory.
+ * @param {string} sessionID The requested parent session ID.
+ * @param {number} tailLines The replay tail bound in lines to keep.
+ * @returns {{ files: string[], lines: string[] }} The files read (oldest-first
+ *     basenames) and the tail-bounded lines, oldest-first.
+ */
+function readSessionTree(metricsDir, sessionID, tailLines) {
+  if (tailLines <= 0) return { files: [], lines: [] }
+  const sessionsDir = path.join(metricsDir, "sessions")
+  const sharedBlocks = readFileGenerations(path.join(metricsDir, "turnstile.jsonl"), tailLines)
+  const sharedLines = sharedBlocks.flatMap((b) => b.lines)
+  const children = childIDsOf(
+    sharedLines.map(parseLine).filter((e) => e !== null),
+    sessionID,
+  )
+  const keep = new Set([sessionID, ...children])
+  const sinkBlocks = [sessionID, ...children].flatMap((id) =>
+    // The sink family is walked in full: it is the session's own record and
+    // rotation bounds it, so a hot shared tail can never evict these rows.
+    readFileGenerations(path.join(sessionsDir, id + ".jsonl"), Number.POSITIVE_INFINITY),
+  )
+  const inTree = sharedLines.filter((l) => {
+    const e = parseLine(l)
+    return e !== null && typeof e.sessionID === "string" && keep.has(e.sessionID)
+  })
+  // The shared file's contribution honors the replay tail (the sink family
+  // does not — it is the session's own record, bounded by rotation).
+  const sharedTail = inTree.slice(-tailLines)
+  const lines = dedupeLines([...sinkBlocks.flatMap((b) => b.lines), ...sharedTail])
+  lines.sort((a, b) => {
+    const ka = tsKey(a)
+    const kb = tsKey(b)
+    return ka === kb ? 0 : ka < kb ? -1 : 1
+  })
+  return {
+    files: [...sinkBlocks, ...sharedBlocks].map((b) => b.name),
+    lines,
+  }
+}
+
+/**
  * Extracts a lexicographic sort key from a journal line's `ts` field. A
  * missing or unparseable `ts` sorts oldest (empty string).
  * @param {string} line A raw JSONL journal line.
@@ -391,8 +509,8 @@ function reviewCredit(state, expected) {
  * the plan red. Malformed lines and lines whose sessionID fails the shape
  * check are skipped before any fold.
  * @param {Record<string, unknown>} acc The task-window accumulator.
- * @returns {{ plan: Record<string, unknown>, tests: Record<string, unknown>, review: Record<string, number>, waivers: number, blocks: number, dispatches: number, exitZeroRuns: number }}
- *     The folded sections and running counts.
+ * @returns {{ plan: Record<string, unknown>, tests: Record<string, unknown>, review: Record<string, number>, waivers: number, blocks: number, dispatches: number, exitZeroRuns: number, emitTs: string }}
+ *     The folded sections, running counts, and the last emit-event timestamp.
  */
 function foldTask(acc) {
   let planResult = null
@@ -412,6 +530,7 @@ function foldTask(acc) {
   let blocks = 0
   let waivers = 0
   let exitZeroRuns = 0
+  let emitTs = ""
   // The ensemble fold mirrors src/ledger.ts's replay (foldEnsemble +
   // restoreHumanGrants): `ensemble` entries carry the RUNNING dispatch count,
   // so last-wins — not summation — is the honest read. Summing the running
@@ -457,6 +576,10 @@ function foldTask(acc) {
     } else if (type === "blocked") {
       blocks++
     } else if (type === "evidence") {
+      // An `event:"emit"` row records an artifact write: its ts becomes the
+      // document's `emittedAt` (last-wins). It carries no `exit`, so
+      // `isExitZero` is false and it never counts into `exitZeroRuns`.
+      if (e.event === "emit") emitTs = typeof e.ts === "string" ? e.ts : ""
       if (isExitZero(e)) exitZeroRuns++
     } else if (type === "ensemble") {
       foldEnsembleEntry(e, acc.expected, ensemble)
@@ -505,6 +628,7 @@ function foldTask(acc) {
     blocks,
     dispatches,
     exitZeroRuns,
+    emitTs,
   }
 }
 
@@ -521,7 +645,7 @@ function foldTask(acc) {
  */
 function buildDoc(window, sessionID) {
   const hash = (s) => crypto.createHash("sha256").update(s).digest("hex")
-  const { plan, tests, review, waivers, blocks, dispatches } = foldTask(window)
+  const { plan, tests, review, waivers, blocks, dispatches, emitTs } = foldTask(window)
   return {
     schema: SCHEMA,
     generatedAt: new Date(0).toISOString(),
@@ -529,6 +653,7 @@ function buildDoc(window, sessionID) {
     noTask: false,
     task: "t-" + hash(sessionID).slice(0, 8),
     green: greenRule(plan, tests, review),
+    emittedAt: emitTs || "",
     plan,
     tests,
     review,
@@ -558,6 +683,7 @@ function emptyDoc(info) {
     noTask: info.noTask,
     task: null,
     green: false,
+    emittedAt: "",
     plan: { verdict: null, marker: null, at: "", source: null, stale: false },
     tests: { result: null, marker: null, at: "", verified: null, mode: null, exitZeroRuns: 0 },
     review: { approves: 0, expected: info.expected },
@@ -687,6 +813,7 @@ function checkShapes(doc) {
     "noTask",
     "task",
     "green",
+    "emittedAt",
     "plan",
     "tests",
     "review",
@@ -702,6 +829,13 @@ function checkShapes(doc) {
   if (!bool(doc.noJournal) || !bool(doc.noTask)) v.push("noJournal/noTask must be booleans")
   if (doc.task !== null && !TASK_RE.test(doc.task)) v.push(`task ${doc.task}: bad handle`)
   if (!bool(doc.green)) v.push("green must be a boolean")
+  // Legacy artifacts predate `emittedAt`; the rule is conditional on the key's
+  // presence so they stay valid, and `""` (a fold that saw no emit) is allowed.
+  if (
+    doc.emittedAt !== undefined &&
+    (!str(doc.emittedAt) || (doc.emittedAt !== "" && !TS_RE.test(doc.emittedAt)))
+  )
+    v.push("emittedAt: bad timestamp")
 
   for (const k of ["waivers", "blocks", "dispatches"])
     if (!isCount(doc[k])) v.push(`${k}: must be a non-negative integer`)
@@ -950,15 +1084,40 @@ function basePath(p) {
 }
 
 /**
+ * Mirrors the artifact JSON to `sessions/<sessionID>/evidence.json` beside the
+ * session's sink, so the published bytes are co-located with the journal that
+ * produced them. Best-effort and fail-open: a failure writes one stderr note
+ * and never affects the exit code.
+ * @param {string} metricsDir The resolved metrics directory.
+ * @param {string} sessionID The task's parent session ID.
+ * @param {Record<string, unknown>} doc The document to mirror.
+ */
+function mirrorArtifact(metricsDir, sessionID, doc) {
+  try {
+    const mirror = path.join(metricsDir, "sessions", sessionID, "evidence.json")
+    fs.mkdirSync(path.dirname(mirror), { recursive: true })
+    fs.writeFileSync(mirror, JSON.stringify(doc, null, 2) + "\n")
+  } catch (e) {
+    process.stderr.write(
+      `evidence: could not mirror the artifact: ${e instanceof Error ? e.message : String(e)}\n`,
+    )
+  }
+}
+
+/**
  * Writes the document per `--out`/`--format`, creating the destination
  * directory. For a `.json` out path the sibling `.md` is written too (the
- * posted body); otherwise only the requested format is written.
+ * posted body); otherwise only the requested format is written. A task
+ * document (`task !== null`) is additionally mirrored beside the session's
+ * sink; a degraded document mirrors nothing.
  * @param {string} out The `--out` path.
  * @param {string} format The `--format` value.
  * @param {Record<string, unknown>} doc The document to write.
+ * @param {string} metricsDir The resolved metrics directory.
+ * @param {string | null} sessionID The task's parent session ID, or null.
  * @returns {Promise<number>} The process exit code (0 written, 1 on failure).
  */
-async function writeOut(out, format, doc) {
+async function writeOut(out, format, doc, metricsDir, sessionID) {
   try {
     const dir = path.dirname(out)
     fs.mkdirSync(dir, { recursive: true })
@@ -971,11 +1130,70 @@ async function writeOut(out, format, doc) {
       const text = format === "json" ? JSON.stringify(doc, null, 2) + "\n" : render(doc) + "\n"
       fs.writeFileSync(out, text)
     }
+    if (doc.task !== null && sessionID !== null) mirrorArtifact(metricsDir, sessionID, doc)
     return 0
   } catch (e) {
     process.stderr.write(`cannot write ${out}: ${e instanceof Error ? e.message : String(e)}\n`)
     return 1
   }
+}
+
+/**
+ * Appends one unchained `event:"emit"` journal row for an artifact write. The
+ * row routes to the task's session sink (`sessions/<sid>.jsonl`) when the
+ * sessions dir holds a family root for that id, else the shared
+ * `turnstile.jsonl` — mirroring how the task's other rows route. The row is
+ * the unchained legacy shape (no `hash` field), so it is inert to the hash
+ * chain and to the host's chain seeding. Fail-open: an append failure writes
+ * a one-line stderr note and the artifact is still emitted (without a fresh
+ * `emittedAt`).
+ * @param {string} metricsDir The resolved metrics directory.
+ * @param {string} sessionID The task's parent session ID.
+ * @returns {string} The row's ISO timestamp (the value folded into
+ *     `emittedAt` when the append succeeded).
+ */
+function journalEmit(metricsDir, sessionID) {
+  const row = { ts: new Date().toISOString(), type: "evidence", event: "emit", sessionID }
+  let sink = path.join(metricsDir, "turnstile.jsonl")
+  try {
+    const sessionsDir = path.join(metricsDir, "sessions")
+    const hasFamily = fs
+      .readdirSync(sessionsDir)
+      .some((name) => name === sessionID + ".jsonl" || name.startsWith(sessionID + ".jsonl."))
+    if (hasFamily) sink = path.join(sessionsDir, sessionID + ".jsonl")
+  } catch {
+    // No sessions dir (legacy layout) or unreadable: the shared file is the sink.
+  }
+  try {
+    fs.appendFileSync(sink, JSON.stringify(row) + "\n")
+  } catch (e) {
+    process.stderr.write(
+      `evidence: could not journal the emit event: ${e instanceof Error ? e.message : String(e)}\n`,
+    )
+  }
+  return row.ts
+}
+
+/**
+ * Builds one task's window from a session-tree-scoped read: the fold entries
+ * are the scoped stream's rows whose `sessionID` is the task's (the fold stays
+ * parent-keyed — child rows count into `journal.lines`/`files` but never into
+ * the fold), and `journal.head` is the scoped stream's last line (the
+ * session-tree tail).
+ * @param {{ files: string[], lines: string[] }} scoped The scoped read result.
+ * @param {string} sid The task's parent session ID.
+ * @param {number} bar The reviewer ensemble bar.
+ * @returns {{ entries: Record<string, unknown>[], head: string | null,
+ *     expected: number, files: string[], lines: number }} The window.
+ */
+function taskWindow(scoped, sid, bar) {
+  const entries = []
+  for (const line of scoped.lines) {
+    const e = parseLine(line)
+    if (e !== null && e.sessionID === sid) entries.push(e)
+  }
+  const head = scoped.lines.length > 0 ? scoped.lines[scoped.lines.length - 1] : null
+  return { entries, head, expected: bar, files: scoped.files, lines: scoped.lines.length }
 }
 
 /**
@@ -1007,6 +1225,29 @@ async function main(argv) {
   }
 
   const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  const taskArg = flags.task ?? "latest"
+
+  // An explicit task reads only that session's tree — no global scan — so a
+  // quiet session's rows are emitted even when a hot shared tail evicted them.
+  if (taskArg !== "latest") {
+    let scoped = readSessionTree(metricsDir, taskArg, replayTailLines)
+    if (scoped.lines.length === 0) {
+      // An explicit id that names no session is an input error, not an empty
+      // result: it fails loudly so a mistyped id is never mistaken for "no task".
+      process.stderr.write(`unknown task "${taskArg}"\n`)
+      process.stderr.write(USAGE.replace(/^/gm, "  ") + "\n")
+      return 2
+    }
+    // An artifact write journals one emit event, then the tree is re-read so
+    // the emit row is inside the folded window and `journal.head` reflects
+    // the post-append tail.
+    if (flags.out !== null) {
+      journalEmit(metricsDir, taskArg)
+      scoped = readSessionTree(metricsDir, taskArg, replayTailLines)
+    }
+    return emit(flags, buildDoc(taskWindow(scoped, taskArg, bar), taskArg), metricsDir, taskArg)
+  }
+
   const { files, lines } = readJournal(
     journalPath,
     path.join(metricsDir, "sessions"),
@@ -1022,21 +1263,19 @@ async function main(argv) {
       head: null,
       expected: bar,
     })
-    return emit(flags, doc)
+    return emit(flags, doc, metricsDir, null)
   }
 
   const bySession = new Map()
+  const parentOf = new Map()
   let last = null
   for (const line of lines) {
-    let e
-    try {
-      e = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (!e || typeof e !== "object" || Array.isArray(e)) continue
+    const e = parseLine(line)
+    if (e === null) continue
     const sid = e.sessionID
     if (typeof sid !== "string" || !REPLAY_SESSION_RE.test(sid)) continue
+    if (e.type === "child-edge" && typeof e.parent === "string" && REPLAY_SESSION_RE.test(e.parent))
+      parentOf.set(sid, e.parent)
     if (!bySession.has(sid)) bySession.set(sid, { entries: [], head: line })
     const w = bySession.get(sid)
     w.entries.push(e)
@@ -1044,19 +1283,7 @@ async function main(argv) {
     last = { sid, line }
   }
 
-  const taskArg = flags.task ?? "latest"
-  const picked =
-    taskArg === "latest" ? last : { sid: taskArg, line: null, present: bySession.has(taskArg) }
-
-  if (taskArg !== "latest" && (!picked || !bySession.has(picked.sid))) {
-    // An explicit id that names no session is an input error, not an empty
-    // result: it fails loudly so a mistyped id is never mistaken for "no task".
-    process.stderr.write(`unknown task "${taskArg}"\n`)
-    process.stderr.write(USAGE.replace(/^/gm, "  ") + "\n")
-    return 2
-  }
-
-  if (!picked || !bySession.has(picked.sid)) {
+  if (!last || !bySession.has(last.sid)) {
     const head = last ? last.line : null
     const doc = emptyDoc({
       noJournal: false,
@@ -1069,32 +1296,42 @@ async function main(argv) {
           : "sha256:" + crypto.createHash("sha256").update(head).digest("hex").slice(0, 12),
       expected: bar,
     })
-    return emit(flags, doc)
+    return emit(flags, doc, metricsDir, null)
   }
 
-  const win = bySession.get(picked.sid)
-  const doc = buildDoc(
-    {
-      entries: win.entries,
-      head: win.head,
-      expected: bar,
-      files,
-      lines: lines.length,
-    },
-    picked.sid,
-  )
-  return emit(flags, doc)
+  const sid = last.sid
+  // A child-keyed last line (a `child-edge` row) names the child, but the
+  // fold rows (gate/verdict/plan) are parent-keyed: resolve the task session
+  // to the parent so the scoped tree read covers the rows that carry the
+  // freshness signal. An unresolved id (no edge row) is used as-is.
+  const taskSid = parentOf.get(sid) ?? sid
+  // The window is scoped to the task's session tree, not the global walk.
+  let window = taskWindow(readSessionTree(metricsDir, taskSid, replayTailLines), taskSid, bar)
+  // An artifact write journals one emit event, then the tree is re-read so
+  // the emit row is inside the folded window and `journal.head` reflects the
+  // post-append tail. The task selection stays from the global read.
+  if (flags.out !== null) {
+    journalEmit(metricsDir, taskSid)
+    const reread = readSessionTree(metricsDir, taskSid, replayTailLines)
+    if (reread.lines.length > 0) window = taskWindow(reread, taskSid, bar)
+  }
+  const doc = buildDoc(window, taskSid)
+  return emit(flags, doc, metricsDir, taskSid)
 }
 
 /**
  * Prints or writes the document per the flags. `--out` writes (stdout stays
- * empty); otherwise the requested format goes to stdout.
+ * empty); otherwise the requested format goes to stdout. A task document
+ * written with `--out` is also mirrored beside the session's sink.
  * @param {{ out: string | null, format: string }} flags The parsed flags.
  * @param {Record<string, unknown>} doc The document.
+ * @param {string} metricsDir The resolved metrics directory.
+ * @param {string | null} sessionID The task's parent session ID, or null for
+ *     a degraded document (which mirrors nothing).
  * @returns {Promise<number>} The process exit code.
  */
-async function emit(flags, doc) {
-  if (flags.out !== null) return writeOut(flags.out, flags.format, doc)
+async function emit(flags, doc, metricsDir, sessionID) {
+  if (flags.out !== null) return writeOut(flags.out, flags.format, doc, metricsDir, sessionID)
   const text = flags.format === "json" ? JSON.stringify(doc, null, 2) + "\n" : render(doc) + "\n"
   process.stdout.write(text)
   return 0

@@ -11,14 +11,14 @@
 
 import { evictTo } from "./bounded.ts"
 import { loadConfig } from "./config.ts"
+import { sha256Hex16 } from "./chain.ts"
 import { createJournaler, type Journaler } from "./journal.ts"
 import {
   compileMarkerRegex,
   deltaWindowFloorChars,
   formatNearMissDiagnostics,
   GATE_RE,
-  CANONICAL_GATE_MARKER,
-  CANONICAL_VERDICT_MARKER,
+  markerRetryPrompt,
   verdictResultOf,
   VERDICT_RE,
 } from "./markers.ts"
@@ -77,44 +77,6 @@ const askLatchTtlMs = 5_000
 
 /** Cap on tracked per-child marker-retry counters (maxSessions scale). */
 const MAX_TRACKED_MARKER_RETRIES = 64
-
-/** Chars of the child's prior delivery quoted in the retry prompt. */
-const TAIL_CHARS = 600
-
-/** Marker the given agent's role owes: GATE for the test-runner,
- *  VERDICT for the reviewers; unknown agents get both examples. */
-function markerExampleOf(agents: TurnstileConfig["agents"], agent: string): string {
-  if (agent === agents.testRunner) return `\`${CANONICAL_GATE_MARKER}\``
-  if (agent === agents.reviewer || agent === agents.planReviewer)
-    return `\`${CANONICAL_VERDICT_MARKER}\``
-  return `\`${CANONICAL_GATE_MARKER}\` (test-runner) or \`${CANONICAL_VERDICT_MARKER}\` (reviewer)`
-}
-
-/** Bounded tail of the child's prior delivery, quoted in the retry
- *  prompt so the restatement is mechanical. Empty when the tail trims
- *  to nothing. */
-function priorOutputTail(priorOutput: string): string {
-  const tail = priorOutput.slice(-TAIL_CHARS).trim()
-  return tail === ""
-    ? ""
-    : ` The end of your previous reply, for reference:\n\`\`\`\n${tail}\n\`\`\``
-}
-
-/** Retry prompt telling the child its output was received and parsed,
- *  so it restates only the marker plus its existing conclusion. */
-function markerRetryPrompt(
-  agents: TurnstileConfig["agents"],
-  agent: string,
-  priorOutput: string,
-): string {
-  return (
-    "[turnstile] Your output was received and parsed. Your analysis is " +
-    "complete. Do not run any tools and do not repeat the work. Reply " +
-    "with only the required marker as the first line, followed by your " +
-    `existing conclusion. Your marker: ${markerExampleOf(agents, agent)}.` +
-    priorOutputTail(priorOutput)
-  )
-}
 
 /** Shared per-setup context consumed by turnstile's per-surface hook modules. */
 export interface TurnstileContext {
@@ -190,6 +152,11 @@ export interface TurnstileContext {
   sessionDirs: Map<string, string>
   /** Child session ID → marker-retry attempts already used. */
   markerRetries: Map<string, number>
+  /** Parent + agent stamp key → sha256-16 of that dispatch's prompt
+   *  (delivery-time tamper check; the child ID does not exist yet at
+   *  execute.before, so the stamp is keyed by the dispatching parent and
+   *  the resolved agent, keeping concurrent dispatches distinct). */
+  dispatchPromptHashes: Map<string, string>
   /** Per-session sliding window of streamed child text. */
   deltaWindows: Map<string, string>
   /** Child session ID → resolved agent name (emitter authority). */
@@ -275,8 +242,15 @@ export interface TurnstileContext {
   surfaceObserveSummary(event: ToolHookEvent): void
   /** True when text contains at least one GATE or VERDICT marker. */
   hasMarker(text: string): boolean
-  /** Journals one task/subagent dispatch entry. */
-  recordDispatch(sessionID: string, agent: string, description: string, blocked: boolean): void
+  /** Journals one task/subagent dispatch entry (with the dispatch prompt's
+   *  sha256-16 provenance hash). */
+  recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+    promptHash: string,
+  ): void
   /** Surfaces pending near-miss diagnostics into the first tool delivery. */
   surfaceNearMissDiagnostics(event: ToolHookEvent): void
   /** Seeds (or refreshes) a child session's emitter agent. */
@@ -291,6 +265,10 @@ export interface TurnstileContext {
   hasLiveLandingAsk(sid: string): boolean
   /** True when a live (unexpired) pending-hands-on-ask latch exists. */
   hasLiveHandsOnAsk(sid: string): boolean
+  /** Arms the landing ask latch; false when deduped inside the TTL window. */
+  armLandingAsk(parent: string): boolean
+  /** Arms the hands-on ask latch; false when deduped inside the TTL window. */
+  armHandsOnAsk(parent: string): boolean
   /** Returns the last-known project directory for a session. */
   currentProjectDir(sessionID: string): string
   /** Resolves the project directory via session.get, caching per session. */
@@ -479,6 +457,7 @@ interface CoreState {
   maxTrackedSessionDirs: number
   sessionDirs: Map<string, string>
   markerRetries: Map<string, number>
+  dispatchPromptHashes: Map<string, string>
   deltaWindows: Map<string, string>
   maxDeltaWindowChars: number
   maxTrackedDeltaWindows: number
@@ -542,7 +521,13 @@ interface CoreState {
   /** See {@link hasMarker}. */
   hasMarker(text: string): boolean
   /** See {@link recordDispatch}. */
-  recordDispatch(sessionID: string, agent: string, description: string, blocked: boolean): void
+  recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+    promptHash: string,
+  ): void
   /** See {@link boundNearMissPending}. */
   boundNearMissPending(): void
   /** See {@link surfaceNearMissDiagnostics}. */
@@ -665,6 +650,7 @@ interface CoreState {
     agent: string,
     description: string,
     waived: boolean,
+    promptHash: string,
   ): boolean
   /** See {@link blockCause}. */
   blockCause(e: BlockError, agent: string): string
@@ -675,6 +661,7 @@ interface CoreState {
     agent: string,
     description: string,
     waived: boolean,
+    promptHash: string,
   ): boolean
   /** See {@link armLandingAsk}. */
   armLandingAsk(parent: string): boolean
@@ -735,12 +722,14 @@ function recordDispatch(
   agent: string,
   description: string,
   blocked: boolean,
+  promptHash: string,
 ): void {
   st.journaler.journal({
     type: "dispatch",
     sessionID,
     agent,
     description,
+    promptHash,
     ...(blocked ? { blocked: true } : {}),
   })
   st.journaler.traceEvent("orchestrator", "dispatch", `task -> ${agent}`, sessionID)
@@ -815,14 +804,71 @@ function boundAwaitingAsks(st: CoreState): void {
   evictTo(st.awaitingPlanAsk, st.maxTrackedPlanAsks)
 }
 
-function hasLiveAwaitingAsk(st: CoreState, sid: string): boolean {
-  const at = st.awaitingPlanAsk.get(sid)
+/** The maps and TTL one ask-latch family reads and expires against. */
+interface AskLatchMaps {
+  /** Parent → arm time (ms) for the family's live ask latch. */
+  latch: Map<string, number>
+  /** Latch TTL in ms: an arm older than this is expired on read. */
+  ttl: number
+  /** Dedupe map (parent → last escalate time); expiry mirror-deletes it. */
+  dedupe?: Map<string, number>
+}
+
+/** Read one family's latch: live, expired (deleted), or absent. */
+function latchHasLive(maps: AskLatchMaps, sid: string): boolean {
+  const at = maps.latch.get(sid)
   if (at === undefined) return false
-  if (Date.now() - at > st.awaitingPlanAskTtlMs) {
-    st.awaitingPlanAsk.delete(sid)
+  if (Date.now() - at > maps.ttl) {
+    maps.latch.delete(sid)
+    // Mirror the expiry on the dedupe map too: a stale timestamp must not
+    // suppress a legitimate new ask row after the latch expired.
+    maps.dedupe?.delete(sid)
     return false
   }
   return true
+}
+
+/** Arm one family's latch; false when a dedupe stamp is inside the TTL. */
+function latchArm(
+  maps: AskLatchMaps & { dedupe: Map<string, number> },
+  bound: () => void,
+  parent: string,
+): boolean {
+  const now = Date.now()
+  const last = maps.dedupe.get(parent)
+  maps.latch.set(parent, now)
+  bound()
+  if (last !== undefined && now - last < maps.ttl) return false
+  maps.dedupe.set(parent, now)
+  bound()
+  return true
+}
+
+/** The awaiting family's latch maps: no dedupe map, so expiry deletes only the latch. */
+function awaitingAskMaps(st: CoreState): AskLatchMaps {
+  return { latch: st.awaitingPlanAsk, ttl: st.awaitingPlanAskTtlMs }
+}
+
+/** The landing family's latch and dedupe maps. */
+function landingAskMaps(st: CoreState): AskLatchMaps & { dedupe: Map<string, number> } {
+  return {
+    latch: st.pendingLandingAsk,
+    ttl: st.pendingLandingAskTtlMs,
+    dedupe: st.lastLandingEscalateAt,
+  }
+}
+
+/** The hands-on family's latch and dedupe maps. */
+function handsOnAskMaps(st: CoreState): AskLatchMaps & { dedupe: Map<string, number> } {
+  return {
+    latch: st.pendingHandsOnAsk,
+    ttl: st.pendingHandsOnAskTtlMs,
+    dedupe: st.lastHandsOnEscalateAt,
+  }
+}
+
+function hasLiveAwaitingAsk(st: CoreState, sid: string): boolean {
+  return latchHasLive(awaitingAskMaps(st), sid)
 }
 
 function boundLandingAsks(st: CoreState): void {
@@ -844,29 +890,11 @@ function boundLandingGateAsks(st: CoreState): void {
 }
 
 function hasLiveLandingAsk(st: CoreState, sid: string): boolean {
-  const at = st.pendingLandingAsk.get(sid)
-  if (at === undefined) return false
-  if (Date.now() - at > st.pendingLandingAskTtlMs) {
-    st.pendingLandingAsk.delete(sid)
-    // Mirror the expiry on the dedupe map too: a stale timestamp must not
-    // suppress a legitimate new ask row after the latch expired.
-    st.lastLandingEscalateAt.delete(sid)
-    return false
-  }
-  return true
+  return latchHasLive(landingAskMaps(st), sid)
 }
 
 function hasLiveHandsOnAsk(st: CoreState, sid: string): boolean {
-  const at = st.pendingHandsOnAsk.get(sid)
-  if (at === undefined) return false
-  if (Date.now() - at > st.pendingHandsOnAskTtlMs) {
-    st.pendingHandsOnAsk.delete(sid)
-    // Mirror the expiry on the dedupe map too: a stale timestamp must not
-    // suppress a legitimate new ask row after the latch expired.
-    st.lastHandsOnEscalateAt.delete(sid)
-    return false
-  }
-  return true
+  return latchHasLive(handsOnAskMaps(st), sid)
 }
 
 function promoteOnEvidence(st: CoreState, parent: string): void {
@@ -1111,7 +1139,10 @@ function applyPolicyResult(
   delivery: Delivery,
   agent: string,
 ): void {
+  // `absent` and `parent-authored` are documented silent cases: nothing to
+  // deliver, or text authored by the emitting session rather than the child.
   if (delivery.kind === "absent") return
+  if (delivery.kind === "parent-authored") return
   if (delivery.kind === "unknown") {
     st.journalPolicy(parent, false, { reason: "unknown-shape", shape: delivery.shape })
     return
@@ -1334,10 +1365,18 @@ function observeActive(st: CoreState, sessionID: string): boolean {
   }
 }
 
+/**
+ * True when enforcement is armed for the session's parent: `alwaysEnforce`
+ * short-circuits to true; otherwise the parent bucket's `engaged` flag is
+ * read. A pure read — the probe runs on every read-budget and
+ * policy-injection decision, so it must not mint a bucket (dormant sessions
+ * would otherwise churn the LRU on each check); a missing bucket reads as
+ * not armed. Journals `engagement read:` and fails toward false on error.
+ */
 function enforcementArmed(st: CoreState, sessionID: string): boolean {
   if (st.config.alwaysEnforce) return true
   try {
-    return st.ledger.state(st.ledger.parentOf(sessionID)).engaged
+    return st.ledger.peek(st.ledger.parentOf(sessionID))?.engaged ?? false
   } catch (e) {
     st.journaler.journal({ type: "error", sessionID, error: `engagement read: ${e}` })
     return false
@@ -1378,10 +1417,11 @@ function suspendDispatchOutcome(
   agent: string,
   description: string,
   waived: boolean,
+  promptHash: string,
 ): boolean {
   if (!st.suspendSuppressionActive(sessionID)) return false
   st.journalSuspendedWouldBlock(sessionID, st.blockCause(e, agent))
-  st.allowDispatch(sessionID, agent, description, waived)
+  st.allowDispatch(sessionID, agent, description, waived, promptHash)
   return true
 }
 
@@ -1396,40 +1436,27 @@ function dispatchBlockOutcome(
   agent: string,
   description: string,
   waived: boolean,
+  promptHash: string,
 ): boolean {
   if (!(e instanceof BlockError)) return false
   if (st.observeActive(sessionID)) {
     const cause = st.blockCause(e, agent)
     const totals = st.ledger.noteWouldBlock(sessionID)
     st.journaler.journal(wouldBlockEntry(sessionID, cause, totals.observed, totals.wouldBlocks))
-    st.allowDispatch(sessionID, agent, description, waived)
+    st.allowDispatch(sessionID, agent, description, waived, promptHash)
     return true
   }
-  if (st.suspendDispatchOutcome(e, sessionID, agent, description, waived)) return true
-  st.recordDispatch(sessionID, agent, description, true)
+  if (st.suspendDispatchOutcome(e, sessionID, agent, description, waived, promptHash)) return true
+  st.recordDispatch(sessionID, agent, description, true, promptHash)
   return false
 }
 
 function armLandingAsk(st: CoreState, parent: string): boolean {
-  const now = Date.now()
-  const last = st.lastLandingEscalateAt.get(parent)
-  st.pendingLandingAsk.set(parent, now)
-  st.boundLandingAsks()
-  if (last !== undefined && now - last < askLatchTtlMs) return false
-  st.lastLandingEscalateAt.set(parent, now)
-  st.boundLandingAsks()
-  return true
+  return latchArm(landingAskMaps(st), st.boundLandingAsks, parent)
 }
 
 function armHandsOnAsk(st: CoreState, parent: string): boolean {
-  const now = Date.now()
-  const last = st.lastHandsOnEscalateAt.get(parent)
-  st.pendingHandsOnAsk.set(parent, now)
-  st.boundHandsOnAsks()
-  if (last !== undefined && now - last < askLatchTtlMs) return false
-  st.lastHandsOnEscalateAt.set(parent, now)
-  st.boundHandsOnAsks()
-  return true
+  return latchArm(handsOnAskMaps(st), st.boundHandsOnAsks, parent)
 }
 
 function suspendBlock(st: CoreState, event: ToolHookEvent, e: BlockError): boolean {
@@ -1510,19 +1537,21 @@ async function retryMarker(
     return st.noteRetrySkipped(child, agent, used, "exhausted")
   if (typeof st.hostSessionRef.current?.prompt !== "function")
     return st.noteRetrySkipped(child, agent, used, "skipped-no-api")
+  const text = markerRetryPrompt(st.config.agents, agent, st.gateRe, st.verdictRe, priorOutput)
   st.journaler.journal({
     type: "marker-retry",
     sessionID: child,
     agent,
     attempt: used,
     outcome: "prompted",
+    textHash: sha256Hex16(text),
   })
   st.markerRetries.set(child, used + 1)
   evictTo(st.markerRetries, MAX_TRACKED_MARKER_RETRIES)
   try {
     await st.hostSessionRef.current.prompt({
       sessionID: child,
-      text: markerRetryPrompt(st.config.agents, agent, priorOutput),
+      text,
     })
   } catch (e) {
     st.journaler.journal({ type: "error", error: `marker-retry prompt failed: ${String(e)}` })
@@ -1566,6 +1595,7 @@ function buildCoreJournaler(st: CoreState): void {
     trace: st.config.trace,
     maxBytes: st.config.journalMaxBytes,
     maxGenerations: st.config.journalMaxGenerations,
+    archiveGenerations: st.config.journalArchiveGenerations,
     rotateEveryEntries: st.config.journalRotateEveryEntries,
     perSession: st.config.journalPerSession,
     sinkFor: (sessionID) => st.ledger.parentOf(sessionID),
@@ -1635,6 +1665,8 @@ function buildCoreLedger(opts: TurnstileOptions, st: CoreState): void {
     opts.approvalLedgerPath,
     st.config.observeSessions,
     st.config.agents.reviewer,
+    st.journaler.sessionsDir,
+    st.journaler,
   )
 
   // Evidence tracker: correlates a GATE: PASS against journaled exit-0
@@ -1688,8 +1720,15 @@ function buildCoreDeliveryMaps(st: CoreState): void {
   // resolution via `session.get`.
   st.hostSessionRef = { current: undefined }
 
-  /** Per-child marker-retry attempts used; bounded by boundMarkerRetries. */
+  /** Per-child marker-retry attempts used; bounded by the inline
+   *  `evictTo(st.markerRetries, MAX_TRACKED_MARKER_RETRIES)` trim. */
   st.markerRetries = new Map<string, number>()
+  // Parent+agent dispatch pair (see dispatchStampKey in dispatch-guard.ts)
+  // → sha256-16 of its latest dispatch prompt,
+  // recorded by the dispatch guard and compared against the delivery's
+  // echoed prompt by the tamper check (tool-hooks-after, keyed through the
+  // child's resolved parent). Bounded like markerRetries.
+  st.dispatchPromptHashes = new Map<string, string>()
   st.taskDeliverySeq = { current: 0 }
 }
 
@@ -1902,7 +1941,8 @@ function buildCoreIntentMaps(st: CoreState): void {
   st.intentNudgePending = new Map<string, IntentKind>()
 
   // Pending plan-impact advisories, keyed by parent session ID: the text
-  // stashed by the plan-impact classifier (hooks-core) for one classified
+  // stashed by the plan-impact classifier (classifyParentPlanImpact in
+  // bash-write-guard.ts) for one classified
   // parent write/edit/write-shaped bash call, consumed one-shot by the next
   // parent-facing delivery (same channel as the intent nudge). Latest-wins
   // when a second classification lands before delivery; a task-scope reset
@@ -1958,7 +1998,8 @@ function buildCoreSessionDirMaps(st: CoreState): void {
 function buildCorePromptHolders(st: CoreState): void {
   // Prompt-channel waiver capture: the waiver must
   // provenance from the user's prompt, never the dispatch prompt. A counter
-  // tracks prompts where NEITHER candidate text key (`text`/`prompt`) holds a
+  // tracks prompts where NONE of the candidate text keys (`text`, `prompt`,
+  // `prompt.text`) holds a
   // non-empty string, so an unresolvable source is reported once (keylessPrompts hits
   // 1 exactly once) as a misconfiguration (mirrors the bash `command ?? cmd`
   // telemetry).
@@ -2199,6 +2240,7 @@ type CoreMapViews = Pick<
   | "handsOnGateAsks"
   | "sessionDirs"
   | "markerRetries"
+  | "dispatchPromptHashes"
   | "deltaWindows"
   | "sessionAgents"
   | "admittedIds"
@@ -2225,6 +2267,7 @@ function coreMapViews(st: CoreState): CoreMapViews {
     handsOnGateAsks: st.handsOnGateAsks,
     sessionDirs: st.sessionDirs,
     markerRetries: st.markerRetries,
+    dispatchPromptHashes: st.dispatchPromptHashes,
     deltaWindows: st.deltaWindows,
     sessionAgents: st.sessionAgents,
     admittedIds: st.admittedIds,
@@ -2335,6 +2378,8 @@ type CoreServiceViews1 = Pick<
   | "hasLiveAwaitingAsk"
   | "hasLiveLandingAsk"
   | "hasLiveHandsOnAsk"
+  | "armLandingAsk"
+  | "armHandsOnAsk"
   | "currentProjectDir"
   | "resolveProjectDir"
   | "resolveParent"
@@ -2355,6 +2400,8 @@ function coreServiceViews1(st: CoreState): CoreServiceViews1 {
     hasLiveAwaitingAsk: st.hasLiveAwaitingAsk,
     hasLiveLandingAsk: st.hasLiveLandingAsk,
     hasLiveHandsOnAsk: st.hasLiveHandsOnAsk,
+    armLandingAsk: st.armLandingAsk,
+    armHandsOnAsk: st.armHandsOnAsk,
     currentProjectDir: st.currentProjectDir,
     resolveProjectDir: st.resolveProjectDir,
     resolveParent: st.resolveParent,

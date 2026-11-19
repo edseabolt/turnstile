@@ -10,6 +10,7 @@
 
 import * as fs from "node:fs"
 import * as path from "node:path"
+import * as zlib from "node:zlib"
 
 import { foldChain } from "./chain.ts"
 import type { ChainVerdict, EpochSummary, ParsedRow } from "./chain.ts"
@@ -50,12 +51,33 @@ export interface VerifyReport {
 }
 
 /**
- * Lists a file family's generations oldest-first: the numbered generations
+ * Lists a family's archived generations oldest-first: the `.gz` files in the
+ * sibling `archive/` directory named for the family's basename.
+ * @param file The current file path (names the family).
+ * @returns The archive paths, lexicographically sorted (chronological).
+ */
+function archiveFiles(file: string): string[] {
+  try {
+    const dir = path.join(path.dirname(file), "archive")
+    const base = path.basename(file)
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.startsWith(`${base}.`) && name.endsWith(".gz"))
+      .sort()
+      .map((name) => path.join(dir, name))
+  } catch {
+    return [] // no archive dir (opt-out or nothing rotated yet)
+  }
+}
+
+/**
+ * Lists a file family's generations oldest-first: the archived generations
+ * in the sibling `archive/` directory, then the numbered generations
  * `.maxGenerations..1` that exist, then the current file (when present).
  * Also reports whether the family folds with a trust root: the oldest
- * surviving file is a numbered generation other than `.1` only when the
- * journaler pruned, so its first chained row continues a chain whose
- * earlier generations no longer exist.
+ * surviving file is neither the current file nor `.1` only when the
+ * journaler pruned (or archived), so its first chained row continues a
+ * chain whose earlier generations no longer exist live.
  * @param file The current file path.
  * @param maxGenerations The generation count convention (5 in this repo).
  * @returns The existing file paths oldest-first plus the trust-root flag.
@@ -64,7 +86,7 @@ function familyFiles(
   file: string,
   maxGenerations: number,
 ): { files: string[]; chainRootAtStart: boolean } {
-  const files: string[] = []
+  const files: string[] = archiveFiles(file)
   for (let gen = maxGenerations; gen >= 1; gen--) {
     if (fs.existsSync(`${file}.${gen}`)) files.push(`${file}.${gen}`)
   }
@@ -75,15 +97,17 @@ function familyFiles(
 }
 
 /**
- * Reads one journal file into the fold's row shape, skipping malformed
- * lines (fail-open: a corrupt line is inert, not fatal).
+ * Reads one journal file into the fold's row shape, decompressing gzip
+ * archives first, skipping malformed lines (fail-open: a corrupt line or an
+ * unreadable archive is inert, not fatal).
  * @param file The file to read.
  * @returns The parsed rows, oldest-first.
  */
 function readFamilyRows(file: string): ParsedRow[] {
   let text: string
   try {
-    text = fs.readFileSync(file, "utf8")
+    const raw = fs.readFileSync(file)
+    text = (file.endsWith(".gz") ? zlib.gunzipSync(raw) : raw).toString("utf8")
   } catch {
     return []
   }

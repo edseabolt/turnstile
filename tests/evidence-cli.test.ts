@@ -31,10 +31,12 @@ import * as crypto from "node:crypto"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+
+import { recordHash } from "../src/chain.ts"
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const evidenceScript = join(repoRoot, "scripts", "evidence.mjs")
@@ -50,6 +52,7 @@ interface EvidenceDoc {
   noTask: boolean
   task: string | null
   green: boolean
+  emittedAt: string
   plan: {
     verdict: string | null
     marker: string | null
@@ -108,7 +111,9 @@ function code(res: { status: number | null; exitCode?: number | null }): number 
 
 /** Writes a journal file (current or a rotated generation) from JSONL lines. */
 function writeJournal(dir: string, file: string, lines: Entry[]): void {
-  writeFileSync(join(dir, file), lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
+  const target = join(dir, file)
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, lines.map((l) => JSON.stringify(l)).join("\n") + "\n")
 }
 
 /** Builds a journal entry with a monotonic ISO timestamp. */
@@ -845,6 +850,36 @@ test("evidence: a rotated-only journal still folds and names the generation", ()
   }
 })
 
+test("evidence: --validate accepts the per-session sink basenames the emitter reports", () => {
+  // docstring: the sessions/ layout names each sink <sessionID>.jsonl, and
+  // readJournal walks and reports those basenames — the validator's
+  // journal.files rule must accept them, or every artifact from a
+  // sessions/-layout machine fails --validate (emitter/validator drift).
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("ses_abc123"))
+    writeJournal(dir, join("sessions", "ses_abc123.jsonl"), greenTask("ses_abc123"))
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "ses_abc123", "--out", p])
+    const emitted = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    assert.ok(
+      emitted.journal.files.some((f) => f.startsWith("ses_")),
+      "emitter reports the session sink",
+    )
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 0, `session basenames validate: ${res.stderr}`)
+    // A basename outside the session-ID alphabet is still rejected.
+    const tampered = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    tampered.journal.files = ["bad name!.jsonl"]
+    writeFileSync(p, JSON.stringify(tampered))
+    const bad = runEvidence(dir, ["--validate", p])
+    assert.equal(code(bad), 1)
+    assert.match(bad.stderr, /bad basename/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("evidence: the replay-tail bound limits the folded window", () => {
   // docstring: the fold honors the configured replay tail, so entries outside
   // the tail are not felt by the summary.
@@ -1009,6 +1044,26 @@ test("evidence: --validate rejects a path-shaped value in a permitted key", () =
     const res = runEvidence(dir, ["--validate", p])
     assert.equal(code(res), 1)
     assert.match(res.stderr, /plan\.source/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: --validate accepts the subagent-synthetic plan provenance", () => {
+  // docstring: the runtime journals `subagent-synthetic` as the plan source
+  // when a plan verdict is captured from a subagent task result (src/ledger.ts),
+  // so the emitter's provenance whitelist must accept it or every artifact
+  // from a subagent-driven task fails --validate (emitter/validator drift).
+  const dir = metricsDir()
+  try {
+    const entries = greenTask("sp-sub").map((e) =>
+      e.type === "verdict" ? { ...e, source: "subagent-synthetic" } : e,
+    )
+    writeJournal(dir, "turnstile.jsonl", entries)
+    const p = join(dir, "evidence.json")
+    runEvidence(dir, ["--task", "sp-sub", "--out", p])
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 0, `subagent-synthetic validates: ${res.stderr}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1220,3 +1275,373 @@ function taskHandle(sessionID: string): string {
   // sha256(sessionID) truncated to 8 hex chars, prefixed "t-".
   return "t-" + crypto.createHash("sha256").update(sessionID).digest("hex").slice(0, 8)
 }
+
+/**
+ * Reads one journal file family's current file as parsed rows (generations are
+ * not needed by these tests: the emit row always lands in the current file).
+ * @param dir The metrics directory.
+ * @param file The file basename or `sessions/<sid>.jsonl` relative path.
+ * @returns The parsed rows, file order.
+ */
+function readJournalLines(dir: string, file: string): Entry[] {
+  return readFileSync(join(dir, file), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Entry)
+}
+
+/** Counts the `event:"emit"` rows in a parsed journal file. */
+function emitRows(rows: Entry[]): Entry[] {
+  return rows.filter((r) => r.type === "evidence" && r.event === "emit")
+}
+
+test('evidence: an --out emit journals one event:"emit" row for the task', () => {
+  // docstring: an artifact write is the durable emit, so exactly one emit row
+  // naming the task's session is appended to the shared journal.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-emit"))
+    runEvidence(dir, ["--task", "sp-emit", "--out", join(dir, "e.json")])
+    const emit = emitRows(readJournalLines(dir, "turnstile.jsonl"))
+    assert.equal(emit.length, 1)
+    assert.equal(emit[0]!.sessionID, "sp-emit")
+    assert.match(emit[0]!.ts, /^\d{4}-\d{2}-\d{2}T/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a stdout emit and a --validate journal nothing", () => {
+  // docstring: stdout output is a read and --validate writes nothing, so
+  // neither may append an emit row — only the artifact write journals.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-ro"))
+    runEvidence(dir, ["--task", "sp-ro", "--format", "json"])
+    const p = join(dir, "e.json")
+    runEvidence(dir, ["--task", "sp-ro", "--out", p])
+    const before = readJournalLines(dir, "turnstile.jsonl").length
+    runEvidence(dir, ["--validate", p])
+    const rows = readJournalLines(dir, "turnstile.jsonl")
+    assert.equal(emitRows(rows).length, 1, "only the --out emit row exists")
+    assert.equal(rows.length, before, "--validate appended nothing")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: the emit row routes to the session sink when the family exists", () => {
+  // docstring: when the sessions dir holds a family root for the task, the
+  // emit row lands in that sink like the task's other rows; otherwise it
+  // falls back to the shared file.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-shared"))
+    writeJournal(dir, join("sessions", "sp-sink.jsonl"), greenTask("sp-sink"))
+    runEvidence(dir, ["--task", "sp-sink", "--out", join(dir, "a.json")])
+    runEvidence(dir, ["--task", "sp-shared", "--out", join(dir, "b.json")])
+    assert.equal(emitRows(readJournalLines(dir, join("sessions", "sp-sink.jsonl"))).length, 1)
+    assert.equal(emitRows(readJournalLines(dir, "turnstile.jsonl")).length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: task documents carry emittedAt; degraded docs carry an empty one", () => {
+  // docstring: the emitted artifact's emittedAt equals the emit row's ts, and
+  // a noTask degraded document carries the empty-string form.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-at"))
+    const p = join(dir, "e.json")
+    runEvidence(dir, ["--task", "sp-at", "--out", p])
+    const doc = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    assert.match(doc.emittedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/)
+    const row = emitRows(readJournalLines(dir, "turnstile.jsonl"))[0]!
+    assert.equal(doc.emittedAt, row.ts, "emittedAt equals the emit row's ts")
+    // A noTask document: journal lines exist but none carries a valid
+    // session ID, so the latest selector degrades to noTask (an explicit
+    // unknown id would be an input error, exit 2).
+    writeFileSync(
+      join(dir, "turnstile.jsonl"),
+      JSON.stringify({ ts: new Date(1).toISOString(), type: "gate", result: "PASS" }) + "\n",
+    )
+    const empty = JSON.parse(runEvidence(dir, ["--format", "json"]).stdout) as EvidenceDoc
+    assert.equal(empty.noTask, true)
+    assert.equal(empty.emittedAt, "")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a legacy artifact without emittedAt validates; a malformed one does not", () => {
+  // docstring: the emittedAt rule is conditional on the key's presence, so a
+  // pre-change artifact stays valid, while a present-but-malformed value is
+  // named by the validator.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-legacy"))
+    const p = join(dir, "e.json")
+    runEvidence(dir, ["--task", "sp-legacy", "--out", p])
+    const legacy: Record<string, unknown> = JSON.parse(readFileSync(p, "utf8"))
+    delete legacy.emittedAt
+    writeFileSync(p, JSON.stringify(legacy))
+    assert.equal(code(runEvidence(dir, ["--validate", p])), 0, "absent emittedAt is valid")
+    const bad = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    bad.emittedAt = "not-a-ts"
+    writeFileSync(p, JSON.stringify(bad))
+    const res = runEvidence(dir, ["--validate", p])
+    assert.equal(code(res), 1)
+    assert.match(res.stderr, /emittedAt: bad timestamp/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: emit rows never count into exitZeroRuns", () => {
+  // docstring: an emit row carries no exit field, so the exit-0 run count
+  // reflects only real exit-0 evidence rows, never artifact writes.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      ...greenTask("sp-ez"),
+      line(7, { type: "evidence", sessionID: "sp-ez", exit: 0 }),
+    ])
+    const p = join(dir, "e.json")
+    runEvidence(dir, ["--task", "sp-ez", "--out", p])
+    const doc = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    assert.equal(doc.tests.exitZeroRuns, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: repeated emits are last-wins and advance the journal head", () => {
+  // docstring: two artifact writes append two emit rows; the second (newer)
+  // row's ts wins the fold and the reported head is the post-append tail.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", greenTask("sp-2x"))
+    const p = join(dir, "e.json")
+    runEvidence(dir, ["--task", "sp-2x", "--out", p])
+    const first = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    runEvidence(dir, ["--task", "sp-2x", "--out", p])
+    const second = JSON.parse(readFileSync(p, "utf8")) as EvidenceDoc
+    const rows = emitRows(readJournalLines(dir, "turnstile.jsonl"))
+    assert.equal(rows.length, 2)
+    assert.equal(second.emittedAt, rows[1]!.ts, "the newer emit row wins")
+    assert.notEqual(second.emittedAt, first.emittedAt)
+    assert.notEqual(second.journal.head, first.journal.head, "the head advanced")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: an unchained emit row leaves a chained journal verifiable", () => {
+  // docstring: the emit row is appended without a hash field, so the hash
+  // chain fold still reports ok over the seeded chained rows and the row is
+  // visible in the audit trail.
+  const dir = metricsDir()
+  try {
+    const ts = "2026-01-01T10:00:00.000Z"
+    const payload = { ts, type: "gate", sessionID: "ses1", result: "PASS" }
+    const hash = recordHash("", ts, payload)
+    writeJournal(dir, "turnstile.jsonl", [{ ...payload, seq: 0, prevHash: "", hash }])
+    const p = join(dir, "e.json")
+    const res = runEvidence(dir, ["--task", "ses1", "--out", p])
+    assert.equal(code(res), 0, `stderr: ${res.stderr}`)
+    const rows = readJournalLines(dir, "turnstile.jsonl")
+    assert.equal(rows.length, 2, "the emit row was appended")
+    assert.equal(rows[1]!.hash, undefined, "the emit row is unchained")
+    // The chain-verify spawn path (prov --verify, the pattern from
+    // tests/prov-verify-cli.test.ts): the chain folds ok over the seeded
+    // chained row plus the unchained emit row — the emit row did not fork
+    // the hash chain.
+    const v = spawnSync(process.execPath, [join(repoRoot, "scripts", "prov.mjs"), "--verify"], {
+      env: { ...process.env, TURNSTILE_METRICS_DIR: dir },
+      encoding: "utf8",
+    })
+    assert.equal(code(v), 0, v.stdout)
+    assert.match(v.stdout, /chain ok \(2 rows, 0 epochs\)/, "the chain still verifies")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: an explicit task scopes files and lines to its session tree", () => {
+  // docstring: the task window reads only the task's session tree — its sink
+  // family and the shared file filtered to it — so another session's rows
+  // (even newer ones dominating the shared tail) neither enter the fold nor
+  // the reported files/lines.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, join("sessions", "sp-a.jsonl"), greenTask("sp-a"))
+    writeJournal(dir, "turnstile.jsonl", [
+      ...greenTask("sp-b"),
+      line(100, { type: "dispatch", sessionID: "sp-b", agent: "executor" }),
+    ])
+    const obj = JSON.parse(
+      runEvidence(dir, ["--task", "sp-a", "--format", "json"]).stdout,
+    ) as EvidenceDoc
+    assert.equal(obj.green, true, "the fold is sp-a's green task")
+    assert.equal(obj.dispatches, 1)
+    assert.ok(
+      obj.journal.files.every((f) => !f.includes("sp-b")),
+      "no other session's file is reported",
+    )
+    assert.equal(obj.journal.lines, greenTask("sp-a").length, "the scoped count, not the global")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a quiet session's rows are not evicted by a hot shared tail", () => {
+  // docstring: the sink family is walked with the full replay tail, so a
+  // session whose rows fell out of a hot shared tail still emits a full task.
+  const dir = metricsDir()
+  const cfgDir = metricsDir()
+  try {
+    const cfgPath = join(cfgDir, "turnstile.json")
+    writeFileSync(cfgPath, JSON.stringify({ replayTailLines: 2 }))
+    writeJournal(dir, join("sessions", "sp-quiet.jsonl"), greenTask("sp-quiet"))
+    writeJournal(dir, "turnstile.jsonl", [
+      line(10, { type: "dispatch", sessionID: "sp-hot", agent: "x" }),
+      line(11, { type: "dispatch", sessionID: "sp-hot", agent: "x" }),
+      line(12, { type: "dispatch", sessionID: "sp-hot", agent: "x" }),
+    ])
+    const res = spawnSync(
+      process.execPath,
+      [evidenceScript, "--task", "sp-quiet", "--format", "json"],
+      {
+        env: { ...process.env, TURNSTILE_METRICS_DIR: dir, TURNSTILE_CONFIG: cfgPath },
+        encoding: "utf8",
+      },
+    )
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as EvidenceDoc
+    assert.equal(obj.green, true, "the quiet session's full task is folded")
+    assert.equal(obj.journal.lines, greenTask("sp-quiet").length, "the scoped window")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cfgDir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: child-edge rows pull child sinks into the session tree", () => {
+  // docstring: a child sink named by a shared-file `child-edge` row is walked
+  // with the parent's, so its rows count into the reported journal window —
+  // while the fold itself stays parent-keyed.
+  const dir = metricsDir()
+  try {
+    const parentRows = greenTask("sp-parent")
+    writeJournal(dir, join("sessions", "sp-parent.jsonl"), parentRows)
+    const childRows = [
+      line(7, { type: "marker-retry", sessionID: "sp-child", agent: "executor" }),
+      line(8, { type: "marker-retry", sessionID: "sp-child", agent: "executor" }),
+    ]
+    writeJournal(dir, join("sessions", "sp-child.jsonl"), childRows)
+    writeJournal(dir, "turnstile.jsonl", [
+      line(9, { type: "child-edge", sessionID: "sp-child", parent: "sp-parent" }),
+    ])
+    const obj = JSON.parse(
+      runEvidence(dir, ["--task", "sp-parent", "--format", "json"]).stdout,
+    ) as EvidenceDoc
+    assert.ok(
+      obj.journal.files.some((f) => f.startsWith("sp-child")),
+      "the child sink is reported",
+    )
+    assert.equal(obj.journal.lines, parentRows.length + childRows.length + 1)
+    assert.equal(obj.dispatches, 1, "the fold counts only parent-keyed rows")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: --task latest resolves a child-keyed last line to the parent session", () => {
+  // docstring: the newest global line can be child-keyed (a `child-edge`
+  // row), but the fold rows (gate/verdict/plan) are parent-keyed — so the
+  // latest selection resolves the child to its parent and the window reads
+  // the parent's tree. Without the resolution the artifact is hollow: a task
+  // handle for the child with `plan.at: ""` and no tests result, which fails
+  // `--validate` (the issue-368 CI regression).
+  const dir = metricsDir()
+  try {
+    const rows = greenTask("sp-par")
+    writeJournal(dir, join("sessions", "sp-par.jsonl"), rows)
+    writeJournal(dir, "turnstile.jsonl", [
+      ...rows,
+      line(10, { type: "child-edge", sessionID: "sp-chi", parent: "sp-par" }),
+    ])
+    const res = runEvidence(dir, ["--format", "json"])
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as EvidenceDoc
+    assert.equal(obj.task, taskHandle("sp-par"), "the parent session is the task")
+    assert.match(obj.plan.at, /^\d{4}-\d{2}-\d{2}T/, "plan.at carries the parent's verdict ts")
+    assert.equal(obj.tests.result, "PASS", "the parent's gate row is folded")
+    assert.equal(obj.green, true, "the artifact is not hollow")
+    // The emitted artifact must pass --validate (the committed-artifact CI step).
+    const out = join(dir, "evidence.json")
+    const wres = runEvidence(dir, ["--task", "latest", "--out", out])
+    assert.equal(code(wres), 0, `stderr: ${wres.stderr}`)
+    const vres = runEvidence(dir, ["--validate", out])
+    assert.equal(code(vres), 0, `validate stderr: ${vres.stderr}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: an explicit task with rows only in another session exits 2", () => {
+  // docstring: an explicit id whose session tree holds no rows anywhere — no
+  // sink, no shared rows — is an input error, so it exits 2 loudly.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, { type: "dispatch", sessionID: "sp-b", agent: "x" }),
+    ])
+    const res = runEvidence(dir, ["--task", "sp-missing", "--format", "json"])
+    assert.equal(code(res), 2)
+    assert.match(res.stderr, /unknown task/i)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: --out mirrors the artifact beside the session sink", () => {
+  // docstring: a task artifact written with --out is mirrored to
+  // sessions/<sid>/evidence.json with the same bytes; a degraded document
+  // mirrors nothing.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, join("sessions", "sp-mir.jsonl"), greenTask("sp-mir"))
+    const p = join(dir, "e.json")
+    const res = runEvidence(dir, ["--task", "sp-mir", "--out", p])
+    assert.equal(code(res), 0, `stderr: ${res.stderr}`)
+    const mirror = join(dir, "sessions", "sp-mir", "evidence.json")
+    assert.equal(readFileSync(mirror, "utf8"), readFileSync(p, "utf8"), "same bytes")
+    // A degraded (noTask) document mirrors nothing.
+    const p2 = join(dir, "e2.json")
+    runEvidence(dir, ["--task", "latest", "--out", p2])
+    assert.equal(code(res), 0)
+    assert.equal(existsSync(join(dir, "sessions", "latest")), false, "no mirror for noTask")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("evidence: a failed mirror write degrades to a stderr note with exit 0", () => {
+  // docstring: the mirror is best-effort — an unwritable sessions path writes
+  // one stderr note and the artifact is still emitted successfully.
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, join("sessions", "sp-mir2.jsonl"), greenTask("sp-mir2"))
+    // A file where the mirror directory must be created blocks mkdir.
+    writeFileSync(join(dir, "sessions", "sp-mir2"), "not a dir")
+    const p = join(dir, "e.json")
+    const res = runEvidence(dir, ["--task", "sp-mir2", "--out", p])
+    assert.equal(code(res), 0, "the exit code is unaffected")
+    assert.match(res.stderr, /could not mirror the artifact/)
+    assert.ok(existsSync(p), "the artifact itself was still written")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

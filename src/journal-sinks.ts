@@ -9,6 +9,9 @@
 
 import * as fs from "node:fs"
 import * as path from "node:path"
+import * as zlib from "node:zlib"
+
+import { withFileLock } from "./lockfile.ts"
 
 /**
  * Host session-ID alphabet, length-capped: the only shapes that may name a
@@ -29,17 +32,26 @@ export function now(): string {
 
 /**
  * Rotates a journal file when it grows past the size limit, keeping at
- * most `maxGenerations` numbered generations. Silent on any failure.
+ * most `maxGenerations` numbered generations. When `archiveGenerations` is
+ * positive, the outgoing final generation is gzip-archived before the prune.
+ * Silent on any failure.
  * @param file Path of the journal file to check and rotate.
  * @param maxBytes Rotation threshold in bytes.
  * @param maxGenerations Number of numbered generations to keep.
+ * @param archiveGenerations Archived generations kept per family; 0 = off.
  */
-export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: number): void {
+export function rotateIfLarge(
+  file: string,
+  maxBytes: number,
+  maxGenerations: number,
+  archiveGenerations: number,
+): void {
   try {
     const stat = fs.statSync(file)
     if (stat.size <= maxBytes) return
     // prune the oldest generation first so the shift below has a free slot
     const oldest = `${file}.${maxGenerations}`
+    if (archiveGenerations > 0) archiveGeneration(oldest, archiveGenerations)
     try {
       fs.unlinkSync(oldest)
     } catch {
@@ -55,6 +67,68 @@ export function rotateIfLarge(file: string, maxBytes: number, maxGenerations: nu
     fs.renameSync(file, `${file}.1`)
   } catch {
     // missing file or stat failure: nothing to rotate
+  }
+}
+
+/**
+ * Lists a family's existing archive files oldest-first.
+ * @param archiveDir The family's `archive/` directory.
+ * @param prefix The archive-name prefix (the journal file's basename).
+ * @returns The matching `.gz` paths, lexicographically sorted.
+ */
+function listArchives(archiveDir: string, prefix: string): string[] {
+  return fs
+    .readdirSync(archiveDir)
+    .filter((name) => name.startsWith(`${prefix}.`) && name.endsWith(".gz"))
+    .sort()
+    .map((name) => path.join(archiveDir, name))
+}
+
+/**
+ * Prunes the oldest archives beyond the keep bound for one family.
+ * @param archiveDir The family's `archive/` directory.
+ * @param prefix The archive-name prefix (the journal file's basename).
+ * @param keep Maximum number of archives to retain.
+ */
+function pruneArchives(archiveDir: string, prefix: string, keep: number): void {
+  const archives = listArchives(archiveDir, prefix)
+  for (const stale of archives.slice(0, Math.max(0, archives.length - keep))) {
+    try {
+      fs.unlinkSync(stale)
+    } catch {
+      // already gone: nothing to prune
+    }
+  }
+}
+
+/**
+ * Gzip-archives one outgoing generation into `<dir>/archive/` next to its
+ * journal, then prunes archives beyond the keep bound. The archive name
+ * embeds a zero-padded epoch-ms timestamp plus a collision-bumped sequence
+ * (`-001`, `-002`, … within one millisecond), so lexicographic order equals
+ * chronological order and no archive is ever silently overwritten. Runs
+ * under the caller's rotation lock. Silent on any failure: an archive
+ * problem never breaks rotation or journaling.
+ * @param gen Path of the outgoing generation file.
+ * @param keep Maximum number of archives to retain for the family.
+ */
+function archiveGeneration(gen: string, keep: number): void {
+  try {
+    const text = fs.readFileSync(gen, "utf8")
+    const dir = path.join(path.dirname(gen), "archive")
+    const base = path.basename(gen)
+    fs.mkdirSync(dir, { recursive: true })
+    const ts = String(Date.now()).padStart(15, "0")
+    let seq = 0
+    let target = path.join(dir, `${base}.${ts}-${String(seq).padStart(3, "0")}.gz`)
+    while (fs.existsSync(target)) {
+      seq++
+      target = path.join(dir, `${base}.${ts}-${String(seq).padStart(3, "0")}.gz`)
+    }
+    fs.writeFileSync(target, zlib.gzipSync(text))
+    pruneArchives(dir, base, keep)
+  } catch {
+    // archiving must never break rotation
   }
 }
 
@@ -85,24 +159,75 @@ function repairTornTail(file: string): void {
   }
 }
 
+/** Directories this process has already ensured exist (per-process memo:
+ * mkdir is an open-time cost, not a per-row cost). Invalidated by the
+ * retry-once path when an append fails. */
+const ensuredDirs = new Set<string>()
+/** Journal files this process has already torn-tail-repaired (the first
+ * write by this process; a torn tail can only be left by a prior
+ * process's crash, which the next process's first write repairs). */
+const repairedFiles = new Set<string>()
+
 /**
- * Appends one line to a file, creating the parent directory first. The
- * caller is responsible for rotating when a size bound applies (the journaler's
- * `journal()`/`traceEvent()` call `tickRotate` on an entry-count tick, under a
- * lock-guarded rename). A torn final line (no trailing newline, left by a
- * crash mid-append) is separated with one `\n` first so the new line always
- * parses on its own. Silent on any failure: journaling must never break
- * execution.
+ * Creates the parent directory for a journal file, at most once per
+ * directory per process.
+ * @param dir The directory to ensure exists.
+ */
+function ensureDirOnce(dir: string): void {
+  if (ensuredDirs.has(dir)) return
+  fs.mkdirSync(dir, { recursive: true })
+  ensuredDirs.add(dir)
+}
+
+/**
+ * Runs the torn-tail repair for a journal file, at most once per file per
+ * process (the first write by this process).
+ * @param file The file to repair before its first append in this process.
+ */
+function repairOnce(file: string): void {
+  if (repairedFiles.has(file)) return
+  repairTornTail(file)
+  repairedFiles.add(file)
+}
+
+/**
+ * Appends one line to a file, creating the parent directory once per process
+ * and running the torn-tail repair once per file per process (a torn tail can
+ * only be left by a prior process's crash, which the next process's first
+ * write repairs); a failed append drops both memos for the path and retries
+ * once. The caller is still responsible for rotating when a size bound applies
+ * (the journaler's `journal()`/`traceEvent()` call `tickRotate` on an
+ * entry-count tick, under a lock-guarded rename). A torn final line (no
+ * trailing newline, left by a crash mid-append) is separated with one `\n`
+ * first so the new line always parses on its own. Silent on any failure:
+ * journaling must never break execution.
  * @param file Path of the file to append to.
  * @param text The line to append (a trailing newline is added).
  */
 export function appendLine(file: string, text: string): void {
+  if (tryAppend(file, text)) return
+  // A failure usually means a memo is stale (the directory was removed
+  // mid-session). Drop the memos for this path and retry exactly once.
+  ensuredDirs.delete(path.dirname(file))
+  repairedFiles.delete(file)
+  tryAppend(file, text)
+}
+
+/**
+ * Performs one append attempt with the memoized directory-ensure and
+ * torn-tail repair, swallowing any I/O error.
+ * @param file Path of the file to append to.
+ * @param text The line to append (a trailing newline is added).
+ * @returns True when the append succeeded.
+ */
+function tryAppend(file: string, text: string): boolean {
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    repairTornTail(file)
+    ensureDirOnce(path.dirname(file))
+    repairOnce(file)
     fs.appendFileSync(file, text + "\n")
+    return true
   } catch {
-    // journaling must never break execution
+    return false // journaling must never break execution
   }
 }
 
@@ -133,6 +258,10 @@ export interface JournalSinksOptions {
   maxBytes: number
   /** Rotated generations kept per journal file. */
   maxGenerations: number
+  /** Archived generations kept per family in the sibling `archive/`
+   *  directory; 0 = off. Threaded from config (`journalArchiveGenerations`,
+   *  default 5) — no fallback here, so a missing thread is a type error. */
+  archiveGenerations: number
   /** Hot path is append-only; the size check and rotation run once per this
    *  many appends. Entries between the check and the rename are the bounded
    *  overshoot. */
@@ -184,33 +313,20 @@ function sinkFor(
 }
 
 /**
- * Steals a lock directory whose mtime proves its creator crashed
- * mid-rotation. A stat or rmdir failure throws to the caller's catch, so a
- * lock in an unexpected state (a file, a non-empty directory, a vanished
- * path) is never forced open — it just skips the tick.
- * @param lock Path of the contended `<file>.lock` directory.
- * @returns True when the stale lock was removed (a steal happened).
- */
-function stealStaleLock(lock: string): boolean {
-  if (Date.now() - fs.statSync(lock).mtimeMs < ROTATION_LOCK_STALE_MS) return false
-  fs.rmdirSync(lock)
-  return true
-}
-
-/**
  * Rotates `file` once per `rotateEveryEntries` writes, under a created
  * `<file>.lock` directory that is an atomic mutex (mkdir fails with EEXIST
  * while another session holds it) so concurrent sessions never both rename
- * the shared file. A stale lock — its mtime past the staleness bound,
- * proving its creator crashed — is stolen (journaled as a
- * `rotation-lock-stale:` error entry) and the mkdir retried once; a fresh
- * contention is a silent return. Non-EEXIST mkdir errors and steal-path
- * throws land in the single outer catch. The error row always lands on the
- * shared journal file, even when the contended file is a session sink (one
- * fixed audit location for rotation errors). Fail-open: the outer catch
- * swallows every steal-path throw and the finally's failed rmdir, so a
- * throw inside the finally (a failed rmdir) or the rotate cannot propagate
- * out of `journal()` into the hook. The per-write hot path never calls
+ * the shared file. The lock protocol is the shared `withFileLock` boundary:
+ * a single attempt (`timeoutMs: 0` — a fresh contention is a silent skip,
+ * not a retry), a stale lock — its mtime past the staleness bound, proving
+ * its creator crashed — stolen once (journaled as a `rotation-lock-stale:`
+ * error entry via the steal seam, before the rotation rename so the row
+ * lands in the rotated generation). Non-EEXIST mkdir errors and steal-path
+ * throws degrade to `{held:false}` inside the boundary, which skips the
+ * tick. The error row always lands on the shared journal file, even when
+ * the contended file is a session sink (one fixed audit location for
+ * rotation errors). Fail-open: a failed release or any lock-state error
+ * never propagates out of `journal()`. The per-write hot path never calls
  * this past the counter gate.
  * @param options The journaler options (rotation bounds).
  * @param journalPath The shared journal file path (the error row's sink).
@@ -225,27 +341,19 @@ function tickRotate(
 ): void {
   if (++counter.n < options.rotateEveryEntries) return
   counter.n = 0
-  try {
-    const lock = `${file}.lock`
-    try {
-      fs.mkdirSync(lock)
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e
-      if (!stealStaleLock(lock)) return
-      appendLine(
-        journalPath,
-        JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
-      )
-      fs.mkdirSync(lock) // raced again: the throw lands in the outer catch
-    }
-    try {
-      rotateIfLarge(file, options.maxBytes, options.maxGenerations)
-    } finally {
-      fs.rmdirSync(`${file}.lock`)
-    }
-  } catch {
-    // steal-path throw, non-EEXIST mkdir error, or failed rmdir: skip the tick
-  }
+  withFileLock(
+    file,
+    {
+      timeoutMs: 0,
+      staleMs: ROTATION_LOCK_STALE_MS,
+      onStaleSteal: () =>
+        appendLine(
+          journalPath,
+          JSON.stringify({ ts: now(), type: "error", error: `rotation-lock-stale: ${file}` }),
+        ),
+    },
+    () => rotateIfLarge(file, options.maxBytes, options.maxGenerations, options.archiveGenerations),
+  )
 }
 
 /**

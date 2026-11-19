@@ -33,6 +33,8 @@ function chainedJournaler(opts?: {
     trace: false,
     maxBytes: opts?.maxBytes ?? 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: opts?.rotateEveryEntries ?? 512,
     perSession: true,
     sinkFor: opts?.sinkFor ?? ((sid) => (sid === "p1" ? "p1" : "")),
@@ -115,6 +117,8 @@ test("disabled tamper evidence reproduces the legacy unchained row shape", () =>
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     tamper: { enabled: false, epochEntries: 512 },
   })
@@ -247,6 +251,8 @@ function restartedJournaler(metricsDir: string, epochEntries: number) {
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     perSession: true,
     sinkFor: (sid) => (sid === "p1" ? "p1" : ""),

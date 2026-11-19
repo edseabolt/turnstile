@@ -72,6 +72,13 @@ add, remove, or switch worktrees or branches, merge, or open/close a PR
 unless the user explicitly asks. If a worktree is in use, assert a
 `WORKTREE:` header for logging.
 
+Before every push that adds commits to an open PR — and before opening
+one — re-emit the evidence bundle and commit the pair: run
+`evidence --task latest --out .turnstile/evidence.json` (it writes the
+sibling `.md` too), then `git add .turnstile/evidence.json
+.turnstile/evidence.md` into the commit you push. CI flags a stale
+committed badge; treat a stale notice like a red gate.
+
 ## Completion
 
 You are not finished merely because the code compiles. The implementation

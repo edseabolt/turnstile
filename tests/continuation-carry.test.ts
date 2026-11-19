@@ -193,6 +193,34 @@ test("worktreeFingerprint fingerprints a git worktree", { skip: !hasGit }, () =>
   assert.equal(fp.includes("main"), true)
 })
 
+/**
+ * `worktreeFingerprint` falls back when rev-parse exits cleanly but prints
+ * fewer than two lines (malformed output, not a throw).
+ */
+test("worktreeFingerprint falls back on a short rev-parse output", () => {
+  const dir = tmpDir("turnstile-short-")
+  const fp = worktreeFingerprint(dir, () => "only-top\n")
+  assert.equal(fp, path.resolve(dir))
+  assert.equal(fp.includes("\u0000"), false)
+})
+
+/**
+ * `worktreeFingerprint` runs a single git invocation and joins the two
+ * output lines with NUL.
+ */
+test("worktreeFingerprint parses both lines of one rev-parse invocation", () => {
+  const calls: string[][] = []
+  const fp = worktreeFingerprint("/p", (cmd, args) => {
+    calls.push([cmd, ...args])
+    return "/p\nmain\n"
+  })
+  assert.equal(fp, "/p\u0000main")
+  assert.equal(calls.length, 1)
+  const first = calls[0]
+  assert.ok(first !== undefined)
+  assert.deepEqual(first.slice(-4), ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"])
+})
+
 /** `worktreeFingerprint` falls back on a throw from the injected exec seam. */
 test("worktreeFingerprint falls back on a throwing exec seam", () => {
   const dir = tmpDir("turnstile-throw-")

@@ -9,10 +9,17 @@
 #   pull_request_target  Publish. Runs the base ref's copy of this file (a pull
 #                       request cannot rewrite the posting logic in its own
 #                       diff), in the base context with a writable token. It
-#                       has no checkout step and no run step: it reads the one
-#                       artifact file through the Contents API, asserts two
-#                       byte-level invariants, and upserts one comment keyed
-#                       on the `turnstile:evidence` marker it searches for.
+#                       has no checkout step and no run step: it reads the
+#                       committed artifact files through the Contents API,
+#                       asserts two byte-level invariants on the .md, appends
+#                       a fixed amber notice when the evidence predates the
+#                       latest non-evidence commit — found by walking back
+#                       from the head (bounded at 100 commits) to the first
+#                       commit that touches anything outside `.turnstile/`,
+#                       falling back to the head date when the walk is
+#                       exhausted, blocked, or the file list is empty or
+#                       truncated — and upserts
+#                       one comment keyed on the `turnstile:evidence` marker.
 #
 # Contributor bytes may be read; they are never executed. GitHub asks a
 # maintainer to approve the first run from a new fork contributor, so a first
@@ -29,8 +36,10 @@
 # Copy this file into your repo's .github/workflows/. The emitter writes both
 # .turnstile/evidence.json and the sibling .turnstile/evidence.md
 # (`evidence --out .turnstile/evidence.json`); commit both. The posted body is
-# the committed Markdown verbatim — neither job reads a journal or runs the
-# pipeline.
+# the committed Markdown verbatim, plus at most one fixed staleness notice
+# appended by the workflow itself — neither job reads a journal or runs the
+# pipeline. The byte invariants (marker first line, 1 KiB cap) apply to the
+# committed artifact; the appended notice is workflow-authored bytes.
 
 name: turnstile evidence
 
@@ -41,7 +50,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   # Job 2 — publish. Base context, writable token, no checkout and no run
-  # step: it reads the one artifact file and asserts byte invariants on it.
+  # step: it reads the committed artifact files and asserts byte invariants
+  # on the .md.
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
@@ -122,13 +132,117 @@ jobs:
               ].join("\n");
             }
 
-            // 3. Upsert the single comment keyed on the marker: update the
+            // 2b. Staleness notice. The journal is per-machine, so CI can
+            //     never refresh the artifact — it can only notice when it is
+            //     old. Read the committed JSON (the emitter's sibling of the
+            //     .md), take the newest journal timestamp it reports
+            //     (plan.at / tests.at / emittedAt — the emit-time event the
+            //     emitter journals on every artifact write), and compare it
+            //     with the latest commit that could have changed code:
+            //     walking back from the head (bounded at 100 commits) to the
+            //     first commit that touches anything outside .turnstile/ —
+            //     evidence-only commits are the normal emit-and-commit
+            //     refresh path. When the evidence predates that commit,
+            //     append a fixed amber notice — never any document bytes —
+            //     so a stale badge warns instead of reading as current.
+            //     Best-effort: any failure to read the JSON or a commit skips
+            //     the notice, and the .md alone still posts. Conservative
+            //     fallbacks to the head date: walk exhaustion at the bound,
+            //     an API failure mid-walk, a parentless evidence-only root,
+            //     and an empty or truncated files list (GitHub caps it at
+            //     300 entries, and a full list is required to prove a commit
+            //     is evidence-only) — at worst a spurious notice.
+            let staleNote = null;
+            if (violation === null) {
+              try {
+                const res = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: ".turnstile/evidence.json",
+                  ref: context.payload.pull_request.head.sha,
+                });
+                const doc = JSON.parse(
+                  Buffer.from(res.data.content, res.data.encoding).toString("utf8"),
+                );
+                const ts = [doc?.plan?.at, doc?.tests?.at, doc?.emittedAt]
+                  .filter((t) => typeof t === "string" && t && !Number.isNaN(Date.parse(t)))
+                  .sort()
+                  .at(-1);
+                if (ts !== undefined) {
+                  const MAX_WALK = 100;
+                  const isEvOnly = (c) => {
+                    const files = c.data.files ?? [];
+                    return (
+                      files.length > 0 &&
+                      files.length < 300 &&
+                      files.every(
+                        (f) =>
+                          typeof f.filename === "string" &&
+                          f.filename.startsWith(".turnstile/"),
+                      )
+                    );
+                  };
+                  let commit = await github.rest.repos.getCommit({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: context.payload.pull_request.head.sha,
+                  });
+                  const headDate =
+                    commit.data.commit.committer?.date ?? commit.data.commit.author?.date;
+                  // Walk back through evidence-only commits (the normal
+                  // emit-and-commit refresh path) to the first commit that
+                  // could have changed code. Every fallback keeps
+                  // comparedDate at the head date: conservative, at worst a
+                  // spurious notice.
+                  let comparedDate = headDate;
+                  let sha = context.payload.pull_request.head.sha;
+                  for (let i = 0; i < MAX_WALK && isEvOnly(commit); i++) {
+                    if (!commit.data.parents?.length) break; // whole visible history is evidence-only
+                    sha = commit.data.parents[0].sha;
+                    try {
+                      commit = await github.rest.repos.getCommit({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        ref: sha,
+                      });
+                      const d =
+                        commit.data.commit.committer?.date ?? commit.data.commit.author?.date;
+                      if (!isEvOnly(commit)) {
+                        comparedDate = d;
+                        break;
+                      }
+                    } catch (walkErr) {
+                      core.info(`Walk-back stopped at ${sha}: ${walkErr instanceof Error ? walkErr.message : String(walkErr)}`);
+                      break;
+                    }
+                  }
+                  if (
+                    typeof comparedDate === "string" &&
+                    Date.parse(ts) < Date.parse(comparedDate)
+                  ) {
+                    staleNote =
+                      `> ⚠ Stale: the last journaled event (${ts}) predates the ` +
+                      `latest non-evidence commit (${comparedDate}). Re-run the ` +
+                      `evidence emitter and commit both .turnstile/ files to ` +
+                      `refresh the badge.`;
+                  }
+                }
+              } catch (e) {
+                core.info(`Staleness check skipped: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }
+
+            // 3. Append the staleness notice on the valid path and upsert
+            //    the single comment keyed on the marker: update the
             //    existing one if found, create it only when none is found.
             //    Never a second comment. `github.paginate(endpoint, params)`
             //    returns the flattened list of all pages' items — the
             //    endpoint is passed unexecuted, with the params alongside it
             //    (calling the endpoint here would start the request and pass
             //    a Promise, which paginate cannot iterate).
+            if (staleNote !== null) {
+              body = body.endsWith("\n") ? body + staleNote : body + "\n" + staleNote;
+            }
             const { owner, repo } = context.repo;
             const issueNumber = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, {

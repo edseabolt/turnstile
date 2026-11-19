@@ -307,6 +307,7 @@ test("verify stays ok after rotation prunes the oldest generation", async () => 
   const { ctx, metricsDir } = coreWith({ epochEntries: 3 }, {
     journalMaxBytes: 300,
     journalMaxGenerations: 3,
+    journalArchiveGenerations: 0,
     journalRotateEveryEntries: 1,
   } as Partial<TurnstileConfig>)
   const anchors = path.join(metricsDir, "anchors.jsonl")
@@ -424,6 +425,8 @@ test("interleaved journaler instances on a shared directory keep one chain", asy
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     tamper: { enabled: true, epochEntries: 2 },
   })
@@ -453,6 +456,7 @@ test("verify stays ok when an epoch window straddles a pruned generation", async
   const { ctx, metricsDir } = coreWith({ epochEntries: 3 }, {
     journalMaxBytes: 1,
     journalMaxGenerations: 3,
+    journalArchiveGenerations: 0,
     journalRotateEveryEntries: 1,
   } as Partial<TurnstileConfig>)
   // Every append rotates (maxBytes 1), so epoch windows straddle generation
@@ -523,6 +527,8 @@ test("the append-time head resync falls back to a full reseed on hostile tails",
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     tamper: { enabled: true, epochEntries: 512 },
   })
@@ -556,6 +562,8 @@ test("the append-time head resync falls back to a full reseed on hostile tails",
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     tamper: { enabled: true, epochEntries: 512 },
   })
@@ -576,6 +584,8 @@ test("a restarted journaler continues the family epoch index after rotation", as
     trace: false,
     maxBytes: 200,
     maxGenerations: 3,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 1,
     tamper: { enabled: true, epochEntries: 2 },
   })
@@ -614,6 +624,7 @@ test("epoch indices stay unique across rotation pruning with anchors", async () 
   const { ctx, metricsDir } = coreWith({ epochEntries: 2 }, {
     journalMaxBytes: 1,
     journalMaxGenerations: 3,
+    journalArchiveGenerations: 0,
     journalRotateEveryEntries: 1,
   } as Partial<TurnstileConfig>)
   const { sink } = fileSink(path.join(metricsDir, "anchors.jsonl"))
@@ -635,6 +646,8 @@ test("a corrupt epoch tail reseeds from the max committed index", async () => {
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     tamper: { enabled: true, epochEntries: 2 },
   })

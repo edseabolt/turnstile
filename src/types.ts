@@ -36,7 +36,7 @@ export interface TaskInput {
  * `output` object carries it too), and `content` is the model-visible text
  * — a string or an array of content blocks — that the host normalizes into
  * the transcript, stringifying `output` only when `content` is absent.
- * Fields are `unknown` because the host does not type them; `src/setup.ts`
+ * Fields are `unknown` because the host does not type them; `src/delivery.ts`
  * classifies the shape once per delivery (`classifyDelivery`) and fails
  * open on an unrecognized one.
  */
@@ -69,7 +69,7 @@ export interface ToolHookEvent {
   /**
    * Dispatched subagent/agent name, observed on v2.0.27
    * execute.before/after payloads. The host contract does not type this
-   * field, hence `unknown`; `src/setup.ts` reads it (against the configured
+   * field, hence `unknown`; `src/hooks-core.ts` reads it (against the configured
    * agent-name set) as a conservative exclusion fallback for orchestrator
    * policy injection: it applies only when the child→parent edge is
    * unresolvable, to avoid injecting into an unregistered child's own text;
@@ -86,7 +86,8 @@ export interface PromptHookProperties {
   sessionID?: unknown
   /**
    * Candidate key for the raw user prompt text on v2.0.27. The host does not
-   * type this field, hence `unknown`; `src/setup.ts` reads it (against the
+   * type this field, hence `unknown`; `src/delivery.ts` reads it (via
+   * `promptTextOf`, against the
    * candidate `text ?? prompt`) to capture user-authored waiver/approval markers
    * at prompt admission. Fails open when absent.
    */
@@ -94,8 +95,8 @@ export interface PromptHookProperties {
   /**
    * Alternate candidate key for the raw user prompt text. On opencode ≥ 2.0.29
    * the host may instead send its mutable prompt input object
-   * (`{text, files, agents, skills}`) here; `src/setup.ts` reads the object's
-   * `text` field as a THIRD candidate (via a guarded cast), so a user
+   * (`{text, files, agents, skills}`) here; `src/delivery.ts` reads the object's
+   * `text` field as a THIRD candidate (via `promptTextOf`'s guarded cast), so a user
    * waiver/approval marker in `prompt.text` is captured too. Fails open when
    * absent.
    */
@@ -130,8 +131,9 @@ export interface CompactionDraft {
   /**
    * Session identity on v2.x's compaction payload (host contract mirrors the
    * session-scoped prompt/generate payloads, which carry a lenient
-   * `sessionID?: unknown`). Read through the `asSessionID` helper in
-   * `src/setup.ts` so the snapshot hydrates the parent bucket; a missing or
+   * `sessionID?: unknown`). Read through the `asSessionID` helper (defined in
+   * `src/delivery.ts`) from `src/hooks-session-bodies.ts` so the snapshot
+   * hydrates the parent bucket; a missing or
    * hostile value degrades to instruction-only (fail-open).
    */
   sessionID?: unknown
@@ -142,15 +144,17 @@ export interface SessionRecord {
   parentID?: unknown
   /**
    * Directory of the session's current checkout, as delivered by the host.
-   * The host does not type this field, hence `unknown`; `src/setup.ts` reads it
-   * (against the candidate keys `directory` / `data.directory`) to resolve the
+   * The host does not type this field, hence `unknown`; `src/parent-resolution.ts`
+   * reads it (via `readRecordString` against the candidate keys `directory` /
+   * `data.directory`) to resolve the
    * project directory per dispatch and fails open when absent.
    */
   directory?: unknown
   /**
    * Agent name of the session, as delivered by the host. The host does not
-   * type this field, hence `unknown`; `src/setup.ts` reads it (against the
-   * candidate keys `agent` / `data.agent`, the shared `AGENT_KEYS`) to decide
+   * type this field, hence `unknown`; `src/parent-resolution.ts` reads it (via
+   * `readRecordString` against the candidate keys `agent` / `data.agent`, the
+   * shared `AGENT_KEYS` in `src/delivery.ts`) to decide
    * whether the session's `GATE:`/`VERDICT:` marker text is authoritative for
    * that kind. Fails open to unresolved: an unproven agent is denied (fail-closed
    * for text observation), and the `execute.after` delivery path seeds the agent
@@ -159,9 +163,9 @@ export interface SessionRecord {
   agent?: unknown
   /**
    * Hosted directory of the session's current checkout, as delivered by the
-   * host. The host does not type this field, hence `unknown`; `src/setup.ts`
-   * reads `location.directory` as a fourth candidate and fails open when
-   * absent.
+   * host. The host does not type this field, hence `unknown`;
+   * `src/parent-resolution.ts` reads `location.directory` as a fourth candidate
+   * (via `readRecordString`) and fails open when absent.
    */
   location?: { directory?: unknown }
   data?: {
@@ -177,8 +181,8 @@ export interface EventProperties {
   type?: unknown
   /**
    * Agent name carried on a `session.created` event, when the host includes
-   * it. `unknown` (untyped by the host); `src/setup.ts` reads it against
-   * `typeof ... === "string"` to seed the emitter-authority cache. Fails open
+   * it. `unknown` (untyped by the host); `src/event-stream-handlers.ts` reads it
+   * against `typeof ... === "string"` to seed the emitter-authority cache. Fails open
    * to empty: a created event without the agent stays unseeded at streaming
    * time and rests on the `execute.after` delivery seed.
    */
@@ -851,6 +855,12 @@ export interface TurnstileConfig {
   journalMaxBytes: number
   /** Number of rotated journal generations to keep. */
   journalMaxGenerations: number
+  /**
+   * Archived generations kept per journal file family in the sibling
+   * archive/ directory; 0 disables archiving. Default 5, matching
+   * journalMaxGenerations.
+   */
+  journalArchiveGenerations: number
   /**
    * Size-check/rotation cadence: the journal append hot path only stats and
    * rotates once per this many appends; entries between the check and the

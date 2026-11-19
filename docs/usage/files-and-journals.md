@@ -5,7 +5,9 @@
     entries without a sessionID); hot path is append-only and rotates
     once per `journalRotateEveryEntries` (default 512) writes under a
     lock-guarded rename, keeps `journalMaxGenerations` (default 5)
-    generations; a lock left behind by a crash between create and remove of
+    generations; pruned generations are gzip-archived under `archive/`
+    (default depth 5, `journalArchiveGenerations: 0` disables); a lock left
+    behind by a crash between create and remove of
     `<file>.lock` is stolen once its age passes a staleness bound
     (`ROTATION_LOCK_STALE_MS`, 60s) and the rotation proceeds, and journaling
     keeps appending through fresh contention
@@ -39,7 +41,8 @@
     Fail-open: read/write errors are journaled and the gate
     degrades to journal-replay semantics
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
-  ~30 MB per journal, worst case ~60 MB total, plus the approved-plan
+  ~30 MB per journal, plus gzip archives (≤ 5 pruned generations,
+  ~2.5 MB per journal) — worst case ~65 MB total — plus the approved-plan
   sidecar (≤ 256 short records). With `journalPerSession` on, each live
   session adds its own `sessions/<parentID>.jsonl` with the same per-file
   bounds, so aggregate retention and boot replay read cost scale with the

@@ -162,18 +162,17 @@ used singular `agent`):
 {
   "$schema": "https://opencode.ai/config.json",
   "agents": {
-    "planner": { "model": "oMLX/oQ/Qwen3.8-Flash-Next-oQ4-mtp" },
-    "plan-reviewer": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp" },
-    "executor": { "model": "oMLX/oQ/Qwen3.8-27B-oQ8-mtp" },
-    "test-runner": { "model": "oMLX/oQ/Qwen3.8-27B-oQ8-mtp" },
-    "reviewer": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp" },
-    "debugger": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ4-mtp" },
+    "planner": { "model": "oMLX/oQ/Qwen3.8-Flash-Next-oQ6-mtp" },
+    "plan-reviewer": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ6-mtp" },
+    "executor": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ6-mtp" },
+    "test-runner": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ6-mtp" },
+    "reviewer": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ6-mtp" },
+    "debugger": { "model": "oMLX/oQ/GLM-5.3-Flash-oQ6-mtp" },
   },
 }
 ```
 
-This is the author's actual local setup (a self-hosted oMLX engine serving
-Qwen and GLM models). Frontier hosted models work the same way — any
+This is the author's actual local setup (a self-hosted oMLX engine serving a GLM model). Frontier hosted models work the same way — any  
 `provider/model-id` your OpenCode install lists, e.g.
 `anthropic/claude-sonnet-4-5` — and are the right choice if your local
 models struggle with the executor or reviewer roles.
@@ -252,9 +251,9 @@ Two sanctioned ways to change the pipeline:
   hold to the marker contract. Your agents get the same gates the shipped
   ones do. Gate authority follows these configured names, not the agent's
   role: an agent that runs the test suite under a custom name (e.g. `build`)
-  must be configured as `agents.testRunner` — `agents.bareOutput` then
-  derives — or its `GATE:` markers are journaled as `suppressed` and the
-  gate stays red.
+  must be configured as `agents.testRunner` (`agents.bareOutput` then
+  derives); otherwise its `GATE:` markers are journaled as `suppressed` and
+  the gate stays red.
 - **Fork the repo.** To change the pipeline content itself, fork and edit
   `agents/*.md` there; your installer serves your fork.
 
@@ -301,7 +300,7 @@ Shared caveats:
 - `npm run install:check` reports drift between the manifest and what is
   actually installed. There is no `install:agents:check`: the orchestrator
   policy is injected from code (`src/policy.ts`), not a manifest-managed
-  template, so nothing to verify there — `npm run ci:installed` is now just
+  template, so nothing to verify there. `npm run ci:installed` is now just
   `install:check`. These install checks must run after `npm run init` on a
   machine with artifacts installed — a fresh clone has nothing to check. The
   host chain (`npm run ci` = `npm run ci:host`) covers lint, format:check,

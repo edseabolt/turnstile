@@ -1,17 +1,19 @@
 # Gate state machine
 
 All state is keyed per parent session. `replayGrace` gives restart-restored
-flags a one-prompt survival window; continuation carry (default on) re-arms
-it when a continuing prompt has an unchanged worktree fingerprint and earned
-credit (a green test gate or a reviewer approval). A retired task's credit
-also rides the same window when the review phase was interrupted mid-flight:
-a green test gate, at least one counted reviewer dispatch or waived reviewer
-round, and no credited reviewer approval (`isInterruptedReview`,
-`src/task-scope.ts`); both the live abort path and the restart-replay path
-recover identically, and the journaled `continuation` row carries
-`recovery: true` in that case. The recovery re-opens the retired task's
-plan-bound scope, which then persists like any live plan-bound green task
-(bounded by the ensemble cap and the landing gate, not by prompt count).
+flags a one-prompt survival window. Continuation carry (default on) re-arms
+that window when a continuing prompt has an unchanged worktree fingerprint
+and earned credit — a green test gate or a reviewer approval.
+
+A retired task's credit rides the same window when the review phase was
+interrupted mid-flight: the task has a green test gate, at least one counted
+reviewer dispatch or waived reviewer round, and no credited reviewer
+approval (`isInterruptedReview`, `src/task-scope.ts`). Both the live abort
+path and the restart-replay path recover identically; the journaled
+`continuation` row carries `recovery: true` in that case. The recovery
+re-opens the retired task's plan-bound scope. That scope then persists like
+any live plan-bound green task — bounded by the ensemble cap and the landing
+gate, not by prompt count.
 
 ### Dormant-until-engaged
 

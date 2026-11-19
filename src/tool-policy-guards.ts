@@ -85,10 +85,11 @@ export interface CompiledRule {
 }
 
 /**
- * The stateful landing-gate capability `setup.ts` hands to the landing guard
+ * The stateful landing-gate capability handed to the landing guard
  * so the stateful ledger never crosses into the pure tool-policy boundary. The
- * stateful side (`landingBlocks`, `hasReviewApprove`) lives only in `setup.ts`;
- * tool-policy mutates it exclusively through `recordBlock`/`escalate`.
+ * stateful side (`landingBlocks`, `hasReviewApprove`) lives only in
+ * `src/bash-write-guard.ts` (`landingGateHandles`); tool-policy mutates it
+ * exclusively through `recordBlock`/`escalate`.
  */
 export interface LandingGateCapability {
   /** True when the task already carries a reviewer `VERDICT: APPROVE` (release signal). */
@@ -808,7 +809,7 @@ function guardBashWrite(
  * @param tool The tool name, recorded in the journal.
  * @param command The raw command value from the host payload (`unknown`).
  * @param sessionID The session ID, recorded in journal entries.
- * @param gate The landing-gate capability supplied by `setup.ts`.
+ * @param gate The landing-gate capability built by `bash-write-guard.ts`.
  * @throws Error with a `BLOCKED by turnstile:` prefix when the gate blocks.
  */
 function guardLanding(

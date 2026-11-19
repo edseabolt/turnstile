@@ -24,6 +24,11 @@
       "minimum": 1,
       "description": "Number of rotated journal generations to keep (default 5)."
     },
+    "journalArchiveGenerations": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Archived generations kept per journal family in the sibling archive/ directory; 0 disables archiving (default 5)."
+    },
     "journalRotateEveryEntries": {
       "type": "integer",
       "minimum": 1,

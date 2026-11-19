@@ -4,7 +4,7 @@ writers: "Writers" {
   hooks: "hooks & gates"
 }
 
-jsonl: "turnstile.jsonl\nshared fallback\n5 MB × 5 generations" {
+jsonl: "turnstile.jsonl\nshared fallback\n5 MB × 5 generations\n+ archive/ (5 gz,\ncold storage)" {
   shape: cylinder
 }
 sessions: "sessions/<parentID>.jsonl\nper parent session\nsame bounds per file" {
@@ -29,7 +29,7 @@ anchors: "anchors.jsonl\npublished epoch refs\n(session-state sink)" {
 sinks: "anchor sinks\nsession-state (host)\ngit-note / commit-trailer (repo)\n{plugin} (external)"
 verify: "verifyJournalChain\nsession-end (verifyOnSessionEnd)\n+ prov --verify (offline)\n+ prov --verify --session <id>\n  (scoped, per-row Merkle\n  inclusion proofs)"
 
-writers.hooks -> jsonl: "every decision,\n43 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry /\nchain-epoch / chain-verify)\nno/unknown sessionID → shared"
+writers.hooks -> jsonl: "every decision,\n44 entry types\n(incl. maintenance / observe /\nwould-block / suspended / session-summary /\ngenerate-draft / marker-retry /\ndispatch-tamper /\nchain-epoch / chain-verify)\nno/unknown sessionID → shared"
 writers.hooks -> sessions: "entry with a resolvable\nparent sessionID\n(sinkFor → parent's file)"
 writers.hooks -> trace: "trace:true only"
 writers.hooks -> approval: "bound APPROVE credits\n(fail-open; unbound records nothing)"

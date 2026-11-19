@@ -29,12 +29,12 @@ each maps to a turnstile mechanism:
   `unverifiedPass` and never greens the gate under
   `gateEvidence:"enforce"`. The correlation re-runs when a child→parent
   edge resolves late (a background dispatch) and at reviewer-dispatch
-  time, bounded to the parent's current task window (a prompt-admission
-  stamp), so a stale prior-task execution cannot verify a new task's
-  claim; a gate-unverified refusal names the sessions it searched
-  (parent plus every child with journaled executions, with attribution
-  reasons) in the `BLOCKED` message and the `searched` field of the
-  journaled `blocked` entry.
+  time. It is bounded to the parent's current task window (a
+  prompt-admission stamp), so a stale prior-task execution cannot verify a
+  new task's claim. A gate-unverified refusal names the sessions it
+  searched — parent plus every child with journaled executions, with
+  attribution reasons — in the `BLOCKED` message and the `searched` field
+  of the journaled `blocked` entry.
 - **A decision journal.** OpenCode logs are diagnostics, not a
   structured decision record. `src/journal.ts` appends every gate
   transition, block, waiver, and dispatch to a replayable JSONL trail
@@ -64,7 +64,7 @@ turnstile unchanged unless a gate applies. Other adjacent approaches
 gate on written artifacts, like spec workflows, or on a single
 human-approval point; turnstile gates the machine steps around those.
 The bundled planner/executor/test-runner/reviewer agents in
-`agents/` are the reference pipeline, not a requirement; the
+`agents/` are the reference pipeline, not a requirement. The
 gates key off agent names and markers, and other suites' agents can
 carry their own markers.
 

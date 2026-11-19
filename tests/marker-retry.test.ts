@@ -9,6 +9,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
+import { markerRetryPrompt } from "../src/markers.ts"
 import {
   callTool,
   isolatedEnv,
@@ -63,7 +64,9 @@ test("retry fires once and prompts the child", async () => {
     assert.match(h.sessionPrompts[0]!.text, /GATE: PASS tests=3 passed=3 failed=0/)
     assert.doesNotMatch(h.sessionPrompts[0]!.text, /VERDICT:/)
     assert.match(h.sessionPrompts[0]!.text, /received and parsed/)
-    assert.match(h.sessionPrompts[0]!.text, /Do not run any tools/)
+    assert.match(h.sessionPrompts[0]!.text, /Do not start new work/)
+    assert.doesNotMatch(h.sessionPrompts[0]!.text, /Do not run any tools/)
+    assert.match(h.sessionPrompts[0]!.text, /never invent or estimate counts/)
     assert.ok(journalEntries(metricsDir).every((l) => l.type !== "violation"))
   } finally {
     dispose()
@@ -84,7 +87,7 @@ test("retry prompt tells the reviewer its analysis is complete and quotes the ta
     const p = h.sessionPrompts[0]!
     assert.match(p.text, /VERDICT: APPROVE crit=0 high=0 med=0 low=0/)
     assert.doesNotMatch(p.text, /GATE:/)
-    assert.match(p.text, /Do not run any tools/)
+    assert.match(p.text, /Do not start new work/)
     assert.match(p.text, /verdict: approve/)
   } finally {
     dispose()
@@ -216,6 +219,57 @@ test("a failed retry prompt fails open and counts a violation", async () => {
   }
 })
 
+/** A prior output whose tail carries GATE/VERDICT marker lines has them
+ *  stripped from the quoted tail: the prompt never repeats a marker line
+ *  (or its counts), so it cannot read as a pre-supplied marker. Unit-level:
+ *  the bare-output path never delivers a marker-bearing tail (a marker-bearing
+ *  delivery is not bare), so the stripping arms are only reachable here. */
+test("retry prompt never quotes a marker line from the prior output", () => {
+  const agents = {
+    testRunner: "test-runner",
+    reviewer: "reviewer",
+    planReviewer: "plan-reviewer",
+  } as never
+  const prompt = markerRetryPrompt(
+    agents,
+    "test-runner",
+    /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ failed=\d+/gm,
+    /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm,
+    "GATE: PASS tests=9 passed=9 failed=0\nanalysis of the run\nVERDICT: APPROVE crit=1 high=0 med=0 low=0",
+  )
+  assert.match(prompt, /analysis of the run/)
+  assert.doesNotMatch(prompt, /tests=9/)
+  assert.doesNotMatch(prompt, /crit=1/)
+})
+
+/** A prior output that is ONLY marker lines strips to an empty tail, so the
+ *  quoted-tail block is omitted entirely. */
+test("retry prompt omits the tail block when only marker lines remain", () => {
+  const agents = { testRunner: "test-runner" } as never
+  const prompt = markerRetryPrompt(
+    agents,
+    "test-runner",
+    /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ failed=\d+/gm,
+    /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm,
+    "GATE: PASS tests=9 passed=9 failed=0",
+  )
+  assert.doesNotMatch(prompt, /```/)
+})
+
+/** The prompted marker-retry row carries textHash: the sha256-16 of the
+ *  exact retry prompt text sent to the child (injection provenance). */
+test("prompted marker-retry row carries the injected text hash", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await deliverBare(h, "test-runner", "c1")
+    const row = journalEntries(metricsDir).find((l) => l.type === "marker-retry")
+    assert.equal(row!.outcome, "prompted")
+    assert.match(String(row!.textHash), /^[0-9a-f]{16}$/)
+  } finally {
+    dispose()
+  }
+})
+
 /** A marker-less delivery from an agent outside bareOutput journals neither
  *  a marker-retry row nor a violation. */
 test("retry never fires for marker-uncontracted agents", async () => {
@@ -268,4 +322,118 @@ test("plan-reviewer suppression survives the retry path", async () => {
   } finally {
     dispose()
   }
+})
+
+/** The incident shape (issue #376): a parent-keyed string delivery whose
+ *  metadata names the child — the parent-side background-subagent
+ *  acknowledgment — is parent-authored, so no retry, no prompt, no violation. */
+test("parent-keyed string delivery is never treated as child output", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: {
+        output:
+          "The subagent is working in the background " +
+          "(sessionID: ses_child123). You will receive a <subagent> message.",
+        metadata: { sessionID: "ses_child123" },
+      },
+    })
+    assert.equal(h.sessionPrompts.length, 0)
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "marker-retry"))
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "violation"))
+  } finally {
+    dispose()
+  }
+})
+
+/** Any parent-keyed string delivery is parent-authored regardless of wording:
+ *  the event origin, not the text, decides the classification. */
+test("any parent-keyed string delivery is parent-authored regardless of wording", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner" },
+      result: {
+        output: "accepted for background execution",
+        metadata: { sessionID: "ses_child123" },
+      },
+    })
+    assert.equal(h.sessionPrompts.length, 0)
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "marker-retry"))
+  } finally {
+    dispose()
+  }
+})
+
+/** A child-keyed event whose metadata child matches the origin stays on the
+ *  string path: the bare-output retry still fires. */
+test("child-keyed delivery with matching metadata still classifies as child output", async () => {
+  const { h, dispose } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "c1",
+      input: { agent: "test-runner" },
+      result: { output: "ran, no marker", metadata: { sessionID: "c1" } },
+    })
+    assert.equal(h.sessionPrompts.length, 1)
+  } finally {
+    dispose()
+  }
+})
+
+/** The `origin !== ""` guard: an event with no sessionID but a metadata child
+ *  (the supported metadataChildOf fallback shape) stays on the string path
+ *  and the retry still fires. */
+test("empty-origin delivery with a metadata child still classifies as child output", async () => {
+  const { h, dispose, metricsDir } = await boot()
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      input: { agent: "test-runner" },
+      result: { output: "ran, no marker", metadata: { sessionID: "c1" } },
+    })
+    assert.equal(h.sessionPrompts.length, 1)
+    assert.ok(!journalEntries(metricsDir).some((l) => l.type === "violation"))
+  } finally {
+    dispose()
+  }
+})
+
+/** Unit assertions on classifyDelivery's origin rule: the incident payload is
+ *  parent-authored with empty text; child-keyed and empty-origin payloads
+ *  stay on the string path. */
+test("classifyDelivery applies the origin rule", async () => {
+  const { classifyDelivery } = await import("../src/delivery.ts")
+  const incident = classifyDelivery({
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner" },
+    result: {
+      output: "The subagent is working in the background (sessionID: ses_child123).",
+      metadata: { sessionID: "ses_child123" },
+    },
+  } as any)
+  assert.equal(incident.kind, "parent-authored")
+  assert.equal(incident.text, "")
+  assert.equal(incident.child, "ses_child123")
+  const childKeyed = classifyDelivery({
+    tool: "task",
+    sessionID: "c1",
+    input: { agent: "test-runner" },
+    result: { output: "ran, no marker" },
+  } as any)
+  assert.equal(childKeyed.kind, "string")
+  const emptyOrigin = classifyDelivery({
+    tool: "task",
+    input: { agent: "test-runner" },
+    result: { output: "ran, no marker", metadata: { sessionID: "c1" } },
+  } as any)
+  assert.equal(emptyOrigin.kind, "string")
+  assert.equal(emptyOrigin.child, "c1")
 })

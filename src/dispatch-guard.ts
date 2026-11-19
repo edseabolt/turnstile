@@ -24,6 +24,8 @@ import {
   maintenanceMarkerSensitive,
 } from "./maintenance.ts"
 import { BlockError } from "./gates.ts"
+import { sha256Hex16 } from "./chain.ts"
+import { evictTo } from "./bounded.ts"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { spawnSync } from "node:child_process"
@@ -56,7 +58,16 @@ export interface DispatchGuardState {
   /** Evicts oldest per-plan maintenance counters past the cap. */
   boundMaintenanceCounts(): void
   /** Journals one task/subagent dispatch entry (the canonical copy). */
-  recordDispatch(sessionID: string, agent: string, description: string, blocked: boolean): void
+  recordDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    blocked: boolean,
+    promptHash: string,
+  ): void
+  /** Dispatch stamp key (parent + agent) → sha256-16 of that dispatch's
+   *  prompt (delivery-time tamper check). */
+  dispatchPromptHashes: Map<string, string>
   /** Whether reactive enforcement is armed for the session's parent. */
   enforcementArmed(sessionID: string): boolean
   /** Journals one engagement transition row. */
@@ -74,7 +85,23 @@ export interface DispatchGuardState {
     agent: string,
     description: string,
     waived: boolean,
+    promptHash: string,
   ): boolean
+}
+
+/**
+ * The dispatch-prompt-hash stamp key: the dispatching parent joined with the
+ * resolved agent name. Keying by parent alone would let two concurrent
+ * dispatches (parallel task calls in one message) overwrite each other's
+ * stamp and cause a spurious tamper row on the first child's delivery; the
+ * agent name is available at both dispatch time (agentFromDispatchEvent) and
+ * delivery time (agentFromDeliveryEvent), so the pair disambiguates.
+ * @param sessionID The dispatching parent session.
+ * @param agent The resolved agent name.
+ * @returns The composite stamp key.
+ */
+export function dispatchStampKey(sessionID: string, agent: string): string {
+  return `${sessionID}\u0000${agent}`
 }
 
 /**
@@ -177,9 +204,10 @@ function allowDispatchBody(
   agent: string,
   description: string,
   waived: boolean,
+  promptHash: string,
 ): void {
   st.gates.countDispatch(sessionID, st.ledger, agent, waived)
-  st.recordDispatch(sessionID, agent, description, false)
+  st.recordDispatch(sessionID, agent, description, false, promptHash)
 }
 
 /**
@@ -478,17 +506,18 @@ async function guardExecutorDispatch(
   prompt: string,
   description: string,
   waived: boolean,
+  promptHash: string,
 ): Promise<boolean> {
   const maintenance = await classifyMaintenanceDispatchBody(st, sessionID, prompt)
   if (maintenance === "admit") {
-    allowDispatchBody(st, sessionID, agent, description, waived)
+    allowDispatchBody(st, sessionID, agent, description, waived, promptHash)
     return true
   }
   if (maintenance === "capped") {
     maintenanceCappedBlockBody(st, sessionID, st.ledger.state(sessionID).approvedPlan)
   }
   if (consumePlanGrantBody(st, sessionID, agent)) {
-    allowDispatchBody(st, sessionID, agent, description, waived)
+    allowDispatchBody(st, sessionID, agent, description, waived, promptHash)
     return true
   }
   await enforceExecutorGatesBody(st, sessionID, prompt)
@@ -511,6 +540,7 @@ function dormantDispatchArm(
   sessionID: string,
   agent: string,
   description: string,
+  promptHash: string,
 ): boolean {
   if (st.enforcementArmed(sessionID)) return false
   const s = st.ledger.state(sessionID)
@@ -521,7 +551,7 @@ function dormantDispatchArm(
     // armed enforcement is itself governed.
     return false
   }
-  allowDispatchBody(st, sessionID, agent, description, false)
+  allowDispatchBody(st, sessionID, agent, description, false, promptHash)
   if (agent === st.config.agents.reviewer) {
     // Symmetry with the engaged path: the ensemble counter and its journal
     // entry live outside countDispatch, so the dormant arm must count the
@@ -585,7 +615,10 @@ function planReviewPendingBlockBody(st: DispatchGuardState, sessionID: string): 
  * the reviewer evidence guard, and the executor branch — then the counters
  * advance and the dispatch entry is recorded at the admitted exit (a blocked
  * attempt draws down nothing; stamped `blocked:true` only on a deliberate
- * BlockError, which is re-thrown for the outer fail-open catch).
+ * BlockError, which is re-thrown for the outer fail-open catch). The
+ * dispatch prompt's sha256-16 is computed once here and threaded through
+ * every admit/block exit, and recorded per child for the delivery-time
+ * tamper check.
  * @param st The dispatch-guard state.
  * @param sessionID The dispatching session ID.
  * @param agent The resolved agent name.
@@ -600,8 +633,16 @@ async function guardedTaskDispatchBody(
   description: string,
 ): Promise<void> {
   let waived = false
+  const promptHash = sha256Hex16(prompt)
+  // Tamper-check anchor: record the dispatch prompt's hash keyed by parent
+  // + resolved agent so the delivery-time check (tool-hooks-after) can
+  // compare the echoed prompt through the child's resolved parent, and so
+  // two concurrent dispatches from one parent keep distinct stamps.
+  // Bounded like the other per-session maps.
+  st.dispatchPromptHashes.set(dispatchStampKey(sessionID, agent), promptHash)
+  evictTo(st.dispatchPromptHashes, st.config.maxSessions)
   try {
-    if (dormantDispatchArm(st, sessionID, agent, description)) return
+    if (dormantDispatchArm(st, sessionID, agent, description, promptHash)) return
     waived = dispatchBudgetBody(st, sessionID, agent)
     if (agent === st.config.agents.reviewer) reviewerDecisionRecheckBody(st, sessionID)
     // The user-review pause sits after the reviewer recheck and before the
@@ -614,14 +655,14 @@ async function guardedTaskDispatchBody(
     if (agent === st.config.agents.planReviewer) planReviewPauseFailOpen(st, sessionID)
     if (
       agent === st.config.agents.executor &&
-      (await guardExecutorDispatch(st, sessionID, agent, prompt, description, waived))
+      (await guardExecutorDispatch(st, sessionID, agent, prompt, description, waived, promptHash))
     ) {
       return
     }
     if (agent === st.config.agents.planner) planReviewArmFailOpen(st, sessionID)
-    allowDispatchBody(st, sessionID, agent, description, waived)
+    allowDispatchBody(st, sessionID, agent, description, waived, promptHash)
   } catch (e) {
-    if (st.dispatchBlockOutcome(e, sessionID, agent, description, waived)) return
+    if (st.dispatchBlockOutcome(e, sessionID, agent, description, waived, promptHash)) return
     throw e
   }
 }
@@ -672,13 +713,19 @@ export function createDispatchGuard(st: DispatchGuardState): {
     prompt: string,
     description: string,
   ): Promise<void>
-  allowDispatch(sessionID: string, agent: string, description: string, waived: boolean): void
+  allowDispatch(
+    sessionID: string,
+    agent: string,
+    description: string,
+    waived: boolean,
+    promptHash: string,
+  ): void
 } {
   return {
     handleTaskDispatch: (event) => handleTaskDispatchBody(st, event),
     guardedTaskDispatch: (sessionID, agent, prompt, description) =>
       guardedTaskDispatchBody(st, sessionID, agent, prompt, description),
-    allowDispatch: (sessionID, agent, description, waived) =>
-      allowDispatchBody(st, sessionID, agent, description, waived),
+    allowDispatch: (sessionID, agent, description, waived, promptHash) =>
+      allowDispatchBody(st, sessionID, agent, description, waived, promptHash),
   }
 }

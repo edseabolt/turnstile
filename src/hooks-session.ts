@@ -35,7 +35,11 @@ interface SessionHookBodies {
 export function createSessionHooks(ctx: TurnstileContext): SessionHookBodies {
   return {
     prompt(properties: PromptHookProperties): void {
-      sessionPromptBody(ctx, properties)
+      try {
+        sessionPromptBody(ctx, properties)
+      } catch (e) {
+        ctx.journaler.journal({ type: "error", error: `prompt hook: ${e}` })
+      }
     },
     generate(draft: GenerateDraft): void {
       try {

@@ -11,7 +11,7 @@ tamper evidence. The state-machine view lives in
 | Section                                         | File                                             |
 | ----------------------------------------------- | ------------------------------------------------ |
 | File layout                                     | [journal/file-layout.md](journal/file-layout.md) |
-| Entry-type catalog (43 types)                   | [journal/entry-types.md](journal/entry-types.md) |
+| Entry-type catalog (44 types)                   | [journal/entry-types.md](journal/entry-types.md) |
 | Rotation and per-session sinks                  | [journal/rotation.md](journal/rotation.md)       |
 | Replay on restart                               | [journal/replay.md](journal/replay.md)           |
 | Tamper evidence: the hash chain                 | [journal/chain.md](journal/chain.md)             |

@@ -35,6 +35,8 @@ function segmentedJournaler(opts?: {
     trace: false,
     maxBytes: opts?.maxBytes ?? 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: opts?.rotateEveryEntries ?? 512,
     perSession: opts?.perSession ?? true,
     sinkFor: opts?.sinkFor ?? ((sid) => (sid === "p1" ? "p1" : "")),
@@ -103,6 +105,8 @@ test("perSession on without a resolver falls back to shared sink", () => {
     trace: false,
     maxBytes: 5 * 1024 * 1024,
     maxGenerations: 5,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
     perSession: true,
   })

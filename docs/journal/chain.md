@@ -10,13 +10,23 @@ the canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
 dependencies). Editing, deleting, or reordering any row breaks every hash
 after it.
 
+One class of rows is deliberately unchained, defined by origin, not
+payload: the rows written from inside the chained path itself, in
+`src/journal.ts` (`journalLockError`, the degraded-append warning) and
+`src/journal-sinks.ts` (`tickRotate`'s `rotation-lock-stale:` row), when
+that path is degraded. Chaining them would recurse — the chained append is
+what failed. Ledger-side rows whose payload happens to begin with
+`journal-lock:` (for example the approval-lock error row) are NOT in this
+class: they are written from `src/ledger.ts` and are chained like every
+other ledger row.
+
 Epochs batch the chain for verification and
-[anchoring](anchors.md): every `epochEntries`
-data rows (default 512, matching the rotation cadence) the journaler
+[anchoring](anchors.md). Every `epochEntries`
+data rows (default 512, matching the rotation cadence), the journaler
 appends a `chain-epoch` row, itself chained like any other, carrying
-`{source, epoch, count, root, head}` where `root` is the Merkle root over
+`{source, epoch, count, root, head}`. The `root` is the Merkle root over
 the epoch's data-row hashes (pairwise `sha256(a + b)`, an odd trailing node
-hashed with itself, the single survivor hashed with itself once more) and
+hashed with itself, the single survivor hashed with itself once more). The
 `head` is the epoch's last data-row hash. Two more entry types ride the
 chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
 verdict; verification is described below, anchor sinks in
@@ -32,11 +42,11 @@ committed index in the surviving generations, so a `source#epoch` ref
 identity is stable for the anchor cross-check. When rotation has pruned
 generations (the oldest surviving file is a numbered generation other than
 `.1`), its first chained row folds as a **trust root**: its `prevHash`
-points into a pruned generation, so the prevHash continuity check is waived
+points into a pruned generation. The prevHash continuity check is waived
 for that row only (its own hash and a plausible `seq` are still verified).
 When `tamperEvidence.verifyOnSessionEnd` is `true` (default `false`), the
 session-idle handler runs it once per session and journals the
-`chain-verify` verdict, toasting on failure, which shrinks the detection
+`chain-verify` verdict, toasting on failure. That shrinks the detection
 window from "whenever someone runs the CLI" to one session. The same check
 is available offline: `opencode-turnstile prov --verify` folds the chain
 and verifies the epoch refs against the configured sinks, exiting 0 on an
@@ -45,6 +55,44 @@ and 2 on usage errors.
 
 Row-level inclusion proofs (`prov --verify --session <id>`) are described in
 [anchors.md](anchors.md).
+
+**Cross-process append locking.** Two OpenCode instances sharing a metrics
+dir append to the same journal files. Without coordination, both could read
+the same chain tail and both append — a forked chain (two rows with the
+same `seq` and `prevHash`), which the verify fold reports as broken. The
+append path closes that window (`src/lockfile.ts`, `src/journal.ts`):
+
+- Every chained append runs inside an advisory mkdir mutex at
+  `<journal>.lock` (`withFileLock`), and the chain head is **re-read from
+  disk inside the critical section** — the disk tail inside the lock is the
+  only trusted chain head; the in-process `FamilyChain` is a cache,
+  revalidated on every append.
+- **One lock at a time.** No code path holds two `<file>.lock` mutexes at
+  once: the append lock is acquired and released entirely within the
+  chained append, and rotation's lock is taken only after the append has
+  returned. No deadlock by construction.
+- **Bounds.** A lock older than 10 s (append) or 60 s (rotation) is stale —
+  its holder crashed — and is stolen once; the steal is journaled
+  (`journal-lock: stale lock stolen:` for appends,
+  `rotation-lock-stale:` for rotation). Acquisition retries are bounded
+  (1 s for appends; rotation makes a single attempt).
+- **Fail-open degradation.** When the lock cannot be acquired within the
+  bound, the append proceeds unlocked (the pre-lock resync-then-append
+  sequence) and journals one `journal-lock: append lock unavailable:` error
+  row. No append is ever blocked or dropped; the race window is narrowed,
+  not closed, and the degradation is visible. The durable approved-plan
+  sidecar uses the same protocol (`journal-lock: approval lock unavailable:`
+  on degradation), with an in-lock re-read that folds a concurrent host's
+  records into both memory and any compaction rewrite.
+- **Follow-up.** If a fork is ever detected in the wild (the lock protocol
+  proving insufficient — a stolen live lock, an NFS edge case), the
+  escalation path is per-writer partitioned journal files with a
+  cross-writer linkage field: that turns a fork into a detectable event
+  instead of a prevented one, at the cost of a larger replay and verify
+  change. It is deliberately not implemented now.
+
+Unchained rows (tamper evidence off, the default) are not locked: the
+defect is chain forking, which only exists under tamper evidence.
 
 **Differential characterization** (integration-tested in
 `tests/tamper-matrix.test.ts`): for each mutation of a captured honest
@@ -108,7 +156,7 @@ One deletion caveat remains: because pruning makes the oldest surviving
 generation's first row a trust root, deleting the oldest generations resets
 the chain root, the same trust domain as deleting the journal outright. And
 verify over an empty or wholly deleted journal with an empty anchor store
-is vacuously ok: absence of rows is not evidence of integrity, which is why
+is vacuously ok: absence of rows is not evidence of integrity. That is why
 the anchors live in a second file (or sink domain) that still names the
 epochs the deleted journal should have contained. With anchors retained,
 that deletion is exactly what the absence check reports.

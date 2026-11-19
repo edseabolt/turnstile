@@ -130,7 +130,14 @@ test("a blocked reviewer dispatch journals dispatch and blocked rows with exact 
   )
   const dispatch = entriesOfType(metricsDir, "dispatch")
   assert.deepEqual(dispatch, [
-    { type: "dispatch", sessionID: "p1", agent: "reviewer", description: "", blocked: true },
+    {
+      type: "dispatch",
+      sessionID: "p1",
+      agent: "reviewer",
+      description: "",
+      promptHash: dispatch[0]!.promptHash,
+      blocked: true,
+    },
   ])
   assert.deepEqual(entriesOfType(metricsDir, "blocked"), [
     {
@@ -252,6 +259,12 @@ test("a task dispatch through the dispatch guard journals the allowed dispatch r
     input: { agent: "planner", prompt: "plan" },
   } as any)
   assert.deepEqual(entriesOfType(metricsDir, "dispatch"), [
-    { type: "dispatch", sessionID: "p1", agent: "planner", description: "" },
+    {
+      type: "dispatch",
+      sessionID: "p1",
+      agent: "planner",
+      description: "",
+      promptHash: entriesOfType(metricsDir, "dispatch")[0]!.promptHash,
+    },
   ])
 })

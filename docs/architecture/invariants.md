@@ -13,9 +13,9 @@
   are inert. Waiver scope is literal configured stage names, not intent
   parsing: the configured agent names named in the waiver text scope it to
   those stages' gates (the plan gate is covered by either the plan-reviewer
-  or executor name); an unscoped waiver covers every gate but the reviewer
-  gate consumes it on the first dispatch it unlocks, and a scoped waiver
-  stays live until that stage's waiver allowance is spent, metered separately
+  or executor name). An unscoped waiver covers every gate, but the reviewer
+  gate consumes it on the first dispatch it unlocks; a scoped waiver stays
+  live until that stage's waiver allowance is spent, metered separately
   from the ordinary dispatch caps. The family rides the same one-prompt
   replay grace (a restart resume or a `continuationCarry` re-admission) and
   is otherwise dropped on a new prompt. One exception to "covers every

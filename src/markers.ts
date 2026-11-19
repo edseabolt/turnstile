@@ -10,7 +10,7 @@
  * events byte-identical to legacy output).
  */
 
-import type { MarkerNearMiss, TaskInput } from "./types.ts"
+import type { MarkerNearMiss, TaskInput, TurnstileConfig } from "./types.ts"
 
 // `export const` keeps the regex literals load-bearing for
 // scripts/check-markers.mjs, which extracts them by name and asserts the
@@ -203,6 +203,42 @@ export function deltaWindowFloorChars(gateSource: string, verdictSource: string)
 }
 
 /**
+ * Finds marker matches present in the pre-truncation buffer but no longer
+ * fully inside the surviving window — a match whose start was tail-sliced
+ * away — and never seen complete in the previous window. The previous-window
+ * filter keeps the diagnostic honest in streaming: a marker already fully
+ * inside the window at an earlier fold was credited then, so a later fold
+ * tail-slicing it out is not a truncation. Pure; each regex is defensively
+ * cloned with the `g` flag, so a non-global regex cannot make `matchAll`
+ * throw. Empty when the window was not truncated or nothing new was cut.
+ * @param buffer The window text before tail-slicing.
+ * @param window The surviving window text after tail-slicing.
+ * @param previousWindow The window text before the delta that triggered this
+ *     fold (a prefix of `buffer`); matches fully inside it are already seen.
+ * @param res The marker regexes to probe.
+ * @returns The truncated match texts, first-seen order, deduped.
+ */
+export function findTruncatedMarkerSpans(
+  buffer: string,
+  window: string,
+  previousWindow: string,
+  ...res: RegExp[]
+): string[] {
+  if (window.length >= buffer.length) return []
+  const cut = buffer.length - window.length
+  const found: string[] = []
+  for (const re of res) {
+    const global = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`)
+    for (const match of buffer.matchAll(global)) {
+      if (match.index === undefined || match.index >= cut) continue
+      if (match.index + match[0].length <= previousWindow.length) continue
+      if (!found.includes(match[0])) found.push(match[0])
+    }
+  }
+  return found
+}
+
+/**
  * Escapes one space-separated word of a marker literal for embedding in a
  * RegExp source, neutralizing the metacharacters `[.*+?^${}()|[\]\\]` so a
  * custom literal cannot throw at compile time.
@@ -313,6 +349,61 @@ export function formatNearMissDiagnostics(
  */
 export function agentFromTaskInput(input: TaskInput | undefined | null): string {
   return String(input?.subagent_type ?? input?.agent ?? input?.subagent ?? "")
+}
+
+/** Chars of the child's prior delivery quoted in the retry prompt. */
+const TAIL_CHARS = 600
+
+/** Marker the given agent's role owes: GATE for the test-runner,
+ *  VERDICT for the reviewers; unknown agents get both examples. */
+function markerExampleOf(agents: TurnstileConfig["agents"], agent: string): string {
+  if (agent === agents.testRunner) return `\`${CANONICAL_GATE_MARKER}\``
+  if (agent === agents.reviewer || agent === agents.planReviewer)
+    return `\`${CANONICAL_VERDICT_MARKER}\``
+  return `\`${CANONICAL_GATE_MARKER}\` (test-runner) or \`${CANONICAL_VERDICT_MARKER}\` (reviewer)`
+}
+
+/** Bounded tail of the child's prior delivery, quoted in the retry prompt so
+ *  the restatement is mechanical. Any GATE/VERDICT marker line is stripped
+ *  first (the compiled config regexes — the single marker matcher): quoting a
+ *  marker line is what made the prompt read as a pre-supplied marker with
+ *  counts. Empty when the stripped tail trims to nothing. */
+function priorOutputTail(gateRe: RegExp, verdictRe: RegExp, priorOutput: string): string {
+  const stripped = priorOutput
+    .split("\n")
+    .filter((line) => line.match(gateRe) === null && line.match(verdictRe) === null)
+    .join("\n")
+    .slice(-TAIL_CHARS)
+    .trim()
+  return stripped === ""
+    ? ""
+    : ` The end of your previous reply, for reference:\n\`\`\`\n${stripped}\n\`\`\``
+}
+
+/** Retry prompt telling the child its output was received and parsed,
+ *  so it restates only the marker plus its existing conclusion. The counts
+ *  clause points at the child's own recorded results — never at the quoted
+ *  tail, which no longer carries marker lines to copy counts from. Exported
+ *  for the marker-stripping unit tests (the bare-output path can never
+ *  deliver a marker-bearing tail, so the stripping arms are only reachable
+ *  here — defense in depth against a future second call site). */
+export function markerRetryPrompt(
+  agents: TurnstileConfig["agents"],
+  agent: string,
+  gateRe: RegExp,
+  verdictRe: RegExp,
+  priorOutput: string,
+): string {
+  return (
+    "[turnstile] Your output was received and parsed. Your analysis is " +
+    "complete. Restate only the marker that records the conclusion you " +
+    "already reached; if your analysis produced counts, recompute them from " +
+    "your own recorded results — never invent or estimate counts. Do not " +
+    "start new work. Reply with only the required marker as the first line, " +
+    "followed by your existing conclusion. Your marker: " +
+    `${markerExampleOf(agents, agent)}.` +
+    priorOutputTail(gateRe, verdictRe, priorOutput)
+  )
 }
 
 export { parseGateMarkers } from "./gate-markers-parse.ts"

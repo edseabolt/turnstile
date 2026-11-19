@@ -47,6 +47,8 @@ function bootGates(): {
     trace: false,
     maxBytes: 1e6,
     maxGenerations: 1,
+
+    archiveGenerations: 0,
     rotateEveryEntries: 512,
   })
   return { gates: createGates(CONFIG, journaler), ledger }
