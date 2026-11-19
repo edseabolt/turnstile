@@ -10,6 +10,16 @@ the canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
 dependencies). Editing, deleting, or reordering any row breaks every hash
 after it.
 
+One class of rows is deliberately unchained, defined by origin, not
+payload: the rows written from inside the chained path itself, in
+`src/journal.ts` (`journalLockError`, the degraded-append warning) and
+`src/journal-sinks.ts` (`tickRotate`'s `rotation-lock-stale:` row), when
+that path is degraded. Chaining them would recurse — the chained append is
+what failed. Ledger-side rows whose payload happens to begin with
+`journal-lock:` (for example the approval-lock error row) are NOT in this
+class: they are written from `src/ledger.ts` and are chained like every
+other ledger row.
+
 Epochs batch the chain for verification and
 [anchoring](anchors.md). Every `epochEntries`
 data rows (default 512, matching the rotation cadence), the journaler

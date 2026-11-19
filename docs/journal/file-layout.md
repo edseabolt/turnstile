@@ -55,7 +55,9 @@
 
   The first legacy match is transparently re-keyed to the current scheme:
   in-memory, sidecar append, and one replay-inert `plan-rekey` journal row
-  with `reason: "durable-key-scheme"`. A record matching neither key leaves
+  with `reason: "durable-key-scheme"` (chained through the journaler on a
+  journaler-backed ledger; under per-session segmentation it routes to the
+  owning session's sink). A record matching neither key leaves
   the plan pending with cause `durable-key-stale`: the enforcing dispatch
   journals the blocked row with that reason and a recovery message (one
   re-approval re-keys it) instead of the `no-plan-verdict` never-approved
