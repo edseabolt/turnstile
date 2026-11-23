@@ -55,6 +55,7 @@ const NON_EMPTY_STRING_KEYS: readonly (keyof TurnstileConfig)[] = [
  *  Definitive: a non-matching value is rejected outright. */
 const LITERAL_KEYS: Partial<Record<keyof TurnstileConfig, readonly string[]>> = {
   sessionSummary: ["on", "quiet", "off"],
+  tokenUsage: ["off", "summary", "per-message"],
   escalation: ["ask", "block"],
 }
 

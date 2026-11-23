@@ -173,6 +173,11 @@
       "enum": ["on", "quiet", "off"],
       "description": "Session-end summary surface: quiet (default) prints one recap line at session.idle for sessions that did something (silent for zero-activity sessions); on also prints an all-gates-green line for zero-activity sessions; off disables the surface entirely."
     },
+    "tokenUsage": {
+      "type": "string",
+      "enum": ["off", "summary", "per-message"],
+      "description": "Token-usage journaling surface: summary (default) accumulates completed assistant-turn usage in memory and journals one token-usage rollup row per session at session.idle; per-message journals one row per completed assistant turn; off disables the surface entirely."
+    },
     "agents": {
       "type": "object",
       "additionalProperties": false,

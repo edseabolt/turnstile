@@ -32,6 +32,7 @@ import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
 import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
 import { createLedger, type GateLedger } from "./ledger.ts"
+import type { TokenUsageTotals } from "./token-usage.ts"
 import { createContextSurface, type ContextSurfaceFlags } from "./context-surface.ts"
 import { createParentResolution } from "./parent-resolution.ts"
 import { createVerdictCapture } from "./verdict-capture.ts"
@@ -165,6 +166,10 @@ export interface TurnstileContext {
   admittedIds: Set<string>
   /** Sessions already given their one session-end summary (per host process). */
   summarizedSessions: Set<string>
+  /** Assistant message IDs already counted for token usage (per-message dedup). */
+  tokenUsageSeen: Set<string>
+  /** Per-session token/cost accumulator for the summary-mode rollup. */
+  tokenUsageTotals: Map<string, TokenUsageTotals>
   // ── constants ─────────────────────────────────────────────────────────────
   /** Cap on parents holding pending near-miss diagnostics. */
   maxTrackedNearMiss: number
@@ -235,6 +240,8 @@ export interface TurnstileContext {
   boundAdmittedIds(): void
   /** Evicts oldest keys from summarizedSessions past the cap. */
   boundSummarizedSessions(): void
+  /** Evicts the token-usage dedup set and accumulator past the session cap. */
+  boundTokenUsage(): void
   // ── services ──────────────────────────────────────────────────────────────
   /** Surfaces config warnings once into the first tool delivery. */
   surfaceConfigWarnings(event: ToolHookEvent): void
@@ -466,6 +473,8 @@ interface CoreState {
   admittedIds: Set<string>
   maxTrackedAdmittedIds: number
   summarizedSessions: Set<string>
+  tokenUsageSeen: Set<string>
+  tokenUsageTotals: Map<string, TokenUsageTotals>
   maintenanceCounts: Map<string, number>
   maxTrackedMaintenancePlans: number
   config: TurnstileConfig
@@ -673,6 +682,8 @@ interface CoreState {
   boundAdmittedIds(): void
   /** See {@link boundSummarizedSessions}. */
   boundSummarizedSessions(): void
+  /** See {@link boundTokenUsage}. */
+  boundTokenUsage(): void
   /** See {@link boundMaintenanceCounts}. */
   boundMaintenanceCounts(): void
   /** See {@link bindToast}. */
@@ -1474,6 +1485,12 @@ function boundSummarizedSessions(st: CoreState): void {
   evictTo(st.summarizedSessions, st.config.maxSessions)
 }
 
+/** Evicts the token-usage dedup set and accumulator past the session cap. */
+function boundTokenUsage(st: CoreState): void {
+  evictTo(st.tokenUsageSeen, st.config.maxSessions)
+  evictTo(st.tokenUsageTotals, st.config.maxSessions)
+}
+
 function boundMaintenanceCounts(st: CoreState): void {
   evictTo(st.maintenanceCounts, st.maxTrackedMaintenancePlans)
 }
@@ -1784,6 +1801,12 @@ function buildCoreSummaryMaps(st: CoreState): void {
   // Bounded like the admitted-id set (cap = maxSessions, the same LRU bound
   // the ledger uses; a session that idled once never fires again).
   st.summarizedSessions = new Set<string>()
+
+  // Token-usage journaling state: the per-message dedup set and the
+  // per-session summary-mode accumulator. In-memory only, bounded like the
+  // summary dedupe (cap = maxSessions) via boundTokenUsage.
+  st.tokenUsageSeen = new Set<string>()
+  st.tokenUsageTotals = new Map<string, TokenUsageTotals>()
 }
 
 function buildCoreDispatchMaps(st: CoreState): void {
@@ -2058,6 +2081,7 @@ function bindCoreBounders(st: CoreState): void {
   st.boundLandingGateAsks = boundLandingGateAsks.bind(null, st)
   st.boundAdmittedIds = boundAdmittedIds.bind(null, st)
   st.boundSummarizedSessions = boundSummarizedSessions.bind(null, st)
+  st.boundTokenUsage = boundTokenUsage.bind(null, st)
   st.boundMaintenanceCounts = boundMaintenanceCounts.bind(null, st)
 }
 
@@ -2245,6 +2269,8 @@ type CoreMapViews = Pick<
   | "sessionAgents"
   | "admittedIds"
   | "summarizedSessions"
+  | "tokenUsageSeen"
+  | "tokenUsageTotals"
 >
 
 function coreMapViews(st: CoreState): CoreMapViews {
@@ -2272,6 +2298,8 @@ function coreMapViews(st: CoreState): CoreMapViews {
     sessionAgents: st.sessionAgents,
     admittedIds: st.admittedIds,
     summarizedSessions: st.summarizedSessions,
+    tokenUsageSeen: st.tokenUsageSeen,
+    tokenUsageTotals: st.tokenUsageTotals,
   }
 }
 
@@ -2341,6 +2369,7 @@ type CoreBounderViews = Pick<
   | "boundLandingGateAsks"
   | "boundAdmittedIds"
   | "boundSummarizedSessions"
+  | "boundTokenUsage"
 >
 
 function coreBounderViews(st: CoreState): CoreBounderViews {
@@ -2360,6 +2389,7 @@ function coreBounderViews(st: CoreState): CoreBounderViews {
     boundLandingGateAsks: st.boundLandingGateAsks,
     boundAdmittedIds: st.boundAdmittedIds,
     boundSummarizedSessions: st.boundSummarizedSessions,
+    boundTokenUsage: st.boundTokenUsage,
   }
 }
 
