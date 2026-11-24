@@ -28,6 +28,10 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
+// Shared journal-read helpers (plain ESM sibling): the generation walker (with
+// the gzip-archive walk CLI surfaces do) and the cross-sink dedupe/parse —
+// imported once here rather than re-implemented (DRY).
+import { dedupeSinks, parseLine, readFileGenerations } from "./journal-read.mjs"
 
 const USAGE = `Usage: opencode-turnstile status [--json] [--check-updates]
 
@@ -322,33 +326,6 @@ function resolveConfig(env) {
     replayTailLines: resolveReplayTailLines(config?.replayTailLines),
     observeSessions: resolveObserveSessions(config?.observeSessions),
   }
-}
-
-/**
- * Reads one journal file family (the current file plus its rotated
- * generations) as oldest-first blocks: a newest-first walk over `file`, then
- * `.1`, `.2`, … (stopping at the first missing generation — a missing
- * current file is the post-rotation state, so the walk starts at `.1`),
- * stopping once the collected lines satisfy the tail bound. Silently
- * tolerates missing generations.
- * @param {string} file Absolute path of the current journal file.
- * @param {number} tailLines The per-file tail bound in lines to keep.
- * @returns {{ name: string, lines: string[] }[]} The blocks, oldest-first.
- */
-function readFileGenerations(file, tailLines) {
-  const blocks = []
-  let generation = fs.existsSync(file) ? 0 : 1
-  for (;;) {
-    const gen = generation === 0 ? file : `${file}.${generation}`
-    if (!fs.existsSync(gen)) break
-    blocks.unshift({
-      name: path.basename(gen),
-      lines: fs.readFileSync(gen, "utf8").split("\n").filter(Boolean),
-    })
-    if (blocks.reduce((total, b) => total + b.lines.length, 0) >= tailLines) break
-    generation++
-  }
-  return blocks
 }
 
 /**
@@ -664,6 +641,149 @@ function aggregate(lines) {
   return { sessions, observe, rekeys }
 }
 
+/** The token-count fields a `token-usage` row carries (cost sits beside them). */
+const TOKEN_FIELDS = ["input", "output", "reasoning", "cacheRead", "cacheWrite"]
+
+/**
+ * Coerces a raw token/cost field to a number: a missing, non-numeric, or
+ * non-finite value is 0 (a malformed row renders zeros, it is not dropped).
+ * @param {unknown} v The raw field value.
+ * @returns {number} The numeric value, or 0.
+ */
+function numOr0(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0
+}
+
+/**
+ * Fresh zeroed token totals (the five token counts plus host-computed cost).
+ * @returns {Record<string, number>} The zeroed totals.
+ */
+function zeroTokenTotals() {
+  return { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }
+}
+
+/**
+ * Adds one `token-usage` row's tokens and cost into a totals accumulator.
+ * @param {Record<string, number>} into The accumulator to add into.
+ * @param {Record<string, unknown>} e The parsed `token-usage` row.
+ * @returns {Record<string, number>} The accumulator.
+ */
+function addTokenRow(into, e) {
+  const tokens = e.tokens && typeof e.tokens === "object" ? e.tokens : {}
+  for (const k of TOKEN_FIELDS) into[k] += numOr0(tokens[k])
+  into.cost += numOr0(e.cost)
+  return into
+}
+
+/**
+ * Filters raw journal lines to `token-usage` rows, deduped across sinks (a
+ * row parent-keyed into a session sink can also sit in the shared file; the
+ * full-line identity dedupe counts it once).
+ * @param {string[]} lines Raw journal lines from all walked sinks.
+ * @returns {Record<string, unknown>[]} The parsed token-usage rows.
+ */
+function tokenRowsOf(lines) {
+  return dedupeSinks(lines)
+    .map(parseLine)
+    .filter((e) => e !== null && e.type === "token-usage")
+}
+
+/**
+ * Folds token-usage rows per source session: each session keeps its
+ * per-message sum and its session-rollup sum separately, so the caller can
+ * prefer the rollup (a per-message session also flushes a rollup at
+ * `session.idle` — counting both would double-count). The last seen
+ * `parentID` wins (it is constant per session).
+ * @param {Record<string, unknown>[]} rows Parsed token-usage rows.
+ * @returns {Map<string, { rollup: Record<string, number>, perMessage: Record<string, number>, hasRollup: boolean, parentID: string }>}
+ *     sessionID → per-source totals and parent.
+ */
+function sessionTokensOf(rows) {
+  const acc = new Map()
+  for (const e of rows) {
+    const sid = typeof e.sessionID === "string" && e.sessionID ? e.sessionID : ""
+    if (sid === "") continue
+    let a = acc.get(sid)
+    if (!a) {
+      a = {
+        rollup: zeroTokenTotals(),
+        perMessage: zeroTokenTotals(),
+        hasRollup: false,
+        parentID: "",
+      }
+      acc.set(sid, a)
+    }
+    if (typeof e.parentID === "string" && e.parentID) a.parentID = e.parentID
+    if (e.event === "session-rollup") {
+      a.hasRollup = true
+      addTokenRow(a.rollup, e)
+    } else {
+      addTokenRow(a.perMessage, e)
+    }
+  }
+  return acc
+}
+
+/**
+ * Groups per-session token totals by task root: each session counts once,
+ * from its rollup when it flushed one, else from its per-message rows; a
+ * session without a `parentID` groups under its own sessionID. Also folds
+ * the grand total.
+ * @param {Map<string, { rollup: Record<string, number>, perMessage: Record<string, number>, hasRollup: boolean, parentID: string }>} sessionAcc
+ *     sessionID → per-source totals and parent (from sessionTokensOf).
+ * @returns {{ byParent: Map<string, Record<string, number>>, total: Record<string, number> }}
+ *     parentID → `{ sessions, ...totals }`, plus the grand total.
+ */
+function groupByParent(sessionAcc) {
+  const byParent = new Map()
+  const total = zeroTokenTotals()
+  for (const [sid, a] of sessionAcc) {
+    const parent = a.parentID !== "" ? a.parentID : sid
+    let entry = byParent.get(parent)
+    if (!entry) {
+      entry = { sessions: 0, ...zeroTokenTotals() }
+      byParent.set(parent, entry)
+    }
+    const totals = a.hasRollup ? a.rollup : a.perMessage
+    entry.sessions++
+    for (const k of [...TOKEN_FIELDS, "cost"]) {
+      entry[k] += totals[k]
+      total[k] += totals[k]
+    }
+  }
+  return { byParent, total }
+}
+
+/**
+ * Builds the `tokenUsage` JSON block from raw token-usage rows.
+ * @param {Record<string, unknown>[]} rows Parsed token-usage rows.
+ * @returns {{ byParent: Record<string, Record<string, number>>, total: Record<string, number> }}
+ *     The rollup block (byParent keyed by parentID).
+ */
+function buildTokenUsage(rows) {
+  const { byParent, total } = groupByParent(sessionTokensOf(rows))
+  return { byParent: Object.fromEntries(byParent), total }
+}
+
+/**
+ * Renders the table-mode token rollup: one line per task root plus a total
+ * line, token counts raw and cost with four decimals.
+ * @param {{ byParent: Record<string, Record<string, number>>, total: Record<string, number> }} tokenUsage
+ *     The rollup block (from buildTokenUsage).
+ * @returns {string} The rollup lines, newline-joined.
+ */
+function renderTokenLines(tokenUsage) {
+  const fmt = (t) =>
+    `in ${t.input} out ${t.output} reason ${t.reasoning} cacheR ${t.cacheRead} ` +
+    `cacheW ${t.cacheWrite}  $${t.cost.toFixed(4)}`
+  const out = []
+  for (const [parent, t] of Object.entries(tokenUsage.byParent)) {
+    out.push(`tokens: ${fmtSession(parent)}  ${fmt(t)}`)
+  }
+  out.push(`tokens: total  ${fmt(tokenUsage.total)}`)
+  return out.join("\n")
+}
+
 /**
  * Truncates a session ID for a table cell (JSON keeps the full ID).
  * @param {string} id The raw session ID.
@@ -927,13 +1047,26 @@ async function main(argv) {
     base.sessions[id] = a
   }
 
+  const tokenRows = tokenRowsOf(lines)
+  const tokenUsage = tokenRows.length > 0 ? buildTokenUsage(tokenRows) : null
+
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
   if (flags.json) {
     process.stdout.write(
-      `${JSON.stringify({ ...base, ...(update ? { update } : {}), ...(advisory ? { advisories: [advisory] } : {}) }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          ...base,
+          ...(tokenUsage ? { tokenUsage } : {}),
+          ...(update ? { update } : {}),
+          ...(advisory ? { advisories: [advisory] } : {}),
+        },
+        null,
+        2,
+      )}\n`,
     )
   } else {
     let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
+    if (tokenUsage) table += `\n${renderTokenLines(tokenUsage)}`
     if (update) {
       const line = updateLineText(update)
       if (line) table += `\n${line}`
