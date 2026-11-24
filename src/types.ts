@@ -230,6 +230,14 @@ export interface EventProperties {
    * `payload.text` is parsed for markers.
    */
   item?: { type?: unknown; payload?: { text?: unknown; metadata?: unknown } }
+  /**
+   * Full message snapshot carried by `message.updated` (assistant and user
+   * turns, parent and child sessions). Untyped by the host contract this
+   * plugin relies on, hence `unknown`; `src/token-usage.ts` reads
+   * `role`, `id`, `modelID`, `providerID`, `tokens`, `cost`, `finish`, and
+   * `time.completed` against runtime guards and fails open when absent.
+   */
+  info?: unknown
 }
 
 /** A single host stream event delivered by `event.subscribe`. */
@@ -952,6 +960,16 @@ export interface TurnstileConfig {
    * `src/hooks-events.ts`.
    */
   sessionSummary: "on" | "quiet" | "off"
+  /**
+   * Token-usage journaling surface. `summary` (default) accumulates
+   * completed assistant-turn usage in memory and journals one
+   * `token-usage` rollup row per session at `session.idle`; `per-message`
+   * journals one row per completed assistant turn as it completes;
+   * `off` disables the surface entirely (no rows, no accumulation). See
+   * `src/token-usage.ts` and the `message.updated` / `session.idle`
+   * handlers in `src/event-stream-handlers.ts`.
+   */
+  tokenUsage: "off" | "summary" | "per-message"
   /**
    * Repeat-attempt escalation mode for the landing and hands-on gates.
    * Both modes are ask-first: an armed repeat

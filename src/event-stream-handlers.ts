@@ -33,6 +33,7 @@ import {
 } from "./summary.ts"
 import type { EventProperties } from "./types.ts"
 import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
+import { addTotals, extractUsage, zeroTotals } from "./token-usage.ts"
 
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 export type EventHandler = (properties: EventProperties) => void | Promise<void>
@@ -806,6 +807,9 @@ async function handleSessionIdle(
   // The chain verify is independent of the summary setting: it runs once per
   // session even when sessionSummary is "off".
   await runSessionEndVerify(ctx, sid)
+  // The token-usage rollup is independent of the summary setting: it flushes
+  // once per session even when sessionSummary is "off" or quiet-inactive.
+  if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
   if (ctx.config.sessionSummary === "off") return
   const counts = countSessionActivity(readJournalEntries(ctx.journaler.journalPath), sid)
   const inactive = isInactive(counts)
@@ -820,6 +824,77 @@ async function handleSessionIdle(
     text: line.slice(0, SUMMARY_TEXT_BOUND),
   })
   await deliverToast(ctx, line)
+}
+
+/**
+ * Journals the summary-mode token-usage rollup for a session and clears its
+ * accumulator. Called from `handleSessionIdle` before the `sessionSummary`
+ * early returns so the rollup flushes on every idle regardless of the
+ * summary setting. The idle dedupe guard makes this once per session per
+ * host process; an empty accumulator journals nothing.
+ * @param ctx The shared per-setup context.
+ * @param sid The idling session's ID.
+ */
+function flushTokenUsageRollup(ctx: TurnstileContext, sid: string): void {
+  const totals = ctx.tokenUsageTotals.get(sid)
+  if (!totals) return
+  ctx.journaler.journal({
+    type: "token-usage",
+    event: "session-rollup",
+    sessionID: sid,
+    parentID: ctx.ledger.childToParent.get(sid) ?? sid,
+    tokens: {
+      input: totals.input,
+      output: totals.output,
+      reasoning: totals.reasoning,
+      cacheRead: totals.cacheRead,
+      cacheWrite: totals.cacheWrite,
+    },
+    cost: totals.cost,
+  })
+  ctx.tokenUsageTotals.delete(sid)
+}
+
+/**
+ * Handles `message.updated`: on a completed assistant snapshot, journals a
+ * `token-usage` row (`per-message` mode) or merges the turn into the
+ * per-session accumulator (`summary` mode, journaled as one rollup row at
+ * `session.idle`). Snapshots dedup by message ID so only the final completed
+ * update of a turn counts. `parentID` resolves via the `childToParent` map
+ * (own ID for parent sessions) so every row groups by task root. Fail-open —
+ * the outer consume loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties): void {
+  if (ctx.config.tokenUsage === "off") return
+  const usage = extractUsage(properties.info)
+  if (!usage) return
+  if (ctx.tokenUsageSeen.has(usage.messageID)) return
+  ctx.tokenUsageSeen.add(usage.messageID)
+  ctx.boundTokenUsage()
+  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  if (sid === "") return
+  const parentID = ctx.ledger.childToParent.get(sid) ?? sid
+  const totals = ctx.tokenUsageTotals.get(sid) ?? zeroTotals()
+  ctx.tokenUsageTotals.set(sid, addTotals(totals, usage.totals))
+  if (ctx.config.tokenUsage !== "per-message") return
+  ctx.journaler.journal({
+    type: "token-usage",
+    sessionID: sid,
+    parentID,
+    messageID: usage.messageID,
+    modelID: usage.modelID,
+    providerID: usage.providerID,
+    tokens: {
+      input: usage.totals.input,
+      output: usage.totals.output,
+      reasoning: usage.totals.reasoning,
+      cacheRead: usage.totals.cacheRead,
+      cacheWrite: usage.totals.cacheWrite,
+    },
+    cost: usage.totals.cost,
+  })
 }
 
 /**
@@ -841,6 +916,7 @@ export function createEventHandlers(ctx: TurnstileContext): Record<string, Event
     "permission.asked": (p) => handlePermissionAsked(ctx, p),
     "permission.replied": (p) => handlePermissionReplied(ctx, p),
     "session.inbox.enqueued": (p) => handleInboxEnqueued(ctx, p),
+    "message.updated": (p) => handleMessageUpdated(ctx, p),
     "session.idle": (p) => handleSessionIdle(ctx, p),
   }
 }

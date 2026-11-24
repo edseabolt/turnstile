@@ -42,6 +42,7 @@ eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart 
   permbook: "permission.asked / replied\n→ plan, landing & hands-on\nask bookkeeping; human rejects\n→ journalProvDenied → prov:denied\n(decisionLedger.enabled)"
   inbox: "session.inbox.enqueued\n→ prompt admission (≥ 2.0.29)"
   idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"
+  msgupd: "message.updated → token-usage journaling\n(per-message row or session.idle rollup\nper the tokenUsage mode)"
   errors: "session.error → telemetry"
 }
 

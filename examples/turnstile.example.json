@@ -21,6 +21,7 @@
   "plansDir": ".opencode/plans",
   "trace": true,
   "sessionSummary": "quiet",
+  "tokenUsage": "summary",
   "continuationCarry": true,
   "escalation": "block",
   "suspendMarker": "TURNSTILE OFF:",

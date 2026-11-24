@@ -93,7 +93,9 @@ journal holds `plan-rekey` rows (the durable-store scheme migration in the
 [entry-type catalog](entry-types.md)),
 one advisory line naming the re-keyed plans (capped at five, `+N more`
 beyond) renders under the observe line; journals without them render
-byte-identically too.
+byte-identically too. When the journal holds `token-usage` rows, the report
+appends a per-task-root token/cost rollup (the `tokenUsage` key in JSON);
+journals without them render byte-identically as well.
 
 `opencode-turnstile evidence [--task <session|latest>]` is the publishable
 half of that view: the same tail window and shape checks, folded to one
