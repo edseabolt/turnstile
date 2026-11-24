@@ -48,6 +48,10 @@ const LITERAL_KEYS: Record<string, { bad: unknown; warning: string }> = {
     bad: "enforce",
     warning: `config: escalation must be "block" or "ask"; keeping default`,
   },
+  tokenUsage: {
+    bad: "loud",
+    warning: `config: tokenUsage must be "off", "summary", or "per-message"; keeping default`,
+  },
 }
 
 /** The fall-through literal keys with their exact warning wording. */

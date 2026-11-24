@@ -1016,3 +1016,99 @@ test("--help prints usage and exits 0", () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("renders token-usage rows and a rollup-preferred totals summary line", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "token-usage",
+        sessionID: "ses1",
+        parentID: "ses1",
+        messageID: "msg_1",
+        modelID: "m",
+        providerID: "p",
+        tokens: { input: 10, output: 5, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+        cost: 0.01,
+      },
+      {
+        ts: "2026-01-01T10:00:05Z",
+        type: "token-usage",
+        event: "session-rollup",
+        sessionID: "ses1",
+        parentID: "ses1",
+        tokens: { input: 30, output: 8, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+        cost: 0.03,
+      },
+    ])
+    const r = runLog(dir, ["ses1"])
+    assert.equal(code(r), 0)
+    assert.match(
+      r.stdout,
+      /tokens {2}msg msg_1 {2}in 10 out 5 reason 0 cacheR 0 cacheW 0 {2}\$0\.0100/,
+    )
+    assert.match(
+      r.stdout,
+      /tokens {2}session rollup {2}in 30 out 8 reason 0 cacheR 0 cacheW 0 {2}\$0\.0300/,
+    )
+    // The session flushed a rollup, so the totals count from it (not the
+    // per-message rows) — the same no-double-count rule the status rollup uses.
+    assert.match(r.stdout, /tokens: in 30 out 8 reason 0 cacheR 0 cacheW 0 {2}\$0\.0300/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("omits the tokens summary line when the journal has no token rows", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "gate",
+        sessionID: "ses1",
+        result: "PASS",
+        verified: true,
+      },
+    ])
+    const r = runLog(dir, ["ses1"])
+    assert.equal(code(r), 0)
+    assert.equal(/tokens:/i.test(r.stdout), false)
+    const json = JSON.parse(runLog(dir, ["ses1", "--json"]).stdout)
+    assert.equal("tokens" in json.summary, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("--json passes token-usage rows through and adds tokens to the summary", () => {
+  const dir = metricsDir()
+  try {
+    mkdirSync(join(dir, "sessions"))
+    writeSessionJournal(dir, "ses1", [
+      {
+        ts: "2026-01-01T10:00:00Z",
+        type: "token-usage",
+        event: "session-rollup",
+        sessionID: "ses1",
+        parentID: "ses1",
+        tokens: { input: 30, output: 8, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+        cost: 0.03,
+      },
+    ])
+    const r = runLog(dir, ["ses1", "--json"])
+    assert.equal(code(r), 0)
+    const doc = JSON.parse(r.stdout)
+    assert.equal(doc.entries.length, 1)
+    assert.equal(doc.entries[0].type, "token-usage")
+    assert.equal(doc.entries[0].event, "session-rollup")
+    assert.equal(doc.entries[0].tokens.input, 30)
+    assert.equal(doc.summary.tokens.input, 30)
+    assert.equal(doc.summary.tokens.cost, 0.03)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -120,6 +120,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   if (key === "trace") config.trace = value as boolean
   else if (key === "journalPerSession") config.journalPerSession = value as boolean
   else if (key === "sessionSummary") config.sessionSummary = value as "on" | "quiet" | "off"
+  else if (key === "tokenUsage") config.tokenUsage = value as "off" | "summary" | "per-message"
   else if (key === "metricsDir") config.metricsDir = value as string
   else if (key === "waiverMarker") config.waiverMarker = value as string
   else if (key === "approvalMarker") config.approvalMarker = value as string
@@ -152,6 +153,7 @@ const SCALAR_WARNINGS: Record<string, string> = {
   gateEvidence: `config: gateEvidence must be "enforce", "flag", or "off"; keeping default`,
   reviewEnsemble: `config: reviewEnsemble must be "enforce" or "advise"; keeping default`,
   sessionSummary: `config: sessionSummary must be "on", "quiet", or "off"; keeping default`,
+  tokenUsage: `config: tokenUsage must be "off", "summary", or "per-message"; keeping default`,
   escalation: `config: escalation must be "block" or "ask"; keeping default`,
 }
 

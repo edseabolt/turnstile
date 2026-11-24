@@ -290,6 +290,25 @@ function renderVerdict(e) {
 }
 
 /**
+ * Renders one `token-usage` row: per-message rows show the message ID,
+ * session rollups their marker; both show the five token counts and the
+ * host-computed cost. Missing or non-numeric fields render as 0.
+ * @param {Record<string, unknown>} e The parsed entry.
+ * @returns {string} The timeline line.
+ */
+function renderTokenUsage(e) {
+  const t = e.tokens && typeof e.tokens === "object" ? e.tokens : {}
+  const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0)
+  const counts =
+    `in ${n(t.input)} out ${n(t.output)} reason ${n(t.reasoning)} ` +
+    `cacheR ${n(t.cacheRead)} cacheW ${n(t.cacheWrite)}`
+  const cost = `$${n(e.cost).toFixed(4)}`
+  if (e.event === "session-rollup") return `tokens  session rollup  ${counts}  ${cost}`
+  const msg = typeof e.messageID === "string" ? truncateField(e.messageID, 12) : "?"
+  return `tokens  msg ${msg}  ${counts}  ${cost}`
+}
+
+/**
  * Renders the small audit row types (suppressed, marker-retry, intent,
  * continuation, violation) with their salient fields.
  * @param {Record<string, unknown>} e The parsed entry.
@@ -424,6 +443,7 @@ function renderKnown(e, rounds) {
   if (type === "verdict") return renderVerdict(e)
   if (type === "policy") return renderPolicy(e)
   if (type === "tool") return renderTool(e)
+  if (type === "token-usage") return renderTokenUsage(e)
   if (AUDIT_TYPES.includes(type)) return renderAudit(e)
   if (COMPACT_TYPES.includes(type)) return renderCompact(e)
   return null
@@ -499,12 +519,69 @@ function creditedApprovalOf(entries, reviewerAgent) {
   return approved && agentOk && refused !== true ? "yes" : "no"
 }
 
+// Local fold helpers: standalone scripts cannot import src/, so this fold is
+// duplicated in log.mjs and status.mjs; a third consumer triggers the repo's
+// three-strike DRY rule — extract to journal-read.mjs then.
+/** The numeric keys of a token-usage totals object. */
+const TOKEN_TOTAL_KEYS = ["input", "output", "reasoning", "cacheRead", "cacheWrite", "cost"]
+
+/**
+ * Adds one `token-usage` row's tokens and cost into a totals accumulator
+ * (missing or non-numeric fields add 0).
+ * @param {Record<string, number>} into The accumulator to add into.
+ * @param {Record<string, unknown>} e The parsed `token-usage` row.
+ * @returns {Record<string, number>} The accumulator.
+ */
+function addTokenRow(into, e) {
+  const t = e.tokens && typeof e.tokens === "object" ? e.tokens : {}
+  const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0)
+  for (const k of TOKEN_TOTAL_KEYS) {
+    if (k === "cost") into.cost += n(e.cost)
+    else into[k] += n(t[k])
+  }
+  return into
+}
+
+/**
+ * Sums the timeline's token usage, rollup-preferred per session (the same
+ * no-double-count rule the status rollup uses: a per-message session also
+ * flushes a `session-rollup` row at `session.idle`, so a session with a
+ * rollup counts from it, else its per-message rows sum).
+ * @param {Record<string, unknown>[]} entries Parsed journal entries, oldest-first.
+ * @returns {Record<string, number> | null} The totals, or null when the
+ *     timeline holds no token-usage rows.
+ */
+function tokenTotalsOf(entries) {
+  const rollups = new Map()
+  const perMessage = new Map()
+  for (const e of entries) {
+    if (e.type !== "token-usage") continue
+    const sid = typeof e.sessionID === "string" && e.sessionID ? e.sessionID : "?"
+    const target = e.event === "session-rollup" ? rollups : perMessage
+    if (!target.has(sid)) {
+      target.set(sid, { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 })
+    }
+    addTokenRow(target.get(sid), e)
+  }
+  if (rollups.size === 0 && perMessage.size === 0) return null
+  const total = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }
+  const sources = [
+    ...rollups.entries(),
+    ...perMessage.entries().filter(([sid]) => !rollups.has(sid)),
+  ]
+  for (const [, t] of sources) {
+    for (const k of TOKEN_TOTAL_KEYS) total[k] += t[k]
+  }
+  return total
+}
+
 /**
  * Builds the summary fields: blocks grouped by reason, dispatch and waiver
- * counts, credited approval, and the final gate state.
+ * counts, credited approval, and the final gate state. The `tokens` key is
+ * present only when the timeline holds token-usage rows.
  * @param {Record<string, unknown>[]} entries Parsed journal entries, oldest-first.
  * @param {string} reviewerAgent The configured reviewer agent name.
- * @returns {{ blocks: Record<string, number>, dispatches: number, dispatchesBlocked: number, waivers: number, finalGate: string, creditedApproval: string }} The summary.
+ * @returns {{ blocks: Record<string, number>, dispatches: number, dispatchesBlocked: number, waivers: number, finalGate: string, creditedApproval: string, tokens?: Record<string, number> }} The summary.
  */
 function summarize(entries, reviewerAgent) {
   const blocks = {}
@@ -525,6 +602,7 @@ function summarize(entries, reviewerAgent) {
       waivers++
     }
   }
+  const tokens = tokenTotalsOf(entries)
   return {
     blocks,
     dispatches,
@@ -532,6 +610,7 @@ function summarize(entries, reviewerAgent) {
     waivers,
     finalGate: finalGateOf(entries),
     creditedApproval: creditedApprovalOf(entries, reviewerAgent),
+    ...(tokens ? { tokens } : {}),
   }
 }
 
@@ -559,10 +638,24 @@ function renderSummary(s) {
  * @param {string[]} files The journal files read (basenames).
  * @returns {string} The full timeline text.
  */
+/**
+ * Renders the token totals line under the summary (present only when the
+ * timeline holds token-usage rows).
+ * @param {Record<string, number>} t The token totals.
+ * @returns {string} The totals line.
+ */
+function renderTokenTotals(t) {
+  return (
+    `tokens: in ${t.input} out ${t.output} reason ${t.reasoning} ` +
+    `cacheR ${t.cacheRead} cacheW ${t.cacheWrite}  $${t.cost.toFixed(4)}`
+  )
+}
+
 function renderTimeline(rows, summary, sessionID, files) {
   const out = [`turnstile log — ${sessionID} (${rows.length} entries; files: ${files.join(", ")})`]
   for (const row of rows) out.push(`${row.ts}  ${row.text}`)
   out.push(renderSummary(summary))
+  if (summary.tokens) out.push(renderTokenTotals(summary.tokens))
   return out.join("\n")
 }
 

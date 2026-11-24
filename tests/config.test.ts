@@ -1002,6 +1002,35 @@ test("configDigest flips on sessionSummary overrides", () => {
   assert.notEqual(configDigest(base), configDigest({ ...base, sessionSummary: "on" }))
 })
 
+/** tokenUsage defaults to summary and validates its three literals. */
+test("tokenUsage defaults to summary and accepts off/summary/per-message", () => {
+  assert.equal(defaultConfig({}).tokenUsage, "summary")
+  for (const mode of ["off", "summary", "per-message"] as const) {
+    const { config, warnings } = mergeConfig(defaultConfig({}), { tokenUsage: mode })
+    assert.equal(config.tokenUsage, mode)
+    assert.equal(warnings.length, 0)
+  }
+})
+
+/** An invalid tokenUsage value keeps the summary default and names the
+ *  three accepted literals; a non-string rejects the same way. */
+test("mergeConfig rejects an invalid tokenUsage and keeps the summary default", () => {
+  const base = defaultConfig({})
+  for (const bad of ["loud", 42, true]) {
+    const { config, warnings } = mergeConfig(base, { tokenUsage: bad })
+    assert.equal(config.tokenUsage, "summary")
+    assert.deepEqual(warnings, [
+      'config: tokenUsage must be "off", "summary", or "per-message"; keeping default',
+    ])
+  }
+})
+
+/** The digest flips when tokenUsage overrides the summary default. */
+test("configDigest flips on tokenUsage overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, tokenUsage: "off" }))
+})
+
 /** escalation defaults to block and validates its two literals. */
 test("escalation defaults to block and accepts block/ask", () => {
   assert.equal(defaultConfig({}).escalation, "block")

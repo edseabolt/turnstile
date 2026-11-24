@@ -168,6 +168,7 @@ function defaultMarkerScalars(): Pick<
 type DefaultModeScalars = Pick<
   TurnstileConfig,
   | "sessionSummary"
+  | "tokenUsage"
   | "escalation"
   | "continuationCarry"
   | "suspendMarker"
@@ -183,6 +184,11 @@ function defaultModeScalars(): DefaultModeScalars {
     // also prints an all-gates-green line for zero-activity sessions; "off"
     // restores pre-summary behavior exactly.
     sessionSummary: "quiet",
+    // Token-usage journaling: "summary" journals one token-usage rollup row
+    // per session at session.idle (in-memory accumulation, bounded journal
+    // volume); "per-message" journals one row per completed assistant turn;
+    // "off" disables the surface entirely.
+    tokenUsage: "summary",
     // Escalation ladder: on a retried landing/hands-on attempt BOTH modes
     // arm the one-shot ask latch and raise the permission ask; the
     // block-throw is only the no-human fallback, so an auto-accepting host

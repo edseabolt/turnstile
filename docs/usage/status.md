@@ -34,6 +34,18 @@ carries a top-level `suspension` block (the resolved `allowSuspend`,
 `suspendMarker`/`resumeMarker`, config path, and file presence) — the
 surface the `turnstile-off`/`turnstile-on` skills read ([install](install.md)).
 
+### Token usage
+
+When the journal contains `token-usage` rows, `status` appends a rollup: one
+line per task root (the `parentID` — a parent session and its subagent
+children aggregate together) and a total line, each showing input, output,
+reasoning, cache-read, and cache-write tokens plus host-computed cost.
+`status --json` carries the same rollup in a `tokenUsage` key. Sessions that
+journaled per-message rows and later flushed a session rollup are counted
+once, from the rollup. With no `token-usage` rows in the journal (tokenUsage
+`"off"`, or an older journal), the rollup is omitted and the output is
+unchanged.
+
 ### Sharing the evidence
 
 `opencode-turnstile evidence` is the sharing half of the same read-only view:
