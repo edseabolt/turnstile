@@ -335,7 +335,11 @@ function resolveConfig(env) {
  * to its family root — `p1.jsonl.2` roots at `p1.jsonl` — and the set of
  * roots is deduplicated, so each generation is visited exactly once by its
  * own family's walk, including a fully rotated family whose current file is
- * absent). The merged lines are ordered by their `ts` field
+ * absent). Each family's walk is delegated to `readFileGenerations`, which
+ * continues into the family's gzip-archived generations (`archive/*.gz`)
+ * while the tail bound is unmet — so archived rows are visible to every
+ * consumer of this stream (the aggregate, the files list, and the token
+ * rollup). The merged lines are ordered by their `ts` field
  * (missing/unparseable sorts oldest) and the global tail is kept, so the
  * stream satisfies the `replayTailLines` tail bound the runtime replay uses
  * and the status flags stay replay-parity. Silently tolerates missing
@@ -641,6 +645,9 @@ function aggregate(lines) {
   return { sessions, observe, rekeys }
 }
 
+// Local fold helpers: standalone scripts cannot import src/, so this fold is
+// duplicated in status.mjs and log.mjs; a third consumer triggers the repo's
+// three-strike DRY rule — extract to journal-read.mjs then.
 /** The token-count fields a `token-usage` row carries (cost sits beside them). */
 const TOKEN_FIELDS = ["input", "output", "reasoning", "cacheRead", "cacheWrite"]
 

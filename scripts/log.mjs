@@ -519,6 +519,9 @@ function creditedApprovalOf(entries, reviewerAgent) {
   return approved && agentOk && refused !== true ? "yes" : "no"
 }
 
+// Local fold helpers: standalone scripts cannot import src/, so this fold is
+// duplicated in log.mjs and status.mjs; a third consumer triggers the repo's
+// three-strike DRY rule — extract to journal-read.mjs then.
 /** The numeric keys of a token-usage totals object. */
 const TOKEN_TOTAL_KEYS = ["input", "output", "reasoning", "cacheRead", "cacheWrite", "cost"]
 
