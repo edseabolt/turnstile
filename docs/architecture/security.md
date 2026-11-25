@@ -2,8 +2,8 @@
 
 Turnstile is a speed bump and an audit trail, not a security boundary.
 
-- Any text matching the gate marker — including a marker an agent
-  hallucinated or copied from documentation — is journaled `verified:false`
+- Any text matching the gate marker (including a marker an agent
+  hallucinated or copied from documentation) is journaled `verified:false`
   under the default `gateEvidence:enforce` mode. It does not flip
   `hasGatePass` unless the current task's bash/shell executions contain a
   matching exit-0 test command (plausibility checked against

@@ -8,7 +8,7 @@ repo at `~/.local/share/opencode/metrics/`. The store is a shared
 (`journalPerSession`, default on). `gate-events.log` (trace only),
 `anchors.jsonl`, and `approved-plans.jsonl` sit beside them. Retention is
 bounded: 5 MB per file, 5 generations per file, plus gzip-archived pruned
-generations (`journalArchiveGenerations`, default 5 — cold storage; replay
+generations (`journalArchiveGenerations`, default 5; cold storage, replay
 never reads them, verify and the CLI surfaces do). `replayTailLines` (default 2000) bounds the boot window.
 The standalone `evidence` emitter is the one external writer: each
 artifact write appends one unchained `event:"emit"` row and mirrors the
@@ -27,7 +27,7 @@ chained journal rows and the approval sidecar write inside a per-file
 `<file>.lock` mkdir mutex (`src/lockfile.ts`) with the chain head (or
 sidecar) re-read from disk inside the critical section; contention past
 the retry bound degrades to an unlocked write with a journaled
-`journal-lock:` row — never a blocked or dropped row. See
+`journal-lock:` row, never a blocked or dropped row. See
 [journal/chain.md](../journal/chain.md) for the locking contract.
 
 The full catalog lives in [journal/entry-types.md](../journal/entry-types.md). It lists every entry

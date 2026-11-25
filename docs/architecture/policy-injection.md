@@ -10,7 +10,7 @@ The `execute.after` body in `src/hooks-tool.ts` stays armed as the fallback.
 Via the `tool.hook("execute.after")` handler (the same hook the plugin already
 uses to rewrite tool output reaching the model), it prepends the orchestrator
 policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to the first
-`task` (or `subagent`) result delivery per task — once per task — and appends
+`task` (or `subagent`) result delivery per task (once per task) and appends
 a per-delivery `PIPELINE:` status tail to every
 pipeline-stage delivery (see Pipeline continuation below). Each
 delivery is classified once by `classifyDelivery` into its host shape: the
@@ -23,7 +23,7 @@ array). String-shape text is child output only when the event origin
 (`event.sessionID`) is the child or is absent; a non-empty origin that differs
 from the resolved child means the text was authored by the emitting session
 (the parent-side background-subagent acknowledgment among them) and
-classifies as a third, silent `parent-authored` shape — it parses zero
+classifies as a third, silent `parent-authored` shape: it parses zero
 markers, credits nothing, fires no bare-output retry, and receives no policy
 head or status tail. The policy head and the status tail both land on that shape's
 model-visible text through the shared shape ladder (`mutateDeliveryText`):
@@ -38,7 +38,7 @@ string, so a structured delivery parses and attributes to the real child
 exactly like its string twin. The bare-output compliance re-prompt restates,
 never quotes, markers: its quoted prior-output tail strips any `GATE:`/
 `VERDICT:` line, and the prompt directs the child to recompute counts from
-its own recorded results — never to copy or invent them. Dispatch and
+its own recorded results, never to copy or invent them. Dispatch and
 injection texts are hash-stamped for tamper attribution: every `dispatch`
 journal row carries the sha256-16 of the dispatch prompt (`promptHash`), the
 `marker-retry` prompted row carries the sha256-16 of the injected text
@@ -63,7 +63,7 @@ follows the plugin through updates and uninstall–reinstall cycles.
   are the once-flag (which gates only the policy head; the tail lands on
   every pipeline-stage delivery) and an absent result (nothing to deliver);
   a parent-authored delivery (a non-empty event origin differing from the
-  resolved child — the emitting session's own tool-result text, never the
+  resolved child (the emitting session's own tool-result text, never the
   child's output) is the other silent skip, beside `absent`;
   a present-but-unclassifiable result journals loudly on EVERY such delivery
   (the once-flag no longer gates it) as

@@ -14,10 +14,10 @@ npm run ci:installed # install:check — only after `npm run init` on a machine 
 - `npm run check:markers`: marker-drift guard (see below)
 - `npm test`: `node --test --experimental-strip-types --experimental-test-isolation=none
 tests/*.test.ts`, with 100% line/branch/function coverage enforced over
-  `src/` + `turnstile.ts` via node:test's built-in thresholds — no coverage
-  extension. `--experimental-test-isolation=none` makes a green suite deterministic, so a
+  `src/` + `turnstile.ts` via node:test's built-in thresholds, so no coverage
+  extension is needed. `--experimental-test-isolation=none` makes a green suite deterministic, so a
   red branch report is a real never-executed decision, never a merge artifact.
-  `npm test` is the sole coverage authority — `scripts/branch-coverage.mjs` is
+  `npm test` is the sole coverage authority; `scripts/branch-coverage.mjs` is
   a diagnostic, never a work queue. `bin/` and `scripts/` sit outside the gate.
 
 The test suite requires Node ≥ 22.8 (`--experimental-test-isolation` shipped in v22.8.0;
@@ -46,7 +46,7 @@ to re-point `--ref` after a deliberate behavior change.
    the real source through `node --experimental-strip-types`.
 3. **Verified host shape:** the plugin targets the OpenCode v2
    promise-plugin shape (`{ tool.hook, session.hook, permission.hook,
-event.subscribe }` — permission registered when the host exposes it),
+event.subscribe }`, with permission registered when the host exposes it),
    verified against opencode v2.0.22. Do not assume hooks, events, or
    payload fields not already handled in `src/types.ts` without verifying
    them against a real host.
@@ -73,13 +73,15 @@ event.subscribe }` — permission registered when the host exposes it),
 9. **Architecture docs stay in sync:** `docs/architecture.md` (the entry
    point, with section files under `docs/architecture/` and
    `docs/images/*.svg` rendered from `docs/diagrams/*.d2`) is the living
-   architecture reference. When a change alters what it describes — module
-   map, hook surface, gates/`GateState`, journal/replay, config surface —
+   architecture reference. When a change alters what it describes (module
+   map, hook surface, gates/`GateState`, journal/replay, config surface),
    update the D2 source (never the SVG), re-render with
    `d2 --theme 200 <docs/diagrams/X.d2> <docs/images/X.svg>`, update the
    prose, and commit source + SVG + doc in the same change set. Diagrams
    cite real function/hook/field names; a stale name is a docs bug. See the
    "Architecture docs" section of AGENTS.md for the full trigger list.
+10. **Writing style:** ISO 24495-1 applies to all prose; em dashes are used
+    sparingly (see AGENTS.md §"Writing style" for the rule).
 
 ## Tests
 
@@ -111,7 +113,7 @@ commit body. The statistics in `docs/usage/field-tested.md` ("Field-tested
 on itself") show what the journal records about this in practice.
 
 That includes published evidence: `.github/workflows/turnstile-evidence.yml`
-is a copy of `examples/turnstile-evidence.yml` with two deltas — the
+is a copy of `examples/turnstile-evidence.yml` with two deltas: the
 substitution (`node scripts/evidence.mjs` instead of the published CLI, so
 the tree validates itself) and an added header comment explaining the
 copy. Edit the example and re-copy it in the same change set;

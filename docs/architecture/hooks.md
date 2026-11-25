@@ -154,7 +154,7 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   - _Planner write-target guard._ Inside the child exemption, a planner
     child's write/edit is additionally confined to the configured
     `plansDir`. The agent name resolves by the same precedence (event name
-    first, emitter fallback second; an unresolved name is not a planner —
+    first, emitter fallback second; an unresolved name is not a planner,
     fail-open). Scratch targets and empty paths are allowed. A target
     outside the configured plans directory (resolved against the session's
     project dir, relative and absolute `plansDir` both honored) journals
@@ -187,7 +187,7 @@ surfaces pending near-miss marker diagnostics once per prompt batch (a
 parent with a parked hit, journaled `type:"marker"` / `surfaced`), then
 parses markers out of task deliveries, attributes plan verdicts, credits reviewer
 approval (ensemble-gated); both on the delivery's agent, resolved through the
-child→parent edge + host session record when the dispatch input names none —
+child→parent edge + host session record when the dispatch input names none;
 appends the per-delivery `PIPELINE:` status tail
 (skipped when the delivery's agent is not a pipeline stage), prepends the
 orchestrator policy head once per task (the first pipeline delivery reads
@@ -259,7 +259,7 @@ marker is first-sighted once (dedup-suppressing the re-parse), then the window
 ages out on the next task dispatch. A marker longer than the window is not
 reassembled in streaming; the fold journals a `delta-truncated` marker entry
 for a span never seen complete in streaming (a span already credited by
-streaming first-sight is not reported), and gate credit is unaffected — it
+streaming first-sight is not reported), and gate credit is unaffected: it
 arrives from streaming first-sight or the task-result delivery re-parse. A marker that
 never completes within any pre-truncation buffer stays undetectable until
 delivery. A subscription that throws is
