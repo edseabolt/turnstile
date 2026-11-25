@@ -34,7 +34,13 @@ import {
 } from "./summary.ts"
 import type { EventProperties } from "./types.ts"
 import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
-import { addTotals, extractUsage, zeroTotals, type ExtractedUsage } from "./token-usage.ts"
+import {
+  addTotals,
+  extractStepUsage,
+  extractUsage,
+  zeroTotals,
+  type ExtractedUsage,
+} from "./token-usage.ts"
 
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 export type EventHandler = (properties: EventProperties) => void | Promise<void>
@@ -797,7 +803,27 @@ async function handleSessionIdle(
   properties: EventProperties,
 ): Promise<void> {
   const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
-  if (sid === "" || ctx.summarizedSessions.has(sid)) return
+  if (sid === "") return
+  await runSessionEnd(ctx, sid)
+}
+
+/**
+ * Runs the shared session-end sequence once per session: the dedup add
+ * (bounded), the session-end anchor, the chain verify, the token-usage
+ * rollup flush (when `tokenUsage` is not "off"), and the session summary
+ * delivery (per the `sessionSummary` config). The trigger is `session.idle`
+ * (hosts ≤ 2.3.x) or `session.execution.succeeded`/`session.execution.failed`
+ * (hosts ≥ 2.4.x). The once-per-session dedup means the rollup and recap
+ * land after the FIRST trigger per session per host process on either
+ * contract: on 2.4.1 that is after the first agent run rather than at true
+ * quiescence (accepted parity with the 2.0.x first-idle flush; tokens from
+ * later runs stay unflushed until a host restart). Fail-open — the outer
+ * loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param sid The ended session's ID.
+ */
+async function runSessionEnd(ctx: TurnstileContext, sid: string): Promise<void> {
+  if (ctx.summarizedSessions.has(sid)) return
   ctx.summarizedSessions.add(sid)
   ctx.boundSummarizedSessions()
   // The session-end anchor trigger runs first and its publish is awaited, so
@@ -813,6 +839,25 @@ async function handleSessionIdle(
   if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
   if (ctx.config.sessionSummary === "off") return
   await deliverSessionSummary(ctx, sid)
+}
+
+/**
+ * Handles `session.execution.succeeded` and `session.execution.failed`
+ * (hosts ≥ 2.4.x): the session-end flush trigger. An absent or empty
+ * `sessionID` is inert (the payload shape is unverified; tolerate it).
+ * Awaited, not fire-and-forget: the consume loop journals per-event failures
+ * only for awaited rejections, so a `void`-ed throw would become an
+ * unhandled rejection and silently break the fail-open journaling contract.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleExecutionEnded(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  if (sid === "") return
+  await runSessionEnd(ctx, sid)
 }
 
 /**
@@ -886,17 +931,51 @@ function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties
   if (ctx.config.tokenUsage === "off") return
   const usage = extractUsage(properties.info)
   if (!usage) return
-  if (ctx.tokenUsageSeen.has(usage.messageID)) return
-  ctx.tokenUsageSeen.add(usage.messageID)
-  ctx.boundTokenUsage()
   // The real host carries the session ID only inside the snapshot
   // (`info.sessionID`); the top-level `properties.sessionID` fallback keeps
   // tolerance for hosts that publish it there (same pattern as
   // `handleTextUpdated`).
   const sid = asSessionID(properties.sessionID ?? usage.sessionID)
   if (sid === "") return
-  accumulateTokenUsage(ctx, sid, usage)
-  if (ctx.config.tokenUsage === "per-message") journalPerMessageRow(ctx, sid, usage)
+  recordTurnUsage(ctx, { ...usage, sessionID: sid })
+}
+
+/**
+ * Handles `session.step.ended` (hosts ≥ 2.4.x): on a completed assistant
+ * step, merges the step into the same per-session accumulator and dedup set
+ * as `message.updated` (`per-message` mode journals one row per step). The
+ * 2.4.1 payload carries no `modelID`/`providerID`, so step-path rows stamp
+ * empty strings there (consumers sum tokens only). Fail-open — the outer
+ * consume loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleStepEnded(ctx: TurnstileContext, properties: EventProperties): void {
+  if (ctx.config.tokenUsage === "off") return
+  const usage = extractStepUsage(properties)
+  if (!usage) return
+  recordTurnUsage(ctx, { ...usage, modelID: "", providerID: "" })
+}
+
+/**
+ * Shared accumulation tail for both turn carriers (`message.updated` and
+ * `session.step.ended`): dedup-add by message ID (bounded), accumulate into
+ * the session's totals, and journal the per-message row when the mode asks
+ * for it. Note the deliberate ordering change from the pre-extraction
+ * `message.updated` path: the session ID is resolved BEFORE the dedup mark,
+ * so a session-less message no longer marks itself seen (an improvement —
+ * the turn stays eligible once a session ID is known). Cross-contract
+ * no-double-count falls out of the shared dedup key space: a turn whose
+ * assistant message ID arrives through both carriers counts once.
+ * @param ctx The shared per-setup context.
+ * @param usage The extracted turn usage with its session ID resolved.
+ */
+function recordTurnUsage(ctx: TurnstileContext, usage: ExtractedUsage): void {
+  if (ctx.tokenUsageSeen.has(usage.messageID)) return
+  ctx.tokenUsageSeen.add(usage.messageID)
+  ctx.boundTokenUsage()
+  accumulateTokenUsage(ctx, usage.sessionID, usage)
+  if (ctx.config.tokenUsage === "per-message") journalPerMessageRow(ctx, usage.sessionID, usage)
 }
 
 /**
@@ -959,5 +1038,8 @@ export function createEventHandlers(ctx: TurnstileContext): Record<string, Event
     "session.inbox.enqueued": (p) => handleInboxEnqueued(ctx, p),
     "message.updated": (p) => handleMessageUpdated(ctx, p),
     "session.idle": (p) => handleSessionIdle(ctx, p),
+    "session.step.ended": (p) => handleStepEnded(ctx, p),
+    "session.execution.succeeded": (p) => handleExecutionEnded(ctx, p),
+    "session.execution.failed": (p) => handleExecutionEnded(ctx, p),
   }
 }

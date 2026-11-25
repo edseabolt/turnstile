@@ -2,12 +2,15 @@
  * @fileoverview Differential scenario `token-usage`: boots the full plugin
  * over the fake host and pushes `message.updated` events in the REAL host's
  * shape (the session ID only inside the snapshot, `info.sessionID`; no
- * top-level `sessionID`) plus `session.idle`, then diffs both trees'
+ * top-level `sessionID`) plus `session.idle` on session `p1` (the 2.0.x
+ * contract), and `session.step.ended` plus `session.execution.succeeded` on
+ * session `p2` (the 2.4.1 contract), then diffs both trees'
  * journaled entries and `status` token output as normalized cells.
  *
  * Expected characterization: a tree without the session-ID fallback journals
  * no `token-usage` rows and no status token cells; a fixed tree shows the
- * rollup row and the status token block as NEW-IN-HEAD growth.
+ * rollup rows (one per session) and the status token block as NEW-IN-HEAD
+ * growth.
  *
  * Stateful — runs one subprocess per tree.
  */
@@ -24,8 +27,11 @@ import {
   tmpMetricsDir,
 } from "./driver-lib.mjs"
 
-/** The fixture session ID pushed through the fake host. */
-const SID = "p1"
+/** The fixture session IDs pushed through the fake host (one per contract
+ *  segment: `p1` drives the 2.0.x shape, `p2` the 2.4.1 shape). */
+const SIDS = ["p1", "p2"]
+const SID = SIDS[0]
+const SID2 = SIDS[1]
 
 /**
  * Normalizes one journal entry for comparison: drops `ts` and the
@@ -63,11 +69,11 @@ function maskSessionID(value) {
   if (value !== null && typeof value === "object") {
     const out = {}
     for (const k of Object.keys(value).sort()) {
-      out[k === SID ? "<sessionID>" : k] = maskSessionID(value[k])
+      out[SIDS.includes(k) ? "<sessionID>" : k] = maskSessionID(value[k])
     }
     return out
   }
-  return value === SID ? "<sessionID>" : value
+  return SIDS.includes(value) ? "<sessionID>" : value
 }
 
 /**
@@ -123,6 +129,22 @@ export async function scenario(treeRoot) {
     })
   }
   await h.pushEvent({ type: "session.idle", data: { sessionID: SID } })
+  // The 2.4.1 contract segment: `session.step.ended` accumulation plus the
+  // `session.execution.succeeded` flush on a distinct session ID. On a tree
+  // without the port these cells are absent (NEW-IN-HEAD growth).
+  for (const id of ["msg_n1", "msg_n2"]) {
+    await h.pushEvent({
+      type: "session.step.ended",
+      data: {
+        sessionID: SID2,
+        assistantMessageID: id,
+        finish: "stop",
+        tokens: { input: 10, output: 5 },
+        cost: 0.01,
+      },
+    })
+  }
+  await h.pushEvent({ type: "session.execution.succeeded", data: { sessionID: SID2 } })
   dispose()
   const cells = {}
   const perType = {}

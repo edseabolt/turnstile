@@ -1,19 +1,30 @@
 /**
  * @fileoverview Token-usage boundary tests: `extractUsage` accepts only
  * completed assistant snapshots (dual cache nesting, either completion
- * signal, zero defaults for absent fields), `addTotals` sums componentwise,
- * and the `message.updated` / `session.idle` wiring journals deduped
- * per-message rows or one session-rollup row per idle — including the
- * placement guarantee that the rollup flushes even when `sessionSummary` is
- * `"off"`.
+ * signal, zero defaults for absent fields), `extractStepUsage` reads the
+ * 2.4.1 `session.step.ended` payload, `addTotals` sums componentwise, and
+ * the `message.updated` / `session.step.ended` wiring journals deduped
+ * per-message rows or one session-rollup row per session-end trigger
+ * (`session.idle`, `session.execution.succeeded`, `session.execution.failed`)
+ * — including cross-contract no-double-count and the placement guarantee
+ * that the rollup flushes even when `sessionSummary` is `"off"`.
  */
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
-import { addTotals, extractUsage, zeroTotals } from "../src/token-usage.ts"
-import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, type FakeHost } from "./helpers.ts"
+import { addTotals, extractStepUsage, extractUsage, zeroTotals } from "../src/token-usage.ts"
+import { createHooksCore } from "../src/hooks-core.ts"
+import { startEventStream } from "../src/hooks-events.ts"
+import {
+  isolatedEnv,
+  journalEntries,
+  makeFakeHost,
+  tmpDir,
+  waitUntil,
+  type FakeHost,
+} from "./helpers.ts"
 
 /** A completed assistant snapshot with the issue-derived payload shape. */
 const assistantInfo = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -126,6 +137,60 @@ test("addTotals sums componentwise", () => {
     cost: 0.75,
   })
   assert.equal(a.input, 1, "the running totals are not mutated")
+})
+
+// ── pure layer: extractStepUsage (the 2.4.1 step carrier) ──
+
+/** A full `session.step.ended` payload extracts message, session, totals. */
+test("extractStepUsage reads a full step payload", () => {
+  const usage = extractStepUsage({
+    sessionID: "p1",
+    assistantMessageID: "msg_1",
+    finish: "stop",
+    tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 7, write: 3 } },
+    cost: 0.01,
+  })
+  assert.ok(usage)
+  assert.equal(usage.messageID, "msg_1")
+  assert.equal(usage.sessionID, "p1")
+  assert.deepEqual(usage.totals, {
+    input: 10,
+    output: 5,
+    reasoning: 2,
+    cacheRead: 7,
+    cacheWrite: 3,
+    cost: 0.01,
+  })
+})
+
+/** Missing or empty session/assistant message IDs are inert. */
+test("extractStepUsage rejects a missing sessionID or assistantMessageID", () => {
+  assert.equal(extractStepUsage({ assistantMessageID: "msg_1" }), null)
+  assert.equal(extractStepUsage({ sessionID: "p1", assistantMessageID: "" }), null)
+  assert.equal(extractStepUsage({ sessionID: "", assistantMessageID: "msg_1" }), null)
+})
+
+/** Non-object payloads are inert. */
+test("extractStepUsage rejects non-object payloads", () => {
+  assert.equal(extractStepUsage(undefined), null)
+  assert.equal(extractStepUsage(null), null)
+  assert.equal(extractStepUsage("p1"), null)
+})
+
+/** Absent tokens/cost degrade to zero totals; both cache nestings honored. */
+test("extractStepUsage defaults absent fields to zero and reads both cache nestings", () => {
+  const usage = extractStepUsage({ sessionID: "p1", assistantMessageID: "msg_1" })
+  assert.ok(usage)
+  assert.deepEqual(usage.totals, zeroTotals())
+  const flat = extractStepUsage({
+    sessionID: "p1",
+    assistantMessageID: "msg_1",
+    tokens: { input: 1 },
+    cache: { read: 9, write: 8 },
+  })
+  assert.ok(flat)
+  assert.equal(flat.totals.cacheRead, 9)
+  assert.equal(flat.totals.cacheWrite, 8)
 })
 
 // ── wiring: message.updated + session.idle ──
@@ -270,4 +335,158 @@ test("the token-usage accumulator is bounded by maxSessions", async () => {
   assert.equal(rows.length, 1, "only the surviving session rolls up")
   assert.equal(rows[0]!.sessionID, "s3")
   dispose()
+})
+
+// ── wiring: session.step.ended + session.execution.* (the 2.4.1 contract) ──
+
+/**
+ * Pushes a `session.step.ended` event through the fake host's event stream
+ * in the 2.4.1 shape: `sessionID`, `assistantMessageID`, `finish`, `tokens`,
+ * and `cost` at the top level.
+ * @param fake The fake-host wrapper.
+ * @param sid The session the step belongs to.
+ * @param overrides Field overrides (e.g. a distinct `assistantMessageID`).
+ */
+async function pushStepEnded(
+  fake: FakeHost,
+  sid: string,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
+  await fake.pushEvent({
+    type: "session.step.ended",
+    data: {
+      sessionID: sid,
+      assistantMessageID: overrides.id ?? "msg_1",
+      finish: "stop",
+      tokens: { input: 10, output: 5 },
+      cost: 0.01,
+      ...overrides,
+    },
+  })
+}
+
+/** Steps accumulate and `session.execution.succeeded` flushes one rollup. */
+test("session.step.ended accumulates and session.execution.succeeded flushes", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "summary" })
+  await pushStepEnded(fake, "p1")
+  await pushStepEnded(fake, "p1", { id: "msg_2", cost: 0.02 })
+  await fake.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  const rows = usageEntries(metricsDir)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]!.event, "session-rollup")
+  assert.equal(rows[0]!.sessionID, "p1")
+  assert.equal(rows[0]!.tokens.input, 20)
+  assert.ok(Math.abs(rows[0]!.cost - 0.03) < 1e-9)
+  await fake.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  assert.equal(usageEntries(metricsDir).length, 1, "the second trigger is deduped")
+  dispose()
+})
+
+/** `session.execution.failed` also flushes the rollup (failed runs still
+ *  spent tokens). */
+test("session.execution.failed flushes the rollup", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "summary" })
+  await pushStepEnded(fake, "p1")
+  await fake.pushEvent({ type: "session.execution.failed", data: { sessionID: "p1" } })
+  const rows = usageEntries(metricsDir)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]!.event, "session-rollup")
+  assert.equal(rows[0]!.tokens.input, 10)
+  dispose()
+})
+
+/** per-message mode journals one row per step with empty model/provider. */
+test("per-message journals step rows with empty modelID and providerID", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "per-message" })
+  await pushStepEnded(fake, "p1")
+  const rows = usageEntries(metricsDir)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]!.messageID, "msg_1")
+  assert.equal(rows[0]!.modelID, "")
+  assert.equal(rows[0]!.providerID, "")
+  assert.equal(rows[0]!.tokens.input, 10)
+  dispose()
+})
+
+/** A duplicate `session.step.ended` for the same assistant message ID is
+ *  suppressed. */
+test("duplicate session.step.ended for the same message ID counts once", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "per-message" })
+  await pushStepEnded(fake, "p1")
+  await pushStepEnded(fake, "p1")
+  assert.equal(usageEntries(metricsDir).length, 1)
+  dispose()
+})
+
+/** A turn emitted through both contracts counts once (shared dedup key). */
+test("a turn emitted through both contracts counts once", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "per-message" })
+  await pushUpdated(fake, "p1", assistantInfo({ id: "msg_x" }))
+  await pushStepEnded(fake, "p1", { id: "msg_x" })
+  assert.equal(usageEntries(metricsDir).length, 1)
+  dispose()
+})
+
+/** `tokenUsage: "off"` keeps the step path fully inert. */
+test("tokenUsage off journals nothing on session.step.ended", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "off" })
+  await pushStepEnded(fake, "p1")
+  await fake.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  assert.equal(usageEntries(metricsDir).length, 0)
+  dispose()
+})
+
+/** An execution trigger with no token traffic journals no rollup row. */
+test("session.execution.succeeded with no token traffic journals no rollup", async () => {
+  const { dispose, metricsDir, fake } = await boot()
+  await fake.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  assert.equal(usageEntries(metricsDir).length, 0)
+  dispose()
+})
+
+/** A step event without a usable session or message ID is inert. */
+test("session.step.ended without sessionID or assistantMessageID is inert", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "per-message" })
+  await fake.pushEvent({ type: "session.step.ended", data: { finish: "stop" } })
+  await fake.pushEvent({ type: "session.step.ended", data: { sessionID: "p1" } })
+  assert.equal(usageEntries(metricsDir).length, 0)
+  dispose()
+})
+
+/** An execution trigger without a sessionID is inert (tolerated payload). */
+test("session.execution.succeeded without a sessionID is inert", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "summary" })
+  await pushStepEnded(fake, "p1")
+  await fake.pushEvent({ type: "session.execution.succeeded", data: {} })
+  assert.equal(usageEntries(metricsDir).length, 0, "no flush happened")
+  await fake.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  assert.equal(usageEntries(metricsDir).length, 1, "the later valid trigger still flushes")
+  dispose()
+})
+
+/** A throwing dependency inside the awaited execution handler is journaled
+ *  by the consume loop, never an unhandled rejection: `handleExecutionEnded`
+ *  awaits `runSessionEnd`, so the loop's per-event catch sees the throw. */
+test("a throwing execution handler journals the failure via the consume loop", async () => {
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({ env: isolatedEnv(metricsDir), config: { metricsDir } })
+  ctx.journaler.anchorAsync = async () => {
+    throw new Error("boom")
+  }
+  const controller = new AbortController()
+  async function* subscribe(): AsyncIterable<{ type: string; data?: unknown }> {
+    yield { type: "session.execution.succeeded", data: { sessionID: "p1" } }
+  }
+  const stopped = startEventStream(
+    ctx,
+    subscribe as unknown as (options?: { signal?: AbortSignal }) => AsyncIterable<never>,
+    controller.signal,
+  )
+  await waitUntil(() =>
+    journalEntries(metricsDir).some(
+      (l) => l.type === "error" && String(l.error).startsWith("event session.execution.succeeded:"),
+    ),
+  )
+  controller.abort()
+  await stopped
 })

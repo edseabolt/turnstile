@@ -362,6 +362,34 @@ test("session.idle recap carries the token rollup when rows exist", async () => 
   dispose()
 })
 
+/** The 2.4.1 execution trigger delivers the same recap end to end: a turn
+ *  accumulated via `session.step.ended` flushes and surfaces through
+ *  `session.execution.succeeded` (the shared session-end body). */
+test("session.execution.succeeded surfaces the recap like session.idle", async () => {
+  const h = makeFakeHost({ tui: true })
+  const { dispose, metricsDir } = await bootIdle(h.host, {
+    sessionSummary: "quiet",
+    tokenUsage: "summary",
+  })
+  seedActive(metricsDir)
+  await h.pushEvent({
+    type: "session.step.ended",
+    data: {
+      sessionID: "p1",
+      assistantMessageID: "msg_1",
+      finish: "stop",
+      tokens: { input: 1200, output: 300 },
+      cost: 0.01,
+    },
+  })
+  await h.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  const entries = summaryEntries(metricsDir)
+  assert.equal(entries.length, 1)
+  assert.match(String(entries[0]!.text), /1\.2k in\/300 out tok · \$0\.0100/)
+  assert.equal(h.toasts.length, 1, "the toast fires once")
+  dispose()
+})
+
 /** In per-message mode the recap shows the un-doubled totals: the rollup row
  *  flushed at idle is preferred over the per-message rows it mirrors. */
 test("session.idle recap in per-message mode shows un-doubled totals", async () => {
