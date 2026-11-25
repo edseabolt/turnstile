@@ -762,20 +762,61 @@ function groupByParent(sessionAcc) {
 }
 
 /**
+ * Collects the pipeline-stage agent per session from `child-edge` rows (last
+ * row wins, same as the `parentID` handling in `sessionTokensOf`). Sessions
+ * with no child-edge row attribute to `"parent"` at the fold site; stage
+ * attribution is best-effort (a child-edge row rotated out of the journal
+ * window degrades to `"parent"`).
+ * @param {unknown[]} lines Raw journal lines (all sinks, oldest-first).
+ * @returns {Map<string, string>} sessionID → agent name.
+ */
+function agentBySessionOf(lines) {
+  const agents = new Map()
+  for (const e of dedupeSinks(lines).map(parseLine)) {
+    if (e === null || e.type !== "child-edge") continue
+    if (typeof e.sessionID === "string" && e.sessionID && typeof e.agent === "string" && e.agent) {
+      agents.set(e.sessionID, e.agent)
+    }
+  }
+  return agents
+}
+
+/**
  * Builds the `tokenUsage` JSON block from raw token-usage rows.
  * @param {Record<string, unknown>[]} rows Parsed token-usage rows.
- * @returns {{ byParent: Record<string, Record<string, number>>, total: Record<string, number> }}
- *     The rollup block (byParent keyed by parentID).
+ * @param {Map<string, string>} agentBySession sessionID → stage agent (from
+ *     agentBySessionOf; sessions absent from the map group under "parent").
+ * @returns {{ byParent: Record<string, Record<string, number>>, byStage: Record<string, Record<string, number>>, total: Record<string, number> }}
+ *     The rollup block (byParent keyed by parentID, byStage keyed by agent).
  */
-function buildTokenUsage(rows) {
-  const { byParent, total } = groupByParent(sessionTokensOf(rows))
-  return { byParent: Object.fromEntries(byParent), total }
+function buildTokenUsage(rows, agentBySession = new Map()) {
+  const sessionAcc = sessionTokensOf(rows)
+  const { byParent, total } = groupByParent(sessionAcc)
+  const byStage = new Map()
+  for (const [sid, a] of sessionAcc) {
+    const stage = agentBySession.get(sid) ?? "parent"
+    let entry = byStage.get(stage)
+    if (!entry) {
+      entry = { sessions: 0, ...zeroTokenTotals() }
+      byStage.set(stage, entry)
+    }
+    const totals = a.hasRollup ? a.rollup : a.perMessage
+    entry.sessions++
+    for (const k of [...TOKEN_FIELDS, "cost"]) entry[k] += totals[k]
+  }
+  return {
+    byParent: Object.fromEntries(byParent),
+    byStage: Object.fromEntries(byStage),
+    total,
+  }
 }
 
 /**
  * Renders the table-mode token rollup: one line per task root plus a total
- * line, token counts raw and cost with four decimals.
- * @param {{ byParent: Record<string, Record<string, number>>, total: Record<string, number> }} tokenUsage
+ * line, token counts raw and cost with four decimals, then one `tokens by
+ * stage` line per pipeline-stage agent (best-effort attribution via
+ * `child-edge` rows; sessions without one group under `parent`).
+ * @param {{ byParent: Record<string, Record<string, number>>, byStage: Record<string, Record<string, number>>, total: Record<string, number> }} tokenUsage
  *     The rollup block (from buildTokenUsage).
  * @returns {string} The rollup lines, newline-joined.
  */
@@ -788,6 +829,11 @@ function renderTokenLines(tokenUsage) {
     out.push(`tokens: ${fmtSession(parent)}  ${fmt(t)}`)
   }
   out.push(`tokens: total  ${fmt(tokenUsage.total)}`)
+  for (const [stage, t] of Object.entries(tokenUsage.byStage ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    out.push(`tokens by stage: ${stage.padEnd(8)}  ${fmt(t)}`)
+  }
   return out.join("\n")
 }
 
@@ -1055,7 +1101,8 @@ async function main(argv) {
   }
 
   const tokenRows = tokenRowsOf(lines)
-  const tokenUsage = tokenRows.length > 0 ? buildTokenUsage(tokenRows) : null
+  const tokenUsage =
+    tokenRows.length > 0 ? buildTokenUsage(tokenRows, agentBySessionOf(lines)) : null
 
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
   if (flags.json) {

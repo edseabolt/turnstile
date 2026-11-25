@@ -34,6 +34,8 @@ export interface TokenUsageTotals {
 export interface ExtractedUsage {
   /** The host message ID (dedup key across snapshot updates). */
   messageID: string
+  /** The owning session ID, read from the snapshot (`info.sessionID`). */
+  sessionID: string
   /** Model identifier stamped on the row. */
   modelID: string
   /** Provider identifier stamped on the row. */
@@ -122,6 +124,7 @@ export function extractUsage(info: unknown): ExtractedUsage | null {
   const tokens = obj(snapshot.tokens)
   return {
     messageID,
+    sessionID: str(snapshot.sessionID),
     modelID: str(snapshot.modelID),
     providerID: str(snapshot.providerID),
     totals: {

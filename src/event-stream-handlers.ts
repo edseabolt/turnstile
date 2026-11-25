@@ -30,6 +30,7 @@ import {
   formatAllGreenLine,
   formatSessionSummary,
   isInactive,
+  sessionTokenTotals,
 } from "./summary.ts"
 import type { EventProperties } from "./types.ts"
 import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
@@ -811,12 +812,14 @@ async function handleSessionIdle(
   // once per session even when sessionSummary is "off" or quiet-inactive.
   if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
   if (ctx.config.sessionSummary === "off") return
-  const counts = countSessionActivity(readJournalEntries(ctx.journaler.journalPath), sid)
+  const entries = readJournalEntries(ctx.journaler.journalPath)
+  const counts = countSessionActivity(entries, sid)
+  const tokens = sessionTokenTotals(entries, sid)
   const inactive = isInactive(counts)
   if (inactive && ctx.config.sessionSummary === "quiet") return
   const line = inactive
     ? formatAllGreenLine(ctx.journaler.journalPath)
-    : formatSessionSummary(counts, ctx.journaler.journalPath)
+    : formatSessionSummary(counts, ctx.journaler.journalPath, tokens)
   ctx.journaler.journal({
     type: "session-summary",
     sessionID: sid,
@@ -873,7 +876,11 @@ function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties
   if (ctx.tokenUsageSeen.has(usage.messageID)) return
   ctx.tokenUsageSeen.add(usage.messageID)
   ctx.boundTokenUsage()
-  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  // The real host carries the session ID only inside the snapshot
+  // (`info.sessionID`); the top-level `properties.sessionID` fallback keeps
+  // tolerance for hosts that publish it there (same pattern as
+  // `handleTextUpdated`).
+  const sid = asSessionID(properties.sessionID ?? usage.sessionID)
   if (sid === "") return
   const parentID = ctx.ledger.childToParent.get(sid) ?? sid
   const totals = ctx.tokenUsageTotals.get(sid) ?? zeroTotals()

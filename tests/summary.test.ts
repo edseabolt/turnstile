@@ -21,7 +21,9 @@ import {
   formatAllGreenLine,
   formatSessionSummary,
   isInactive,
+  sessionTokenTotals,
 } from "../src/summary.ts"
+import { zeroTotals } from "../src/token-usage.ts"
 import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, type FakeHost } from "./helpers.ts"
 
 /** A gate PASS marker first-sight entry for a parent. */
@@ -128,6 +130,83 @@ test("formatSessionSummary pluralizes 0 and multi-counts", () => {
   )
 })
 
+/** Non-null non-zero totals append the token segment before the journal
+ *  segment, counts compacted and cost at four decimals. */
+test("formatSessionSummary appends the token rollup when totals exist", () => {
+  const t = { ...zeroTotals(), input: 12300, output: 1200, cost: 0.045 }
+  assert.equal(
+    formatSessionSummary({ verified: 1, blockedDispatches: 0, waivers: 0 }, "/m/t.jsonl", t),
+    "turnstile: 1 test-claims verified · 0 premature dispatches blocked · 0 waivers · 12.3k in/1.2k out tok · $0.0450 · journal /m/t.jsonl",
+  )
+})
+
+/** Sub-1000 counts render raw. */
+test("formatSessionSummary renders sub-1000 token counts raw", () => {
+  const t = { ...zeroTotals(), input: 999, output: 12, cost: 0.0001 }
+  const line = formatSessionSummary(
+    { verified: 0, blockedDispatches: 0, waivers: 0 },
+    "/m/t.jsonl",
+    t,
+  )
+  assert.match(line, / · 999 in\/12 out tok · \$0\.0001 · journal/)
+})
+
+/** Null and all-zero totals keep the two-argument output byte-identical. */
+test("formatSessionSummary omits the token segment for null and zero totals", () => {
+  const counts = { verified: 1, blockedDispatches: 0, waivers: 0 }
+  const twoArg = formatSessionSummary(counts, "/m/t.jsonl")
+  assert.equal(formatSessionSummary(counts, "/m/t.jsonl", null), twoArg)
+  assert.equal(formatSessionSummary(counts, "/m/t.jsonl", zeroTotals()), twoArg)
+})
+
+/** `sessionTokenTotals` folds matching token-usage rows and returns null
+ *  when nothing matches or everything is zero. */
+test("sessionTokenTotals folds matching rows and returns null otherwise", () => {
+  const row = (
+    sid: string,
+    tokens: Record<string, unknown>,
+    cost = 0,
+  ): Record<string, unknown> => ({
+    type: "token-usage",
+    sessionID: sid,
+    tokens,
+    cost,
+  })
+  const entries = [
+    row("p1", { input: 10, output: 5 }, 0.01),
+    row("p2", { input: 100 }, 1),
+    row("p1", { input: 1, cacheRead: 7, cacheWrite: 3, reasoning: 2 }, 0.02),
+    { type: "gate", sessionID: "p1", result: "PASS" },
+  ]
+  assert.deepEqual(sessionTokenTotals(entries, "p1"), {
+    input: 11,
+    output: 5,
+    reasoning: 2,
+    cacheRead: 7,
+    cacheWrite: 3,
+    cost: 0.03,
+  })
+  assert.equal(sessionTokenTotals(entries, "p3"), null)
+  assert.equal(sessionTokenTotals([row("p1", {})], "p1"), null, "all-zero rows yield null")
+  assert.equal(sessionTokenTotals([], "p1"), null)
+})
+
+/** Malformed token/cost fields fold as zeros rather than throwing. */
+test("sessionTokenTotals tolerates malformed rows as zeros", () => {
+  const entries = [
+    { type: "token-usage", sessionID: "p1", tokens: "bogus", cost: "x" },
+    { type: "token-usage", sessionID: "p1", tokens: { input: 4 }, cost: 0.5 },
+  ]
+  assert.deepEqual(sessionTokenTotals(entries, "p1"), {
+    input: 4,
+    output: 0,
+    reasoning: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0.5,
+  })
+})
+
 /** The all-green line for the "on" mode's zero-activity sessions. */
 test("formatAllGreenLine names the journal and the green state", () => {
   assert.equal(
@@ -225,6 +304,36 @@ test("session.idle surfaces once per session and toasts the recap", async () => 
   assert.equal(h.toasts.length, 1, "the toast fires once")
   assert.equal(h.toasts[0]!.variant, "success")
   assert.match(h.toasts[0]!.message, /1 premature dispatch blocked · 1 waiver/)
+  dispose()
+})
+
+/** An active session with token-usage rows carries the token segment in the
+ *  journaled recap line (the rollup row flushed at idle is visible to the
+ *  summary's journal read). */
+test("session.idle recap carries the token rollup when rows exist", async () => {
+  const h = makeFakeHost()
+  const { dispose, metricsDir } = await bootIdle(h.host, {
+    sessionSummary: "quiet",
+    tokenUsage: "summary",
+  })
+  seedActive(metricsDir)
+  await h.pushEvent({
+    type: "message.updated",
+    data: {
+      info: {
+        id: "msg_1",
+        role: "assistant",
+        finish: "stop",
+        tokens: { input: 1200, output: 300 },
+        cost: 0.01,
+        sessionID: "p1",
+      },
+    },
+  })
+  await h.pushEvent({ type: "session.idle", data: { sessionID: "p1" } })
+  const entries = summaryEntries(metricsDir)
+  assert.equal(entries.length, 1)
+  assert.match(String(entries[0]!.text), /1\.2k in\/300 out tok · \$0\.0100/)
   dispose()
 })
 

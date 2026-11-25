@@ -139,13 +139,18 @@ test("tokenUsage off journals nothing on message.updated", async () => {
 })
 
 /**
- * Pushes a message.updated event through the fake host's event stream.
+ * Pushes a message.updated event through the fake host's event stream in the
+ * real host's shape: the session ID lives only inside the snapshot
+ * (`info.sessionID`); no top-level `sessionID` is sent.
  * @param fake The fake-host wrapper.
  * @param sid The session the message belongs to.
  * @param info The message snapshot payload.
  */
 async function pushUpdated(fake: FakeHost, sid: string, info: unknown): Promise<void> {
-  await fake.pushEvent({ type: "message.updated", data: { sessionID: sid, info } })
+  await fake.pushEvent({
+    type: "message.updated",
+    data: { info: { ...(info as Record<string, unknown>), sessionID: sid } },
+  })
 }
 
 /** per-message journals one deduped row per completed assistant turn. */
@@ -225,6 +230,32 @@ test("message.updated without a sessionID is inert", async () => {
   assert.equal(usageEntries(metricsDir).length, 0)
   await fake.pushEvent({ type: "session.idle", data: { sessionID: "p1" } })
   assert.equal(usageEntries(metricsDir).length, 0, "nothing accumulated either")
+  dispose()
+})
+
+/** A snapshot-carried session ID (`info.sessionID`, the real host shape)
+ *  resolves the session with no top-level `sessionID` present. */
+test("message.updated resolves the session from info.sessionID", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "summary" })
+  await pushUpdated(fake, "p1", assistantInfo())
+  await fake.pushEvent({ type: "session.idle", data: { sessionID: "p1" } })
+  const rows = usageEntries(metricsDir)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]!.sessionID, "p1", "the snapshot's session ID is used")
+  dispose()
+})
+
+/** A top-level `properties.sessionID` (a legacy host shape) still journals. */
+test("message.updated tolerates a top-level sessionID", async () => {
+  const { dispose, metricsDir, fake } = await boot({ tokenUsage: "summary" })
+  await fake.pushEvent({
+    type: "message.updated",
+    data: { sessionID: "p1", info: assistantInfo() },
+  })
+  await fake.pushEvent({ type: "session.idle", data: { sessionID: "p1" } })
+  const rows = usageEntries(metricsDir)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0]!.sessionID, "p1")
   dispose()
 })
 
