@@ -817,7 +817,7 @@ async function handleSessionIdle(
  * land after the FIRST trigger per session per host process on either
  * contract: on 2.4.1 that is after the first agent run rather than at true
  * quiescence (accepted parity with the 2.0.x first-idle flush; tokens from
- * later runs stay unflushed until a host restart). Fail-open — the outer
+ * later runs stay unflushed until a host restart). Fail-open: the outer
  * loop journals any throw.
  * @param ctx The shared per-setup context.
  * @param sid The ended session's ID.
@@ -889,10 +889,11 @@ async function deliverSessionSummary(ctx: TurnstileContext, sid: string): Promis
 
 /**
  * Journals the summary-mode token-usage rollup for a session and clears its
- * accumulator. Called from `handleSessionIdle` before the `sessionSummary`
- * early returns so the rollup flushes on every idle regardless of the
- * summary setting. The idle dedupe guard makes this once per session per
- * host process; an empty accumulator journals nothing.
+ * accumulator. Called from `runSessionEnd` (which serves `session.idle` and
+ * the ≥ 2.4.1 `session.execution.succeeded`/`failed` carriers) before the
+ * `sessionSummary` early returns so the rollup flushes on every session end
+ * regardless of the summary setting. The session-end dedupe guard makes this
+ * once per session per host process; an empty accumulator journals nothing.
  * @param ctx The shared per-setup context.
  * @param sid The idling session's ID.
  */
@@ -945,7 +946,7 @@ function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties
  * step, merges the step into the same per-session accumulator and dedup set
  * as `message.updated` (`per-message` mode journals one row per step). The
  * 2.4.1 payload carries no `modelID`/`providerID`, so step-path rows stamp
- * empty strings there (consumers sum tokens only). Fail-open — the outer
+ * empty strings there (consumers sum tokens only). Fail-open: the outer
  * consume loop journals any throw.
  * @param ctx The shared per-setup context.
  * @param properties The resolved event properties.
@@ -963,7 +964,7 @@ function handleStepEnded(ctx: TurnstileContext, properties: EventProperties): vo
  * the session's totals, and journal the per-message row when the mode asks
  * for it. Note the deliberate ordering change from the pre-extraction
  * `message.updated` path: the session ID is resolved BEFORE the dedup mark,
- * so a session-less message no longer marks itself seen (an improvement —
+ * so a session-less message no longer marks itself seen (an improvement:
  * the turn stays eligible once a session ID is known). Cross-contract
  * no-double-count falls out of the shared dedup key space: a turn whose
  * assistant message ID arrives through both carriers counts once.
@@ -980,7 +981,9 @@ function recordTurnUsage(ctx: TurnstileContext, usage: ExtractedUsage): void {
 
 /**
  * Merges one completed turn into the session's token accumulator (summary
- * mode journals the merge as one rollup row at `session.idle`).
+ * mode journals the merge as one rollup row during the shared session-end
+ * sequence, which serves `session.idle` and the ≥ 2.4.1
+ * `session.execution.succeeded`/`failed` carriers).
  * @param ctx The shared per-setup context.
  * @param sid The session the turn belongs to.
  * @param usage The extracted turn usage.
@@ -993,7 +996,9 @@ function accumulateTokenUsage(ctx: TurnstileContext, sid: string, usage: Extract
 /**
  * Journals one deduped per-message `token-usage` row. `parentID` resolves via
  * the `childToParent` map (own ID for parent sessions) so every row groups by
- * task root.
+ * task root. `modelID`/`providerID` can be "": the ≥ 2.4.1
+ * `session.step.ended` carrier carries no model fields, while
+ * `message.updated` snapshots do; consumers sum tokens only.
  * @param ctx The shared per-setup context.
  * @param sid The session the turn belongs to.
  * @param usage The extracted turn usage.

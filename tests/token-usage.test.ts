@@ -5,8 +5,8 @@
  * 2.4.1 `session.step.ended` payload, `addTotals` sums componentwise, and
  * the `message.updated` / `session.step.ended` wiring journals deduped
  * per-message rows or one session-rollup row per session-end trigger
- * (`session.idle`, `session.execution.succeeded`, `session.execution.failed`)
- * — including cross-contract no-double-count and the placement guarantee
+ * (`session.idle`, `session.execution.succeeded`, `session.execution.failed`),
+ * including cross-contract no-double-count and the placement guarantee
  * that the rollup flushes even when `sessionSummary` is `"off"`.
  */
 

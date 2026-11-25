@@ -249,7 +249,7 @@ the same way a foreground tool result does; on 2.0.22–2.0.28 the event does
 not exist and completions arrive as foreground tool results), the
 session-end summary (`session.idle` on hosts ≤ 2.3.x or
 `session.execution.succeeded`/`session.execution.failed` on hosts ≥ 2.4.1,
-one recap per session per host process — the once-per-session dedup means
+one recap per session per host process: the once-per-session dedup means
 the recap and token rollup land after the FIRST trigger, so on 2.4.1 that is
 after the first agent run rather than at true quiescence; see the
 `session-summary` entry kind in [persistence](persistence.md); the recap

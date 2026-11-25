@@ -2,7 +2,7 @@
  * @fileoverview Token-usage boundary: pure extraction, merge, and rollup
  * helpers for per-session token/cost journaling fed from the host's
  * `message.updated` event (hosts ≤ 2.3.x) or `session.step.ended` event
- * (hosts ≥ 2.4.x). No host, no journaler, no state — the caller
+ * (hosts ≥ 2.4.x). No host, no journaler, no state: the caller
  * (`handleMessageUpdated` / `handleStepEnded` in
  * `src/event-stream-handlers.ts`) reads the event payload, dedups by message
  * ID against the bounded context sets, and journals; this module only decides
@@ -186,8 +186,8 @@ export function extractStepUsage(properties: unknown): ExtractedStepUsage | null
 }
 
 /**
- * Componentwise sum of two totals objects — the accumulator merge for the
- * summary-mode session rollup.
+ * Componentwise sum of two totals objects (the accumulator merge for the
+ * summary-mode session rollup).
  * @param a The running totals.
  * @param b The incoming totals.
  * @returns A fresh totals object with each component summed.
