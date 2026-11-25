@@ -239,6 +239,12 @@ export interface EventProperties {
    * when absent.
    */
   info?: unknown
+  /**
+   * On hosts ≥ 2.4.1 the per-step carrier is `session.step.ended`, whose
+   * properties carry `sessionID`, `assistantMessageID`, `finish`, `cost`,
+   * and `tokens` at the top level; `extractStepUsage` reads those fields
+   * against the same runtime guards.
+   */
 }
 
 /** A single host stream event delivered by `event.subscribe`. */

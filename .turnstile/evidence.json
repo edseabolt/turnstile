@@ -3,23 +3,23 @@
   "generatedAt": "1970-01-01T00:00:00.000Z",
   "noJournal": false,
   "noTask": false,
-  "task": "t-4ea32a88",
+  "task": "t-81ea39ea",
   "green": true,
-  "emittedAt": "2026-11-25T18:54:04.256Z",
+  "emittedAt": "2026-11-25T19:55:25.763Z",
   "plan": {
     "verdict": "APPROVE",
-    "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
-    "at": "2026-11-25T18:53:15.351Z",
+    "marker": "VERDICT: APPROVE crit=0 high=0 med=1 low=2",
+    "at": "2026-11-25T19:45:58.281Z",
     "source": "subagent-synthetic",
     "stale": false
   },
   "tests": {
     "result": "PASS",
-    "marker": "GATE: PASS tests=1982 passed=1982 failed=0",
-    "at": "2026-11-25T18:46:19.529Z",
+    "marker": "GATE: PASS tests=1997 passed=1997 failed=0",
+    "at": "2026-11-25T19:38:13.189Z",
     "verified": true,
     "mode": "enforce",
-    "exitZeroRuns": 0
+    "exitZeroRuns": 5
   },
   "review": {
     "approves": 2,
@@ -27,30 +27,20 @@
   },
   "waivers": 0,
   "blocks": 2,
-  "dispatches": 21,
+  "dispatches": 7,
   "journal": {
     "files": [
-      "ses_decc953c7ffeyiViFPOnQnUN0X.jsonl",
-      "ses_decc675bfffeMJgIIuYcNpYz3R.jsonl",
-      "ses_decbf85ceffeLbD1lf7fbJU4Lm.jsonl",
-      "ses_decbb8808ffewhJ81124AUJAtl.jsonl",
-      "ses_decbabc08ffe9jT1QOlN3ypIh4.jsonl",
-      "ses_decaa151effeeJbo3THGh7Bq3w.jsonl",
-      "ses_deca3b7f8ffeaw92rzjx65jy5K.jsonl",
-      "ses_deca3b7f7ffe9DFGSBel3YUwBB.jsonl",
-      "ses_dec3d3662ffekrnvzClohb7mM5.jsonl",
-      "ses_dec27a9e9ffewkl736KnyrE0m2.jsonl",
-      "ses_dec130389ffeuuSbvjsF5otOmg.jsonl",
-      "ses_dec115c2affeCJCig91r5Vr4to.jsonl",
-      "ses_dec06e0ddffe1fuLJWXOsPpa3w.jsonl",
-      "ses_dec033db8ffeuheeLsyzCNyEXn.jsonl",
-      "ses_dec033db7ffeVXmsAEXbEZf15v.jsonl",
-      "ses_debfa41dcffeKd0h6mHaIQsiQC.jsonl",
-      "ses_debf80826ffeDCmMRkiA64vQBY.jsonl",
-      "ses_debf80826ffdQp9ZK3YfzVDndv.jsonl",
+      "ses_debecca04ffe1uvNBUXk08VsWH.jsonl",
+      "ses_debe35891ffe4gsmkqAjIk8p7S.jsonl",
+      "ses_debd908f8ffev3ebAbWsei5DSI.jsonl",
+      "ses_debd6a006ffeZYYVt6okLipej2.jsonl",
+      "ses_debcb4421ffecJJFE9vRkH0lXk.jsonl",
+      "ses_debc872e9ffePjMhN1g87PV92v.jsonl",
+      "ses_debc872e8ffedqwXaQjSugrOC2.jsonl",
+      "ses_debc0b2a4ffeWsMSDRK5NFCDYF.jsonl",
       "turnstile.jsonl"
     ],
-    "lines": 1593,
-    "head": "sha256:41ea39af6444"
+    "lines": 437,
+    "head": "sha256:833485f0d651"
   }
 }

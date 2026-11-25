@@ -247,12 +247,17 @@ child→parent edge, so a
 background plan-reviewer's `VERDICT: APPROVE` moves the plan-approval gate
 the same way a foreground tool result does; on 2.0.22–2.0.28 the event does
 not exist and completions arrive as foreground tool results), the
-session-end summary (`session.idle`, one recap line per session, see the
+session-end summary (`session.idle` on hosts ≤ 2.3.x or
+`session.execution.succeeded`/`session.execution.failed` on hosts ≥ 2.4.1,
+one recap per session per host process: the once-per-session dedup means
+the recap and token rollup land after the FIRST trigger, so on 2.4.1 that is
+after the first agent run rather than at true quiescence; see the
 `session-summary` entry kind in [persistence](persistence.md); the recap
 line carries the session's token/cost rollup when the journal holds
 token-usage rows for it),
-token-usage journaling (`message.updated` → a `token-usage` per-message row
-or a `session.idle` rollup per the `tokenUsage` mode, see the `token-usage`
+token-usage journaling (`message.updated` on hosts ≤ 2.3.x, `session.step.ended`
+on hosts ≥ 2.4.1 → a `token-usage` per-message row or a session-end rollup per
+the `tokenUsage` mode, see the `token-usage`
 entry kind in [persistence](persistence.md)), and error
 telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
