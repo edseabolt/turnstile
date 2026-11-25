@@ -12,7 +12,7 @@
     (`ROTATION_LOCK_STALE_MS`, 60s) and the rotation proceeds, and journaling
     keeps appending through fresh contention
   - `sessions/<parentID>.jsonl`: per-parent-session segments (when
-    `journalPerSession` is on, the default) — every entry with a resolvable
+    `journalPerSession` is on, the default); every entry with a resolvable
     parent sessionID appends here, so one session's story reads
     top-to-bottom; same rotation bounds per file. Grep one session's
     history with `rg … ~/.local/share/opencode/metrics/sessions/<parentID>.jsonl`
@@ -26,14 +26,14 @@
     scope + key-scheme tag (`scheme: "spec"`; untagged = legacy whole-file
     key)), capped at 256 records and rewritten on eviction. A plan whose
     name and content key still match a record for the current project is
-    not _pending_ — the plan gate stays green for it even after its
+    not _pending_: the plan gate stays green for it even after its
     journal APPROVE line has aged out of `replayTailLines` and across
     prompt resets; an edited or replaced plan (key mismatch) stays
     pending. A legacy record whose whole-file key still matches the
     whole-file sha256 at the current plans scan is honored and re-keyed to
     the spec scheme on first touch (journaled `plan-rekey`; the re-key
     writes the current spec key). A cached scan may reflect the bytes at
-    its last refresh rather than the current file — a progress-only edit
+    its last refresh rather than the current file: a progress-only edit
     leaves the spec region (and the cached scan signature) unchanged, so a
     legacy record can be honored across such an edit. A record matching
     neither key blocks with
@@ -42,7 +42,7 @@
     degrades to journal-replay semantics
 - Retention is bounded: 2 files × (1 current + 5 generations) × 5 MB ≈
   ~30 MB per journal, plus gzip archives (≤ 5 pruned generations,
-  ~2.5 MB per journal) — worst case ~65 MB total — plus the approved-plan
+  ~2.5 MB per journal; worst case ~65 MB total) plus the approved-plan
   sidecar (≤ 256 short records). With `journalPerSession` on, each live
   session adds its own `sessions/<parentID>.jsonl` with the same per-file
   bounds, so aggregate retention and boot replay read cost scale with the

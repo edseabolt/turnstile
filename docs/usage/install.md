@@ -11,7 +11,7 @@ with the CLI install.
    ```
 
    turnstile loads and enforces its gates, injecting the orchestrator policy
-   into the parent session at runtime — nothing is written to any
+   into the parent session at runtime; nothing is written to any
    instructions file. The pipeline agent definitions are not installed by
    this option alone (recognition is by dispatch _name_, not by installed
    files, so the gates still fire).
@@ -44,7 +44,7 @@ npx opencode-turnstile init --copy
 
 Copy mode records the mode it used in the ledger (alongside each entry's
 source, hash, and version); symlink mode deletes ledger entries rather than
-recording them. `check` does not read the mode from the ledger — it
+recording them. `check` does not read the mode from the ledger; it
 re-resolves it on each run from the CLI flag, then the manifest, then
 filesystem auto-detection, so it stays consistent across reruns.
 
@@ -73,7 +73,7 @@ opencode-turnstile`, or your registry's equivalent). Re-run `check` to see
 whether anything is outdated or drifted, then `init` to re-sync only what
 changed: `npx opencode-turnstile init --copy` for package installs,
 `npm run init -- --copy` from a clone. The injected orchestrator policy
-travels with the plugin, so re-syncing the plugin re-supplies it — there is
+travels with the plugin, so re-syncing the plugin re-supplies it; there is
 no separate contract block to re-sync.
 
 ### Uninstall
@@ -85,7 +85,7 @@ installed (untracked files, symlinks pointing outside the repo) are left
 alone, and a second run is a clean no-op. Injected policy is gone the moment
 the plugin is unloaded; a legacy contract block once written by hand into
 `~/.config/opencode/AGENTS.md` is not owned by turnstile and is removed
-separately — see
+separately; see
 [Policy injection](../architecture/policy-injection.md).
 
 ### Retired paths
@@ -94,7 +94,7 @@ The manifest also carries a `retired` list: destinations turnstile once
 installed but no longer ships (for example the old `turnstile-suspend` and
 `turnstile-setup` skills, or the command files from when `status` and `log`
 were slash commands). `init`, `check`, and `uninstall` sweep these paths on
-every run, so upgrading removes the stale installed copies automatically —
+every run, so upgrading removes the stale installed copies automatically:
 repo-owned symlinks (including links whose repo target is gone) and
 ledger-owned copies are removed; anything unowned is reported and left
 alone. Between the upgrade and the next `init`, `check` (and
@@ -108,8 +108,8 @@ in `install.json`; unowned files in the target directories are never
 touched. Two install modes:
 
 A manifest entry may name a directory as its source (the plugin's `src/`
-tree ships this way): the directory installs file-by-file — recursive,
-sorted — so each file is individually ledger-recorded (copy) or linked
+tree ships this way): the directory installs file-by-file (recursive,
+sorted), so each file is individually ledger-recorded (copy) or linked
 (link), removed by uninstall, and reported by check.
 
 |                           | Symlink (default)                                   | Copy (`--copy`)                                         |
@@ -149,7 +149,7 @@ installer will refuse to touch.
 
 The seven agent definitions in `agents/` ship **without** a `model:`
 frontmatter key. Each subagent therefore runs on the model of the session
-that dispatched it — OpenCode v2's documented inheritance rule — so there is
+that dispatched it (OpenCode v2's documented inheritance rule), so there is
 nothing to configure for the common case. The `--print-model-config`
 printer covers the six pipeline-stage names; the requirements agent
 inherits the dispatching session's model and needs no pin.
@@ -172,15 +172,15 @@ used singular `agent`):
 }
 ```
 
-This is the author's actual local setup (a self-hosted oMLX engine serving a GLM model). Frontier hosted models work the same way — any  
+This is the author's actual local setup (a self-hosted oMLX engine serving a GLM model). Frontier hosted models work the same way: any  
 `provider/model-id` your OpenCode install lists, e.g.
-`anthropic/claude-sonnet-4-5` — and are the right choice if your local
+`anthropic/claude-sonnet-4-5`; they are the right choice if your local
 models struggle with the executor or reviewer roles.
 
 Model IDs come from `opencode models` and take the form `provider/modelID`,
 with an optional `#variant`. Restarts pick the change up. Because the
 shipped definitions are silent on `model:`, a pin you add is the only
-definition of that model — there is no merge precedence to reason about.
+definition of that model; there is no merge precedence to reason about.
 
 Copy-mode users: after a `git pull` that changes these definitions, re-run
 `npm run install:copy` to pick up the new frontmatter. `npm run
@@ -189,7 +189,7 @@ install:check` will report `stale` (not `conflict`) until you do.
 ### Printing a model config
 
 To generate a `{"agents": {…}}` snippet instead of copying the six agent
-names by hand, run the printer. It writes nothing — it short-circuits before
+names by hand, run the printer. It writes nothing: it short-circuits before
 any install work, so the ledger, links, and copies are untouched:
 
 ```sh
@@ -213,8 +213,8 @@ That prints one entry per agent, each defaulting to a placeholder:
 
 Seed individual agents with repeatable `--model` seeds. A bare
 `provider/model` (optionally `#variant`) seeds all six; `name=` seeds one.
-Model ids may be multi-segment — providers require interior slashes, e.g.
-`oMLX/oQ/GLM-5.3-Flash-oQ4-mtp` — so the model body is everything after the
+Model ids may be multi-segment (providers require interior slashes, e.g.
+`oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`), so the model body is everything after the
 first slash.
 
 ```sh
@@ -259,7 +259,7 @@ Two sanctioned ways to change the pipeline:
 
 One coupling to know when customizing either way: the shipped definitions
 reference `.opencode/plans/` as turnstile's **default** `plansDir`, not a
-constant — the plan path travels in the dispatch prompt, and the agents are
+constant: the plan path travels in the dispatch prompt, and the agents are
 instructed to honor it over the default (see the frontmatter comment in
 `agents/planner.md`). If you reconfigure `plansDir`,
 update your agent definitions' write permission (planner) accordingly; a
@@ -302,7 +302,7 @@ Shared caveats:
   policy is injected from code (`src/policy.ts`), not a manifest-managed
   template, so nothing to verify there. `npm run ci:installed` is now just
   `install:check`. These install checks must run after `npm run init` on a
-  machine with artifacts installed — a fresh clone has nothing to check. The
+  machine with artifacts installed; a fresh clone has nothing to check. The
   host chain (`npm run ci` = `npm run ci:host`) covers lint, format:check,
   typecheck, check:markers, and test without the install checks. GitHub CI
   runs `npm run ci:host`, the host chain only, because a runner has no
@@ -331,7 +331,7 @@ Derived views (origin labels, noise rate, taste-drift) are available offline
 via `opencode-turnstile prov-views`; they read the same `prov:*` rows and
 never mutate them.
 
-The on/off skills never send the suspend/resume markers themselves — the
+The on/off skills never send the suspend/resume markers themselves: the
 markers are honored only from user-typed prompts, so an agent relaying one
 does nothing. Instead the skill reads the resolved suspension config from
 `status --json`'s `suspension` block:
@@ -348,9 +348,9 @@ does nothing. Instead the skill reads the resolved suspension config from
 
 A worked `turnstile-off` flow: the skill runs `status --json`, reads
 `suspendMarker` and `allowSuspend` from the block, and hands you a
-copy-ready prompt — "Send this yourself (do not let the agent send it):
+copy-ready prompt: "Send this yourself (do not let the agent send it):
 `<suspendMarker> <your reason>`". If your config sets `allowSuspend: false`
-(the kill switch), the skill says so and stops — it does not compose a
+(the kill switch), the skill says so and stops; it does not compose a
 prompt that would be refused. A renamed marker (`suspendMarker` in the [configuration](configuration.md)
 table) is picked up automatically because the value always comes from the
 CLI, never from the skill text. All nine skills forward

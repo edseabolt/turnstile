@@ -41,8 +41,8 @@ eventloop: "event.subscribe stream loop (hooks-events.ts,\nthrow-only 5-restart 
   text: "message.part.updated /\nsession.text.ended / .delta\n(Δ chunk reassembled in a per-session\nwindow) → parseMarkers"
   permbook: "permission.asked / replied\n→ plan, landing & hands-on\nask bookkeeping; human rejects\n→ journalProvDenied → prov:denied\n(decisionLedger.enabled)"
   inbox: "session.inbox.enqueued\n→ prompt admission (≥ 2.0.29)"
-  idle: "session.idle → session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)"
-  msgupd: "message.updated → token-usage journaling\n(per-message row or session.idle rollup\nper the tokenUsage mode)"
+  idle: "session.idle (≤ 2.0.x) /\nsession.execution.succeeded · failed (≥ 2.4.1)\n→ runSessionEnd: session-end summary\n(one recap line per session; journaled\ntype:\"session-summary\" + best-effort toast)\n+ token-usage rollup flush"
+  msgupd: "message.updated (≤ 2.0.x) /\nsession.step.ended (≥ 2.4.1)\n→ token-usage journaling (per-message row\nor session-end rollup per the tokenUsage\nmode; dedup by assistant message id\nacross both)"
   errors: "session.error → telemetry"
 }
 

@@ -154,7 +154,7 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   - _Planner write-target guard._ Inside the child exemption, a planner
     child's write/edit is additionally confined to the configured
     `plansDir`. The agent name resolves by the same precedence (event name
-    first, emitter fallback second; an unresolved name is not a planner —
+    first, emitter fallback second; an unresolved name is not a planner,
     fail-open). Scratch targets and empty paths are allowed. A target
     outside the configured plans directory (resolved against the session's
     project dir, relative and absolute `plansDir` both honored) journals
@@ -187,7 +187,7 @@ surfaces pending near-miss marker diagnostics once per prompt batch (a
 parent with a parked hit, journaled `type:"marker"` / `surfaced`), then
 parses markers out of task deliveries, attributes plan verdicts, credits reviewer
 approval (ensemble-gated); both on the delivery's agent, resolved through the
-child→parent edge + host session record when the dispatch input names none —
+child→parent edge + host session record when the dispatch input names none;
 appends the per-delivery `PIPELINE:` status tail
 (skipped when the delivery's agent is not a pipeline stage), prepends the
 orchestrator policy head once per task (the first pipeline delivery reads
@@ -247,10 +247,20 @@ child→parent edge, so a
 background plan-reviewer's `VERDICT: APPROVE` moves the plan-approval gate
 the same way a foreground tool result does; on 2.0.22–2.0.28 the event does
 not exist and completions arrive as foreground tool results), the
-session-end summary (`session.idle`, one recap line per session, see the
-`session-summary` entry kind in [persistence](persistence.md)),
-token-usage journaling (`message.updated` → a `token-usage` per-message row
-or a `session.idle` rollup per the `tokenUsage` mode, see the `token-usage`
+session-end summary (`session.idle` on hosts ≤ 2.3.x or
+`session.execution.succeeded`/`session.execution.failed` on hosts ≥ 2.4.1,
+one recap per session per host process: the once-per-session dedup means
+the recap and token rollup land after the FIRST trigger, so on 2.4.1 that is
+after the first agent run rather than at true quiescence; see the
+`session-summary` entry kind in [persistence](persistence.md); the recap
+line carries the session's token/cost rollup when the journal holds
+token-usage rows for it). The rollup row and the `session-summary` proof row
+are journaled synchronously before the session-end anchor and verify awaits,
+so both survive headless hosts that exit the process right after
+`session.execution.succeeded`.
+token-usage journaling (`message.updated` on hosts ≤ 2.3.x, `session.step.ended`
+on hosts ≥ 2.4.1 → a `token-usage` per-message row or a session-end rollup per
+the `tokenUsage` mode, see the `token-usage`
 entry kind in [persistence](persistence.md)), and error
 telemetry. Streamed child text
 is ingested through a per-session sliding window: a marker the host splits
@@ -259,7 +269,7 @@ marker is first-sighted once (dedup-suppressing the re-parse), then the window
 ages out on the next task dispatch. A marker longer than the window is not
 reassembled in streaming; the fold journals a `delta-truncated` marker entry
 for a span never seen complete in streaming (a span already credited by
-streaming first-sight is not reported), and gate credit is unaffected — it
+streaming first-sight is not reported), and gate credit is unaffected: it
 arrives from streaming first-sight or the task-result delivery re-parse. A marker that
 never completes within any pre-truncation buffer stays undetectable until
 delivery. A subscription that throws is

@@ -14,7 +14,7 @@ One class of rows is deliberately unchained, defined by origin, not
 payload: the rows written from inside the chained path itself, in
 `src/journal.ts` (`journalLockError`, the degraded-append warning) and
 `src/journal-sinks.ts` (`tickRotate`'s `rotation-lock-stale:` row), when
-that path is degraded. Chaining them would recurse — the chained append is
+that path is degraded. Chaining them would recurse: the chained append is
 what failed. Ledger-side rows whose payload happens to begin with
 `journal-lock:` (for example the approval-lock error row) are NOT in this
 class: they are written from `src/ledger.ts` and are chained like every
@@ -58,21 +58,21 @@ Row-level inclusion proofs (`prov --verify --session <id>`) are described in
 
 **Cross-process append locking.** Two OpenCode instances sharing a metrics
 dir append to the same journal files. Without coordination, both could read
-the same chain tail and both append — a forked chain (two rows with the
+the same chain tail and both append, forking the chain (two rows with the
 same `seq` and `prevHash`), which the verify fold reports as broken. The
 append path closes that window (`src/lockfile.ts`, `src/journal.ts`):
 
 - Every chained append runs inside an advisory mkdir mutex at
   `<journal>.lock` (`withFileLock`), and the chain head is **re-read from
-  disk inside the critical section** — the disk tail inside the lock is the
+  disk inside the critical section**: the disk tail inside the lock is the
   only trusted chain head; the in-process `FamilyChain` is a cache,
   revalidated on every append.
 - **One lock at a time.** No code path holds two `<file>.lock` mutexes at
   once: the append lock is acquired and released entirely within the
   chained append, and rotation's lock is taken only after the append has
   returned. No deadlock by construction.
-- **Bounds.** A lock older than 10 s (append) or 60 s (rotation) is stale —
-  its holder crashed — and is stolen once; the steal is journaled
+- **Bounds.** A lock older than 10 s (append) or 60 s (rotation) is stale
+  (its holder crashed) and is stolen once; the steal is journaled
   (`journal-lock: stale lock stolen:` for appends,
   `rotation-lock-stale:` for rotation). Acquisition retries are bounded
   (1 s for appends; rotation makes a single attempt).
@@ -85,7 +85,7 @@ append path closes that window (`src/lockfile.ts`, `src/journal.ts`):
   on degradation), with an in-lock re-read that folds a concurrent host's
   records into both memory and any compaction rewrite.
 - **Follow-up.** If a fork is ever detected in the wild (the lock protocol
-  proving insufficient — a stolen live lock, an NFS edge case), the
+  proving insufficient: a stolen live lock, an NFS edge case), the
   escalation path is per-writer partitioned journal files with a
   cross-writer linkage field: that turns a fork into a detectable event
   instead of a prevented one, at the cost of a larger replay and verify
@@ -103,14 +103,14 @@ positive) fails loudly:
 
 | #   | Mutation                                                                                    | Expected result                                                                                                                       | Caught by                                                                                                                                            |
 | --- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0   | none (control)                                                                              | verify passes                                                                                                                         | —                                                                                                                                                    |
+| 0   | none (control)                                                                              | verify passes                                                                                                                         | none                                                                                                                                                 |
 | 1   | edit one row's payload                                                                      | fail, first broken link reported                                                                                                      | chain fold                                                                                                                                           |
 | 2   | delete a row                                                                                | fail                                                                                                                                  | chain fold                                                                                                                                           |
 | 3   | insert a fabricated row                                                                     | fail                                                                                                                                  | chain fold                                                                                                                                           |
 | 4   | reorder rows                                                                                | fail                                                                                                                                  | chain fold / epoch root                                                                                                                              |
 | 5   | fork (branch from an interior row)                                                          | fail                                                                                                                                  | chain fold / epoch root                                                                                                                              |
 | 6   | rewrite-all with recomputed chain                                                           | chain folds clean, anchor check fails                                                                                                 | anchor                                                                                                                                               |
-| 7   | edit rows within the un-anchored tail                                                       | **passes** (documented residual hole, bounded by the anchor cadence)                                                                  | —                                                                                                                                                    |
+| 7   | edit rows within the un-anchored tail                                                       | **passes** (documented residual hole, bounded by the anchor cadence)                                                                  | none                                                                                                                                                 |
 | 8   | truncate-and-continue (recurring-cleaner attack: truncate, keep logging into a fresh chain) | fail: previously published epoch roots become underivable from the current file, even though the new chain folds clean and re-anchors | anchor (CLI surfaces it via the unanchored-ref check against the retained store; missing-root detection confirmed at the `verifyJournalChain` level) |
 | 9   | commit a wrong epoch root (row re-hashed honestly)                                          | fail: the per-record fold stays clean, so only the epoch-root check catches it                                                        | chain fold / epoch root                                                                                                                              |
 

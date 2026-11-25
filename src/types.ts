@@ -234,10 +234,17 @@ export interface EventProperties {
    * Full message snapshot carried by `message.updated` (assistant and user
    * turns, parent and child sessions). Untyped by the host contract this
    * plugin relies on, hence `unknown`; `src/token-usage.ts` reads
-   * `role`, `id`, `modelID`, `providerID`, `tokens`, `cost`, `finish`, and
-   * `time.completed` against runtime guards and fails open when absent.
+   * `role`, `id`, `sessionID`, `modelID`, `providerID`, `tokens`, `cost`,
+   * `finish`, and `time.completed` against runtime guards and fails open
+   * when absent.
    */
   info?: unknown
+  /**
+   * On hosts ≥ 2.4.1 the per-step carrier is `session.step.ended`, whose
+   * properties carry `sessionID`, `assistantMessageID`, `finish`, `cost`,
+   * and `tokens` at the top level; `extractStepUsage` reads those fields
+   * against the same runtime guards.
+   */
 }
 
 /** A single host stream event delivered by `event.subscribe`. */

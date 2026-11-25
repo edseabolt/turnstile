@@ -1,10 +1,10 @@
-# AGENTS.md — turnstile
+# AGENTS.md (turnstile)
 
 ## Branching & releases (standing instruction, Oct 2026)
 
 - `dev` is the default and the only primary development branch; it is
   GitHub-protected (required `ci` status check, no direct pushes). All work
-  lands in `dev` via PR — never push directly, never commit to `main`.
+  lands in `dev` via PR: never push directly, never commit to `main`.
 - `main` is release-only. It is promoted exclusively by a `dev` → `main`
   PR that a human merges deliberately. Do not merge anything into `main`,
   and do not click through a dev→main PR merge, unless the user asks
@@ -16,14 +16,14 @@
 
 OpenCode v2 promise-plugin: `turnstile.ts` is the thin entry point the host
 loads; behavior lives in focused modules under `src/`, one boundary per
-file — the authoritative module map (every file + responsibility) is
+file. The authoritative module map (every file + responsibility) is
 `docs/modules.md`; do not hand-copy it here.
 It
 mechanically enforces an agent pipeline (planner → plan-reviewer →
 executor → test-runner → reviewer). The orchestrator policy is injected
-into the parent session at runtime by the plugin (from `src/policy.ts`) —
-primarily via the `session.context` channel, with the `execute.after` hook
-as the fallback re-supply — rather than written to any instructions
+into the parent session at runtime by the plugin (from `src/policy.ts`),
+primarily via the `session.context` channel with the `execute.after` hook
+as the fallback re-supply, rather than written to any instructions
 file at install time; a fresh install can never lose it; per-agent
 instruction lines live in each `agents/<name>.md`.
 The plugin and pipeline subagent definitions are installed by
@@ -38,7 +38,7 @@ The subagent definitions the pipeline dispatches (planner, plan-reviewer,
 executor, test-runner, reviewer, debugger) ship as examples in
 `agents/`;
 `npm run init` links or copies them into `~/.config/opencode/agents/`;
-the shipped definitions carry no `model:` frontmatter — subagents inherit
+the shipped definitions carry no `model:` frontmatter: subagents inherit
 the dispatching session's model, and per-agent pins belong in
 `~/.config/opencode/opencode.json` under `agents.<name>.model`; installs
 never carry user state.
@@ -47,15 +47,15 @@ model snippet (repeatable `--model [name=]provider/model[#variant]` seeds;
 model ids may be multi-segment, e.g. `oMLX/oQ/GLM-5.3-Flash-oQ4-mtp`;
 `--validate` checks concrete specs against `opencode models` and exits 1 on a
 miss; `--model`/`--validate` given without `--print-model-config` exit 2) and
-writes nothing — `install.mjs` prints the snippet and short-circuits before
+writes nothing: `install.mjs` prints the snippet and short-circuits before
 any manifest work (see the README).
 Verification tooling: ESLint + typescript-eslint (lint), Prettier
 (format), `tsc` strict (typecheck), and `scripts/check-markers.mjs` (marker
 drift). `npm test` enforces 100% line, branch, and function coverage over
 `src/` + `turnstile.ts` via node:test's built-in V8 coverage thresholds
-(100 for lines, branches, and functions) with `--experimental-test-isolation=none` — fully
+(100 for lines, branches, and functions) with `--experimental-test-isolation=none`. That is fully
 deterministic on a green suite: a red branch report is a real
-never-executed decision, never a merge artifact — the installer scripts
+never-executed decision, never a merge artifact. The installer scripts
 (`bin/`, `scripts/`) are outside the gate:
 
 ```
@@ -66,24 +66,31 @@ npm run ci:installed # install:check — install-drift, run after npm run init
 ## Coding practices
 
 These rules are enforced on every change, not aspirational. A review that
-spots a violation rejects the change or refactors it in the same change set —
+spots a violation rejects the change or refactors it in the same change set;
 "cleanup later" is not an option.
 
-### Writing style — ISO 24495-1 (standing instruction, Nov 2026)
+### Writing style: ISO 24495-1 (standing instruction, Nov 2026)
 
-All prose written in this repo must follow ISO 24495-1 (Plain language —
+All prose written in this repo must follow ISO 24495-1 (Plain language,
 Part 1: Governing principles and guidelines). This applies everywhere prose
 is written: documentation (README, `docs/`), docstrings/JSDoc, code comments,
 commit messages, and agent/skill definition text. Prioritize the standard's
 core principles: write for your readers, keep it findable and usable, and
-say only what's needed — nothing more.
+say only what's needed, nothing more.
+
+Em dashes are a taste rule on top of the standard: use them sparingly — at
+most one per document, and only for a genuine break no comma, colon,
+parenthesis, or sentence split can carry. The routine appositive pattern
+("X — qualification — continuation") is rewritten as a colon, commas,
+parentheses, or a split sentence. This applies to the same surfaces as the
+paragraph above.
 
 ### Functional design (function size cap)
 
 Functions should be small, focused, and easy to understand. Hard guideline:
 **a function is at most 20–30 lines** (clean-code best practice; the tighter
 20 is the target, 30 is the ceiling before a refactor is mandatory). If a
-function exceeds it, break it down by the concerns inside it — extraction is
+function exceeds it, break it down by the concerns inside it; extraction is
 not optional past the ceiling. A function that needs a comment to explain its
 structure is already too big. (In this repo, behavior already splits one
 concern per file under `src/`; keep new logic in the boundary that owns it,
@@ -101,7 +108,7 @@ defect, not a shortcut. Concretely in this repo:
 - Marker syntax, config defaults, and policy text each have one canonical
   source (`src/markers.ts`, `src/config.ts`, `src/policy.ts`); anything that
   needs them imports or is checked against the source by
-  `scripts/check-markers.mjs` — never copy them by hand.
+  `scripts/check-markers.mjs`; never copy them by hand.
 - When a repeated block appears a third time, extract it in the same change
   set that added it. A comment like "keep these in sync" marks a DRY
   violation to fix, not a convention to follow.
@@ -115,7 +122,7 @@ parses, `state.ts` remembers, `ledger.ts` persists and evicts, `journal.ts`
 persists, the `hooks-*` modules carry the per-surface hook bodies, and
 `setup.ts` wires.
 Dependencies flow one way; no cycles. New behavior extends existing
-boundaries through their exported interfaces — a boundary is never reached
+boundaries through their exported interfaces: a boundary is never reached
 into or bypassed to avoid touching its API.)
 
 ### Security
@@ -138,7 +145,7 @@ behavior. All tests should have docstrings too. (The gate state machine in `src/
 the critical path; the harness is `node:test` with
 `--experimental-strip-types --experimental-test-isolation=none`, wired into `npm run ci`.
 Coverage is enforced at 100% lines, branches, and functions over `src/` +
-`turnstile.ts` by the same command — a coverage extension is not needed, the
+`turnstile.ts` by the same command: a coverage extension is not needed, the
 Node test runner's built-in thresholds gate it, and with `--experimental-test-isolation=none`
 a green suite is deterministic: a red branch report is a real
 never-executed decision, never a merge artifact. `bin/` and `scripts/` sit
@@ -164,7 +171,7 @@ reference.)
 Comments and docstrings must be self-contained: a reader without the plan,
 the issue, or this session's context must still understand them. Never
 reference chunks, acceptance criteria, plan files, or issue numbers in
-source comments, docstrings, or test titles — those citations belong in the
+source comments, docstrings, or test titles; those citations belong in the
 plan file and the commit message, not the code.
 
 ### Naming conventions
@@ -217,17 +224,17 @@ stated feature; devDependencies are tooling only.)
   `continuationCarry` re-arms the one-prompt grace for a same-worktree/branch
   continuation carrying earned credit (a journaled `GATE: PASS` or a credited
   reviewer `VERDICT: APPROVE`; a retired plan-bound task whose review was
-  interrupted mid-flight — green gate, ≥1 counted reviewer dispatch or a
-  waived reviewer round, no credited approval — carries the same way,
+  interrupted mid-flight (green gate, ≥1 counted reviewer dispatch or a
+  waived reviewer round, no credited approval) carries the same way,
   journaled as a `recovery: true` continuation row); replay-time
   `refusedApprove:true` last-wins
   suppression still outranks the carried approval.
 - Marker regexes (`GATE: PASS|FAIL tests=…`, `VERDICT: APPROVE|BLOCK …`) are
   parsed from task results and child-session text. Changing marker syntax
   requires updating both the regexes here and the marker examples in the
-  validated sources — README.md, `docs/usage.md` (the usage index, which
+  validated sources: README.md, `docs/usage.md` (the usage index, which
   carries the canonical marker-example block), `agents/*.md`, and
-  `src/policy.ts` — checked together by `scripts/check-markers.mjs`.
+  `src/policy.ts`, checked together by `scripts/check-markers.mjs`.
 - The read-counter keys off the parent session (`childToParent` map); state
   is per parent, not per child subagent session.
 - Shipped agent definitions (`agents/*.md`) must treat configured values as
@@ -237,7 +244,7 @@ stated feature; devDependencies are tooling only.)
   config key so a customized setup doesn't strand the agent. Frontmatter
   permission rules that mirror a default (planner's `.opencode/plans/**`
   allow) carry a comment stating they must be updated when the key changes.
-  `.opencode/knowledge/` is exempt — it is a repo-local convention, not a
+  `.opencode/knowledge/` is exempt: it is a repo-local convention, not a
   turnstile config key. When a config default changes, check `agents/*.md`
   phrasing in the same change set.
 
@@ -252,7 +259,7 @@ stated feature; devDependencies are tooling only.)
   (~5 MB ÷ ~10 compression each, ≈ ~2.5 MB per family), so the worst case
   per journal family is ≈ ~32.5 MB. Archiving starts with the first
   rotation after the feature is present; no backfill. The archive is cold
-  storage only — replay never reads it, verify and the CLI surfaces do.
+  storage only: replay never reads it; verify and the CLI surfaces do.
   Plus one bounded sink per live parent session. With
   `trace: false` the trace file is never written,
   roughly halving that; the JSONL journal is the audit trail and always
@@ -265,7 +272,7 @@ stated feature; devDependencies are tooling only.)
   CONTRIBUTING.md in the same change set; if a rule lives only here, leave
   CONTRIBUTING.md pointing at this file rather than duplicating it.
 - `npm test` is the sole coverage authority. `scripts/branch-coverage.mjs` is
-  diagnostic-only — it localizes what `npm test` already flagged (file:line +
+  diagnostic-only: it localizes what `npm test` already flagged (file:line +
   snippet); never loop on its output, never treat its findings as a work
   queue, and do not write ad-hoc V8-parsing scripts to re-derive coverage
   the gate already enforces; if per-file attribution is needed, run a single
@@ -279,9 +286,9 @@ stated feature; devDependencies are tooling only.)
 `docs/architecture/` and `docs/images/*.svg` rendered from
 `docs/diagrams/*.d2`) is the living architecture reference for new users and
 devs. It is not a snapshot: when a change alters what the diagrams or
-document describe, update them in the same change set — not as a follow-up.
+document describe, update them in the same change set, not as a follow-up.
 
-- **Trigger for updates** — touch the docs when a change affects any of:
+- **Trigger for updates**: touch the docs when a change affects any of:
   - the module map (`docs/modules.md`): new/renamed/removed files under
     `src/`, or changed dependency direction between boundaries;
   - the hook surface: hooks registered in `src/setup.ts` (session, tool,
@@ -294,7 +301,7 @@ document describe, update them in the same change set — not as a follow-up.
   - configuration: keys, defaults, validation, or the layered resolution.
     Refactors that move code without changing behavior (renames aside) don't
     require doc edits.
-- **How to update** — edit the D2 source in `docs/diagrams/` (not the SVG),
+- **How to update**: edit the D2 source in `docs/diagrams/` (not the SVG),
   re-render the matching image, and update the matching architecture doc
   (the index or a section file under `docs/architecture/`) to match:
 
@@ -308,20 +315,20 @@ document describe, update them in the same change set — not as a follow-up.
   machine), `d05-persistence` (journal/replay). Add a new numbered diagram
   rather than overloading an existing one. The README hero banner
   (`docs/images/hero.svg`) is the exception: it is hand-authored SVG with no
-  D2 source — edit the SVG directly (keep it valid XML, dark theme, wide
+  D2 source: edit the SVG directly (keep it valid XML, dark theme, wide
   aspect), and update it whenever enforcement points change.
 
-- **Same accuracy bar as code** — diagrams cite real function/hook/field
+- **Same accuracy bar as code**: diagrams cite real function/hook/field
   names; if a name in a diagram no longer exists in source, that's a bug in
   the docs. The doc's claims are verified against source the same way test
   expectations are.
-- **CONTRIBUTING.md stays aligned too** — it mirrors the repo rules in
+- **CONTRIBUTING.md stays aligned too**: it mirrors the repo rules in
   short form (dev loop, marker-drift source set, architecture-docs rule).
-  When a change above makes CONTRIBUTING.md's claims stale — the CI chain
-  composition, the set of marker-validated sources, or the docs-sync rule —
+  When a change above makes CONTRIBUTING.md's claims stale (the CI chain
+  composition, the set of marker-validated sources, or the docs-sync rule),
   update it in the same change set. CONTRIBUTING.md defers detail to this
   file; keep it a summary, not a second source of truth.
-- **`examples/turnstile.example.json` mirrors `defaultConfig()`** — the
+- **`examples/turnstile.example.json` mirrors `defaultConfig()`**: the
   example carries every key from the defaults in `src/config.ts` verbatim,
   with exactly one deliberate omission (`metricsDir`, computed at load
   time). When a default value, key, or sub-block (`agents`, `toolPolicy`,

@@ -22,7 +22,8 @@
 // `--check-updates` (opt-in) checks npm for a newer turnstile: the installed
 // version comes from the script's own package.json; the registry lookup is
 // cached at `<metricsDir>/update-check.json` for 24h so repeated runs stay
-// network-free, and failures are never cached.
+// network-free, and failures are never cached. Status also reports the
+// loaded plugin version (the newest `setup` row) against the installed one.
 
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -37,7 +38,8 @@ const USAGE = `Usage: opencode-turnstile status [--json] [--check-updates]
 
 Reports turnstile gate and plan state per parent session, read from the
 JSONL journal. Read-only: nothing is written. The journal reflects the last
-prompt-cycle; in-memory state can be fresher.
+prompt-cycle; in-memory state can be fresher. The report also compares the
+loaded plugin version (the newest setup row) against the installed one.
 
 Options:
   --json            Print machine-readable JSON instead of the table
@@ -762,20 +764,61 @@ function groupByParent(sessionAcc) {
 }
 
 /**
+ * Collects the pipeline-stage agent per session from `child-edge` rows (last
+ * row wins, same as the `parentID` handling in `sessionTokensOf`). Sessions
+ * with no child-edge row attribute to `"parent"` at the fold site; stage
+ * attribution is best-effort (a child-edge row rotated out of the journal
+ * window degrades to `"parent"`).
+ * @param {unknown[]} lines Raw journal lines (all sinks, oldest-first).
+ * @returns {Map<string, string>} sessionID → agent name.
+ */
+function agentBySessionOf(lines) {
+  const agents = new Map()
+  for (const e of dedupeSinks(lines).map(parseLine)) {
+    if (e === null || e.type !== "child-edge") continue
+    if (typeof e.sessionID === "string" && e.sessionID && typeof e.agent === "string" && e.agent) {
+      agents.set(e.sessionID, e.agent)
+    }
+  }
+  return agents
+}
+
+/**
  * Builds the `tokenUsage` JSON block from raw token-usage rows.
  * @param {Record<string, unknown>[]} rows Parsed token-usage rows.
- * @returns {{ byParent: Record<string, Record<string, number>>, total: Record<string, number> }}
- *     The rollup block (byParent keyed by parentID).
+ * @param {Map<string, string>} agentBySession sessionID → stage agent (from
+ *     agentBySessionOf; sessions absent from the map group under "parent").
+ * @returns {{ byParent: Record<string, Record<string, number>>, byStage: Record<string, Record<string, number>>, total: Record<string, number> }}
+ *     The rollup block (byParent keyed by parentID, byStage keyed by agent).
  */
-function buildTokenUsage(rows) {
-  const { byParent, total } = groupByParent(sessionTokensOf(rows))
-  return { byParent: Object.fromEntries(byParent), total }
+function buildTokenUsage(rows, agentBySession = new Map()) {
+  const sessionAcc = sessionTokensOf(rows)
+  const { byParent, total } = groupByParent(sessionAcc)
+  const byStage = new Map()
+  for (const [sid, a] of sessionAcc) {
+    const stage = agentBySession.get(sid) ?? "parent"
+    let entry = byStage.get(stage)
+    if (!entry) {
+      entry = { sessions: 0, ...zeroTokenTotals() }
+      byStage.set(stage, entry)
+    }
+    const totals = a.hasRollup ? a.rollup : a.perMessage
+    entry.sessions++
+    for (const k of [...TOKEN_FIELDS, "cost"]) entry[k] += totals[k]
+  }
+  return {
+    byParent: Object.fromEntries(byParent),
+    byStage: Object.fromEntries(byStage),
+    total,
+  }
 }
 
 /**
  * Renders the table-mode token rollup: one line per task root plus a total
- * line, token counts raw and cost with four decimals.
- * @param {{ byParent: Record<string, Record<string, number>>, total: Record<string, number> }} tokenUsage
+ * line, token counts raw and cost with four decimals, then one `tokens by
+ * stage` line per pipeline-stage agent (best-effort attribution via
+ * `child-edge` rows; sessions without one group under `parent`).
+ * @param {{ byParent: Record<string, Record<string, number>>, byStage: Record<string, Record<string, number>>, total: Record<string, number> }} tokenUsage
  *     The rollup block (from buildTokenUsage).
  * @returns {string} The rollup lines, newline-joined.
  */
@@ -788,6 +831,11 @@ function renderTokenLines(tokenUsage) {
     out.push(`tokens: ${fmtSession(parent)}  ${fmt(t)}`)
   }
   out.push(`tokens: total  ${fmt(tokenUsage.total)}`)
+  for (const [stage, t] of Object.entries(tokenUsage.byStage ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    out.push(`tokens by stage: ${stage.padEnd(8)}  ${fmt(t)}`)
+  }
   return out.join("\n")
 }
 
@@ -994,6 +1042,63 @@ function autoacceptAdvisory(env) {
 }
 
 /**
+ * Finds the newest usable setup heartbeat row in the journal lines. Lines are
+ * ts-ordered oldest-first, so the last qualifying row wins. Setup rows carry
+ * no sessionID, so this scans raw lines directly rather than going through
+ * `aggregate()` (which skips sessionID-less entries).
+ * @param {string[]} lines Journal lines, oldest-first (from readJournal).
+ * @returns {{ version: string, ts: string } | null} The newest row with a
+ *     parseable version, or null when none exists (fail-open).
+ */
+function newestSetupRow(lines) {
+  let best = null
+  for (const e of dedupeSinks(lines).map(parseLine)) {
+    if (e === null || e.type !== "setup") continue
+    if (typeof e.version !== "string" || parseSemverJs(e.version) === null) continue
+    best = e
+  }
+  return best === null
+    ? null
+    : { version: best.version, ts: typeof best.ts === "string" ? best.ts : "" }
+}
+
+/**
+ * Builds the loaded-plugin advisory line for table mode: a restart warning
+ * when the loaded version is older than the installed one, a quiet-positive
+ * line otherwise, and nothing when there is no usable row.
+ * @param {{ version: string, ts: string } | null} row The newest setup row.
+ * @returns {string} The line, or "" when there is nothing to report.
+ */
+function loadedPluginLine(row) {
+  const installed = parseSemverJs(installedVersion())
+  const loaded = row === null ? null : parseSemverJs(row.version)
+  if (!row || !loaded || !installed) return ""
+  if (compareCores(loaded, installed) < 0) {
+    const at = row.ts !== "" ? ` at ${row.ts}` : ""
+    return `loaded plugin: ${row.version}${at} — RESTART OPENCODE (installed: ${installedVersion()})`
+  }
+  return `loaded plugin: ${row.version} (current)`
+}
+
+/**
+ * Builds the `pluginLoad` JSON block from the newest setup row, or null when
+ * there is no usable row or the installed version is unreadable.
+ * @param {{ version: string, ts: string } | null} row The newest setup row.
+ * @returns {{ loadedVersion: string, loadedAt: string, installedVersion: string, stale: boolean } | null} The block, or null.
+ */
+function pluginLoadDoc(row) {
+  const installed = parseSemverJs(installedVersion())
+  const loaded = row === null ? null : parseSemverJs(row.version)
+  if (!row || !loaded || !installed) return null
+  return {
+    loadedVersion: row.version,
+    loadedAt: row.ts,
+    installedVersion: installedVersion(),
+    stale: compareCores(loaded, installed) < 0,
+  }
+}
+
+/**
  * Entry point. Parses args, resolves the journal, aggregates, and prints.
  * @param {string[]} argv Arguments after the `status` subcommand.
  * @returns {Promise<number>} The process exit code.
@@ -1055,15 +1160,19 @@ async function main(argv) {
   }
 
   const tokenRows = tokenRowsOf(lines)
-  const tokenUsage = tokenRows.length > 0 ? buildTokenUsage(tokenRows) : null
+  const tokenUsage =
+    tokenRows.length > 0 ? buildTokenUsage(tokenRows, agentBySessionOf(lines)) : null
 
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
+  const setupRow = newestSetupRow(lines)
+  const pluginLoad = pluginLoadDoc(setupRow)
   if (flags.json) {
     process.stdout.write(
       `${JSON.stringify(
         {
           ...base,
           ...(tokenUsage ? { tokenUsage } : {}),
+          ...(pluginLoad ? { pluginLoad } : {}),
           ...(update ? { update } : {}),
           ...(advisory ? { advisories: [advisory] } : {}),
         },
@@ -1074,6 +1183,8 @@ async function main(argv) {
   } else {
     let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
     if (tokenUsage) table += `\n${renderTokenLines(tokenUsage)}`
+    const loaded = loadedPluginLine(setupRow)
+    if (loaded) table += `\n${loaded}`
     if (update) {
       const line = updateLineText(update)
       if (line) table += `\n${line}`

@@ -30,10 +30,17 @@ import {
   formatAllGreenLine,
   formatSessionSummary,
   isInactive,
+  sessionTokenTotals,
 } from "./summary.ts"
 import type { EventProperties } from "./types.ts"
 import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
-import { addTotals, extractUsage, zeroTotals } from "./token-usage.ts"
+import {
+  addTotals,
+  extractStepUsage,
+  extractUsage,
+  zeroTotals,
+  type ExtractedUsage,
+} from "./token-usage.ts"
 
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 export type EventHandler = (properties: EventProperties) => void | Promise<void>
@@ -796,42 +803,107 @@ async function handleSessionIdle(
   properties: EventProperties,
 ): Promise<void> {
   const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
-  if (sid === "" || ctx.summarizedSessions.has(sid)) return
+  if (sid === "") return
+  await runSessionEnd(ctx, sid)
+}
+
+/**
+ * Runs the shared session-end sequence once per session: the dedup add
+ * (bounded), the synchronous journal writes (the token-usage rollup flush
+ * when `tokenUsage` is not "off", then the session-summary proof row per
+ * the `sessionSummary` config), the session-end anchor, the chain verify,
+ * and the best-effort summary toast. The synchronous writes precede the
+ * first await so both rows survive headless hosts that exit the process
+ * during the anchor/verify window; the anchor publish still precedes the
+ * verify so published refs count as anchored. The trigger is `session.idle`
+ * (hosts ≤ 2.3.x) or `session.execution.succeeded`/`session.execution.failed`
+ * (hosts ≥ 2.4.x). The once-per-session dedup means the rollup and recap
+ * land after the FIRST trigger per session per host process on either
+ * contract: on 2.4.1 that is after the first agent run rather than at true
+ * quiescence (accepted parity with the 2.0.x first-idle flush; tokens from
+ * later runs stay unflushed until a host restart). Fail-open: the outer
+ * loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param sid The ended session's ID.
+ */
+async function runSessionEnd(ctx: TurnstileContext, sid: string): Promise<void> {
+  if (ctx.summarizedSessions.has(sid)) return
   ctx.summarizedSessions.add(sid)
   ctx.boundSummarizedSessions()
-  // The session-end anchor trigger runs first and its publish is awaited, so
-  // refs closed/published for this session count as anchored in the verify
-  // that follows (no false "unanchored epoch refs" verdict). Fail-open by
-  // the journaler's anchor contract.
+  // Headless hosts can exit the process during the first await, so every
+  // synchronous journal write happens first: the rollup flush, then the
+  // summary proof row (flush-then-read, so summary totals include tokens).
+  if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
+  const summaryLine = ctx.config.sessionSummary === "off" ? null : composeSessionSummary(ctx, sid)
+  // The session-end anchor trigger runs after those rows are published and its
+  // publish is awaited, so refs closed/published for this session (including
+  // the rollup and summary rows) count as anchored in the verify that follows
+  // (no false "unanchored epoch refs" verdict). Fail-open by the journaler's
+  // anchor contract.
   await ctx.journaler.anchorAsync("session-end", sid)
   // The chain verify is independent of the summary setting: it runs once per
   // session even when sessionSummary is "off".
   await runSessionEndVerify(ctx, sid)
-  // The token-usage rollup is independent of the summary setting: it flushes
-  // once per session even when sessionSummary is "off" or quiet-inactive.
-  if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
-  if (ctx.config.sessionSummary === "off") return
-  const counts = countSessionActivity(readJournalEntries(ctx.journaler.journalPath), sid)
+  if (summaryLine !== null) await deliverToast(ctx, summaryLine)
+}
+
+/**
+ * Handles `session.execution.succeeded` and `session.execution.failed`
+ * (hosts ≥ 2.4.x): the session-end flush trigger. An absent or empty
+ * `sessionID` is inert (the payload shape is unverified; tolerate it).
+ * Awaited, not fire-and-forget: the consume loop journals per-event failures
+ * only for awaited rejections, so a `void`-ed throw would become an
+ * unhandled rejection and silently break the fail-open journaling contract.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleExecutionEnded(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  if (sid === "") return
+  await runSessionEnd(ctx, sid)
+}
+
+/**
+ * Reads the session's activity and token totals from one journal read and
+ * composes the recap: the all-green line for zero-activity sessions (under
+ * "on"), else the recap line with the token rollup appended when the journal
+ * holds token-usage rows. Journals the delivery-proof entry and returns the
+ * line, or `null` when quiet-inactive (no row). Fully synchronous so the
+ * proof row survives headless process exit; must run after the rollup flush
+ * so summary-mode totals include the session's tokens.
+ * @param ctx The shared per-setup context.
+ * @param sid The idling session's ID.
+ * @returns The composed summary line, or `null` when no row was journaled.
+ */
+function composeSessionSummary(ctx: TurnstileContext, sid: string): string | null {
+  const entries = readJournalEntries(ctx.journaler.journalPath)
+  const counts = countSessionActivity(entries, sid)
+  const tokens = sessionTokenTotals(entries, sid)
   const inactive = isInactive(counts)
-  if (inactive && ctx.config.sessionSummary === "quiet") return
+  if (inactive && ctx.config.sessionSummary === "quiet") return null
   const line = inactive
     ? formatAllGreenLine(ctx.journaler.journalPath)
-    : formatSessionSummary(counts, ctx.journaler.journalPath)
+    : formatSessionSummary(counts, ctx.journaler.journalPath, tokens)
   ctx.journaler.journal({
     type: "session-summary",
     sessionID: sid,
     ...counts,
     text: line.slice(0, SUMMARY_TEXT_BOUND),
   })
-  await deliverToast(ctx, line)
+  return line
 }
 
 /**
  * Journals the summary-mode token-usage rollup for a session and clears its
- * accumulator. Called from `handleSessionIdle` before the `sessionSummary`
- * early returns so the rollup flushes on every idle regardless of the
- * summary setting. The idle dedupe guard makes this once per session per
- * host process; an empty accumulator journals nothing.
+ * accumulator. Called from `runSessionEnd` (which serves `session.idle` and
+ * the ≥ 2.4.1 `session.execution.succeeded`/`failed` carriers) first in the
+ * session-end sequence, before any await, so the rollup row survives headless
+ * process exit and flushes on every session end regardless of the summary
+ * setting. The session-end dedupe guard makes this
+ * once per session per host process; an empty accumulator journals nothing.
  * @param ctx The shared per-setup context.
  * @param sid The idling session's ID.
  */
@@ -870,19 +942,82 @@ function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties
   if (ctx.config.tokenUsage === "off") return
   const usage = extractUsage(properties.info)
   if (!usage) return
+  // The real host carries the session ID only inside the snapshot
+  // (`info.sessionID`); the top-level `properties.sessionID` fallback keeps
+  // tolerance for hosts that publish it there (same pattern as
+  // `handleTextUpdated`).
+  const sid = asSessionID(properties.sessionID ?? usage.sessionID)
+  if (sid === "") return
+  recordTurnUsage(ctx, { ...usage, sessionID: sid })
+}
+
+/**
+ * Handles `session.step.ended` (hosts ≥ 2.4.x): on a completed assistant
+ * step, merges the step into the same per-session accumulator and dedup set
+ * as `message.updated` (`per-message` mode journals one row per step). The
+ * 2.4.1 payload carries no `modelID`/`providerID`, so step-path rows stamp
+ * empty strings there (consumers sum tokens only). Fail-open: the outer
+ * consume loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleStepEnded(ctx: TurnstileContext, properties: EventProperties): void {
+  if (ctx.config.tokenUsage === "off") return
+  const usage = extractStepUsage(properties)
+  if (!usage) return
+  recordTurnUsage(ctx, { ...usage, modelID: "", providerID: "" })
+}
+
+/**
+ * Shared accumulation tail for both turn carriers (`message.updated` and
+ * `session.step.ended`): dedup-add by message ID (bounded), accumulate into
+ * the session's totals, and journal the per-message row when the mode asks
+ * for it. Note the deliberate ordering change from the pre-extraction
+ * `message.updated` path: the session ID is resolved BEFORE the dedup mark,
+ * so a session-less message no longer marks itself seen (an improvement:
+ * the turn stays eligible once a session ID is known). Cross-contract
+ * no-double-count falls out of the shared dedup key space: a turn whose
+ * assistant message ID arrives through both carriers counts once.
+ * @param ctx The shared per-setup context.
+ * @param usage The extracted turn usage with its session ID resolved.
+ */
+function recordTurnUsage(ctx: TurnstileContext, usage: ExtractedUsage): void {
   if (ctx.tokenUsageSeen.has(usage.messageID)) return
   ctx.tokenUsageSeen.add(usage.messageID)
   ctx.boundTokenUsage()
-  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
-  if (sid === "") return
-  const parentID = ctx.ledger.childToParent.get(sid) ?? sid
+  accumulateTokenUsage(ctx, usage.sessionID, usage)
+  if (ctx.config.tokenUsage === "per-message") journalPerMessageRow(ctx, usage.sessionID, usage)
+}
+
+/**
+ * Merges one completed turn into the session's token accumulator (summary
+ * mode journals the merge as one rollup row during the shared session-end
+ * sequence, which serves `session.idle` and the ≥ 2.4.1
+ * `session.execution.succeeded`/`failed` carriers).
+ * @param ctx The shared per-setup context.
+ * @param sid The session the turn belongs to.
+ * @param usage The extracted turn usage.
+ */
+function accumulateTokenUsage(ctx: TurnstileContext, sid: string, usage: ExtractedUsage): void {
   const totals = ctx.tokenUsageTotals.get(sid) ?? zeroTotals()
   ctx.tokenUsageTotals.set(sid, addTotals(totals, usage.totals))
-  if (ctx.config.tokenUsage !== "per-message") return
+}
+
+/**
+ * Journals one deduped per-message `token-usage` row. `parentID` resolves via
+ * the `childToParent` map (own ID for parent sessions) so every row groups by
+ * task root. `modelID`/`providerID` can be "": the ≥ 2.4.1
+ * `session.step.ended` carrier carries no model fields, while
+ * `message.updated` snapshots do; consumers sum tokens only.
+ * @param ctx The shared per-setup context.
+ * @param sid The session the turn belongs to.
+ * @param usage The extracted turn usage.
+ */
+function journalPerMessageRow(ctx: TurnstileContext, sid: string, usage: ExtractedUsage): void {
   ctx.journaler.journal({
     type: "token-usage",
     sessionID: sid,
-    parentID,
+    parentID: ctx.ledger.childToParent.get(sid) ?? sid,
     messageID: usage.messageID,
     modelID: usage.modelID,
     providerID: usage.providerID,
@@ -918,5 +1053,8 @@ export function createEventHandlers(ctx: TurnstileContext): Record<string, Event
     "session.inbox.enqueued": (p) => handleInboxEnqueued(ctx, p),
     "message.updated": (p) => handleMessageUpdated(ctx, p),
     "session.idle": (p) => handleSessionIdle(ctx, p),
+    "session.step.ended": (p) => handleStepEnded(ctx, p),
+    "session.execution.succeeded": (p) => handleExecutionEnded(ctx, p),
+    "session.execution.failed": (p) => handleExecutionEnded(ctx, p),
   }
 }

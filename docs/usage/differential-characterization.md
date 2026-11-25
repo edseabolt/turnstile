@@ -1,4 +1,4 @@
-# Differential characterization harness — worked example
+# Differential characterization harness: worked example
 
 `npm run test:differential` drives HEAD and a reference commit through the
 same inputs and compares the serialized results cell by cell. It is the
@@ -16,7 +16,7 @@ npm run test:differential -- --scenario prov --ref 687270b
 ```
 
 The default ref predates the decision ledger, so a full run reports
-`prov: SKIPPED (absent in ref)` — exactly the caveat the README states: for
+`prov: SKIPPED (absent in ref)`; that is exactly the caveat the README states: for
 `prov` and recovery/replay cells use a reference at or after `687270b`, since
 refs inside the partial-ledger merge window fail with a driver error rather
 than a structured skip. `--keep` leaves the reference worktree on disk for
@@ -118,19 +118,19 @@ DIFFERENTIAL: PASS scenarios=6 cells=875 skipped=1 newInHead=68
 
 What each line means:
 
-- `## <scenario>: PASS|FAIL (cells=<n>)` — one block per scenario, in
+- `## <scenario>: PASS|FAIL (cells=<n>)`: one block per scenario, in
   `config`, `markers`, `replay`, `dispatch`, `journal`, `prov` order. A
   **cell** is one input probe plus its full serialized result: `config`
   probes every scalar `defaultConfig()` key against a fixed
   matrix, which is why that scenario alone has 836 cells; the
-  others key on their own surface — `journal` by entry type and per-type
-  occurrence, `replay` by fixture name.
-- `NEW-IN-HEAD: <cell>` — a cell the reference tree does not have. Surface
+  others key on their own surface (`journal` by entry type and per-type
+  occurrence, `replay` by fixture name).
+- `NEW-IN-HEAD: <cell>`: a cell the reference tree does not have. Surface
   growth is expected and never fails the run.
-- `SKIPPED (absent in ref)` — the scenario's driver needs a module the
+- `SKIPPED (absent in ref)`: the scenario's driver needs a module the
   reference tree lacks, so there is nothing to compare: `cells=0`, and the
   skip does not fail the run.
-- `DIFFERENTIAL: PASS scenarios=6 cells=875 skipped=1 newInHead=68` — the
+- `DIFFERENTIAL: PASS scenarios=6 cells=875 skipped=1 newInHead=68`: the
   machine-parseable summary. Exit 0 only when no scenario failed; skips are allowed.
 
 The targeted invocation prints the same shape for one scenario, with the

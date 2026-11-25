@@ -1,4 +1,4 @@
-# Turnstile — Architecture
+# Turnstile: Architecture
 
 Turnstile is an OpenCode v2 promise-plugin that mechanically enforces an agent
 pipeline (**planner → plan-reviewer → executor → test-runner → reviewer**; an
@@ -29,7 +29,7 @@ Three ideas explain the whole plugin:
    invalidates approvals rather than trusting them.
 
 This document is the entry point to the architecture reference. The module
-map — one boundary per file under `src/`, dependencies one way, no cycles —
+map (one boundary per file under `src/`, dependencies one way, no cycles)
 lives in [modules.md](modules.md), with the
 [d01-modules diagram](images/d01-modules.svg).
 
@@ -47,5 +47,5 @@ lives in [modules.md](modules.md), with the
 | Security posture and limits                   | [architecture/security.md](architecture/security.md)                 |
 | Positioning: how turnstile fits the ecosystem | [architecture/positioning.md](architecture/positioning.md)           |
 
-For day-to-day operation — worked session, waivers, install, configuration —
+For day-to-day operation (worked session, waivers, install, configuration),
 see [usage.md](usage.md).

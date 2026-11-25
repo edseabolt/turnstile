@@ -32,8 +32,8 @@ each maps to a turnstile mechanism:
   time. It is bounded to the parent's current task window (a
   prompt-admission stamp), so a stale prior-task execution cannot verify a
   new task's claim. A gate-unverified refusal names the sessions it
-  searched — parent plus every child with journaled executions, with
-  attribution reasons — in the `BLOCKED` message and the `searched` field
+  searched (parent plus every child with journaled executions, with
+  attribution reasons) in the `BLOCKED` message and the `searched` field
   of the journaled `blocked` entry.
 - **A decision journal.** OpenCode logs are diagnostics, not a
   structured decision record. `src/journal.ts` appends every gate

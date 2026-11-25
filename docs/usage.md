@@ -1,10 +1,10 @@
-# Turnstile — Usage
+# Turnstile: Usage
 
 Day-to-day operation of the turnstile plugin: a worked session from planner
 to landing, waivers and approvals in full, installing and maintaining the
 plugin, the complete configuration reference, journals and retention, and
-the `status` command. For how the plugin works inside — hook surface, gate
-state machine, policy injection — see [`architecture.md`](architecture.md);
+the `status` command. For how the plugin works inside (hook surface, gate
+state machine, policy injection), see [`architecture.md`](architecture.md);
 the module map lives in [`modules.md`](modules.md) and the journal catalog
 in [`journal.md`](journal.md).
 
@@ -19,7 +19,7 @@ in [`journal.md`](journal.md).
 | Files and journals                                     | [usage/files-and-journals.md](usage/files-and-journals.md)                       |
 | Status                                                 | [usage/status.md](usage/status.md)                                               |
 | Field-tested on itself                                 | [usage/field-tested.md](usage/field-tested.md)                                   |
-| Differential characterization harness — worked example | [usage/differential-characterization.md](usage/differential-characterization.md) |
+| Differential characterization harness (worked example) | [usage/differential-characterization.md](usage/differential-characterization.md) |
 
 ## Marker quick-reference
 

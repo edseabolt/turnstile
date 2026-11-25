@@ -1,11 +1,13 @@
 /**
  * @fileoverview Token-usage boundary: pure extraction, merge, and rollup
  * helpers for per-session token/cost journaling fed from the host's
- * `message.updated` event. No host, no journaler, no state — the caller
- * (`handleMessageUpdated` in `src/event-stream-handlers.ts`) reads the event
- * snapshot, dedups by message ID against the bounded context sets, and
- * journals; this module only decides what a completed assistant-turn usage
- * snapshot looks like and how totals combine. Pure and throw-free throughout.
+ * `message.updated` event (hosts ≤ 2.3.x) or `session.step.ended` event
+ * (hosts ≥ 2.4.x). No host, no journaler, no state: the caller
+ * (`handleMessageUpdated` / `handleStepEnded` in
+ * `src/event-stream-handlers.ts`) reads the event payload, dedups by message
+ * ID against the bounded context sets, and journals; this module only decides
+ * what a completed assistant-turn usage snapshot looks like and how totals
+ * combine. Pure and throw-free throughout.
  *
  * The host payload shape (`properties.info`, `info.id`,
  * `tokens.cache.read` vs `info.cache.read`, `time.completed` vs `finish`)
@@ -34,6 +36,8 @@ export interface TokenUsageTotals {
 export interface ExtractedUsage {
   /** The host message ID (dedup key across snapshot updates). */
   messageID: string
+  /** The owning session ID, read from the snapshot (`info.sessionID`). */
+  sessionID: string
   /** Model identifier stamped on the row. */
   modelID: string
   /** Provider identifier stamped on the row. */
@@ -122,6 +126,7 @@ export function extractUsage(info: unknown): ExtractedUsage | null {
   const tokens = obj(snapshot.tokens)
   return {
     messageID,
+    sessionID: str(snapshot.sessionID),
     modelID: str(snapshot.modelID),
     providerID: str(snapshot.providerID),
     totals: {
@@ -136,8 +141,53 @@ export function extractUsage(info: unknown): ExtractedUsage | null {
 }
 
 /**
- * Componentwise sum of two totals objects — the accumulator merge for the
- * summary-mode session rollup.
+ * A completed assistant step extracted from `session.step.ended`.
+ */
+export interface ExtractedStepUsage {
+  /** The assistant message ID (`assistantMessageID`); dedup key. */
+  messageID: string
+  /** The owning session ID (top-level `properties.sessionID`). */
+  sessionID: string
+  /** The step's token/cost totals. */
+  totals: TokenUsageTotals
+}
+
+/**
+ * Extracts a completed assistant step's usage from a `session.step.ended`
+ * properties payload (hosts ≥ 2.4.1). Guards: non-null object, a non-empty
+ * string `sessionID`, and a non-empty string `assistantMessageID`. No role or
+ * completion guard: the event itself signals step end. Token and cost fields
+ * default to 0 when absent or non-numeric; the `tokens` sub-shape is
+ * inference beyond the probe's top-level confirmation, so an unexpected shape
+ * degrades to zeros, never a crash.
+ * @param properties The raw event properties from the host event.
+ * @returns The extracted step usage, or null when the payload lacks a
+ *     usable session or message ID.
+ */
+export function extractStepUsage(properties: unknown): ExtractedStepUsage | null {
+  const bag = obj(properties)
+  if (!bag) return null
+  const sessionID = str(bag.sessionID)
+  const messageID = str(bag.assistantMessageID)
+  if (sessionID === "" || messageID === "") return null
+  const tokens = obj(bag.tokens)
+  return {
+    messageID,
+    sessionID,
+    totals: {
+      ...zeroTotals(),
+      input: num(tokens?.input),
+      output: num(tokens?.output),
+      reasoning: num(tokens?.reasoning),
+      ...cacheTotals(tokens, bag),
+      cost: num(bag.cost),
+    },
+  }
+}
+
+/**
+ * Componentwise sum of two totals objects (the accumulator merge for the
+ * summary-mode session rollup).
  * @param a The running totals.
  * @param b The incoming totals.
  * @returns A fresh totals object with each component summed.
