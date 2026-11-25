@@ -34,8 +34,8 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const DRIVERS_DIR = path.join(REPO_ROOT, "scripts", "differential")
-const DEFAULT_REF = "d35b077"
-const SCENARIO_NAMES = ["config", "markers", "replay", "dispatch", "journal", "prov"]
+const DEFAULT_REF = "d8f5f9e"
+const SCENARIO_NAMES = ["config", "markers", "replay", "dispatch", "journal", "prov", "token-usage"]
 /** Scenarios driven in-process (pure functions only); the rest subprocess. */
 const INPROCESS_SCENARIOS = new Set(["config", "markers"])
 const WORKTREE_PREFIX = "turnstile-diff-ref-"

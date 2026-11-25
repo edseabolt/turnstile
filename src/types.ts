@@ -234,8 +234,9 @@ export interface EventProperties {
    * Full message snapshot carried by `message.updated` (assistant and user
    * turns, parent and child sessions). Untyped by the host contract this
    * plugin relies on, hence `unknown`; `src/token-usage.ts` reads
-   * `role`, `id`, `modelID`, `providerID`, `tokens`, `cost`, `finish`, and
-   * `time.completed` against runtime guards and fails open when absent.
+   * `role`, `id`, `sessionID`, `modelID`, `providerID`, `tokens`, `cost`,
+   * `finish`, and `time.completed` against runtime guards and fails open
+   * when absent.
    */
   info?: unknown
 }

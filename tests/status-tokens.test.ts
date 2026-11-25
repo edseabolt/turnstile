@@ -276,3 +276,53 @@ test("reads rotated generations and gzip archives", () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/** Builds a `child-edge` row naming the session's pipeline-stage agent. */
+function edgeRow(sessionID: string, agent: string): Entry {
+  return {
+    ts: "2026-01-01T10:00:00Z",
+    type: "child-edge",
+    sessionID,
+    parent: PARENT,
+    agent,
+  }
+}
+
+test("attributes token totals per stage via child-edge agent, parent fallback", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [
+      edgeRow("seschild1", "executor"),
+      msgRow("seschild1", PARENT, { input: 1200, output: 340 }, 0.045),
+      msgRow(PARENT, PARENT, { input: 800, output: 120 }, 0.021),
+    ])
+    const json = JSON.parse(runStatus(dir, ["--json"]).stdout)
+    assert.equal(json.tokenUsage.byStage.executor.input, 1200)
+    assert.equal(json.tokenUsage.byStage.executor.sessions, 1)
+    assert.equal(json.tokenUsage.byStage.parent.input, 800)
+    assert.equal(json.tokenUsage.total.input, 2000)
+    const table = runStatus(dir).stdout
+    assert.match(
+      table,
+      /tokens by stage: executor {2}in 1200 out 340 reason 0 cacheR 0 cacheW 0 {2}\$0\.0450/,
+    )
+    assert.match(
+      table,
+      /tokens by stage: parent {4}in 800 out 120 reason 0 cacheR 0 cacheW 0 {2}\$0\.0210/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a session whose child-edge rotated out attributes to parent", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [msgRow("seslost", PARENT, { input: 5 })])
+    const json = JSON.parse(runStatus(dir, ["--json"]).stdout)
+    assert.equal(json.tokenUsage.byStage.parent.input, 5)
+    assert.equal("executor" in json.tokenUsage.byStage, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
