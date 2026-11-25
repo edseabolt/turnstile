@@ -34,7 +34,7 @@ import {
 } from "./summary.ts"
 import type { EventProperties } from "./types.ts"
 import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
-import { addTotals, extractUsage, zeroTotals } from "./token-usage.ts"
+import { addTotals, extractUsage, zeroTotals, type ExtractedUsage } from "./token-usage.ts"
 
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 export type EventHandler = (properties: EventProperties) => void | Promise<void>
@@ -812,6 +812,19 @@ async function handleSessionIdle(
   // once per session even when sessionSummary is "off" or quiet-inactive.
   if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
   if (ctx.config.sessionSummary === "off") return
+  await deliverSessionSummary(ctx, sid)
+}
+
+/**
+ * Counts the session's activity and token totals from one journal read and
+ * delivers the recap: the all-green line for zero-activity sessions (under
+ * "on"), else the recap line with the token rollup appended when the journal
+ * holds token-usage rows. Journals the delivery-proof entry and toasts
+ * best-effort.
+ * @param ctx The shared per-setup context.
+ * @param sid The idling session's ID.
+ */
+async function deliverSessionSummary(ctx: TurnstileContext, sid: string): Promise<void> {
   const entries = readJournalEntries(ctx.journaler.journalPath)
   const counts = countSessionActivity(entries, sid)
   const tokens = sessionTokenTotals(entries, sid)
@@ -882,14 +895,35 @@ function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties
   // `handleTextUpdated`).
   const sid = asSessionID(properties.sessionID ?? usage.sessionID)
   if (sid === "") return
-  const parentID = ctx.ledger.childToParent.get(sid) ?? sid
+  accumulateTokenUsage(ctx, sid, usage)
+  if (ctx.config.tokenUsage === "per-message") journalPerMessageRow(ctx, sid, usage)
+}
+
+/**
+ * Merges one completed turn into the session's token accumulator (summary
+ * mode journals the merge as one rollup row at `session.idle`).
+ * @param ctx The shared per-setup context.
+ * @param sid The session the turn belongs to.
+ * @param usage The extracted turn usage.
+ */
+function accumulateTokenUsage(ctx: TurnstileContext, sid: string, usage: ExtractedUsage): void {
   const totals = ctx.tokenUsageTotals.get(sid) ?? zeroTotals()
   ctx.tokenUsageTotals.set(sid, addTotals(totals, usage.totals))
-  if (ctx.config.tokenUsage !== "per-message") return
+}
+
+/**
+ * Journals one deduped per-message `token-usage` row. `parentID` resolves via
+ * the `childToParent` map (own ID for parent sessions) so every row groups by
+ * task root.
+ * @param ctx The shared per-setup context.
+ * @param sid The session the turn belongs to.
+ * @param usage The extracted turn usage.
+ */
+function journalPerMessageRow(ctx: TurnstileContext, sid: string, usage: ExtractedUsage): void {
   ctx.journaler.journal({
     type: "token-usage",
     sessionID: sid,
-    parentID,
+    parentID: ctx.ledger.childToParent.get(sid) ?? sid,
     messageID: usage.messageID,
     modelID: usage.modelID,
     providerID: usage.providerID,

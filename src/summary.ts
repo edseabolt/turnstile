@@ -94,10 +94,42 @@ function tokenCost(row: JournalEntry): number {
 }
 
 /**
+ * Adds one token-usage row's components into a totals accumulator.
+ * @param totals The running totals (mutated).
+ * @param row The parsed token-usage row.
+ */
+function addRow(totals: TokenUsageTotals, row: JournalEntry): void {
+  totals.input += tokenField(row, "input")
+  totals.output += tokenField(row, "output")
+  totals.reasoning += tokenField(row, "reasoning")
+  totals.cacheRead += tokenField(row, "cacheRead")
+  totals.cacheWrite += tokenField(row, "cacheWrite")
+  totals.cost += tokenCost(row)
+}
+
+/**
+ * True when every totals component is zero.
+ * @param totals The totals to test.
+ * @returns True when the totals carry no information.
+ */
+function allZeroTotals(totals: TokenUsageTotals): boolean {
+  return (
+    totals.input === 0 &&
+    totals.output === 0 &&
+    totals.reasoning === 0 &&
+    totals.cacheRead === 0 &&
+    totals.cacheWrite === 0 &&
+    totals.cost === 0
+  )
+}
+
+/**
  * Folds the journal's `token-usage` rows for one session into componentwise
- * totals: rollup rows (`event:"session-rollup"`) and per-message rows are
- * mutually exclusive per session by mode, so every matching row sums without
- * double-counting. Pure; throws nothing.
+ * totals, mirroring the status surface's source rule: a session with a
+ * `session-rollup` row counts from its rollup rows only (per-message mode
+ * also flushes a rollup at `session.idle`, so counting both would
+ * double-count); a session with only per-message rows sums them. Pure;
+ * throws nothing.
  * @param entries The parsed journal entries, oldest-first.
  * @param sessionID The session the totals are derived for.
  * @returns The totals, or null when no rows match or every component is zero.
@@ -106,7 +138,7 @@ export function sessionTokenTotals(
   entries: JournalEntry[],
   sessionID: string,
 ): TokenUsageTotals | null {
-  const totals: TokenUsageTotals = {
+  const rollup: TokenUsageTotals = {
     input: 0,
     output: 0,
     reasoning: 0,
@@ -114,26 +146,19 @@ export function sessionTokenTotals(
     cacheWrite: 0,
     cost: 0,
   }
-  let seen = false
+  const perMessage: TokenUsageTotals = { ...rollup }
+  let sawRollup = false
   for (const entry of entries) {
     if (entry.type !== "token-usage" || entry.sessionID !== sessionID) continue
-    seen = true
-    totals.input += tokenField(entry, "input")
-    totals.output += tokenField(entry, "output")
-    totals.reasoning += tokenField(entry, "reasoning")
-    totals.cacheRead += tokenField(entry, "cacheRead")
-    totals.cacheWrite += tokenField(entry, "cacheWrite")
-    totals.cost += tokenCost(entry)
+    if (entry.event === "session-rollup") {
+      sawRollup = true
+      addRow(rollup, entry)
+    } else {
+      addRow(perMessage, entry)
+    }
   }
-  if (!seen) return null
-  const allZero =
-    totals.input === 0 &&
-    totals.output === 0 &&
-    totals.reasoning === 0 &&
-    totals.cacheRead === 0 &&
-    totals.cacheWrite === 0 &&
-    totals.cost === 0
-  return allZero ? null : totals
+  const totals = sawRollup ? rollup : perMessage
+  return allZeroTotals(totals) ? null : totals
 }
 
 /**

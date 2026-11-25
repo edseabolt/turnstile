@@ -191,6 +191,31 @@ test("sessionTokenTotals folds matching rows and returns null otherwise", () => 
   assert.equal(sessionTokenTotals([], "p1"), null)
 })
 
+/** A session with both per-message rows and a rollup row counts from the
+ *  rollup only (per-message mode also flushes a rollup at idle; counting
+ *  both would double). */
+test("sessionTokenTotals prefers the rollup over per-message rows", () => {
+  const row = (tokens: Record<string, unknown>, event?: string): Record<string, unknown> => ({
+    type: "token-usage",
+    sessionID: "p1",
+    tokens,
+    cost: 0.01,
+    ...(event ? { event } : {}),
+  })
+  const entries = [
+    row({ input: 100, output: 50 }),
+    row({ input: 100, output: 50 }, "session-rollup"),
+  ]
+  assert.deepEqual(sessionTokenTotals(entries, "p1"), {
+    input: 100,
+    output: 50,
+    reasoning: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0.01,
+  })
+})
+
 /** Malformed token/cost fields fold as zeros rather than throwing. */
 test("sessionTokenTotals tolerates malformed rows as zeros", () => {
   const entries = [
@@ -334,6 +359,36 @@ test("session.idle recap carries the token rollup when rows exist", async () => 
   const entries = summaryEntries(metricsDir)
   assert.equal(entries.length, 1)
   assert.match(String(entries[0]!.text), /1\.2k in\/300 out tok · \$0\.0100/)
+  dispose()
+})
+
+/** In per-message mode the recap shows the un-doubled totals: the rollup row
+ *  flushed at idle is preferred over the per-message rows it mirrors. */
+test("session.idle recap in per-message mode shows un-doubled totals", async () => {
+  const h = makeFakeHost()
+  const { dispose, metricsDir } = await bootIdle(h.host, {
+    sessionSummary: "quiet",
+    tokenUsage: "per-message",
+  })
+  seedActive(metricsDir)
+  await h.pushEvent({
+    type: "message.updated",
+    data: {
+      info: {
+        id: "msg_1",
+        role: "assistant",
+        finish: "stop",
+        tokens: { input: 100, output: 50 },
+        cost: 0.01,
+        sessionID: "p1",
+      },
+    },
+  })
+  await h.pushEvent({ type: "session.idle", data: { sessionID: "p1" } })
+  const entries = summaryEntries(metricsDir)
+  assert.equal(entries.length, 1)
+  assert.match(String(entries[0]!.text), /100 in\/50 out tok · \$0\.0100/)
+  assert.doesNotMatch(String(entries[0]!.text), /200 in/)
   dispose()
 })
 
