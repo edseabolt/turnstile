@@ -308,6 +308,25 @@ Turnstile has no npm lifecycle hooks: installing the package never writes to
 Modes, conflicts, the ledger, upgrades, uninstall, and per-agent model pins
 are covered in [`docs/usage/install.md`](docs/usage/install.md).
 
+### Verify the running version
+
+After upgrading, restart every OpenCode process that hosts sessions: the TUI
+or desktop app, and any persistent service (`opencode service restart`,
+`opencode serve`, ACP providers). A running host keeps the previously loaded
+plugin module, so sessions it serves keep enforcing the old version until it
+restarts, with no error to tell you.
+
+To confirm what a machine is actually running, read the newest `setup` row in
+the journal; it stamps the plugin version and load time:
+
+```sh
+grep '"type":"setup"' ~/.local/share/opencode/metrics/turnstile.jsonl | tail -1
+```
+
+If that row's version is older than the installed package, a process still
+runs the old module: restart it. `npx opencode-turnstile check` verifies
+files on disk, not the loaded module.
+
 Verify a clone with:
 
 ```sh
