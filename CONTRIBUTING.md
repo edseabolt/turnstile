@@ -96,6 +96,9 @@ trace format, and the exact block messages.
 - At release: bump `HOST_COMPAT` in `src/host-compat.ts` when a new opencode
   was tested, update the README compatibility matrix (including the tested
   list), and run `npm run ci`.
+- `CHANGELOG.md` is updated by the gh-release skill as part of cutting a
+  release: the `## [Unreleased]` section is renamed to the new version,
+  populated, and a fresh empty `## [Unreleased]` is opened.
 
 ## Commit style
 
