@@ -22,7 +22,8 @@
 // `--check-updates` (opt-in) checks npm for a newer turnstile: the installed
 // version comes from the script's own package.json; the registry lookup is
 // cached at `<metricsDir>/update-check.json` for 24h so repeated runs stay
-// network-free, and failures are never cached.
+// network-free, and failures are never cached. Status also reports the
+// loaded plugin version (the newest `setup` row) against the installed one.
 
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -37,7 +38,8 @@ const USAGE = `Usage: opencode-turnstile status [--json] [--check-updates]
 
 Reports turnstile gate and plan state per parent session, read from the
 JSONL journal. Read-only: nothing is written. The journal reflects the last
-prompt-cycle; in-memory state can be fresher.
+prompt-cycle; in-memory state can be fresher. The report also compares the
+loaded plugin version (the newest setup row) against the installed one.
 
 Options:
   --json            Print machine-readable JSON instead of the table
@@ -1040,6 +1042,63 @@ function autoacceptAdvisory(env) {
 }
 
 /**
+ * Finds the newest usable setup heartbeat row in the journal lines. Lines are
+ * ts-ordered oldest-first, so the last qualifying row wins. Setup rows carry
+ * no sessionID, so this scans raw lines directly rather than going through
+ * `aggregate()` (which skips sessionID-less entries).
+ * @param {string[]} lines Journal lines, oldest-first (from readJournal).
+ * @returns {{ version: string, ts: string } | null} The newest row with a
+ *     parseable version, or null when none exists (fail-open).
+ */
+function newestSetupRow(lines) {
+  let best = null
+  for (const e of dedupeSinks(lines).map(parseLine)) {
+    if (e === null || e.type !== "setup") continue
+    if (typeof e.version !== "string" || parseSemverJs(e.version) === null) continue
+    best = e
+  }
+  return best === null
+    ? null
+    : { version: best.version, ts: typeof best.ts === "string" ? best.ts : "" }
+}
+
+/**
+ * Builds the loaded-plugin advisory line for table mode: a restart warning
+ * when the loaded version is older than the installed one, a quiet-positive
+ * line otherwise, and nothing when there is no usable row.
+ * @param {{ version: string, ts: string } | null} row The newest setup row.
+ * @returns {string} The line, or "" when there is nothing to report.
+ */
+function loadedPluginLine(row) {
+  const installed = installedVersion()
+  const loaded = row === null ? null : parseSemverJs(row.version)
+  if (!row || !loaded || !installed) return ""
+  if (compareCores(loaded, parseSemverJs(installed)) < 0) {
+    const at = row.ts !== "" ? ` at ${row.ts}` : ""
+    return `loaded plugin: ${row.version}${at} — RESTART OPENCODE (installed: ${installed})`
+  }
+  return `loaded plugin: ${row.version} (current)`
+}
+
+/**
+ * Builds the `pluginLoad` JSON block from the newest setup row, or null when
+ * there is no usable row or the installed version is unreadable.
+ * @param {{ version: string, ts: string } | null} row The newest setup row.
+ * @returns {{ loadedVersion: string, loadedAt: string, installedVersion: string, stale: boolean } | null} The block, or null.
+ */
+function pluginLoadDoc(row) {
+  const installed = installedVersion()
+  const loaded = row === null ? null : parseSemverJs(row.version)
+  if (!row || !loaded || !installed) return null
+  return {
+    loadedVersion: row.version,
+    loadedAt: row.ts,
+    installedVersion: installed,
+    stale: compareCores(loaded, parseSemverJs(installed)) < 0,
+  }
+}
+
+/**
  * Entry point. Parses args, resolves the journal, aggregates, and prints.
  * @param {string[]} argv Arguments after the `status` subcommand.
  * @returns {Promise<number>} The process exit code.
@@ -1105,12 +1164,14 @@ async function main(argv) {
     tokenRows.length > 0 ? buildTokenUsage(tokenRows, agentBySessionOf(lines)) : null
 
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
+  const pluginLoad = pluginLoadDoc(newestSetupRow(lines))
   if (flags.json) {
     process.stdout.write(
       `${JSON.stringify(
         {
           ...base,
           ...(tokenUsage ? { tokenUsage } : {}),
+          ...(pluginLoad ? { pluginLoad } : {}),
           ...(update ? { update } : {}),
           ...(advisory ? { advisories: [advisory] } : {}),
         },
@@ -1121,6 +1182,8 @@ async function main(argv) {
   } else {
     let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
     if (tokenUsage) table += `\n${renderTokenLines(tokenUsage)}`
+    const loaded = loadedPluginLine(newestSetupRow(lines))
+    if (loaded) table += `\n${loaded}`
     if (update) {
       const line = updateLineText(update)
       if (line) table += `\n${line}`

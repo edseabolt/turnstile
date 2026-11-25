@@ -325,7 +325,9 @@ grep '"type":"setup"' ~/.local/share/opencode/metrics/turnstile.jsonl | tail -1
 
 If that row's version is older than the installed package, a process still
 runs the old module: restart it. `npx opencode-turnstile check` verifies
-files on disk, not the loaded module.
+files on disk, not the loaded module. The `opencode-turnstile status`
+command reports this gap directly (a `loaded plugin:` line, or `pluginLoad`
+in `--json`).
 
 Verify a clone with:
 
