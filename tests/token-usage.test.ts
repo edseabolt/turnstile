@@ -12,6 +12,8 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
 import { addTotals, extractStepUsage, extractUsage, zeroTotals } from "../src/token-usage.ts"
@@ -489,4 +491,106 @@ test("a throwing execution handler journals the failure via the consume loop", a
   )
   controller.abort()
   await stopped
+})
+
+/**
+ * Starts the event stream on a bare `createHooksCore` context with a
+ * two-event 2.4.1 script (one token-bearing step, then the execution
+ * trigger), the shared shape of the ordering tests below.
+ * @param ctx The hooks core context (journaler stubbed by the caller).
+ * @returns The abort controller and the supervision promise (never awaited
+ *     by the pending-anchor test: the stream parks on the stubbed await).
+ */
+function startOrderingStream(ctx: ReturnType<typeof createHooksCore>): {
+  controller: AbortController
+  stopped: Promise<unknown>
+} {
+  const controller = new AbortController()
+  async function* subscribe(): AsyncIterable<{ type: string; data?: unknown }> {
+    yield {
+      type: "session.step.ended",
+      data: {
+        sessionID: "p1",
+        assistantMessageID: "msg_1",
+        finish: "stop",
+        tokens: { input: 10, output: 5 },
+        cost: 0.01,
+      },
+    }
+    yield { type: "session.execution.succeeded", data: { sessionID: "p1" } }
+  }
+  const stopped = startEventStream(
+    ctx,
+    subscribe as unknown as (options?: { signal?: AbortSignal }) => AsyncIterable<never>,
+    controller.signal,
+  )
+  return { controller, stopped }
+}
+
+/** The rollup row is journaled before the session-end anchor await: a
+ *  forever-pending `anchorAsync` (the headless teardown window) still
+ *  leaves the rollup row in the journal. */
+test("rollup row lands even when the session-end anchor never resolves", async () => {
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, tokenUsage: "summary" },
+  })
+  ctx.journaler.anchorAsync = () => new Promise(() => {})
+  const { controller } = startOrderingStream(ctx)
+  await waitUntil(() => usageEntries(metricsDir).length === 1)
+  controller.abort()
+})
+
+/** The rollup row also survives a session-end verify that throws after the
+ *  anchor: the flush precedes the verify await, and the verify failure is
+ *  journaled fail-open. */
+test("rollup row lands when the session-end verify throws after the anchor", async () => {
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({
+    env: isolatedEnv(metricsDir),
+    config: {
+      metricsDir,
+      tokenUsage: "summary",
+      tamperEvidence: {
+        enabled: true,
+        anchor: "session-state",
+        epochEntries: 512,
+        verifyOnSessionEnd: true,
+      },
+    },
+  })
+  Object.defineProperty(ctx, "anchorSinks", {
+    get(): unknown {
+      throw new Error("verify boom")
+    },
+  })
+  const { controller, stopped } = startOrderingStream(ctx)
+  await waitUntil(() =>
+    journalEntries(metricsDir).some(
+      (l) => l.type === "error" && String(l.error).startsWith("chain-verify:"),
+    ),
+  )
+  assert.equal(usageEntries(metricsDir).length, 1, "the rollup row precedes the verify")
+  controller.abort()
+  await stopped
+})
+
+/** Summary-mode totals include the rollup: the flush is journaled before
+ *  the summary's journal read, so the recap line carries the tokens. */
+test("summary-mode totals include the rollup: flush precedes the summary journal read", async () => {
+  const { dispose, metricsDir, fake } = await boot({
+    tokenUsage: "summary",
+    sessionSummary: "on",
+  })
+  fs.appendFileSync(
+    path.join(metricsDir, "turnstile.jsonl"),
+    JSON.stringify({ type: "gate", sessionID: "p1", result: "PASS" }) + "\n",
+  )
+  await pushStepEnded(fake, "p1")
+  await fake.pushEvent({ type: "session.execution.succeeded", data: { sessionID: "p1" } })
+  const summary = journalEntries(metricsDir).find((e) => e.type === "session-summary")
+  assert.ok(summary, "the summary proof row is journaled")
+  assert.match(String(summary!.text), /10 in\/5 out tok/)
+  dispose()
 })

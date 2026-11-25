@@ -809,9 +809,13 @@ async function handleSessionIdle(
 
 /**
  * Runs the shared session-end sequence once per session: the dedup add
- * (bounded), the session-end anchor, the chain verify, the token-usage
- * rollup flush (when `tokenUsage` is not "off"), and the session summary
- * delivery (per the `sessionSummary` config). The trigger is `session.idle`
+ * (bounded), the synchronous journal writes (the token-usage rollup flush
+ * when `tokenUsage` is not "off", then the session-summary proof row per
+ * the `sessionSummary` config), the session-end anchor, the chain verify,
+ * and the best-effort summary toast. The synchronous writes precede the
+ * first await so both rows survive headless hosts that exit the process
+ * during the anchor/verify window; the anchor publish still precedes the
+ * verify so published refs count as anchored. The trigger is `session.idle`
  * (hosts ≤ 2.3.x) or `session.execution.succeeded`/`session.execution.failed`
  * (hosts ≥ 2.4.x). The once-per-session dedup means the rollup and recap
  * land after the FIRST trigger per session per host process on either
@@ -826,19 +830,21 @@ async function runSessionEnd(ctx: TurnstileContext, sid: string): Promise<void> 
   if (ctx.summarizedSessions.has(sid)) return
   ctx.summarizedSessions.add(sid)
   ctx.boundSummarizedSessions()
-  // The session-end anchor trigger runs first and its publish is awaited, so
-  // refs closed/published for this session count as anchored in the verify
-  // that follows (no false "unanchored epoch refs" verdict). Fail-open by
-  // the journaler's anchor contract.
+  // Headless hosts can exit the process during the first await, so every
+  // synchronous journal write happens first: the rollup flush, then the
+  // summary proof row (flush-then-read, so summary totals include tokens).
+  if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
+  const summaryLine = ctx.config.sessionSummary === "off" ? null : composeSessionSummary(ctx, sid)
+  // The session-end anchor trigger runs after those rows are published and its
+  // publish is awaited, so refs closed/published for this session (including
+  // the rollup and summary rows) count as anchored in the verify that follows
+  // (no false "unanchored epoch refs" verdict). Fail-open by the journaler's
+  // anchor contract.
   await ctx.journaler.anchorAsync("session-end", sid)
   // The chain verify is independent of the summary setting: it runs once per
   // session even when sessionSummary is "off".
   await runSessionEndVerify(ctx, sid)
-  // The token-usage rollup is independent of the summary setting: it flushes
-  // once per session even when sessionSummary is "off" or quiet-inactive.
-  if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
-  if (ctx.config.sessionSummary === "off") return
-  await deliverSessionSummary(ctx, sid)
+  if (summaryLine !== null) await deliverToast(ctx, summaryLine)
 }
 
 /**
@@ -861,20 +867,23 @@ async function handleExecutionEnded(
 }
 
 /**
- * Counts the session's activity and token totals from one journal read and
- * delivers the recap: the all-green line for zero-activity sessions (under
+ * Reads the session's activity and token totals from one journal read and
+ * composes the recap: the all-green line for zero-activity sessions (under
  * "on"), else the recap line with the token rollup appended when the journal
- * holds token-usage rows. Journals the delivery-proof entry and toasts
- * best-effort.
+ * holds token-usage rows. Journals the delivery-proof entry and returns the
+ * line, or `null` when quiet-inactive (no row). Fully synchronous so the
+ * proof row survives headless process exit; must run after the rollup flush
+ * so summary-mode totals include the session's tokens.
  * @param ctx The shared per-setup context.
  * @param sid The idling session's ID.
+ * @returns The composed summary line, or `null` when no row was journaled.
  */
-async function deliverSessionSummary(ctx: TurnstileContext, sid: string): Promise<void> {
+function composeSessionSummary(ctx: TurnstileContext, sid: string): string | null {
   const entries = readJournalEntries(ctx.journaler.journalPath)
   const counts = countSessionActivity(entries, sid)
   const tokens = sessionTokenTotals(entries, sid)
   const inactive = isInactive(counts)
-  if (inactive && ctx.config.sessionSummary === "quiet") return
+  if (inactive && ctx.config.sessionSummary === "quiet") return null
   const line = inactive
     ? formatAllGreenLine(ctx.journaler.journalPath)
     : formatSessionSummary(counts, ctx.journaler.journalPath, tokens)
@@ -884,15 +893,16 @@ async function deliverSessionSummary(ctx: TurnstileContext, sid: string): Promis
     ...counts,
     text: line.slice(0, SUMMARY_TEXT_BOUND),
   })
-  await deliverToast(ctx, line)
+  return line
 }
 
 /**
  * Journals the summary-mode token-usage rollup for a session and clears its
  * accumulator. Called from `runSessionEnd` (which serves `session.idle` and
- * the ≥ 2.4.1 `session.execution.succeeded`/`failed` carriers) before the
- * `sessionSummary` early returns so the rollup flushes on every session end
- * regardless of the summary setting. The session-end dedupe guard makes this
+ * the ≥ 2.4.1 `session.execution.succeeded`/`failed` carriers) first in the
+ * session-end sequence, before any await, so the rollup row survives headless
+ * process exit and flushes on every session end regardless of the summary
+ * setting. The session-end dedupe guard makes this
  * once per session per host process; an empty accumulator journals nothing.
  * @param ctx The shared per-setup context.
  * @param sid The idling session's ID.
