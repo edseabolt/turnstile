@@ -1070,12 +1070,12 @@ function newestSetupRow(lines) {
  * @returns {string} The line, or "" when there is nothing to report.
  */
 function loadedPluginLine(row) {
-  const installed = installedVersion()
+  const installed = parseSemverJs(installedVersion())
   const loaded = row === null ? null : parseSemverJs(row.version)
   if (!row || !loaded || !installed) return ""
-  if (compareCores(loaded, parseSemverJs(installed)) < 0) {
+  if (compareCores(loaded, installed) < 0) {
     const at = row.ts !== "" ? ` at ${row.ts}` : ""
-    return `loaded plugin: ${row.version}${at} — RESTART OPENCODE (installed: ${installed})`
+    return `loaded plugin: ${row.version}${at} — RESTART OPENCODE (installed: ${installedVersion()})`
   }
   return `loaded plugin: ${row.version} (current)`
 }
@@ -1087,14 +1087,14 @@ function loadedPluginLine(row) {
  * @returns {{ loadedVersion: string, loadedAt: string, installedVersion: string, stale: boolean } | null} The block, or null.
  */
 function pluginLoadDoc(row) {
-  const installed = installedVersion()
+  const installed = parseSemverJs(installedVersion())
   const loaded = row === null ? null : parseSemverJs(row.version)
   if (!row || !loaded || !installed) return null
   return {
     loadedVersion: row.version,
     loadedAt: row.ts,
-    installedVersion: installed,
-    stale: compareCores(loaded, parseSemverJs(installed)) < 0,
+    installedVersion: installedVersion(),
+    stale: compareCores(loaded, installed) < 0,
   }
 }
 
@@ -1164,7 +1164,8 @@ async function main(argv) {
     tokenRows.length > 0 ? buildTokenUsage(tokenRows, agentBySessionOf(lines)) : null
 
   const update = flags.checkUpdates ? await resolveUpdateCheck(process.env, metricsDir) : undefined
-  const pluginLoad = pluginLoadDoc(newestSetupRow(lines))
+  const setupRow = newestSetupRow(lines)
+  const pluginLoad = pluginLoadDoc(setupRow)
   if (flags.json) {
     process.stdout.write(
       `${JSON.stringify(
@@ -1182,7 +1183,7 @@ async function main(argv) {
   } else {
     let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
     if (tokenUsage) table += `\n${renderTokenLines(tokenUsage)}`
-    const loaded = loadedPluginLine(newestSetupRow(lines))
+    const loaded = loadedPluginLine(setupRow)
     if (loaded) table += `\n${loaded}`
     if (update) {
       const line = updateLineText(update)

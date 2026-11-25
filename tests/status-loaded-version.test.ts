@@ -22,7 +22,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -230,6 +230,44 @@ test("pluginLoad carries exactly the documented keys", () => {
       "loadedVersion",
       "stale",
     ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * Runs the status script from a copy whose sibling package.json carries a
+ * malformed version, exercising the unparseable-installed-version edge
+ * (installedVersion() returns a string parseSemverJs cannot parse).
+ * @param dir The temp metrics directory holding the journal fixture.
+ * @returns The spawn result with stdout coerced to string.
+ */
+function runStatusWithMalformedInstalled(dir: string, args: string[] = []) {
+  const pkgRoot = join(dir, "pkg")
+  mkdirSync(join(pkgRoot, "scripts"), { recursive: true })
+  for (const f of ["status.mjs", "journal-read.mjs"]) {
+    copyFileSync(join(repoRoot, "scripts", f), join(pkgRoot, "scripts", f))
+  }
+  writeFileSync(join(pkgRoot, "package.json"), JSON.stringify({ version: "not-a-version" }))
+  return spawnSync(process.execPath, [join(pkgRoot, "scripts", "status.mjs"), ...args], {
+    env: {
+      ...process.env,
+      TURNSTILE_METRICS_DIR: dir,
+      TURNSTILE_CLI_CONFIG: join(dir, "absent-cli.json"),
+    },
+    encoding: "utf8",
+  })
+}
+
+test("omits the report when the installed version is not parseable semver", () => {
+  const dir = metricsDir()
+  try {
+    writeJournal(dir, "turnstile.jsonl", [setupRow("2026-01-01T10:00:00Z", installedPkgVersion())])
+    const res = runStatusWithMalformedInstalled(dir)
+    assert.equal(code(res), 0)
+    assert.doesNotMatch(res.stdout, /loaded plugin:/)
+    const json = JSON.parse(runStatusWithMalformedInstalled(dir, ["--json"]).stdout)
+    assert.equal("pluginLoad" in json, false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

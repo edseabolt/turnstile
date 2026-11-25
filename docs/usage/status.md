@@ -53,7 +53,10 @@ When the newest setup heartbeat in the journal is older than the installed
 package, the table carries a `loaded plugin:` line asking for an OpenCode
 restart, and `status --json` carries the same facts in a `pluginLoad` key
 (`loadedVersion`, `loadedAt`, `installedVersion`, `stale`). With no setup
-row, or a version that cannot be parsed, neither appears.
+row, or a version that cannot be parsed, neither appears. The scan reads
+only the replay-tail-bounded journal window (`replayTailLines`, default
+2000): a very long-lived host whose journal tail no longer contains its
+setup row omits the check rather than warning.
 
 ### Sharing the evidence
 
