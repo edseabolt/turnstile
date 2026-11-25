@@ -24,7 +24,16 @@ import {
   sessionTokenTotals,
 } from "../src/summary.ts"
 import { zeroTotals } from "../src/token-usage.ts"
-import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, type FakeHost } from "./helpers.ts"
+import { createHooksCore } from "../src/hooks-core.ts"
+import { startEventStream } from "../src/hooks-events.ts"
+import {
+  isolatedEnv,
+  journalEntries,
+  makeFakeHost,
+  tmpDir,
+  waitUntil,
+  type FakeHost,
+} from "./helpers.ts"
 
 /** A gate PASS marker first-sight entry for a parent. */
 const pass = (sid: string): Record<string, unknown> => ({
@@ -478,6 +487,32 @@ test("session.idle on a host without tui journals the recap with no toast", asyn
   assert.equal(summaryEntries(metricsDir).length, 1)
   assert.equal(h.toasts.length, 0)
   dispose()
+})
+
+/** The `session-summary` proof row is journaled before the session-end
+ *  anchor await: a forever-pending `anchorAsync` (the headless teardown
+ *  window) still leaves the proof row in the journal. */
+test("session-summary proof row lands even when the anchor never resolves", async () => {
+  const metricsDir = tmpDir()
+  const ctx = createHooksCore({
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, sessionSummary: "on" },
+  })
+  ctx.journaler.anchorAsync = () => new Promise(() => {})
+  const controller = new AbortController()
+  async function* subscribe(): AsyncIterable<{ type: string; data?: unknown }> {
+    yield { type: "session.idle", data: { sessionID: "p1" } }
+  }
+  // The stream parks on the pending anchor await, so the supervision
+  // promise is never awaited: the abort marks the teardown the test
+  // simulates.
+  startEventStream(
+    ctx,
+    subscribe as unknown as (options?: { signal?: AbortSignal }) => AsyncIterable<never>,
+    controller.signal,
+  )
+  await waitUntil(() => summaryEntries(metricsDir).length === 1)
+  controller.abort()
 })
 
 /** An event without a sessionID is inert (no dedupe add, no delivery). */

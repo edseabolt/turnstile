@@ -254,7 +254,10 @@ the recap and token rollup land after the FIRST trigger, so on 2.4.1 that is
 after the first agent run rather than at true quiescence; see the
 `session-summary` entry kind in [persistence](persistence.md); the recap
 line carries the session's token/cost rollup when the journal holds
-token-usage rows for it),
+token-usage rows for it). The rollup row and the `session-summary` proof row
+are journaled synchronously before the session-end anchor and verify awaits,
+so both survive headless hosts that exit the process right after
+`session.execution.succeeded`.
 token-usage journaling (`message.updated` on hosts ≤ 2.3.x, `session.step.ended`
 on hosts ≥ 2.4.1 → a `token-usage` per-message row or a session-end rollup per
 the `tokenUsage` mode, see the `token-usage`

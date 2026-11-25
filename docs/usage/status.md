@@ -46,6 +46,18 @@ once, from the rollup. With no `token-usage` rows in the journal (tokenUsage
 `"off"`, or an older journal), the rollup is omitted and the output is
 unchanged.
 
+### Loaded plugin version
+
+The status report also checks which plugin version the running host loaded.
+When the newest setup heartbeat in the journal is older than the installed
+package, the table carries a `loaded plugin:` line asking for an OpenCode
+restart, and `status --json` carries the same facts in a `pluginLoad` key
+(`loadedVersion`, `loadedAt`, `installedVersion`, `stale`). With no setup
+row, or a version that cannot be parsed, neither appears. The scan reads
+only the replay-tail-bounded journal window (`replayTailLines`, default
+2000): a very long-lived host whose journal tail no longer contains its
+setup row omits the check rather than warning.
+
 ### Sharing the evidence
 
 `opencode-turnstile evidence` is the sharing half of the same read-only view:
