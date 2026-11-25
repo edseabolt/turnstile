@@ -31,7 +31,7 @@ I/O stays bounded by the retained-generation sizes, never the full
 `journalMaxGenerations × journalMaxBytes` envelope (the file count grows
 with live sessions; see [the retention note](rotation.md)). Archived
 generations (`journalArchiveGenerations`, default 5) sit outside this
-envelope and are not read by replay — replay needs only `replayTailLines` —
+envelope and are not read by replay (replay needs only `replayTailLines`)
 but are read by verify and the CLI surfaces.
 
 The journal is treated as untrusted data on the read side. A line folds
@@ -102,8 +102,8 @@ half of that view: the same tail window and shape checks, folded to one
 task and projected key by key into `turnstile-evidence/v1`: derived
 counts, canonical marker lines, and two shas (a one-way task handle, and
 `sha256` of the task's last journaled line). The window is scoped to the
-task's session tree — its per-session sink, the child sinks its
-`child-edge` rows name, and the shared file filtered to those sessions —
+task's session tree (its per-session sink, the child sinks its
+`child-edge` rows name, and the shared file filtered to those sessions),
 so another session's journal activity can neither enter the artifact nor
 refresh its freshness signal, and a quiet session's rows cannot be evicted
 by a hot shared tail. `latest` selection still scans the global tail; a

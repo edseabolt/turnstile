@@ -7,7 +7,7 @@ anchor sinks.
 **Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
 the same file an attacker can rewrite proves nothing by itself. So each
 committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is
-published to independent durable stores — the anchor sinks — at the
+published to independent durable stores (the anchor sinks) at the
 task-completion trigger, fire-and-forget: every publish runs concurrently,
 a rejection journals an `anchor-publish:` `error` row, and nothing blocks
 the pipeline. Sinks are selected by `tamperEvidence.anchor`:
@@ -103,17 +103,17 @@ export default function factory({ config }) {
 The factory is called once at setup with `{ config: <the configured
 `options` object> }`. Its returned sink is shape-checked: a string `id`, a
 `trustDomain` in the union, and callable `publish`/`verify`. Both may be
-async — `publish(ref)` receives the anchor ref `{sink, source, epoch,
+async: `publish(ref)` receives the anchor ref `{sink, source, epoch,
 root, head, ts}`; `verify(ref)` returns an `AnchorVerdict`. Every
 failure path degrades fail-open: a failed import, a non-function default
 export, a factory throw, or a malformed sink each become a journaled
-`anchor-sink:` warning and the entry is skipped — never a boot failure.
+`anchor-sink:` warning and the entry is skipped, never a boot failure.
 
 **Row-level inclusion proofs (`prov --verify --session <id>`).** The scoped
 variant folds only the shared journal and the target session's sink.
 `merklePath`/`merklePathRoot` (`src/chain.ts`) derive a per-row audit
 path under the same Bitcoin-style pairwise/self-hash conventions as
-`merkleRoot` (odd nodes hashed with themselves, a final root self-hash —
+`merkleRoot` (odd nodes hashed with themselves, plus a final root self-hash,
 deliberately _not_ RFC 6962/9162's copied-node tree, so the proofs verify
 only against this implementation's verifier); the CLI validates each `prov:*` row's path against its epoch's
 anchored ref root (`merkleOk`, `false` when an anchor disagrees with the

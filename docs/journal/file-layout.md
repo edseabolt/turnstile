@@ -2,26 +2,26 @@
 
 ## File layout
 
-- **`turnstile.jsonl`** — the shared, always-on audit trail. Entries without
+- **`turnstile.jsonl`**: the shared, always-on audit trail. Entries without
   a resolvable parent sessionID land here.
-- **`sessions/<parentID>.jsonl`** — the per-session sink (the default, when
+- **`sessions/<parentID>.jsonl`**: the per-session sink (the default, when
   `journalPerSession` is on). Every entry with a resolvable parent sessionID
   (via the ledger's `parentOf` map) appends here instead of the shared file,
   so one session's dispatches, verdicts, gates, blocks, and waivers read
   top-to-bottom in one file. Entries without a sessionID, or with an ID
   failing the session-ID shape rule, land in the shared `turnstile.jsonl`.
-- **`sessions/<parentID>/evidence.json`** — the local evidence mirror written
+- **`sessions/<parentID>/evidence.json`**: the local evidence mirror written
   by the standalone `evidence` emitter on every `--out` artifact write
   (best-effort): the same bytes as the committed artifact, co-located with
   the producing session's sink for audit.
-- **`archive/`** (and **`sessions/archive/`**) — gzip-archived pruned
+- **`archive/`** (and **`sessions/archive/`**): gzip-archived pruned
   generations, one directory per journal family. By default
   (`journalArchiveGenerations: 5`) rotation archives the outgoing final
   generation instead of destroying it; at most `journalArchiveGenerations`
   archives are kept per family (0 disables). Cold storage only: replay
   never reads it, verify and the CLI surfaces do.
-- **`gate-events.log`** — human-readable trace, only when `trace:true`.
-- **`<file>.lock`** — transient lock directories (never data): one per
+- **`gate-events.log`**: human-readable trace, only when `trace:true`.
+- **`<file>.lock`**: transient lock directories (never data): one per
   guarded file (`turnstile.jsonl.lock`, a session sink's `.lock`, the
   sidecar's `.lock`), the atomic mkdir mutex of the cross-process append,
   sidecar, and rotation protocol. A lock older than its staleness bound
@@ -29,12 +29,12 @@
   crashed holder's; the steal is journaled. Released (rmdir) when the
   guarded write returns; a lock left behind means a crashed process and
   disappears on the next contended write past the bound.
-- **`anchors.jsonl`** — the session-state anchor store, written only when
+- **`anchors.jsonl`**: the session-state anchor store, written only when
   `tamperEvidence.enabled` is `true` (see [tamper evidence: the hash
   chain](chain.md) and [anchors](anchors.md)). One published epoch ref per
   line, appended by the `session-state`
   sink at the task-completion and session-end triggers.
-- **`approved-plans.jsonl`** — the durable approved-plan store (beside the
+- **`approved-plans.jsonl`**: the durable approved-plan store (beside the
   journal by default; the factory's injected option redirects it). Each line
   is one record: a plan file name, its content key, and the project scope
   the approval was recorded under (derived from the resolved project
