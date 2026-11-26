@@ -19,6 +19,7 @@ import { GATE_RE, VERDICT_RE, formatDiagnosticBlock } from "./markers.ts"
 import {
   defaultAgents,
   defaultGitGates,
+  defaultSecrets,
   defaultToolPolicy,
   mergeConfigKey,
 } from "./config-merge.ts"
@@ -352,6 +353,7 @@ export function defaultConfig(
     ...defaultMarkerSources(),
     toolPolicy: defaultToolPolicy(),
     gitGates: defaultGitGates(),
+    secrets: defaultSecrets(),
   }
 }
 
@@ -377,6 +379,7 @@ export function mergeConfig(
     gitGates: { ...base.gitGates },
     decisionLedger: { ...base.decisionLedger },
     tamperEvidence: { ...base.tamperEvidence },
+    secrets: { ...base.secrets },
   }
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     if (patch !== undefined) {

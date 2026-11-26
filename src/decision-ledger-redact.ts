@@ -1,92 +1,28 @@
 /**
  * @fileoverview Pure secret-redaction for the decision ledger:
- * a fixed, ordered pattern list plus `redactSecrets`, which replaces every
+ * an ordered pattern list plus `redactSecrets`, which replaces every
  * match with the fixed `[REDACTED]` sentinel. No fs, no host access, no
- * configuration, no throwing — pure string in, string out — so capture-time
- * wiring can call it unguarded and still fail open. The pattern list is
- * deliberately fixed (not user-configurable in v1): redaction at capture is
- * the one editorial decision that cannot be taken back at read time, so the
- * capture layer refuses to become a secrets leak. This module is the single
- * place to extend the pattern list.
+ * throwing — pure string in, string out — so capture-time
+ * wiring can call it unguarded and still fail open. The built-in pattern
+ * list is the default; a caller holding a resolved config threads its
+ * compiled list (built-ins plus configured extras, from
+ * `src/secret-patterns.ts`) in as a parameter, so configured extras extend
+ * redaction without this module reading config.
  */
+
+import { compileSecretPatterns } from "./secret-patterns.ts"
 
 /** The fixed replacement sentinel written over every redacted span. */
 export const REDACTION_SENTINEL = "[REDACTED]"
 
 /**
- * OpenAI-style API keys: `sk-` followed by at least 20 key characters, so
- * near-misses like a bare `sk-` prefix or a short fragment in prose
- * ("sk-1.5 models") never match.
+ * The ordered built-in redaction pattern list — the compiled built-in
+ * sources from `src/secret-patterns.ts` (the canonical home of the pattern
+ * definitions). Order matters: broader spans (headers, blocks) precede
+ * narrower token shapes so overlapping matches converge onto the widest
+ * span. Frozen: consumers must not mutate it.
  */
-const OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{20,}\b/g
-
-/**
- * AWS access key IDs: the literal `AKIA` prefix followed by 16 or more
- * uppercase alphanumeric characters (the AWS key-ID shape), so a truncated
- * or prose `AKIA` mention does not match, while a key ID embedded in a
- * longer uppercase run (concatenated tokens, minified env output) still
- * redacts. `{16,}` with the trailing word boundary backtracks correctly;
- * a fixed `{16}` would drop the whole match when the run continues.
- */
-const AWS_ACCESS_KEY_RE = /\bAKIA[0-9A-Z]{16,}\b/g
-
-/**
- * Bearer tokens in authorization headers: a `Bearer` scheme keyword followed
- * by its credential run, matched before the narrower token patterns so a
- * bearer header wrapping an `sk-` key redacts as one span.
- */
-const BEARER_TOKEN_RE = /\bbearer\s+[\w.\-+=/]{8,}/gi
-
-/**
- * Authorization headers of any scheme: an `authorization` header name, a
- * separator, and the credential value that follows it (basic, digest,
- * custom schemes alike).
- */
-const AUTHORIZATION_HEADER_RE = /\bauthorization\b["']?\s*[:=]\s*["']?[\w.\-+=/]{8,}/gi
-
-/** GitHub classic personal access tokens: the `ghp_` prefix shape. */
-const GITHUB_PAT_RE = /\bghp_[A-Za-z0-9]{20,}\b/g
-
-/** GitHub fine-grained personal access tokens: the `github_pat_` prefix shape. */
-const GITHUB_FINE_PAT_RE = /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g
-
-/**
- * Generic API-key assignments: `api_key` / `api-key` / `apikey` followed by
- * `=` or `:` and a credential-looking value, in code, env lines, or config.
- */
-const API_KEY_ASSIGNMENT_RE = /\bapi[_-]?key\b["']?\s*[:=]\s*["']?[\w.\-+=/]{8,}/gi
-
-/**
- * Generic token assignments: a bare `token` name followed by `=` or `:` and
- * a credential-looking value (the same assignment shape as API keys).
- */
-const TOKEN_ASSIGNMENT_RE = /\btoken\b["']?\s*[:=]\s*["']?[\w.\-+=/]{8,}/gi
-
-/**
- * PEM private-key blocks: from the `-----BEGIN … PRIVATE KEY-----` header to
- * the matching `-----END … PRIVATE KEY-----` footer, body included. The lazy
- * body quantifier keeps the match linear in the input length.
- */
-const PRIVATE_KEY_BLOCK_RE =
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
-
-/**
- * The ordered redaction pattern list — the canonical source of what the
- * ledger capture layer masks. Order matters: broader spans (headers,
- * blocks) precede narrower token shapes so overlapping matches converge onto
- * the widest span. Frozen: consumers must not mutate it.
- */
-export const SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
-  PRIVATE_KEY_BLOCK_RE,
-  BEARER_TOKEN_RE,
-  AUTHORIZATION_HEADER_RE,
-  OPENAI_KEY_RE,
-  AWS_ACCESS_KEY_RE,
-  GITHUB_PAT_RE,
-  GITHUB_FINE_PAT_RE,
-  API_KEY_ASSIGNMENT_RE,
-  TOKEN_ASSIGNMENT_RE,
-])
+export const SECRET_PATTERNS: readonly RegExp[] = Object.freeze(compileSecretPatterns(null, []))
 
 /**
  * Apply every pattern to `text` once, returning the single-pass result.
@@ -94,11 +30,12 @@ export const SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
  * calls on the same pattern are safe.
  *
  * @param text - The text to redact in one pass.
+ * @param patterns - The compiled patterns to apply.
  * @returns The text with every pattern match replaced by the sentinel.
  */
-function applyAllPatterns(text: string): string {
+function applyAllPatterns(text: string, patterns: readonly RegExp[]): string {
   let result = text
-  for (const pattern of SECRET_PATTERNS) {
+  for (const pattern of patterns) {
     pattern.lastIndex = 0
     result = result.replace(pattern, REDACTION_SENTINEL)
   }
@@ -115,12 +52,15 @@ function applyAllPatterns(text: string): string {
  * inputs bounded.
  *
  * @param text - The text to redact.
+ * @param patterns - The compiled patterns to apply; defaults to the
+ *     built-in list (callers with a resolved config pass the compiled
+ *     built-ins-plus-extras list from `src/secret-patterns.ts`).
  * @returns The redacted text, or the input unchanged when nothing matches.
  */
-export function redactSecrets(text: string): string {
+export function redactSecrets(text: string, patterns: readonly RegExp[] = SECRET_PATTERNS): string {
   let current = text
   for (;;) {
-    const next = applyAllPatterns(current)
+    const next = applyAllPatterns(current, patterns)
     if (next === current) return current
     current = next
   }

@@ -22,6 +22,7 @@ import { BlockError } from "./gates.ts"
 import type { Journaler } from "./journal.ts"
 import { splitCommands, tokenizeWords, type BashWriteVerdict } from "./bash-write.ts"
 import { parseCommitArgs } from "./commit-args.ts"
+import { findHighEntropyLiterals } from "./secret-patterns.ts"
 import type { TurnstileConfig } from "./types.ts"
 
 /**
@@ -173,6 +174,11 @@ export interface ToolPolicyState {
   pathDeny: CompiledRule[]
   /** The compiled commit-format matcher (anchored, dotall). */
   commitFormat: RegExp
+  /**
+   * The compiled secret patterns (built-ins plus configured extras, compiled
+   * once by the composition site) the write-time guard matches against.
+   */
+  secretPatterns: RegExp[]
   /** Per-session blind-retry burst counters for the commit lint. */
   commitRetries: Map<string, { count: number; lastMs: number }>
 }
@@ -346,6 +352,8 @@ export function compileCommitFormat(config: TurnstileConfig, journaler: Journale
  * @param reason The gate-specific block reason string.
  * @param retries Optional burst-retry count (commit-lint invalid-message
  *     blocks only); omitted from the entry when absent.
+ * @param pattern Optional matching secret-pattern index (secret-write blocks
+ *     only); omitted from the entry when absent.
  */
 function journalGateBlock(
   state: ToolPolicyState,
@@ -353,6 +361,7 @@ function journalGateBlock(
   sessionID: string,
   reason: string,
   retries?: number,
+  pattern?: number,
 ): void {
   state.journaler.journal({
     type: "blocked",
@@ -360,6 +369,7 @@ function journalGateBlock(
     tool,
     reason,
     ...(retries === undefined ? {} : { retries }),
+    ...(pattern === undefined ? {} : { pattern }),
   })
   state.journaler.traceEvent("tool-policy", "blocked", `${tool} ${reason}`, sessionID)
 }
@@ -631,6 +641,133 @@ function guardPath(
     throw new BlockError(
       `BLOCKED by turnstile: ${tool} blocked by policy rule ${rule.index}: ${rule.source}`,
     )
+  } catch (e) {
+    guardFailOpen(state, e)
+  }
+}
+
+/**
+ * The advisory nudge text for a write whose content matched secret pattern
+ * `index`, stashed for the next parent-facing delivery.
+ * @param index The matching pattern's index in the compiled list.
+ * @returns The one-line advisory text.
+ */
+function secretWriteAdvisory(index: number): string {
+  return (
+    `[turnstile] advisory: this write matches secret pattern ${index}; ` +
+    `move secrets to a secret manager or env injection`
+  )
+}
+
+/** The advisory nudge text for a write carrying a high-entropy literal. */
+const SECRET_ENTROPY_ADVISORY =
+  `[turnstile] advisory: this write contains a high-entropy literal; ` +
+  `move secrets to a secret manager or env injection`
+
+/**
+ * Returns the index of the first pattern matching `text`, or -1. Global
+ * regexes carry `lastIndex` state, so it is reset before each test.
+ * @param patterns The compiled secret patterns.
+ * @param text The write content to scan.
+ * @returns The lowest matching index, or -1 when nothing matches.
+ */
+function matchSecretPatternIndex(patterns: readonly RegExp[], text: string): number {
+  return patterns.findIndex((re) => {
+    re.lastIndex = 0
+    return re.test(text)
+  })
+}
+
+/**
+ * The advise arm of the write-time secret guard: journals one bounded
+ * advisory row (the content itself is never journaled) and stashes the
+ * one-line nudge for the next parent-facing delivery.
+ * @param state The shared tool-policy state.
+ * @param tool The tool name, recorded in the journal.
+ * @param sessionID The session ID, recorded in the journal entry.
+ * @param index The matching pattern's index.
+ * @param stash The caller's advisory stash (delivered on the next tool
+ *     delivery to the session's parent).
+ */
+function adviseSecretWrite(
+  state: ToolPolicyState,
+  tool: string,
+  sessionID: string,
+  index: number,
+  stash: (text: string) => void,
+): void {
+  state.journaler.journal({ type: "tool", sessionID, tool, secretWrite: true, pattern: index })
+  stash(secretWriteAdvisory(index))
+}
+
+/**
+ * The advisory entropy arm: consulted only when `secrets.entropy` is on,
+ * after no pattern matched. Journals one bounded advisory row carrying
+ * `entropy:true` (never a block, even under `enforce`) and stashes the nudge.
+ * @param state The shared tool-policy state.
+ * @param tool The tool name, recorded in the journal.
+ * @param sessionID The session ID, recorded in the journal entry.
+ * @param text The write content to scan (never journaled).
+ * @param stash The caller's advisory stash.
+ */
+function adviseEntropyWrite(
+  state: ToolPolicyState,
+  tool: string,
+  sessionID: string,
+  text: string,
+  stash: (text: string) => void,
+): void {
+  if (!state.config.secrets.entropy) return
+  if (findHighEntropyLiterals(text).length === 0) return
+  state.journaler.journal({ type: "tool", sessionID, tool, secretWrite: true, entropy: true })
+  stash(SECRET_ENTROPY_ADVISORY)
+}
+
+/**
+ * The write-time secret guard: inspects the content a write/edit/bash tool
+ * call would write (the tool-call payload only, never a file read) against
+ * the compiled secret patterns. `off` (or an empty compiled list) disables
+ * the surface; an absent/non-string content is a normal no-op (path-only
+ * edits carry no content key, so unlike the command/path guards there is no
+ * misconfiguration journal here). On a match: `advise` (the default)
+ * journals an advisory row and stashes one nudge; `enforce` journals the
+ * block and throws the standard `BlockError`. With `secrets.entropy` on, a
+ * no-pattern-match write carrying a high-entropy literal journals an
+ * advisory-only row that never blocks. Fail-open: an internal error journals
+ * and allows; only the deliberate enforce `BlockError` throws.
+ * @param state The shared tool-policy state.
+ * @param tool The tool name, recorded in the journal.
+ * @param content The raw content value from the host payload (`unknown`).
+ * @param sessionID The session ID, recorded in journal entries.
+ * @param stash The caller's advisory stash (delivered on the next tool
+ *     delivery to the session's parent).
+ * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` on a
+ *     match.
+ */
+function guardSecretWrite(
+  state: ToolPolicyState,
+  tool: string,
+  content: unknown,
+  sessionID: string,
+  stash: (text: string) => void,
+): void {
+  try {
+    if (state.config.secrets.writeGuard === "off" || state.secretPatterns.length === 0) return
+    const text = typeof content === "string" ? content : ""
+    if (text === "") return
+    const index = matchSecretPatternIndex(state.secretPatterns, text)
+    if (index >= 0) {
+      if (state.config.secrets.writeGuard === "enforce") {
+        journalGateBlock(state, tool, sessionID, "secret-write", undefined, index)
+        throw new BlockError(
+          `BLOCKED by turnstile: ${tool} blocked: content matches a configured secret ` +
+            `pattern (index ${index}); move the secret out of the written content`,
+        )
+      }
+      adviseSecretWrite(state, tool, sessionID, index, stash)
+      return
+    }
+    adviseEntropyWrite(state, tool, sessionID, text, stash)
   } catch (e) {
     guardFailOpen(state, e)
   }
@@ -1077,5 +1214,24 @@ export function createBashWriteGuards(state: ToolPolicyState): {
   return {
     guardBashWrite: (tool, command, verdict, sessionID, gate) =>
       guardBashWrite(state, tool, command, verdict, sessionID, gate),
+  }
+}
+
+/**
+ * Builds the write-time secret guard bound to the shared state.
+ * @param state The shared tool-policy state.
+ * @returns `guardSecretWrite`.
+ */
+export function createSecretWriteGuard(state: ToolPolicyState): {
+  guardSecretWrite(
+    tool: string,
+    content: unknown,
+    sessionID: string,
+    stash: (text: string) => void,
+  ): void
+} {
+  return {
+    guardSecretWrite: (tool, content, sessionID, stash) =>
+      guardSecretWrite(state, tool, content, sessionID, stash),
   }
 }

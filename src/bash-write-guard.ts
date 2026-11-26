@@ -71,6 +71,22 @@ export interface BashWriteGuardState {
 }
 
 /**
+ * Builds the advisory stash for the write-time secret guard: the nudge text
+ * is parked on the session's parent in the shared plan-impact advisory map,
+ * so the next parent-facing tool delivery carries it (the existing
+ * stash-and-deliver channel, reused rather than a second one).
+ * @param st The bash-write-guard state.
+ * @param sid The dispatching session (resolved to its parent for the stash).
+ * @returns The stash closure the guard calls at most once per match.
+ */
+function secretWriteStash(st: BashWriteGuardState, sid: string): (text: string) => void {
+  return (text) => {
+    st.planImpactAdvisories.set(st.ledger.parentOf(sid), text)
+    st.boundIntentNudges()
+  }
+}
+
+/**
  * The telemetry half of a bash/shell dispatch: the denylist guard, the
  * conventional-commit lint (armed only), the landing telemetry, and the
  * hands-on bash telemetry. The write-shape verdict is classified ONCE here
@@ -93,6 +109,11 @@ function observeBashTelemetry(
   // the empty default there is no such deny, so `gh pr` flows to the
   // landing telemetry below).
   st.toolPolicy.guardBash(tool, command, sid)
+  // Write-time secret guard second: the full command text is the payload
+  // (heredoc bodies ride inside it), scanned before the pipeline gates so a
+  // credential-shaped command is flagged (or blocked under enforce) in every
+  // mode.
+  st.toolPolicy.guardSecretWrite(tool, command, sid, secretWriteStash(st, sid))
   // Dormant-until-engaged: the denylist above and all telemetry below run
   // unconditionally; the pipeline gates (commit lint, bash-write hands-on
   // ladder, landing gate) sleep until the parent engages.
@@ -346,6 +367,17 @@ function handleWriteEditDispatchBody(
   // Denylist first: a configured pathDeny wins and the journal reasons stay
   // disjoint (mirrors the bash denylist-before-landing-gate ordering).
   st.toolPolicy.guardPath(tool, filePath, sid)
+  // Write-time secret guard second, BEFORE the child/scratch exemptions so a
+  // pipeline child's write is covered too (a child writing a real secret is
+  // exactly the exfil case). Only the new content is scanned: `content` for
+  // a write, `newString` for an edit — `oldString` is text already on disk,
+  // and scanning it would re-flag pre-existing text on every edit.
+  st.toolPolicy.guardSecretWrite(
+    tool,
+    event.input?.content ?? event.input?.newString,
+    sid,
+    secretWriteStash(st, sid),
+  )
   if (writeEditExempt(st, event, tool, sid, filePath)) return
   const parent = st.ledger.parentOf(sid) // == sid for a parent; self-keys if unregistered
   // Dormant-until-engaged: the denylist above and the scratch exemption ran

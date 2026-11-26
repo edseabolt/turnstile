@@ -49,6 +49,8 @@ export interface PromptAdmissionState {
   ledger: GateLedger
   /** Gate decision service (plan-name parsing for approval binding). */
   gates: Gates
+  /** The compiled secret patterns (built-ins plus configured extras). */
+  secretPatterns: RegExp[]
   /** Dedupe keys for admitted prompts. */
   admittedIds: Set<string>
   /** Cap on tracked dedupe keys. */
@@ -870,10 +872,10 @@ function captureLedgerBody(
   try {
     if (isPipelineChildPrompt(st, sessionID)) return
     st.journaler.journal(
-      provStatedEntry({ sessionID, text: promptTextOf(properties) }) as unknown as Record<
-        string,
-        unknown
-      >,
+      provStatedEntry(
+        { sessionID, text: promptTextOf(properties) },
+        st.secretPatterns,
+      ) as unknown as Record<string, unknown>,
     )
   } catch (e) {
     st.journaler.journal({ type: "error", sessionID, error: `prov: stated capture: ${e}` })

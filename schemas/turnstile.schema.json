@@ -361,6 +361,27 @@
           "description": "Run a chain+anchor verify at session idle and journal the verdict (default false)."
         }
       }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Secret-detection configuration: the built-in pattern list (in src/secret-patterns.ts) drives both journal redaction and the write-time guard; patterns only ever extends it.",
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Extra regex sources (compiled with g) appended to the built-ins for BOTH journal redaction and the write-time guard; an invalid source is dropped with a journaled error and the built-ins are never replaceable (default empty)."
+        },
+        "writeGuard": {
+          "type": "string",
+          "enum": ["off", "advise", "enforce"],
+          "description": "Write-time secret guard: off disables the surface; advise (default) journals an advisory row and stashes one nudge for the next delivery, never blocking; enforce blocks the matching write with a BLOCKED by turnstile: error."
+        },
+        "entropy": {
+          "type": "boolean",
+          "description": "Advisory-only high-entropy heuristic: when true, a write whose content carries a high-entropy literal journals an advisory row and never blocks, even under enforce (default false)."
+        }
+      }
     }
   }
 }

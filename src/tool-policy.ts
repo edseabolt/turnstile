@@ -31,9 +31,11 @@ import {
   createDenylistGuards,
   createHandsOnGuard,
   createLandingGuard,
+  createSecretWriteGuard,
   createTelemetry,
   type ToolPolicyState,
 } from "./tool-policy-guards.ts"
+import { compileSecretPatterns } from "./secret-patterns.ts"
 
 export {
   HANDSON_REQUIREMENT,
@@ -254,6 +256,33 @@ export interface ToolPolicy {
     sessionID: string,
     gate: BashWriteGateCapability,
   ): void
+  /**
+   * The write-time secret guard: inspects the content a write/edit/bash tool
+   * call would write (the tool-call payload only, never a file read) against
+   * the compiled secret patterns (built-ins plus configured extras). No-op
+   * under `secrets.writeGuard: "off"`, for an empty compiled list, or for
+   * absent/non-string content. On a match: `advise` (the default) journals
+   * `{type:"tool", secretWrite:true, pattern:<index>}` and calls `stash`
+   * once with the one-line advisory nudge (delivered by the caller on the
+   * next tool delivery); `enforce` journals
+   * `{type:"blocked", reason:"secret-write", pattern:<index>}` and throws
+   * (`BlockError`). With `secrets.entropy` on, a no-match write carrying a
+   * high-entropy literal journals `{type:"tool", secretWrite:true,
+   * entropy:true}` and stashes the nudge — never a block, even under
+   * `enforce`. Fail-open on an internal error.
+   * @param tool The tool name, recorded in the journal.
+   * @param content The raw content value from the host payload (`unknown`).
+   * @param sessionID The session ID, recorded in journal entries.
+   * @param stash Called at most once per match with the advisory nudge text.
+   * @throws Error with a `BLOCKED by turnstile:` prefix under `enforce` on a
+   *     match.
+   */
+  guardSecretWrite(
+    tool: string,
+    content: unknown,
+    sessionID: string,
+    stash: (text: string) => void,
+  ): void
 }
 
 /**
@@ -266,10 +295,18 @@ export interface ToolPolicy {
  * @param journaler The telemetry writer for blocked and error entries.
  * @returns The stateless tool-call policy.
  */
-export function createToolPolicy(config: TurnstileConfig, journaler: Journaler): ToolPolicy {
+export function createToolPolicy(
+  config: TurnstileConfig,
+  journaler: Journaler,
+  secretPatterns?: RegExp[],
+): ToolPolicy {
   const bashDeny = compileDenylist(journaler, "bashDeny", config.toolPolicy.bashDeny)
   const pathDeny = compileDenylist(journaler, "pathDeny", config.toolPolicy.pathDeny)
   const commitFormat = compileCommitFormat(config, journaler)
+  // The compiled secret patterns: the composition site (hooks-core) compiles
+  // the resolved list once with the real journaler and threads it in; the
+  // fallback compiles from the config silently (direct callers, tests).
+  const secrets = secretPatterns ?? compileSecretPatterns(null, config.secrets.patterns)
   // Blind-retry escalation state for the commit lint: per-session burst
   // counters (presentation-tier ergonomics, not gate state — deliberately
   // closure-local and not journaled/replayed; a restart resetting the count
@@ -280,6 +317,7 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     bashDeny,
     pathDeny,
     commitFormat,
+    secretPatterns: secrets,
     commitRetries: new Map(),
   }
   return {
@@ -289,5 +327,6 @@ export function createToolPolicy(config: TurnstileConfig, journaler: Journaler):
     ...createLandingGuard(state),
     ...createHandsOnGuard(state),
     ...createBashWriteGuards(state),
+    ...createSecretWriteGuard(state),
   }
 }

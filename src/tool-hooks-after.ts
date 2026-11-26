@@ -404,12 +404,15 @@ function afterWriteEdit(ctx: TurnstileContext, event: ToolHookEvent): void {
   if (child === "") return
   try {
     ctx.journaler.journal(
-      provOverrideEntry({
-        sessionID: ctx.ledger.parentOf(sid),
-        tool: event.tool === "edit" ? "edit" : "write",
-        path,
-        child,
-      }) as unknown as Record<string, unknown>,
+      provOverrideEntry(
+        {
+          sessionID: ctx.ledger.parentOf(sid),
+          tool: event.tool === "edit" ? "edit" : "write",
+          path,
+          child,
+        },
+        ctx.secretPatterns,
+      ) as unknown as Record<string, unknown>,
     )
   } catch (e) {
     ctx.journaler.journal({

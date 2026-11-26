@@ -27,6 +27,7 @@ import { wouldBlockEntry } from "./gates-common.ts"
 import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
 import { createOverrideAdjacency, type OverrideAdjacency } from "./override-adjacency.ts"
 import { createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
+import { compileSecretPatterns } from "./secret-patterns.ts"
 import { formatPipelineStatus } from "./state.ts"
 import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
 import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
@@ -108,6 +109,12 @@ export interface TurnstileContext {
   gates: Gates
   /** Tool policy (push-landing requirement, denylist, etc.). */
   toolPolicy: ToolPolicy
+  /**
+   * The compiled secret patterns (built-ins plus configured extras),
+   * compiled once at composition and threaded into both the tool-policy
+   * state and the decision-ledger capture.
+   */
+  secretPatterns: RegExp[]
   /** Evidence tracker for plan-approval stamps. */
   evidence: EvidenceTracker
   /** In-memory child-write adjacency for prov:override capture; not persisted. */
@@ -430,6 +437,7 @@ interface CoreState {
   maxTrackedNearMiss: number
   gates: Gates
   toolPolicy: ToolPolicy
+  secretPatterns: RegExp[]
   evidence: EvidenceTracker
   overrideAdjacency: OverrideAdjacency
   subagentNames: Set<string>
@@ -1650,10 +1658,16 @@ function buildCoreRegexes(st: CoreState): void {
 function buildCoreServices(st: CoreState): void {
   st.gates = createGates(st.config, st.journaler)
 
+  // The resolved secret-pattern list compiles once here (built-ins plus the
+  // configured extras, invalid extras dropped with a journaled error) and is
+  // threaded into both the tool-policy state (the write-time guard) and the
+  // decision-ledger capture (redaction) — one derivation, two consumers.
+  st.secretPatterns = compileSecretPatterns(st.journaler, st.config.secrets.patterns)
+
   // Stateless denylist for bash/shell and write/edit tools in execute.before
   // regexes compile once here; it throws the same BlockError gates
   // throw, so the hook's existing catch rethrows blocks and journals the rest.
-  st.toolPolicy = createToolPolicy(st.config, st.journaler)
+  st.toolPolicy = createToolPolicy(st.config, st.journaler, st.secretPatterns)
 }
 
 function buildCoreFlags(st: CoreState): void {
@@ -2220,6 +2234,7 @@ type CoreDeps = Pick<
   | "ledger"
   | "gates"
   | "toolPolicy"
+  | "secretPatterns"
   | "evidence"
   | "overrideAdjacency"
   | "childStatus"
@@ -2236,6 +2251,7 @@ function coreDeps(st: CoreState): CoreDeps {
     ledger: st.ledger,
     gates: st.gates,
     toolPolicy: st.toolPolicy,
+    secretPatterns: st.secretPatterns,
     evidence: st.evidence,
     overrideAdjacency: st.overrideAdjacency,
     childStatus: st.childStatus,
