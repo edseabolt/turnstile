@@ -817,6 +817,22 @@ export interface GateState {
    * only while `planUserReview` is on.
    */
   planReviewPending: boolean
+  /**
+   * The pending executor question text; "" when none. Set by a first-sight
+   * authoritative `QUESTION:` marker on an executor task-result delivery;
+   * cleared by the answer dispatch, the cancel capture, or a `resume`
+   * timeout. Task-scoped (fresh "" on a task-scope reset) and
+   * restart-sticky through `mergeAfterReplay` (exactly like
+   * `planReviewPending`) and restored by the `question` journal fold.
+   */
+  questionPending: string
+  /**
+   * Epoch ms when the pending question was opened (the journal row's `ts`);
+   * 0 when none. Restored at replay from the journaled open row so a
+   * restart does not reset the timeout clock; carried with
+   * `questionPending`.
+   */
+  questionOpenedAt: number
 }
 
 /** One first-sight marker observation returned by the marker parser. */

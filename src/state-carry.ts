@@ -23,6 +23,8 @@ function freshFlags(): Pick<
   | "hasReviewApprove"
   | "humanApproval"
   | "planReviewPending"
+  | "questionPending"
+  | "questionOpenedAt"
   | "policyInjected"
   | "suppressedPending"
   | "readWarned"
@@ -41,6 +43,12 @@ function freshFlags(): Pick<
     // by the accept capture or the reject retire. Restart-sticky (see
     // carryStickyFlags).
     planReviewPending: false,
+    // Executor question pause: fresh none ("" / 0); set by a first-sight
+    // authoritative QUESTION marker on an executor delivery, cleared by the
+    // answer dispatch, the cancel capture, or a resume timeout.
+    // Restart-sticky (see carryStickyFlags).
+    questionPending: "",
+    questionOpenedAt: 0,
     policyInjected: false,
     suppressedPending: 0,
     readWarned: false,
@@ -253,6 +261,12 @@ function carryStickyFlags(s: GateState, prior: GateState): void {
   // resolves it. A completed task (reject retire) never carries it —
   // mergeAfterReplay returns a fresh bucket before this runs.
   s.planReviewPending = prior.planReviewPending
+  // The question pause is restart-sticky like the user-review pause: an open
+  // question survives the grace prompt until the user answers, cancels, or
+  // the timeout resolves it. The opened-at clock travels with the text so a
+  // restart does not reset the timeout.
+  s.questionPending = prior.questionPending
+  s.questionOpenedAt = prior.questionOpenedAt
 }
 
 /**
