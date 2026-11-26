@@ -67,7 +67,7 @@ You never invoke the pipeline stages directly. Start a task the way you
 already would, and the enforcement wraps it. The one habit to build: open
 with the planner.
 
-![turnstile, the enforced pipeline: planner → plan gate (VERDICT: APPROVE) → executor → test gate (GATE: PASS) → test-runner → review gate (VERDICT: APPROVE ×2) → reviewer → landing gate → push](docs/images/hero-compact.svg)
+![turnstile, the enforced pipeline: requirements (optional) → planner → plan gate (VERDICT: APPROVE or human approval) → executor (cites chunk-N / AC-n) → test-runner → test gate (GATE: PASS) → reviewer ×2 → review gate (VERDICT: APPROVE ensemble) → landing gate → push](docs/images/hero.svg)
 
 **1. Start a task by invoking the planner.** Paste an issue or a topic into
 your prompt and ask for a plan:
