@@ -141,6 +141,7 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "planImpactStrict") config.planImpactStrict = value as boolean
   else if (key === "planUserReview") config.planUserReview = value as boolean
   else if (key === "requirementsPhase") config.requirementsPhase = value as boolean
+  else if (key === "requireTestOverlap") config.requireTestOverlap = value as boolean
   else if (key === "planReviewAcceptMarker") config.planReviewAcceptMarker = value as string
   else if (key === "planReviewRejectMarker") config.planReviewRejectMarker = value as string
   else if (key === "observeSessions") config.observeSessions = value as number
@@ -625,6 +626,55 @@ export function mergeTamperEvidencePatch(
 }
 
 /**
+ * Validates one string-list element: a string is kept; anything else is
+ * dropped with one warning so a single bad element never discards the
+ * whole user list.
+ * @param key The config key (for warning wording).
+ * @param index The element index (for warning wording).
+ * @param value The candidate element.
+ * @param warnings The warning list to append to.
+ * @returns True when the element is a string (kept).
+ */
+function isValidListElement(
+  key: string,
+  index: number,
+  value: unknown,
+  warnings: string[],
+): boolean {
+  if (typeof value === "string") return true
+  warnings.push(`config: ${key}[${index}] is not a string; dropping element`)
+  return false
+}
+
+/**
+ * Merges a top-level string-list patch key (`testOverlapExempt` /
+ * `testOverlapTestFilePattern`): a non-array warns and keeps the default;
+ * an array keeps its string elements in order, dropping non-strings with
+ * one warning each (copied, so a mutated injected options object never
+ * retro-mutates the live config).
+ * @param config The config to mutate.
+ * @param key The list config key being merged.
+ * @param value The candidate value.
+ * @param warnings The warning list to append to.
+ */
+function mergeStringListKey(
+  config: TurnstileConfig,
+  key: "testOverlapExempt" | "testOverlapTestFilePattern",
+  value: unknown,
+  warnings: string[],
+): void {
+  if (!Array.isArray(value)) {
+    warnings.push(`config: ${key} must be an array of strings; keeping default`)
+    return
+  }
+  const kept: string[] = []
+  value.forEach((element, i) => {
+    if (isValidListElement(key, i, element, warnings)) kept.push(element as string)
+  })
+  config[key] = kept
+}
+
+/**
  * Merges one top-level patch key into the config: section dispatch for the
  * three sub-objects, the `$schema`/`handsOnGate` conventions, the unknown-key
  * warning, and scalar validation for everything else.
@@ -645,6 +695,9 @@ export function mergeConfigKey(
   if (key === "decisionLedger") return mergeDecisionLedgerPatch(config, value, warnings)
   if (key === "tamperEvidence") return mergeTamperEvidencePatch(config, value, warnings)
   if (key === "$schema") return mergeSchemaKey(value, warnings)
+  if (key === "testOverlapExempt" || key === "testOverlapTestFilePattern") {
+    return mergeStringListKey(config, key, value, warnings)
+  }
   if (key === "handsOnGate") {
     // Legacy key from the removed hands-on meta-mode: dropped, never honored,
     // and surfaced so a user config cannot silently lose the knob it still

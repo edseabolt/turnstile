@@ -24,6 +24,7 @@ import {
 } from "./config-merge.ts"
 import { BARE_OUTPUT_UNSET, validateResolved } from "./config-validate.ts"
 import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "./types.ts"
+import { DEFAULT_TEST_FILE_PATTERNS } from "./overlap.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -221,7 +222,12 @@ function defaultModeScalars(): DefaultModeScalars {
 /** The `defaultEnforcementScalars` shape: enforcement-arming default fields. */
 type DefaultEnforcementScalars = Pick<
   TurnstileConfig,
-  "intentNudge" | "alwaysEnforce" | "planImpactStrict" | "planUserReview" | "requirementsPhase"
+  | "intentNudge"
+  | "alwaysEnforce"
+  | "planImpactStrict"
+  | "planUserReview"
+  | "requirementsPhase"
+  | "requireTestOverlap"
 >
 
 function defaultEnforcementScalars(): DefaultEnforcementScalars {
@@ -256,6 +262,10 @@ function defaultEnforcementScalars(): DefaultEnforcementScalars {
     // into the planner dispatch. Soft and ungated: the leg is loop-capped via
     // maxRequirementsRounds but emits no marker and no gate.
     requirementsPhase: false,
+    // Test-overlap corroboration (opt-in): when true, a first-sight
+    // GATE: PASS must show file overlap between the tests that ran and the
+    // files the task touched. Default false — the evidence gate alone.
+    requireTestOverlap: false,
   }
 }
 
@@ -265,7 +275,13 @@ function defaultEnforcementScalars(): DefaultEnforcementScalars {
  */
 function defaultMarkerSources(): Pick<
   TurnstileConfig,
-  "gateMarker" | "verdictMarker" | "gateEvidence" | "reviewEnsemble" | "evidencePattern"
+  | "gateMarker"
+  | "verdictMarker"
+  | "gateEvidence"
+  | "reviewEnsemble"
+  | "evidencePattern"
+  | "testOverlapExempt"
+  | "testOverlapTestFilePattern"
 > {
   return {
     gateMarker: GATE_RE.source,
@@ -273,6 +289,11 @@ function defaultMarkerSources(): Pick<
     gateEvidence: "enforce",
     reviewEnsemble: "enforce",
     evidencePattern: DEFAULT_EVIDENCE_PATTERN,
+    // Test-overlap lists: the exemption globs default empty (the off switch)
+    // and the test-file classification defaults to the cross-ecosystem
+    // convention list (the single canonical source is src/overlap.ts).
+    testOverlapExempt: [],
+    testOverlapTestFilePattern: [...DEFAULT_TEST_FILE_PATTERNS],
   }
 }
 

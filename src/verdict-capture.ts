@@ -10,8 +10,9 @@
 
 import type { Journaler } from "./journal.ts"
 import type { GateLedger } from "./ledger.ts"
-import type { GateState, MarkerEvent, TurnstileConfig } from "./types.ts"
+import type { GateState, MarkerEvent, TestOverlapEvidence, TurnstileConfig } from "./types.ts"
 import { deTokenizeMarker, parseGateMarkers } from "./markers.ts"
+import { computeTestOverlap } from "./overlap.ts"
 import type { EvidenceTracker } from "./evidence.ts"
 
 /**
@@ -83,6 +84,51 @@ function evidenceStampFields(
     stampVerified: observed,
     stampMode: observed === undefined ? undefined : config.gateEvidence,
   }
+}
+
+/**
+ * Computes the test-overlap evidence for one marker parse when the rule is
+ * on (`requireTestOverlap` true, `gateEvidence` not `"off"`); undefined
+ * otherwise (events stay byte-identical to legacy output). Fail-open: a
+ * computation error journals a `type:"error"` row and returns undefined, so
+ * today's evidence behavior stands.
+ * @param st The verdict-capture state (config, evidence, journaler).
+ * @param sid The parent session the parse is keyed on.
+ * @param taskWindows The parent → latest-admitted-prompt window map.
+ * @returns The overlap evidence, or undefined when off, skipped, or failed.
+ */
+function computeOverlapFields(
+  st: VerdictCaptureState,
+  sid: string,
+  taskWindows: Map<string, number>,
+): TestOverlapEvidence | undefined {
+  if (!st.config.requireTestOverlap || st.config.gateEvidence === "off") return undefined
+  try {
+    const window = taskWindows.get(sid) ?? 0
+    return computeTestOverlap(
+      st.evidence.testFiles(sid, window),
+      st.evidence.touchedFiles(sid, window),
+      st.config.testOverlapExempt,
+    )
+  } catch (e) {
+    st.journaler.journal({ type: "error", sessionID: sid, error: `test-overlap: ${e}` })
+    return undefined
+  }
+}
+
+/**
+ * Whether an overlap verdict is a zero-overlap violation: the computation
+ * ran, no skip or exemption applied, and nothing joined.
+ * @param overlap The computed overlap evidence.
+ * @returns True when the PASS must not flip under `enforce`.
+ */
+function isZeroOverlapViolation(overlap: TestOverlapEvidence | undefined): boolean {
+  return (
+    overlap !== undefined &&
+    overlap.exempt !== true &&
+    overlap.skipped === undefined &&
+    overlap.matched === 0
+  )
 }
 
 /**
@@ -169,7 +215,8 @@ function journalSuppressedObservationBody(
  * Journals a first-sight `GATE:` observation: keyed by parent session so
  * journal replay restores state where the reviewer gate looks it up; raw
  * child ID kept for forensics. Spreads the evidence stamp (present only
- * when the evidence mode is not "off"), the task fingerprint (only when
+ * when the evidence mode is not "off"), the test-overlap evidence (present
+ * only when the overlap computation ran), the task fingerprint (only when
  * the parent's bucket has stamped one, so replay can restore the carry
  * identity), and the suppressed-match count (only when > 0), and carries
  * the de-tokenized marker text for the compaction snapshot (the state
@@ -193,6 +240,7 @@ function journalGateEventBody(
 ): void {
   const evidenceStamp =
     event.verified !== undefined ? { verified: event.verified, mode: event.mode } : {}
+  const overlapStamp = event.overlap !== undefined ? { overlap: event.overlap } : {}
   const fp = s.taskFingerprint !== "" ? { fp: s.taskFingerprint } : {}
   st.journaler.journal({
     type: "gate",
@@ -202,6 +250,7 @@ function journalGateEventBody(
     source,
     marker: event.marker,
     ...evidenceStamp,
+    ...overlapStamp,
     ...fp,
     ...suppressedCount,
   })
@@ -320,8 +369,20 @@ function parseMarkersBody(
   if (!sid) return events
   const s = st.ledger.state(sid)
   // Evidence verdict computed here: the caller owns the tracker + config
-  // (see evidenceStampFields for the per-mode derivation).
+  // (see evidenceStampFields for the per-mode derivation). The test-overlap
+  // corroboration computes beside it: a zero-overlap PASS forces
+  // `passVerified = false` under `enforce` (the gate stays red and the
+  // ordinary unverified-PASS ladder asks the human); under `flag` the event
+  // is stamped `overlap` but still flips.
+  const overlap = computeOverlapFields(st, sid, st.taskWindows)
   const stamps = evidenceStampFields(st.config, st.evidence, sid, st.taskWindows)
+  if (isZeroOverlapViolation(overlap) && stamps.passVerified !== undefined) {
+    // Zero-overlap violation under enforce: the PASS must not flip, and the
+    // journal stamp reads verified:false so replay/verify show why the gate
+    // stayed red (the same shape as a claim with no correlated execution).
+    stamps.passVerified = false
+    stamps.stampVerified = false
+  }
   // Thread the raw child session ID as `raw`: dedup provenance is per-child,
   // so a dedup hit from a different child accounts as cross-child suppression
   // while the same child's re-delivery stays silent.
@@ -336,6 +397,7 @@ function parseMarkersBody(
     stamps.stampVerified,
     stamps.stampMode,
     st.markerKindAllowed(sessionID),
+    overlap,
   )) {
     collectMarkerEvent(st, events, event, sid, sessionID, source, s)
   }
