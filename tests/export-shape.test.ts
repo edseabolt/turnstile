@@ -325,9 +325,9 @@ test("journal-sinks.ts exposes the persistence primitives and sink factory", asy
  * The evidence-hits module must expose exactly the hits-operations factory
  * and the per-session ring cap at runtime.
  */
-test("evidence-hits.ts exposes the hits factory and the ring cap", async () => {
+test("evidence-hits.ts exposes the hits factory and the bucket path cap", async () => {
   const mod = await import("../src/evidence-hits.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["MAX_HITS_PER_SESSION", "createEvidenceHits"])
+  assert.deepEqual(Object.keys(mod).sort(), ["MAX_PATHS_PER_BUCKET", "createEvidenceHits"])
 })
 
 /**

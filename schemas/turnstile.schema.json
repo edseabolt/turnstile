@@ -228,6 +228,20 @@
       "type": "string",
       "description": "Case-insensitive regex source matched against bash/shell commands to count as test-execution evidence."
     },
+    "requireTestOverlap": {
+      "type": "boolean",
+      "description": "When true, a first-sight GATE: PASS must show file overlap between the tests that ran and the files the task touched (default false; inert under gateEvidence:\"off\")."
+    },
+    "testOverlapExempt": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Glob list of paths the test-overlap rule never applies to (default empty)."
+    },
+    "testOverlapTestFilePattern": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Case-insensitive regex sources deciding which paths count as test files for the overlap join (default: the cross-ecosystem convention list in src/overlap.ts)."
+    },
     "toolPolicy": {
       "type": "object",
       "additionalProperties": false,

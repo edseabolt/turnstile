@@ -6,7 +6,7 @@
  * receives the compiled regexes as parameters.
  */
 
-import type { GateEvidenceMode, GateState, MarkerEvent } from "./types.ts"
+import type { GateEvidenceMode, GateState, MarkerEvent, TestOverlapEvidence } from "./types.ts"
 import { GATE_RE, VERDICT_RE, gateResultOf } from "./markers.ts"
 
 /**
@@ -66,6 +66,8 @@ function takePending(state: GateState): number {
  * @param stampVerified Journal stamp for the PASS event, or undefined when
  *     the event must stay byte-identical to legacy output.
  * @param stampMode Evidence mode at stamp time.
+ * @param overlap Test-overlap evidence for the PASS, or undefined when not
+ *     computed (absent ⇒ the event stays byte-identical to legacy output).
  * @param events The event list to append the emitted event to.
  */
 function applyGatePass(
@@ -75,6 +77,7 @@ function applyGatePass(
   passVerified: boolean | undefined,
   stampVerified: boolean | undefined,
   stampMode: GateEvidenceMode | undefined,
+  overlap: TestOverlapEvidence | undefined,
   events: MarkerEvent[],
 ): void {
   // passVerified === false (enforce-only) flags the last unverified
@@ -88,12 +91,14 @@ function applyGatePass(
   // Stamp verified/mode only when the caller supplied a stamp: the
   // `"off"` mode leaves both undefined for byte-identical legacy output.
   const stamp = stampVerified !== undefined ? { verified: stampVerified, mode: stampMode } : {}
+  const overlapStamp = overlap !== undefined ? { overlap } : {}
   events.push({
     kind: "gate",
     marker: gate,
     result: "PASS",
     suppressed: gateCount - 1 + takePending(state),
     ...stamp,
+    ...overlapStamp,
   })
 }
 
@@ -110,6 +115,7 @@ function applyGatePass(
  * @param passVerified PASS flip switch (see `applyGatePass`).
  * @param stampVerified Journal stamp for the PASS event, or undefined.
  * @param stampMode Evidence mode at stamp time.
+ * @param overlap Test-overlap evidence for the PASS, or undefined.
  * @param events The event list to append the emitted event to.
  */
 function applyGateResult(
@@ -120,11 +126,12 @@ function applyGateResult(
   passVerified: boolean | undefined,
   stampVerified: boolean | undefined,
   stampMode: GateEvidenceMode | undefined,
+  overlap: TestOverlapEvidence | undefined,
   events: MarkerEvent[],
 ): void {
   const result: "PASS" | "FAIL" = gateResultOf(gate, gateRe)
   if (result === "PASS") {
-    applyGatePass(state, gate, gateCount, passVerified, stampVerified, stampMode, events)
+    applyGatePass(state, gate, gateCount, passVerified, stampVerified, stampMode, overlap, events)
     return
   }
   state.hasGatePass = false
@@ -154,6 +161,7 @@ function applyGateResult(
  * @param stampMode Evidence mode at stamp time.
  * @param kindAllowed Optional predicate deciding whether a kind is
  *     authoritative for the emitting session.
+ * @param overlap Test-overlap evidence for the PASS, or undefined.
  * @param events The event list to append the emitted event to.
  */
 function applyGateMarker(
@@ -167,6 +175,7 @@ function applyGateMarker(
   stampVerified: boolean | undefined,
   stampMode: GateEvidenceMode | undefined,
   kindAllowed: ((kind: "gate" | "verdict") => boolean) | undefined,
+  overlap: TestOverlapEvidence | undefined,
   events: MarkerEvent[],
 ): void {
   const key = `${dedupScope}gate\u0000${gate}`
@@ -175,7 +184,17 @@ function applyGateMarker(
     events.push({ kind: "gate", marker: gate, authority: "suppressed" })
     return
   }
-  applyGateResult(state, gate, gateRe, gateCount, passVerified, stampVerified, stampMode, events)
+  applyGateResult(
+    state,
+    gate,
+    gateRe,
+    gateCount,
+    passVerified,
+    stampVerified,
+    stampMode,
+    overlap,
+    events,
+  )
 }
 
 /**
@@ -261,6 +280,8 @@ function applyVerdictMarker(
  *     is applied nowhere and emitted first-sight with `authority:"suppressed"`
  *     for the caller to journal and drop (dedup is still registered, so the
  *     same text re-delivered stays silent).
+ * @param overlap Optional test-overlap evidence stamped on the PASS event
+ *     when computed (absent ⇒ events stay byte-identical to legacy output).
  * @returns Marker events observed for the first time in this text.
  */
 export function parseGateMarkers(
@@ -274,6 +295,7 @@ export function parseGateMarkers(
   stampVerified?: boolean,
   stampMode?: GateEvidenceMode,
   kindAllowed?: (kind: "gate" | "verdict") => boolean,
+  overlap?: TestOverlapEvidence,
 ): MarkerEvent[] {
   const events: MarkerEvent[] = []
   if (!text) return events
@@ -290,6 +312,7 @@ export function parseGateMarkers(
     stampVerified,
     stampMode,
     kindAllowed,
+    overlap,
     events,
   )
   return events
@@ -324,6 +347,7 @@ function lastMarkerMatches(text: string, re: RegExp): { match: string | null; co
  *     event must stay byte-identical to legacy output (the `"off"` mode).
  * @param stampMode Evidence mode at stamp time.
  * @param kindAllowed Optional kind-authority predicate.
+ * @param overlap Optional test-overlap evidence stamped on the PASS event.
  * @param events The accumulator the first-sight events are pushed to.
  */
 function applyLastMarkers(
@@ -337,6 +361,7 @@ function applyLastMarkers(
   stampVerified: boolean | undefined,
   stampMode: GateEvidenceMode | undefined,
   kindAllowed: ((kind: "gate" | "verdict") => boolean) | undefined,
+  overlap: TestOverlapEvidence | undefined,
   events: MarkerEvent[],
 ): void {
   if (gate.match) {
@@ -351,6 +376,7 @@ function applyLastMarkers(
       stampVerified,
       stampMode,
       kindAllowed,
+      overlap,
       events,
     )
   }
