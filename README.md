@@ -446,7 +446,7 @@ tools remain unguarded. The full threat model:
 
 | OpenCode host       | turnstile (current) | Status                                                                               |
 | ------------------- | ------------------- | ------------------------------------------------------------------------------------ |
-| ≥ 2.0.22, < 3.0.0   | 0.16.x              | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0, 2.2.5, 2.2.7, 2.3.0, 2.3.2, 2.4.1) |
+| ≥ 2.0.22, < 3.0.0   | 0.18.x              | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0, 2.2.5, 2.2.7, 2.3.0, 2.3.2, 2.4.1) |
 | ≥ 3.0.0 or < 2.0.22 | all                 | Refuses to enforce at setup; upgrade turnstile                                       |
 | version unreadable  | all                 | Enforces; one-time journal warning                                                   |
 
