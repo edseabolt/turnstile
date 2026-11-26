@@ -229,6 +229,217 @@ test("replay: the question fold restores pending last-wins and the open clock", 
   assert.equal(ledger.peek("p7"), undefined, "a hostile action mints no bucket")
 })
 
+// ── Pause, answer, cancel, timeout (end-to-end) ──────────────────────────────
+
+/**
+ * Boots the full plugin over a temp metrics dir with the given config.
+ * @param config Injected config overrides.
+ * @returns The fake host, dispose, and metrics dir.
+ */
+async function bootWith(config: Partial<TurnstileConfig>): Promise<{
+  h: FakeHost
+  dispose: () => void
+  metricsDir: string
+}> {
+  const metricsDir = tmpDir()
+  const h = makeFakeHost()
+  const setup = turnstile(h.host, {
+    env: isolatedEnv(metricsDir),
+    config: { metricsDir, alwaysEnforce: true, ...config },
+  })
+  const dispose = (await setup(h.host)) as () => void
+  return { h, dispose, metricsDir }
+}
+
+/**
+ * Reads a parent's replayed gate state from the journal (the host harness
+ * does not expose the live context).
+ * @param metricsDir The metrics dir.
+ * @param sessionID The parent session.
+ * @returns The replayed gate state bucket, or undefined.
+ */
+function replayedState(metricsDir: string, sessionID: string): Record<string, unknown> | undefined {
+  return createLedger(
+    path.join(metricsDir, "turnstile.jsonl"),
+    64,
+    2000,
+  ).peek(sessionID) as Record<string, unknown> | undefined
+}
+
+test("executor QUESTION pauses the pipeline; the answer dispatch resumes it", async () => {
+  const { h, dispose, metricsDir } = await bootWith({})
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor" },
+      result: { output: "work so far\nQUESTION: which queue?" },
+    })
+    const open = entriesOf(metricsDir, "question").find((e) => e.action === "open")
+    assert.ok(open)
+    assert.equal(open.question, "which queue?")
+    assert.equal(replayedState(metricsDir, "p1")?.questionPending, "which queue?")
+    await assert.rejects(
+      () =>
+        callTool(h, "execute.before", {
+          tool: "task",
+          sessionID: "p1",
+          input: { agent: "test-runner", prompt: "run tests" },
+        }),
+      (e: unknown) => {
+        assert.ok(e instanceof BlockError)
+        assert.match(e.message, /BLOCKED by turnstile:/)
+        assert.match(e.message, /which queue\?/)
+        return true
+      },
+    )
+    assert.deepEqual(
+      entriesOf(metricsDir, "blocked").map((r) => [r.agent, r.reason]),
+      [["test-runner", "question-pending"]],
+    )
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner", prompt: "use the in-process queue" },
+    })
+    assert.equal(replayedState(metricsDir, "p1")?.questionPending, "")
+    const answer = entriesOf(metricsDir, "question").find((e) => e.action === "answer")
+    assert.ok(answer)
+    assert.equal(answer.answer, "use the in-process queue")
+  } finally {
+    dispose()
+  }
+})
+
+test("a non-executor QUESTION is journaled suppressed and pauses nothing", async () => {
+  const { h, dispose, metricsDir } = await bootWith({})
+  try {
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "reviewer" },
+      result: { output: "QUESTION: should I approve?" },
+    })
+    const open = entriesOf(metricsDir, "question").find((e) => e.action === "open")
+    assert.ok(open)
+    assert.equal(open.authority, "suppressed")
+    assert.ok(
+      !replayedState(metricsDir, "p1")?.questionPending,
+      "a suppressed open pauses nothing",
+    )
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner", prompt: "run tests" },
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test("QUESTION CANCELLED: in the user's prompt cancels a pending question", async () => {
+  const { h, dispose, metricsDir } = await bootWith({})
+  try {
+    // A priming prompt stamps the task fingerprint so the cancel prompt (a
+    // later prompt than the delivery that opened the question) carries the
+    // pause across the planless per-prompt scope boundary instead of
+    // resetting it before the capture runs.
+    await callSession(h, "prompt", { sessionID: "p1", text: "do work" })
+    await callTool(h, "execute.after", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "executor" },
+      result: { output: "QUESTION: which queue?" },
+    })
+    await callSession(h, "prompt", { sessionID: "p1", text: `${CANCEL} do the simple thing` })
+    assert.equal(replayedState(metricsDir, "p1")?.questionPending, "")
+    assert.ok(
+      entriesOf(metricsDir, "question").some((e) => e.action === "cancel"),
+      "the cancel row is journaled",
+    )
+    await callTool(h, "execute.before", {
+      tool: "task",
+      sessionID: "p1",
+      input: { agent: "test-runner", prompt: "run tests" },
+    })
+  } finally {
+    dispose()
+  }
+})
+
+test("a cancel literal with nothing pending is a no-op", async () => {
+  const { h, dispose, metricsDir } = await bootWith({})
+  try {
+    await callSession(h, "prompt", { sessionID: "p1", text: `${CANCEL} nothing open` })
+    assert.deepEqual(entriesOf(metricsDir, "question"), [])
+  } finally {
+    dispose()
+  }
+})
+
+// ── Timeout decision (guard-level) ───────────────────────────────────────────
+
+test("timeout resume: an aged question proceeds with the warning line appended", async () => {
+  const { ctx, metricsDir } = coreWith({
+    questionTimeoutMinutes: 1,
+    questionTimeoutAction: "resume",
+  })
+  const s = ctx.ledger.state("p1")
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = Date.now() - 2 * 60_000
+  const prompt = await ctx.guardedTaskDispatch("p1", "test-runner", "run tests", "")
+  assert.match(prompt, /question timed out unanswered/)
+  assert.match(prompt, /which queue\?/)
+  assert.equal(s.questionPending, "")
+  assert.ok(entriesOf(metricsDir, "question").some((e) => e.action === "timeout"))
+})
+
+test("timeout hold: an aged question still blocks", async () => {
+  const { ctx, metricsDir } = coreWith({ questionTimeoutMinutes: 1 })
+  const s = ctx.ledger.state("p1")
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = Date.now() - 2 * 60_000
+  await dispatchExpect(ctx, "p1", "test-runner", "run tests", true)
+  assert.equal(s.questionPending, "which queue?", "hold keeps the pause")
+  assert.ok(entriesOf(metricsDir, "question").some((e) => e.action === "timeout") === false)
+})
+
+test("questionTimeoutMinutes 0 (default): the timeout branch never fires", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  const s = ctx.ledger.state("p1")
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = Date.now() - 1000 * 60 * 60 * 24 * 365
+  await dispatchExpect(ctx, "p1", "test-runner", "run tests", true)
+  assert.deepEqual(
+    entriesOf(metricsDir, "question").map((e) => e.action),
+    [],
+    "no timeout row without an armed timeout",
+  )
+})
+
+// ── Fail-open ────────────────────────────────────────────────────────────────
+
+test("an internal question-pause error journals and the dispatch proceeds", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  const s = ctx.ledger.state("p1")
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = Date.now()
+  Object.defineProperty(s, "questionOpenedAt", {
+    get(): number {
+      throw new Error("ledger down")
+    },
+    configurable: true,
+  })
+  await dispatchExpect(ctx, "p1", "test-runner", "run tests", false)
+  const errors = entriesOf(metricsDir, "error")
+  assert.ok(
+    errors.some((r) => String(r.error).includes("question pause:")),
+    "the pause error is journaled",
+  )
+})
+
+// ── Policy + agent text (asserted after the chunk-6 validated-source landing)
+
 // ── Config surface ───────────────────────────────────────────────────────────
 
 test("question config: defaults are no-timeout hold with the canonical cancel literal", () => {

@@ -68,6 +68,12 @@ export interface DispatchGuardState {
   /** Dispatch stamp key (parent + agent) → sha256-16 of that dispatch's
    *  prompt (delivery-time tamper check). */
   dispatchPromptHashes: Map<string, string>
+  /** Parents whose pending question has already drawn a deliberate block
+   *  (keyed parent + openedAt): the next dispatch after a block is the
+   *  user-relayed answer, so it proceeds instead of re-blocking. In-memory
+   *  only — after a restart the restored pause blocks once more before
+   *  accepting the answer. */
+  questionBlocks: Set<string>
   /** Whether reactive enforcement is armed for the session's parent. */
   enforcementArmed(sessionID: string): boolean
   /** Journals one engagement transition row. */
@@ -158,7 +164,10 @@ function journalUnresolvedAgent(st: DispatchGuardState, sessionID: string, agent
  * @param event The execute.before tool event (task/subagent shape).
  * @returns A promise resolving when the dispatch is settled.
  */
-function handleTaskDispatchBody(st: DispatchGuardState, event: ToolHookEvent): Promise<void> {
+async function handleTaskDispatchBody(
+  st: DispatchGuardState,
+  event: ToolHookEvent,
+): Promise<void> {
   // Dispatch-input-first resolution is safe here: `event.input` IS the
   // dispatch input (execute.before, no structured result echo exists),
   // so the `event.agent` fallback cannot shadow a child name the way it
@@ -180,7 +189,12 @@ function handleTaskDispatchBody(st: DispatchGuardState, event: ToolHookEvent): P
   const description = st.config.trace ? String(event.input?.description ?? "").slice(0, 200) : ""
   recordPlanReviewDispatch(st, sessionID, agent, prompt)
   journalUnresolvedAgent(st, sessionID, agent)
-  return guardedTaskDispatchBody(st, sessionID, agent, prompt, description)
+  const effective = await guardedTaskDispatchBody(st, sessionID, agent, prompt, description)
+  // A timeout resume appended its warning line: write the effective prompt
+  // back so the dispatched child actually receives it (the guard already
+  // re-stamped the tamper anchor for the mutated prompt).
+  if (effective !== prompt && event.input) event.input.prompt = effective
+  return
 }
 
 /**
@@ -611,6 +625,101 @@ function planReviewPendingBlockBody(st: DispatchGuardState, sessionID: string): 
 }
 
 /**
+ * Decides whether a pending question has aged past its configured timeout.
+ * Pure so the timeout decision is testable without a clock.
+ * @param openedAt Epoch ms the question was opened (0 = no clock).
+ * @param now Epoch ms now.
+ * @param minutes The configured timeout in minutes (0 = never times out).
+ * @returns True when the timeout is armed, the clock is known, and the age
+ *     exceeds the timeout.
+ */
+function questionTimedOut(openedAt: number, now: number, minutes: number): boolean {
+  return minutes > 0 && openedAt > 0 && now - openedAt > minutes * 60_000
+}
+
+/**
+ * The question-pause stamp key: the parent joined with the question's open
+ * time. Keying by the open time (not the parent alone) keeps a re-asked
+ * question's block state separate from a previous question's, so a stale
+ * entry can never pre-answer a new question.
+ * @param sessionID The dispatching parent session.
+ * @param openedAt Epoch ms the pending question was opened.
+ * @returns The composite stamp key.
+ */
+function questionBlockKey(sessionID: string, openedAt: number): string {
+  return `${sessionID}\u0000${openedAt}`
+}
+
+/**
+ * The executor-question pause arm for ANY task dispatch while a question is
+ * pending. The first dispatch after the question opened is blocked with a
+ * deliberate `BLOCKED by turnstile:` error naming the question (the
+ * orchestrator relays it to the user); the next dispatch after that block is
+ * the user-relayed answer — both fields clear, an `answer` row journals, and
+ * the dispatch proceeds with the prompt verbatim. A pending question aged
+ * past `questionTimeoutMinutes` resolves per `questionTimeoutAction`:
+ * `resume` clears the pause, journals `timeout`, and proceeds with a warning
+ * line appended to the dispatch prompt; `hold` keeps blocking. Returns the
+ * (possibly warning-appended) prompt to dispatch; throws only the
+ * deliberate block.
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ * @param prompt The dispatch prompt.
+ * @returns The effective dispatch prompt (warning-appended on a timeout
+ *     resume; otherwise verbatim).
+ */
+function questionPendingBlockBody(
+  st: DispatchGuardState,
+  sessionID: string,
+  agent: string,
+  prompt: string,
+): string {
+  const s = st.ledger.state(sessionID)
+  if (s.questionPending === "") return prompt
+  const blockKey = questionBlockKey(sessionID, s.questionOpenedAt)
+  if (questionTimedOut(s.questionOpenedAt, Date.now(), st.config.questionTimeoutMinutes)) {
+    if (st.config.questionTimeoutAction === "resume") {
+      const question = s.questionPending
+      s.questionPending = ""
+      s.questionOpenedAt = 0
+      st.questionBlocks.delete(blockKey)
+      st.journaler.journal({ type: "question", sessionID, action: "timeout" })
+      return (
+        `${prompt}\n[turnstile] question timed out unanswered; resuming — ` +
+        `the executor's question was: ${question}`
+      )
+    }
+  } else if (st.questionBlocks.has(blockKey)) {
+    // Answer capture: this dispatch's prompt IS the answer relayed from the
+    // user after the deliberate block.
+    s.questionPending = ""
+    s.questionOpenedAt = 0
+    st.questionBlocks.delete(blockKey)
+    st.journaler.journal({
+      type: "question",
+      sessionID,
+      action: "answer",
+      answer: prompt.slice(0, 200),
+    })
+    return prompt
+  }
+  st.questionBlocks.add(blockKey)
+  st.journaler.journal({
+    type: "blocked",
+    sessionID,
+    agent,
+    reason: "question-pending",
+  })
+  throw new BlockError(
+    `BLOCKED by turnstile: the executor asked a question and the pipeline is paused ` +
+      `until you answer. Relay the decision by re-dispatching with the answer as the ` +
+      `dispatch prompt, or cancel with ${st.config.questionCancelMarker} in your own ` +
+      `prompt. The executor's question was: ${s.questionPending}`,
+    "question-pause",
+  )
+}
+
+/**
  * Guard-and-meter-and-journal section of a task dispatch: the budget guard,
  * the reviewer evidence guard, and the executor branch — then the counters
  * advance and the dispatch entry is recorded at the admitted exit (a blocked
@@ -624,6 +733,9 @@ function planReviewPendingBlockBody(st: DispatchGuardState, sessionID: string): 
  * @param agent The resolved agent name.
  * @param prompt The dispatch prompt.
  * @param description The trace-gated dispatch description.
+ * @returns The effective dispatch prompt: verbatim, or the timeout-resume
+ *     warning appended (the caller writes it back to the host dispatch
+ *     input so the child actually receives it).
  */
 async function guardedTaskDispatchBody(
   st: DispatchGuardState,
@@ -631,9 +743,9 @@ async function guardedTaskDispatchBody(
   agent: string,
   prompt: string,
   description: string,
-): Promise<void> {
+): Promise<string> {
   let waived = false
-  const promptHash = sha256Hex16(prompt)
+  let promptHash = sha256Hex16(prompt)
   // Tamper-check anchor: record the dispatch prompt's hash keyed by parent
   // + resolved agent so the delivery-time check (tool-hooks-after) can
   // compare the echoed prompt through the child's resolved parent, and so
@@ -642,7 +754,7 @@ async function guardedTaskDispatchBody(
   st.dispatchPromptHashes.set(dispatchStampKey(sessionID, agent), promptHash)
   evictTo(st.dispatchPromptHashes, st.config.maxSessions)
   try {
-    if (dormantDispatchArm(st, sessionID, agent, description, promptHash)) return
+    if (dormantDispatchArm(st, sessionID, agent, description, promptHash)) return prompt
     waived = dispatchBudgetBody(st, sessionID, agent)
     if (agent === st.config.agents.reviewer) reviewerDecisionRecheckBody(st, sessionID)
     // The user-review pause sits after the reviewer recheck and before the
@@ -653,17 +765,60 @@ async function guardedTaskDispatchBody(
     // error journals and falls through (dispatch allowed) — only the
     // deliberate block throws.
     if (agent === st.config.agents.planReviewer) planReviewPauseFailOpen(st, sessionID)
+    // The question pause covers every pipeline dispatch: the first dispatch
+    // after the question opened blocks (the orchestrator relays the question
+    // to the user), the next one carries the answer. Unreachable while
+    // dormant (a pending question implies an engaged pipeline). Fail-open:
+    // only the deliberate block rethrows; an internal error journals and the
+    // dispatch proceeds with the prompt verbatim.
+    const answered = questionPauseFailOpen(st, sessionID, agent, prompt)
+    if (answered !== prompt) {
+      // A timeout resume appended its warning line to the dispatched prompt:
+      // re-stamp the tamper anchor and thread the effective prompt/hash so
+      // the delivery-time echo check and the dispatch entry stay consistent.
+      prompt = answered
+      promptHash = sha256Hex16(prompt)
+      st.dispatchPromptHashes.set(dispatchStampKey(sessionID, agent), promptHash)
+    }
     if (
       agent === st.config.agents.executor &&
       (await guardExecutorDispatch(st, sessionID, agent, prompt, description, waived, promptHash))
     ) {
-      return
+      return prompt
     }
     if (agent === st.config.agents.planner) planReviewArmFailOpen(st, sessionID)
     allowDispatchBody(st, sessionID, agent, description, waived, promptHash)
+    return prompt
   } catch (e) {
-    if (st.dispatchBlockOutcome(e, sessionID, agent, description, waived, promptHash)) return
+    if (st.dispatchBlockOutcome(e, sessionID, agent, description, waived, promptHash)) {
+      return prompt
+    }
     throw e
+  }
+}
+
+/**
+ * Runs the question pause wrapped fail-open: an internal error journals and
+ * falls through (dispatch allowed, prompt verbatim) — only the deliberate
+ * block rethrows for the outer fail-open catch.
+ * @param st The dispatch-guard state.
+ * @param sessionID The dispatching session ID.
+ * @param agent The resolved agent name.
+ * @param prompt The dispatch prompt.
+ * @returns The effective dispatch prompt (see questionPendingBlockBody).
+ */
+function questionPauseFailOpen(
+  st: DispatchGuardState,
+  sessionID: string,
+  agent: string,
+  prompt: string,
+): string {
+  try {
+    return questionPendingBlockBody(st, sessionID, agent, prompt)
+  } catch (e) {
+    if (e instanceof BlockError) throw e
+    st.journaler.journal({ type: "error", sessionID, error: `question pause: ${e}` })
+    return prompt
   }
 }
 
@@ -712,7 +867,7 @@ export function createDispatchGuard(st: DispatchGuardState): {
     agent: string,
     prompt: string,
     description: string,
-  ): Promise<void>
+  ): Promise<string>
   allowDispatch(
     sessionID: string,
     agent: string,
