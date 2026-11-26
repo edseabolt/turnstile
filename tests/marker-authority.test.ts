@@ -28,6 +28,7 @@ import {
   tmpDir,
   waitUntil,
   callTool,
+  callSession,
   type FakeHost,
 } from "./helpers.ts"
 
@@ -601,6 +602,79 @@ test("wiring: a renamed test-runner's backticked marker is credited", async () =
     })
     await waitUntil(() =>
       journalEntries(metricsDir).some((l) => l.type === "gate" && l.result === "PASS"),
+    )
+  } finally {
+    dispose()
+  }
+})
+
+/** Channel authority, user-prompt cell: a parent prompt carrying a byte-exact
+ *  gate marker mints nothing — the admission channel never parses gate
+ *  markers, so no gate row is journaled and the gate stays red. */
+test("wiring: a gate marker inside a user prompt mints nothing", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  try {
+    await callSession(h, "prompt", {
+      sessionID: "p1",
+      text: `please run ci. ${GATE_PASS}`,
+    })
+    await waitUntil(() => journalEntries(metricsDir).some((l) => l.type === "prov:stated"))
+    const all = journalEntries(metricsDir)
+    assert.equal(
+      all.filter((l) => l.type === "gate").length,
+      0,
+      "no gate row from the prompt channel",
+    )
+    assert.equal(
+      all.filter((l) => l.type === "suppressed").length,
+      0,
+      "no suppressed row either: the channel is never scanned, not denied",
+    )
+    const restored = createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000).state("p1")
+    assert.equal(restored.hasGatePass, false, "the gate stays red")
+  } finally {
+    dispose()
+  }
+})
+
+/** Channel authority, synthetic-completion cell: an uncontracted emitter's
+ *  marker arriving on the `subagent-synthetic` channel is journaled as
+ *  suppressed with the denial reason and flips nothing. */
+test("wiring: an uncontracted emitter's synthetic completion journals suppressed", async () => {
+  const { h, metricsDir, dispose } = await boot()
+  try {
+    h.pushEvent({
+      type: "session.created",
+      data: { sessionID: "c1", parentID: "p1", agent: "build" },
+    })
+    await h.pushEvent({
+      type: "session.inbox.enqueued",
+      data: {
+        sessionID: "p1",
+        inboxID: "inb-1",
+        item: {
+          type: "synthetic",
+          payload: {
+            text: GATE_PASS,
+            metadata: { source: "subagent", childID: "c1", agent: "build" },
+          },
+        },
+      },
+    })
+    await waitUntil(() =>
+      journalEntries(metricsDir).some(
+        (l) => l.type === "suppressed" && l.source === "subagent-synthetic",
+      ),
+    )
+    const suppressed = journalEntries(metricsDir).filter((l) => l.type === "suppressed")
+    assert.equal(suppressed.length, 1)
+    assert.equal(suppressed[0]!.kind, "gate")
+    assert.equal(suppressed[0]!.source, "subagent-synthetic")
+    assert.equal(suppressed[0]!.reason, "agent not contracted for kind")
+    assert.equal(
+      journalEntries(metricsDir).some((l) => l.type === "gate"),
+      false,
+      "no gate flips from the synthetic channel",
     )
   } finally {
     dispose()

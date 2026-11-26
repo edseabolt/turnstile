@@ -30,6 +30,8 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
 - `scripts/check-markers.mjs` guards against accidental drift between the
   parser and documented markers; it cannot guard against forgery, because
   the markers are plain prose by design.
+- Which text surfaces can mint gate and verdict state is fixed by the
+  channel-authority matrix below; a marker in any other surface is inert.
 - The `bash`/`shell`/`write`/`edit` denylist is a deterrent, not a sandbox:
   it matches strings, so `bash -c "$X"`, script files, `eval` indirection,
   and values sourced from the environment still bypass it. A block names the
@@ -47,6 +49,37 @@ Turnstile is a speed bump and an audit trail, not a security boundary.
 - MCP tools and other tool names not named in `execute.before` (`task`,
   `subagent`, `read`, `bash`, `shell`, `write`, `edit`, `session_move`) remain
   unguarded. Governing them is a follow-on, not part of this policy layer.
+
+## Marker channel authority
+
+Markers move state only when the channel and the emitter are both authorized.
+The parser scans five channels; every other surface is invisible to marker
+parsing and can never mint gate or verdict state.
+
+| Channel                                      | Scanned | Who may mint `GATE:`   | Who may mint `VERDICT:`              |
+| -------------------------------------------- | ------- | ---------------------- | ------------------------------------ |
+| `task-result` (task/subagent delivery)       | yes     | configured test-runner | configured reviewer or plan-reviewer |
+| `child-message` (streamed text part)         | yes     | configured test-runner | configured reviewer or plan-reviewer |
+| `child-text` (streamed text end)             | yes     | configured test-runner | configured reviewer or plan-reviewer |
+| `child-text-delta` (streamed window)         | yes     | configured test-runner | configured reviewer or plan-reviewer |
+| `subagent-synthetic` (background completion) | yes     | configured test-runner | configured reviewer or plan-reviewer |
+| User prompts                                 | never   | nobody                 | nobody                               |
+| `read`/`bash`/`shell`/`write`/`edit` results | never   | nobody                 | nobody                               |
+| MCP and other tool results, file contents    | never   | nobody                 | nobody                               |
+
+The emitter check is the emitter-authority cache: the agent name resolved
+from the dispatch input, the session-created event, or the delivery. An
+unresolved name is denied (fail closed). A denied marker mutates no state,
+registers its dedup key, and journals one `type:"suppressed"` row keyed on
+the emitter with the denial reason (see `docs/journal/entry-types.md`).
+Replay never restores state from a suppressed row.
+
+Quoted markers are the residual exposure of the scanned channels: a
+test-runner echoing a reviewer's `VERDICT: APPROVE` is denied because the
+kind does not match the emitter's contract, and any marker inside a tool
+result or file is never parsed at all. What the matrix cannot prevent is a
+contracted emitter genuinely minting a marker its role owes; that is the
+evidence layer's problem (`gateEvidence`), not the channel layer's.
 
 Use OpenCode's permission and sandboxing mechanisms against hostile agents.
 Treat turnstile's journal as the record of what was _claimed_, and treat the

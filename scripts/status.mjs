@@ -419,6 +419,7 @@ function freshSession() {
     activePlan: "",
     taskComplete: false,
     suspended: false,
+    suppressedMarkers: 0,
   }
 }
 
@@ -444,6 +445,30 @@ function observeCountsOf(entry) {
     return null
   }
   return { observed, wouldBlocks }
+}
+
+/**
+ * Counts suppressed marker-attempt rows per session: a `type:"suppressed"`
+ * row with `kind:"gate"` or `kind:"verdict"` is a rejected-channel marker
+ * attempt (an unauthorized emitter or channel tried to mint state); a
+ * `kind:"replay"` row is a replay drop, not an injection attempt, and is
+ * excluded. Any other type folds nothing.
+ * @param {Record<string, unknown>[]} entries Parsed journal entries.
+ * @returns {{ bySession: Map<string, number>, total: number }} sessionID →
+ *     attempt count, plus the global total.
+ */
+function suppressedMarkerCounts(entries) {
+  const bySession = new Map()
+  let total = 0
+  for (const e of entries) {
+    if (e === null || e.type !== "suppressed") continue
+    if (e.kind !== "gate" && e.kind !== "verdict") continue
+    const sid = typeof e.sessionID === "string" ? e.sessionID : ""
+    if (sid === "" || !REPLAY_SESSION_RE.test(sid)) continue
+    bySession.set(sid, (bySession.get(sid) ?? 0) + 1)
+    total++
+  }
+  return { bySession, total }
 }
 
 /**
@@ -474,14 +499,21 @@ function observeCountsOf(entry) {
  * journal holds observe-mode entries at all — the report's observe header
  * line renders only then, so journals without them stay byte-identical.
  * @param {string[]} lines Journal lines, oldest-first.
- * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number }, rekeys: Array<{ ts: string, plan: string }> }}
- *     sessionID → accumulator, plus the folded observe-mode state, and the
- *     `plan-rekey` rows (the durable-store scheme-migration audit).
+ *
+ * Suppressed marker-attempt rows (`type:"suppressed"` with `kind:"gate"` or
+ * `"verdict"`) count per session into `suppressedMarkers` via
+ * {@link suppressedMarkerCounts}; they mutate no state and stay outside the
+ * replay-parity fold (replay-inert by design).
+ * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number }, rekeys: Array<{ ts: string, plan: string }>, suppressedTotal: number }}
+ *     sessionID → accumulator, plus the folded observe-mode state, the
+ *     `plan-rekey` rows (the durable-store scheme-migration audit), and the
+ *     global suppressed marker-attempt total.
  */
 function aggregate(lines) {
   const sessions = new Map()
   const observe = { seen: 0, observed: 0, wouldBlocks: 0 }
   const rekeys = []
+  const suppressed = suppressedMarkerCounts(dedupeSinks(lines).map(parseLine))
   const forSession = (id) => {
     let a = sessions.get(id)
     if (!a) {
@@ -644,7 +676,11 @@ function aggregate(lines) {
     }
   }
 
-  return { sessions, observe, rekeys }
+  // Suppressed marker attempts are display-only counts, folded after the
+  // state replay so a session with only suppressed rows still surfaces.
+  for (const [sid, n] of suppressed.bySession) forSession(sid).suppressedMarkers = n
+
+  return { sessions, observe, rekeys, suppressedTotal: suppressed.total }
 }
 
 // Local fold helpers: standalone scripts cannot import src/, so this fold is
@@ -873,15 +909,20 @@ function fmtScope(a) {
  * `seen: 0` and no line is emitted). When the journal holds `plan-rekey`
  * rows (the durable-store scheme migration), one advisory line naming the
  * re-keyed plans renders under the observe line — journals without them
- * render byte-identically to before (the rekeys argument is empty).
+ * render byte-identically to before (the rekeys argument is empty). When the
+ * journal holds suppressed marker-attempt rows (`type:"suppressed"` with
+ * `kind:"gate"`/`"verdict"`), one footer line with the global total renders
+ * after the table — journals without them render byte-identically (the
+ * suppressedTotal argument is 0).
  * @param {Map<string, Record<string, unknown>>} sessions Aggregated sessions.
  * @param {string} journalPath The journal file path for the header.
  * @param {{ seen: number, observed: number, wouldBlocks: number }} observe The folded observe-mode state.
  * @param {number} observeSessions The configured observe period (from the config file).
  * @param {Array<{ ts: string, plan: string }>} rekeys The folded `plan-rekey` rows.
+ * @param {number} suppressedTotal The global suppressed marker-attempt total.
  * @returns {string} The table text.
  */
-function renderTable(sessions, journalPath, observe, observeSessions, rekeys) {
+function renderTable(sessions, journalPath, observe, observeSessions, rekeys, suppressedTotal) {
   const rows = [...sessions.entries()].map(([id, a]) => ({
     session: fmtSession(id),
     gate: a.hasGatePass ? "PASS" : "red",
@@ -961,6 +1002,12 @@ function renderTable(sessions, journalPath, observe, observeSessions, rekeys) {
   } else {
     out.push(line(headers))
     for (const r of rows) out.push(line(cells.map((c) => c(r))))
+  }
+  if (suppressedTotal > 0) {
+    // Rejected-channel marker attempts are observable (#410 stats): one
+    // footer line, only when the journal holds at least one, so
+    // suppression-free journals render byte-identically to before.
+    out.push(`suppressed marker attempts: ${suppressedTotal} (see the journal, type:"suppressed")`)
   }
   out.push("", "journal reflects the last prompt-cycle; in-memory state can be fresher.")
   return out.join("\n")
@@ -1154,7 +1201,7 @@ async function main(argv) {
     return 0
   }
 
-  const { sessions, observe, rekeys } = aggregate(lines)
+  const { sessions, observe, rekeys, suppressedTotal } = aggregate(lines)
   for (const [id, a] of sessions) {
     base.sessions[id] = a
   }
@@ -1181,7 +1228,14 @@ async function main(argv) {
       )}\n`,
     )
   } else {
-    let table = renderTable(sessions, journalPath, observe, observeSessions, rekeys)
+    let table = renderTable(
+      sessions,
+      journalPath,
+      observe,
+      observeSessions,
+      rekeys,
+      suppressedTotal,
+    )
     if (tokenUsage) table += `\n${renderTokenLines(tokenUsage)}`
     const loaded = loadedPluginLine(setupRow)
     if (loaded) table += `\n${loaded}`
