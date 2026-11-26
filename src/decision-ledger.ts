@@ -81,10 +81,16 @@ export interface ProvStatedInput {
  * before truncation, never left half-visible in the prefix.
  *
  * @param input - The session ID and raw prompt text.
+ * @param patterns - The compiled secret patterns to redact with (defaults to
+ *     the built-ins; callers with a resolved config pass built-ins plus
+ *     configured extras).
  * @returns The entry with redacted, capped text and the truncation marker.
  */
-export function provStatedEntry(input: ProvStatedInput): ProvStatedEntry {
-  const redacted = redactSecrets(input.text)
+export function provStatedEntry(
+  input: ProvStatedInput,
+  patterns?: readonly RegExp[],
+): ProvStatedEntry {
+  const redacted = redactSecrets(input.text, patterns)
   const truncated = redacted.length > LEDGER_TEXT_CAP
   const text = truncated ? redacted.slice(0, LEDGER_TEXT_CAP) : redacted
   return { type: "prov:stated", sessionID: input.sessionID, text, truncated }
@@ -151,11 +157,17 @@ export interface ProvOverrideInput {
  * flag: the path cap is bounded by design, unlike prompt text.
  *
  * @param input - The session ID, tool, raw target path, and child session.
+ * @param patterns - The compiled secret patterns to redact with (defaults to
+ *     the built-ins; callers with a resolved config pass built-ins plus
+ *     configured extras).
  * @returns The entry with redacted, capped path and keys in construction
  *     order.
  */
-export function provOverrideEntry(input: ProvOverrideInput): ProvOverrideEntry {
-  const redacted = redactSecrets(input.path)
+export function provOverrideEntry(
+  input: ProvOverrideInput,
+  patterns?: readonly RegExp[],
+): ProvOverrideEntry {
+  const redacted = redactSecrets(input.path, patterns)
   const path = redacted.slice(0, LEDGER_PATH_CAP)
   return {
     type: "prov:override",

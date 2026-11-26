@@ -387,6 +387,9 @@ The knobs most people touch:
 | `plansDir`                   | `.opencode/plans`      | where the decomposition scan looks                                                                                                                                 |
 | `decisionLedger.enabled`     | `true`                 | observe-only decision ledger (`opencode-turnstile prov`)                                                                                                           |
 | `tamperEvidence.enabled`     | `false`                | per-record SHA-256 hash chain over every journal row + Merkle epoch commits                                                                                        |
+| `secrets.patterns`           | `[]`                   | extra secret-pattern regexes appended to the built-ins for journal redaction and the write-time guard (append semantics; built-ins are never replaceable)          |
+| `secrets.writeGuard`         | `advise`               | write-time secret guard: `off` disables, `advise` journals + nudges and never blocks, `enforce` blocks the matching write                                          |
+| `secrets.entropy`            | `false`                | advisory-only high-entropy literal flag (never blocks)                                                                                                             |
 
 Invalid keys are ignored, journaled, and summarized once into the session
 context; a malformed config file never breaks the host. The full table

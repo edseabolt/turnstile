@@ -11,6 +11,7 @@ import type {
   TurnstileConfig,
   TurnstileGitGates,
   TurnstileDecisionLedger,
+  TurnstileSecrets,
   TurnstileTamperEvidence,
   TurnstileToolPolicy,
 } from "./types.ts"
@@ -83,6 +84,20 @@ export function defaultToolPolicy(): TurnstileToolPolicy {
     // writer-head set is the zero-false-positive surface. The session-wide
     // escape hatch is the TURNSTILE OFF: suspend marker.
     bashWriteGate: true,
+  }
+}
+
+/**
+ * Builds the default `secrets` sub-object: no extra patterns (the built-ins
+ * in `src/secret-patterns.ts` apply alone), the write-time guard in its
+ * advisory default, and the entropy heuristic off.
+ * @returns The default secrets block.
+ */
+export function defaultSecrets(): TurnstileSecrets {
+  return {
+    patterns: [],
+    writeGuard: "advise",
+    entropy: false,
   }
 }
 
@@ -541,6 +556,108 @@ export function mergeDecisionLedgerPatch(
 }
 
 /**
+ * Validates and appends one `secrets.patterns` element: a non-empty string
+ * that compiles as a regex (compiled with `"g"` by the consumer). Bad
+ * elements are dropped individually with one warning each so a single typo
+ * never discards the whole user list.
+ * @param sources The validated sources accumulated so far.
+ * @param index The element index (for warning wording).
+ * @param src The candidate element.
+ * @param warnings The warning list to append to.
+ */
+function mergeSecretPatternElement(
+  sources: string[],
+  index: number,
+  src: unknown,
+  warnings: string[],
+): void {
+  if (typeof src !== "string" || src.trim().length === 0) {
+    warnings.push(`config: secrets.patterns[${index}] is not a non-empty string; dropping element`)
+    return
+  }
+  try {
+    new RegExp(src, "g")
+    sources.push(src)
+  } catch {
+    warnings.push(`config: secrets.patterns[${index}] is not a valid regex; dropping element`)
+  }
+}
+
+/**
+ * Merges a `secrets.patterns` patch value: a non-array keeps the default
+ * (fail-safe); otherwise every element is validated individually and the
+ * validated list replaces the default. Append semantics live at the
+ * consumer: the compiled list is the built-ins plus these extras.
+ * @param merged The secrets block being built.
+ * @param value The candidate list value.
+ * @param warnings The warning list to append to.
+ */
+function mergeSecretPatterns(merged: TurnstileSecrets, value: unknown, warnings: string[]): void {
+  if (!Array.isArray(value)) {
+    warnings.push(`config: secrets.patterns must be an array of non-empty strings; keeping default`)
+    return
+  }
+  const sources: string[] = []
+  value.forEach((src, i) => mergeSecretPatternElement(sources, i, src, warnings))
+  merged.patterns = sources
+}
+
+/**
+ * Merges one `secrets` sub-key into the block being built.
+ * @param merged The secrets block being built.
+ * @param sk The sub-key name.
+ * @param sv The candidate sub-key value.
+ * @param warnings The warning list to append to.
+ */
+function mergeSecretsKey(
+  merged: TurnstileSecrets,
+  sk: string,
+  sv: unknown,
+  warnings: string[],
+): void {
+  if (sk === "patterns") {
+    mergeSecretPatterns(merged, sv, warnings)
+  } else if (sk === "writeGuard") {
+    if (sv === "off" || sv === "advise" || sv === "enforce") merged.writeGuard = sv
+    else
+      warnings.push(
+        `config: secrets.writeGuard must be "off", "advise", or "enforce"; keeping default`,
+      )
+  } else if (sk === "entropy") {
+    if (typeof sv === "boolean") merged.entropy = sv
+    else warnings.push(`config: secrets.entropy must be a boolean; keeping default`)
+  } else {
+    warnings.push(`config: unknown secrets key "${sk}" ignored`)
+  }
+}
+
+/**
+ * Merges the `secrets` patch section one level deep like `decisionLedger`.
+ * A non-object keeps all defaults; each known sub-key is validated
+ * individually with a journaled warning so a config typo is visible, never
+ * silent. The built-in secret patterns are never replaceable: a configured
+ * `patterns` list only extends them at the consumer.
+ * @param config The config to mutate.
+ * @param value The `secrets` patch value.
+ * @param warnings The warning list to append to.
+ */
+export function mergeSecretsPatch(
+  config: TurnstileConfig,
+  value: unknown,
+  warnings: string[],
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    warnings.push("config: secrets must be an object; keeping defaults")
+    return
+  }
+  const merged: TurnstileSecrets = { ...config.secrets }
+  for (const [sk, sv] of Object.entries(value as Record<string, unknown>)) {
+    mergeSecretsKey(merged, sk, sv, warnings)
+  }
+  config.secrets = merged
+}
+
+/**
  * Validates one `tamperEvidence.anchor` selection element: a non-empty
  * string (a builtin sink name) or a plain object carrying a non-empty
  * string `plugin` (an external sink; `options`, when present, must be an
@@ -693,6 +810,7 @@ export function mergeConfigKey(
   if (key === "toolPolicy") return mergeToolPolicyPatch(config, value, warnings)
   if (key === "gitGates") return mergeGitGatesPatch(config, value, warnings)
   if (key === "decisionLedger") return mergeDecisionLedgerPatch(config, value, warnings)
+  if (key === "secrets") return mergeSecretsPatch(config, value, warnings)
   if (key === "tamperEvidence") return mergeTamperEvidencePatch(config, value, warnings)
   if (key === "$schema") return mergeSchemaKey(value, warnings)
   if (key === "testOverlapExempt" || key === "testOverlapTestFilePattern") {

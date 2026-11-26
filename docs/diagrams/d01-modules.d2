@@ -69,7 +69,7 @@ core: "src/ — one concern per boundary" {
   evidencehits: "evidence-hits.ts\nhits-map ops behind the evidence tracker\n(record, correlate, snapshot, clear)"
   journalsinks: "journal-sinks.ts\nappend/rotate primitives, sink resolution,\nrotation locking via the shared lockfile\nboundary, trace formatting"
   lockfile: "lockfile.ts\nwithFileLock: atomic mkdir mutex at\n<file>.lock, bounded retry, mtime stale\nsteal — shared by append, sidecar, rotation"
-  toolpolicyguards: "tool-policy-guards.ts\ndenylist guards, commit lint, landing +\nhands-on gates, telemetry observers"
+  toolpolicyguards: "tool-policy-guards.ts\ndenylist guards, commit lint, landing +\nhands-on gates, secret write guard,\ntelemetry observers"
   dispatchbudget: "dispatch-budget.ts\nper-leg loop caps, total-dispatch budget,\nread horizon"
   dispatchreviewgate: "dispatch-review-gate.ts\nreviewer round-cap + gate-evidence gate,\nwaiver consumption, ensemble credit"
   gatemessages: "gate-messages.ts\nshared cap-block + gate-unverified\nrefusal message composers"
@@ -81,6 +81,7 @@ core: "src/ — one concern per boundary" {
   engagement: "engagement.ts\nshouldEngage predicate + engagement\njournal entry builder (pure)"
   decisionledger: "decision-ledger.ts\nprov:* entry builders for human\nprompts/denials (config.decisionLedger)"
   decisionledgerredact: "decision-ledger-redact.ts\nredaction filter for the decision ledger"
+  secretpatterns: "secret-patterns.ts\ncanonical secret-pattern sources +\ncompiler (built-ins + configured extras),\nentropy heuristic"
   planscope: "plan-scope.ts\nplanScopeFiles + classifyPlanImpact\n(pure): advisory vs structural set,\nplan-impact classification — no fs"
   types: "types.ts\nhost wire shapes, GateState, TurnstileConfig"
   chain: "chain.ts\nrow hash chain + Merkle epoch\npromotion (pure)"
@@ -199,6 +200,8 @@ core.ledger -> core.bounded
 core.promptadmission -> core.decisionledger
 core.eventstreamhandlers -> core.decisionledger
 core.decisionledger -> core.decisionledgerredact
+core.decisionledgerredact -> core.secretpatterns
+core.toolpolicyguards -> core.secretpatterns
 core.journal -> persist.jsonl
 core.journal -> persist.trace
 core.gates -> core.gatesdispatch

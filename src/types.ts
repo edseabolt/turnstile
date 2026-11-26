@@ -28,6 +28,15 @@ export interface TaskInput {
   filePath?: unknown
   /** Alternate candidate key for the same write/edit target path. */
   path?: unknown
+  /**
+   * New content as delivered by the host's `write` tool. The shape is
+   * unconfirmed on the current host, hence `unknown`; the write-time secret
+   * guard reads it as a documented candidate (`content ?? newString`) and
+   * no-ops when absent.
+   */
+  content?: unknown
+  /** Alternate candidate key for the same write/edit new content. */
+  newString?: unknown
 }
 
 /**
@@ -351,6 +360,39 @@ export interface TurnstileDecisionLedger {
    * behavior changes.
    */
   enabled: boolean
+}
+
+/**
+ * Write-time secret-guard mode. `off` disables the surface entirely;
+ * `advise` (the default) journals an advisory row and stashes one nudge for
+ * the next delivery, never blocking; `enforce` blocks the matching write
+ * with the standard `BLOCKED by turnstile:` composer.
+ */
+export type SecretWriteGuardMode = "off" | "advise" | "enforce"
+
+/**
+ * Secret-detection configuration backing journal redaction and the
+ * write-time guard in `src/tool-policy-guards.ts`. The built-in pattern list
+ * (in `src/secret-patterns.ts`) is the single canonical source both surfaces
+ * consume; `patterns` only ever extends it (append semantics: redaction at
+ * capture time cannot be taken back, so a config typo can never disarm the
+ * built-ins).
+ */
+export interface TurnstileSecrets {
+  /**
+   * Extra regex sources (compiled with `"g"`) appended to the built-ins for
+   * BOTH journal redaction and the write-time guard. An invalid source is
+   * dropped with a journaled error; the built-ins are never replaceable.
+   */
+  patterns: string[]
+  /** Write-time guard mode (default `advise`). */
+  writeGuard: SecretWriteGuardMode
+  /**
+   * Advisory-only high-entropy heuristic (default false): when true, a write
+   * whose content carries a high-entropy literal journals an advisory row
+   * (never blocks, even under `enforce`).
+   */
+  entropy: boolean
 }
 
 /**
@@ -1188,6 +1230,14 @@ export interface TurnstileConfig {
    * and `src/anchor.ts`.
    */
   tamperEvidence: TurnstileTamperEvidence
+  /**
+   * Secret-detection configuration: the extra secret patterns (`patterns`,
+   * appended to the built-ins for both journal redaction and the write-time
+   * guard), the write-guard mode (`writeGuard`, default `advise`), and the
+   * advisory entropy heuristic (`entropy`, default false). See
+   * `src/secret-patterns.ts` and `src/tool-policy-guards.ts`.
+   */
+  secrets: TurnstileSecrets
 }
 
 /** Options accepted by the plugin factory; tests inject config and env here. */

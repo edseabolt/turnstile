@@ -96,6 +96,11 @@ test("schema property names match the defaultConfig key sets exactly", () => {
     Object.keys(cfg.decisionLedger).sort(),
     "decisionLedger key set",
   )
+  assert.deepEqual(
+    Object.keys(schema.properties.secrets!.properties!).sort(),
+    Object.keys(cfg.secrets).sort(),
+    "secrets key set",
+  )
 })
 
 /** (10) Each property's declared JSON type matches `typeof` the runtime

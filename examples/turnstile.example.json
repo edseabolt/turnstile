@@ -91,5 +91,10 @@
     "anchor": "session-state",
     "epochEntries": 512,
     "verifyOnSessionEnd": false
+  },
+  "secrets": {
+    "patterns": [],
+    "writeGuard": "advise",
+    "entropy": false
   }
 }
