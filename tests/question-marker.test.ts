@@ -153,6 +153,17 @@ test("parseQuestionMarker: no marker or empty text returns null", () => {
   assert.equal(parseQuestionMarker(s, ""), null)
 })
 
+// ── Snapshot line ────────────────────────────────────────────────────────────
+
+test("snapshot: the question line renders PENDING only while a question is open", () => {
+  const s = newState()
+  assert.ok(formatGateSnapshot(s).includes("- question: none"))
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = 1
+  assert.ok(formatGateSnapshot(s).includes("- question: PENDING"))
+  assert.ok(!formatGateSnapshot(s).includes("which queue?"), "raw text never rides the snapshot")
+})
+
 // ── Config surface ───────────────────────────────────────────────────────────
 
 test("question config: defaults are no-timeout hold with the canonical cancel literal", () => {
