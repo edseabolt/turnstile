@@ -164,6 +164,71 @@ test("snapshot: the question line renders PENDING only while a question is open"
   assert.ok(!formatGateSnapshot(s).includes("which queue?"), "raw text never rides the snapshot")
 })
 
+// ── Replay fold ──────────────────────────────────────────────────────────────
+
+/**
+ * Writes the given raw lines as the journal of a fresh temp metrics dir.
+ * @param metricsDir The temp metrics dir.
+ * @param lines Raw journal lines.
+ * @returns The journal path.
+ */
+function writeJournal(metricsDir: string, lines: string[]): string {
+  const journalPath = path.join(metricsDir, "turnstile.jsonl")
+  fs.writeFileSync(journalPath, lines.join("\n") + "\n")
+  return journalPath
+}
+
+/**
+ * A `question` journal line for a session.
+ * @param sessionID The session ID.
+ * @param action The lifecycle action (`open`/`answer`/`cancel`/`timeout`).
+ * @param extra Extra fields (e.g. `question`, `authority`).
+ * @returns The raw JSONL line.
+ */
+function questionLine(
+  sessionID: string,
+  action: string,
+  extra: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({
+    ts: "2026-01-01T00:00:00.000Z",
+    type: "question",
+    sessionID,
+    action,
+    ...extra,
+  })
+}
+
+test("replay: the question fold restores pending last-wins and the open clock", () => {
+  const metricsDir = tmpDir()
+  const journalPath = writeJournal(metricsDir, [
+    questionLine("p1", "open", { question: "which queue?" }),
+    questionLine("p2", "open", { question: "a" }),
+    questionLine("p2", "answer", { answer: "in-process" }),
+    questionLine("p3", "open", { question: "a", authority: "suppressed" }),
+    questionLine("p4", "open", { question: "b" }),
+    questionLine("p4", "cancel"),
+    questionLine("p5", "open", { question: "c" }),
+    questionLine("p5", "timeout"),
+    questionLine("p6", "open", { question: 42 }),
+    questionLine("p7", "hostile"),
+  ])
+  const ledger = createLedger(journalPath, 64, 2000)
+  const p1 = ledger.peek("p1")
+  assert.equal(p1?.questionPending, "which queue?", "an open restores pending")
+  assert.equal(
+    p1?.questionOpenedAt,
+    Date.parse("2026-01-01T00:00:00.000Z"),
+    "the clock is the row ts",
+  )
+  assert.equal(ledger.peek("p2")?.questionPending, "", "a later answer clears")
+  assert.equal(ledger.peek("p3"), undefined, "a suppressed open mints no bucket")
+  assert.equal(ledger.peek("p4")?.questionPending, "", "a cancel clears")
+  assert.equal(ledger.peek("p5")?.questionPending, "", "a timeout clears")
+  assert.equal(ledger.peek("p6")?.questionPending, "", "a hostile question degrades to empty")
+  assert.equal(ledger.peek("p7"), undefined, "a hostile action mints no bucket")
+})
+
 // ── Config surface ───────────────────────────────────────────────────────────
 
 test("question config: defaults are no-timeout hold with the canonical cancel literal", () => {
