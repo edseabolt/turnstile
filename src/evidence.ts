@@ -46,29 +46,29 @@ function compileEvidencePattern(
 }
 
 /**
- * Validates the configured test-file pattern list: each source is compiled
- * with `"i"` and an invalid one is dropped with a journaled error row. An
- * entirely invalid (non-empty) list falls back to the cross-ecosystem
- * defaults; an explicitly empty list is honored as empty (no test files are
- * ever extracted, so the overlap rule skips).
+ * Validates and compiles the configured test-file pattern list: each source
+ * is compiled once with `"i"` and an invalid one is dropped with a journaled
+ * error row. An entirely invalid (non-empty) list falls back to the
+ * cross-ecosystem defaults; an explicitly empty list is honored as empty
+ * (no test files are ever extracted, so the overlap rule skips).
  * @param sources The configured `testOverlapTestFilePattern` list.
  * @param journaler Optional telemetry writer for the drop/fallback rows.
- * @returns The valid sources (configured, or the defaults on total failure).
+ * @returns The compiled valid patterns (configured, or the compiled defaults
+ *     on total failure).
  */
 function resolveTestFilePatterns(
   sources: readonly string[],
   journaler?: Pick<Journaler, "journal">,
-): string[] {
-  const valid = sources.filter((source) => {
+): RegExp[] {
+  const valid = sources.flatMap((source) => {
     try {
-      new RegExp(source, "i")
-      return true
+      return [new RegExp(source, "i")]
     } catch (cause) {
       journaler?.journal({
         type: "error",
         error: `config testOverlapTestFilePattern: invalid regex dropped: ${String(cause)}`,
       })
-      return false
+      return []
     }
   })
   if (valid.length === 0 && sources.length > 0) {
@@ -76,7 +76,7 @@ function resolveTestFilePatterns(
       type: "error",
       error: "config testOverlapTestFilePattern: every pattern invalid; using defaults",
     })
-    return [...DEFAULT_TEST_FILE_PATTERNS]
+    return DEFAULT_TEST_FILE_PATTERNS.map((source) => new RegExp(source, "i"))
   }
   return valid
 }
@@ -108,7 +108,7 @@ export interface EvidenceTracker {
    * has a recorded hit. Re-keys a found child bucket to `sid` (lazy
    * promotion, so an async parent edge established after `observe` still
    * resolves). With `since`, a bucket (direct or re-keyed) qualifies only
-   * when its latest activity is at-or-after `since` (inclusive,
+   * when its latest hit is at-or-after `since` (inclusive,
    * same-millisecond-tolerant); a filtered-out child stays keyed under the
    * child (no re-key on a miss, preserving laziness for a later call). When
    * a stale direct bucket exists and an in-window child qualifies, the

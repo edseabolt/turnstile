@@ -17,6 +17,9 @@ import {
   MAX_PATH_TOKENS,
 } from "../src/overlap.ts"
 
+/** Compiles regex sources the way the tracker boundary does (with `"i"`). */
+const compile = (sources: readonly string[]): RegExp[] => sources.map((s) => new RegExp(s, "i"))
+
 /** zero overlap between executed tests and touched files is a violation. */
 test("zero overlap is a violation", () => {
   const r = computeTestOverlap(["src/a.test.ts"], ["src/b.ts"], [])
@@ -59,7 +62,7 @@ test("empty executed set skips as no-test-files", () => {
  *  stdout window, unioned with the command line's own tokens. */
 test("stdout scan is language-agnostic", () => {
   const out = "PASS  tests/test_foo.py\nok   internal/foo_test.go"
-  const files = extractTestFiles("pytest", out, DEFAULT_TEST_FILE_PATTERNS)
+  const files = extractTestFiles("pytest", out, compile(DEFAULT_TEST_FILE_PATTERNS))
   assert.deepEqual(files.sort(), ["internal/foo_test.go", "tests/test_foo.py"])
 })
 
@@ -105,14 +108,12 @@ test("classification table covers every default ecosystem", () => {
 
 /** a configured pattern extends the classification where the defaults miss. */
 test("configured pattern extends classification", () => {
-  const extended = [...DEFAULT_TEST_FILE_PATTERNS, "_test\\.exs$"]
+  const extended = compile([...DEFAULT_TEST_FILE_PATTERNS, "_test\\.exs$"])
   assert.deepEqual(extractTestFiles("mix test", "ok ./a_test.exs", extended), ["./a_test.exs"])
-  assert.deepEqual(extractTestFiles("mix test", "ok ./a_test.exs", DEFAULT_TEST_FILE_PATTERNS), [])
-})
-
-/** an invalid pattern in the list is skipped, the valid ones still apply. */
-test("invalid pattern is skipped by classification", () => {
-  assert.deepEqual(extractTestFiles("x", "ok ./a.test.ts", ["(", "\\.test\\.ts$"]), ["./a.test.ts"])
+  assert.deepEqual(
+    extractTestFiles("mix test", "ok ./a_test.exs", compile(DEFAULT_TEST_FILE_PATTERNS)),
+    [],
+  )
 })
 
 /** extractPathTokens keeps only path-like tokens (separator + extension). */
@@ -137,11 +138,11 @@ test("path token extraction caps at the token cap", () => {
 /** extractTestFiles dedupes across both sources and caps the union. */
 test("test-file extraction dedupes across sources and caps", () => {
   assert.deepEqual(
-    extractTestFiles("node --test src/a.test.ts", "ok src/a.test.ts", ["\\.test\\.ts$"]),
+    extractTestFiles("node --test src/a.test.ts", "ok src/a.test.ts", compile(["\\.test\\.ts$"])),
     ["src/a.test.ts"],
   )
   const many = Array.from({ length: MAX_PATH_TOKENS + 5 }, (_, i) => `d/t${i}.test.ts`).join(" ")
-  assert.equal(extractTestFiles("", many, ["\\.test\\.ts$"]).length, MAX_PATH_TOKENS)
+  assert.equal(extractTestFiles("", many, compile(["\\.test\\.ts$"])).length, MAX_PATH_TOKENS)
 })
 
 /** globToRegExp translates **, *, and ? and anchors the whole path. */

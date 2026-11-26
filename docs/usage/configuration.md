@@ -109,8 +109,6 @@ journal (fail-open); a malformed config file never breaks the host.
 
 **Test-overlap gate.** Off by default. Set `"requireTestOverlap": true` to
 require that the tests a `GATE: PASS` claims actually relate to the files
-the task changed.
-require that the tests a `GATE: PASS` claims actually relate to the files
 the task changed. Turn it on when you want the test gate to catch an
 executor that ran an unrelated suite; leave it off while a task is expected
 to change no code.

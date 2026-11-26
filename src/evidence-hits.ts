@@ -16,12 +16,16 @@ export const MAX_PATHS_PER_BUCKET = 32
 
 /**
  * One session's evidence bucket: the latest exit-0 hit timestamp (`0` for a
- * touched-only bucket that never ran a matching command), whether any hit
- * was ever recorded, and the bounded test-file / touched-path sets.
+ * touched-only bucket that never ran a matching command), the latest
+ * write/edit touch timestamp (tracked separately so a post-window touch
+ * cannot re-qualify a pre-window hit), whether any hit was ever recorded,
+ * and the bounded test-file / touched-path sets.
  */
 export interface EvidenceBucket {
   /** `Date.now()` of the latest exit-0 hit (0 when none). */
   last: number
+  /** `Date.now()` of the latest write/edit touch (0 when none). */
+  lastTouch: number
   /** True once any exit-0 test-command hit was recorded. */
   hadHit: boolean
   /** Bounded, deduped executed test-file tokens (newest-wins). */
@@ -71,7 +75,8 @@ export interface EvidenceHits {
   testFiles(sid: string, since?: number): string[]
   /**
    * The touched change-set paths correlated for `sid` (same rules as
-   * `testFiles`).
+   * `testFiles`, windowed on the latest touch timestamp rather than the
+   * latest hit timestamp).
    * @param sid The parent (or raw) session ID to read.
    * @param since Optional inclusive lower bound (the task window).
    * @returns A copy of the correlated touched set (empty when none).
@@ -105,15 +110,28 @@ function promote(map: Map<string, EvidenceBucket>, key: string): void {
 }
 
 /**
+ * Which bucket timestamp a windowed read bounds on: `last` (the latest
+ * exit-0 hit) for the hit-side reads, `lastTouch` (the latest write/edit)
+ * for the touched-side read.
+ */
+type WindowField = "last" | "lastTouch"
+
+/**
  * Whether a bucket satisfies the window bound: the bound compares against
- * the bucket's latest activity timestamp (hit or touch).
+ * the bucket's timestamp for the read's window field (hit timestamp for
+ * `has`/`testFiles`, touch timestamp for `touchedFiles`).
  * @param bucket The bucket to check.
  * @param since The inclusive lower bound, or undefined for no bound.
+ * @param field The bucket timestamp the read bounds on.
  * @returns True when the bucket qualifies.
  */
-function windowQualifies(bucket: EvidenceBucket, since: number | undefined): boolean {
+function windowQualifies(
+  bucket: EvidenceBucket,
+  since: number | undefined,
+  field: WindowField,
+): boolean {
   if (since === undefined) return true
-  return bucket.last >= since
+  return bucket[field] >= since
 }
 
 /**
@@ -136,7 +154,7 @@ function recordPath(set: string[], path: string): void {
  * @param hits The hits map to mutate.
  * @param maxSessions The LRU session cap.
  * @param pattern The compiled evidence pattern.
- * @param testPatterns The configured test-file regex sources.
+ * @param testPatterns The compiled test-file regexes.
  * @param raw The session ID that ran the command.
  * @param command The command string (matched, never retained).
  * @param exit The command exit code.
@@ -147,7 +165,7 @@ function recordHit(
   hits: Map<string, EvidenceBucket>,
   maxSessions: number,
   pattern: RegExp,
-  testPatterns: readonly string[],
+  testPatterns: readonly RegExp[],
   raw: string,
   command: unknown,
   exit: unknown,
@@ -157,7 +175,13 @@ function recordHit(
   if (exit !== 0) return false
   const commandText = String(command ?? "")
   if (!pattern.test(commandText)) return false
-  const bucket = hits.get(raw) ?? { last: 0, hadHit: false, testFiles: [], touched: [] }
+  const bucket = hits.get(raw) ?? {
+    last: 0,
+    lastTouch: 0,
+    hadHit: false,
+    testFiles: [],
+    touched: [],
+  }
   bucket.last = Date.now()
   bucket.hadHit = true
   for (const file of extractTestFiles(commandText, stdout ?? "", testPatterns)) {
@@ -171,7 +195,9 @@ function recordHit(
 /**
  * Records a touched change-set path under `raw` (no exit/pattern gate),
  * creating the bucket when absent and trimming the map to the session cap.
- * The bucket's activity timestamp advances so the windowed set reads see it.
+ * Only the bucket's touch timestamp advances (the hit timestamp is left
+ * alone, so a post-window touch cannot re-qualify a pre-window hit for the
+ * windowed `has`/`testFiles` reads).
  * @param hits The hits map to mutate.
  * @param maxSessions The LRU session cap.
  * @param raw The session ID that wrote/edited the path.
@@ -184,8 +210,14 @@ function recordTouched(
   path: string,
 ): void {
   if (!raw || !path) return
-  const bucket = hits.get(raw) ?? { last: 0, hadHit: false, testFiles: [], touched: [] }
-  bucket.last = Date.now()
+  const bucket = hits.get(raw) ?? {
+    last: 0,
+    lastTouch: 0,
+    hadHit: false,
+    testFiles: [],
+    touched: [],
+  }
+  bucket.lastTouch = Date.now()
   recordPath(bucket.touched, path)
   hits.set(raw, bucket)
   evictTo(hits, maxSessions)
@@ -201,6 +233,7 @@ function recordTouched(
  * @param parentOf Resolves a raw session ID to its parent.
  * @param sid The parent (or raw) session ID to check.
  * @param since Optional inclusive lower bound (the task window).
+ * @param field The bucket timestamp the read bounds on.
  * @returns The correlated bucket, or undefined when none qualifies.
  */
 function correlateBucket(
@@ -208,14 +241,15 @@ function correlateBucket(
   parentOf: (raw: string) => string,
   sid: string,
   since: number | undefined,
+  field: WindowField,
 ): EvidenceBucket | undefined {
   if (!sid) return undefined
   // Touch unconditionally: present keys reorder to MRU, absent keys no-op.
   promote(hits, sid)
   const direct = hits.get(sid)
-  if (direct && windowQualifies(direct, since)) return direct
+  if (direct && windowQualifies(direct, since, field)) return direct
   for (const [child, bucket] of hits) {
-    if (parentOf(child) === sid && windowQualifies(bucket, since)) {
+    if (parentOf(child) === sid && windowQualifies(bucket, since, field)) {
       hits.delete(child)
       hits.set(sid, bucket)
       promote(hits, sid)
@@ -231,7 +265,7 @@ function correlateBucket(
  * parent resolver.
  * @param maxSessions The LRU session cap (`config.maxSessions`).
  * @param pattern The compiled evidence pattern.
- * @param testPatterns The configured test-file regex sources.
+ * @param testPatterns The compiled test-file regexes.
  * @param parentOf Resolves a raw session ID to its parent (the ledger's
  *     `parentOf`).
  * @returns The observe/touched/has/testFiles/touchedFiles/snapshot/clear
@@ -240,7 +274,7 @@ function correlateBucket(
 export function createEvidenceHits(
   maxSessions: number,
   pattern: RegExp,
-  testPatterns: readonly string[],
+  testPatterns: readonly RegExp[],
   parentOf: (raw: string) => string,
 ): EvidenceHits {
   // Raw session ID → evidence bucket; insertion-order LRU, capped at
@@ -251,15 +285,15 @@ export function createEvidenceHits(
       recordHit(hits, maxSessions, pattern, testPatterns, raw, command, exit, stdout),
     touched: (raw, path) => recordTouched(hits, maxSessions, raw, path),
     has: (sid, since) => {
-      const bucket = correlateBucket(hits, parentOf, sid, since)
+      const bucket = correlateBucket(hits, parentOf, sid, since, "last")
       return bucket !== undefined && bucket.hadHit
     },
     testFiles: (sid, since) => {
-      const bucket = correlateBucket(hits, parentOf, sid, since)
+      const bucket = correlateBucket(hits, parentOf, sid, since, "last")
       return bucket ? [...bucket.testFiles] : []
     },
     touchedFiles: (sid, since) => {
-      const bucket = correlateBucket(hits, parentOf, sid, since)
+      const bucket = correlateBucket(hits, parentOf, sid, since, "lastTouch")
       return bucket ? [...bucket.touched] : []
     },
     snapshot(): Array<{ session: string; last: number }> {

@@ -147,6 +147,26 @@ test("evidence.has with a task window bounds by the latest hit (inclusive)", () 
   assert.equal(t.has("c1"), true)
 })
 
+/** A post-window write/edit touch does not re-qualify a pre-window exit-0
+ *  hit: the windowed `has` bounds on the hit timestamp, not the touch
+ *  timestamp, while the touched set stays readable in the same window. */
+test("evidence.has with a task window ignores a post-window touch of a pre-window hit", async () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.observe("p1", "npm test", 0)
+  const hitLast = t.snapshot()[0]!.last
+  // A distinct-millisecond gap so the touch is strictly after the window.
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  t.touched("p1", "src/a.ts")
+  const since = hitLast + 1
+  assert.equal(t.has("p1", since), false, "the touch cannot re-qualify the pre-window hit")
+  assert.deepEqual(t.testFiles("p1", since), [], "test files window on the hit timestamp too")
+  assert.deepEqual(
+    t.touchedFiles("p1", since),
+    ["src/a.ts"],
+    "the touched set still windows on the touch timestamp",
+  )
+})
+
 /** A windowed miss does not re-key: the child bucket stays under the child,
  *  and a later qualifying call still re-keys it (laziness preserved). */
 test("evidence.has with a task window keeps a filtered-out child keyed under the child", () => {
@@ -268,12 +288,13 @@ test("evidence.touched records without a gate and touchedFiles correlates it", (
   const t = createEvidenceTracker(cfg(), identityParent)
   t.touched("p1", "/repo/src/a.ts")
   assert.deepEqual(t.touchedFiles("p1"), ["/repo/src/a.ts"])
-  // A touched-only bucket never counts as test-execution evidence.
+  // A touched-only bucket never counts as test-execution evidence, and its
+  // snapshot hit timestamp stays 0 (the touch has its own timestamp).
   assert.equal(t.has("p1"), false)
-  // Windowed: a bound beyond the touch excludes it.
-  const last = t.snapshot()[0]!.last
-  assert.deepEqual(t.touchedFiles("p1", last + 1), [])
-  assert.deepEqual(t.touchedFiles("p1", last), ["/repo/src/a.ts"])
+  assert.equal(t.snapshot()[0]!.last, 0)
+  // Windowed on the touch timestamp: a bound beyond the touch excludes it.
+  assert.deepEqual(t.touchedFiles("p1", Date.now() + 1), [])
+  assert.deepEqual(t.touchedFiles("p1", 0), ["/repo/src/a.ts"])
 })
 
 /** A child's touched paths and test files promote to the parent (re-key),

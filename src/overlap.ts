@@ -111,20 +111,16 @@ export function extractPathTokens(text: string): string[] {
 
 /**
  * Decides whether a path-like token is a test file under the configured
- * pattern list: any compiled pattern matching makes it test-ish. An
- * individual pattern that fails to compile is skipped (the tracker
- * boundary journals the drop at setup time; this pure layer stays silent).
+ * pattern list: any compiled pattern matching makes it test-ish. The
+ * patterns arrive pre-compiled (the tracker boundary compiles once and
+ * journals invalid drops at setup time; this pure layer stays silent).
  * @param token The path-like token to classify.
- * @param patterns The configured regex sources (compiled with `"i"`).
+ * @param patterns The compiled test-file regexes (compiled with `"i"`).
  * @returns True when any pattern matches the token.
  */
-export function classifyTestFile(token: string, patterns: readonly string[]): boolean {
-  for (const source of patterns) {
-    try {
-      if (new RegExp(source, "i").test(token)) return true
-    } catch {
-      // Invalid pattern: skipped here; the tracker boundary journals it.
-    }
+export function classifyTestFile(token: string, patterns: readonly RegExp[]): boolean {
+  for (const pattern of patterns) {
+    if (pattern.test(token)) return true
   }
   return false
 }
@@ -136,13 +132,13 @@ export function classifyTestFile(token: string, patterns: readonly string[]): bo
  * `classifyTestFile`, deduped, and capped at `MAX_PATH_TOKENS`.
  * @param commandText The command string (may be "").
  * @param stdout The command's output window (may be "").
- * @param patterns The configured test-file regex sources.
+ * @param patterns The compiled test-file regexes.
  * @returns The deduped test-file tokens in first-seen order.
  */
 export function extractTestFiles(
   commandText: string,
   stdout: string,
-  patterns: readonly string[],
+  patterns: readonly RegExp[],
 ): string[] {
   const files: string[] = []
   for (const token of [...extractPathTokens(commandText), ...extractPathTokens(stdout)]) {
