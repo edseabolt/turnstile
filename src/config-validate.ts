@@ -49,6 +49,7 @@ const NON_EMPTY_STRING_KEYS: readonly (keyof TurnstileConfig)[] = [
   "taskDoneMarker",
   "planReviewAcceptMarker",
   "planReviewRejectMarker",
+  "questionCancelMarker",
   "plansDir",
 ]
 
@@ -58,6 +59,7 @@ const LITERAL_KEYS: Partial<Record<keyof TurnstileConfig, readonly string[]>> = 
   sessionSummary: ["on", "quiet", "off"],
   tokenUsage: ["off", "summary", "per-message"],
   escalation: ["ask", "block"],
+  questionTimeoutAction: ["hold", "resume"],
 }
 
 /** Config keys whose literal check is non-final: a non-matching value falls
@@ -137,7 +139,8 @@ function isValidNumberKey(key: keyof TurnstileConfig, value: unknown): boolean {
   if (
     key === "observeSessions" ||
     key === "agentMarkerRetry" ||
-    key === "journalArchiveGenerations"
+    key === "journalArchiveGenerations" ||
+    key === "questionTimeoutMinutes"
   ) {
     return typeof value === "number" && Number.isInteger(value) && value >= 0
   }

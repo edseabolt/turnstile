@@ -159,6 +159,10 @@ function assignScalar(config: TurnstileConfig, key: keyof TurnstileConfig, value
   else if (key === "requireTestOverlap") config.requireTestOverlap = value as boolean
   else if (key === "planReviewAcceptMarker") config.planReviewAcceptMarker = value as string
   else if (key === "planReviewRejectMarker") config.planReviewRejectMarker = value as string
+  else if (key === "questionTimeoutMinutes") config.questionTimeoutMinutes = value as number
+  else if (key === "questionTimeoutAction")
+    config.questionTimeoutAction = value as TurnstileConfig["questionTimeoutAction"]
+  else if (key === "questionCancelMarker") config.questionCancelMarker = value as string
   else if (key === "observeSessions") config.observeSessions = value as number
   else if (key === "agentMarkerRetry") config.agentMarkerRetry = value as number
   else config[key as keyof TurnstileConfig] = value as never
@@ -171,6 +175,7 @@ const SCALAR_WARNINGS: Record<string, string> = {
   sessionSummary: `config: sessionSummary must be "on", "quiet", or "off"; keeping default`,
   tokenUsage: `config: tokenUsage must be "off", "summary", or "per-message"; keeping default`,
   escalation: `config: escalation must be "block" or "ask"; keeping default`,
+  questionTimeoutAction: `config: questionTimeoutAction must be "hold" or "resume"; keeping default`,
 }
 
 /**

@@ -152,3 +152,38 @@ test("parseQuestionMarker: no marker or empty text returns null", () => {
   assert.equal(parseQuestionMarker(s, "no marker here"), null)
   assert.equal(parseQuestionMarker(s, ""), null)
 })
+
+// ── Config surface ───────────────────────────────────────────────────────────
+
+test("question config: defaults are no-timeout hold with the canonical cancel literal", () => {
+  const c = defaultConfig({})
+  assert.equal(c.questionTimeoutMinutes, 0)
+  assert.equal(c.questionTimeoutAction, "hold")
+  assert.equal(c.questionCancelMarker, CANCEL)
+})
+
+test("question config: valid overrides merge; invalid values are rejected", () => {
+  const { config, warnings } = mergeConfig(defaultConfig({}), {
+    questionTimeoutMinutes: 30,
+    questionTimeoutAction: "resume",
+    questionCancelMarker: "NEVERMIND:",
+  })
+  assert.equal(config.questionTimeoutMinutes, 30)
+  assert.equal(config.questionTimeoutAction, "resume")
+  assert.equal(config.questionCancelMarker, "NEVERMIND:")
+  assert.equal(warnings.length, 0)
+  const bad = mergeConfig(defaultConfig({}), {
+    questionTimeoutMinutes: -1,
+    questionTimeoutAction: "give-up",
+    questionCancelMarker: "",
+  })
+  assert.equal(bad.config.questionTimeoutMinutes, 0, "a negative timeout keeps the default")
+  assert.equal(bad.config.questionTimeoutAction, "hold")
+  assert.equal(bad.config.questionCancelMarker, CANCEL)
+  assert.equal(bad.warnings.length, 3, "each invalid key warns")
+  assert.ok(
+    bad.warnings.includes(
+      `config: questionTimeoutAction must be "hold" or "resume"; keeping default`,
+    ),
+  )
+})

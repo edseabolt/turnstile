@@ -1160,6 +1160,24 @@ export interface TurnstileConfig {
    * `PLAN REJECTED:`.
    */
   planReviewRejectMarker: string
+  /**
+   * Minutes before an unanswered pending question resolves per
+   * `questionTimeoutAction`; `0` (default) holds indefinitely — the timeout
+   * never fires.
+   */
+  questionTimeoutMinutes: number
+  /**
+   * What happens when a pending question exceeds `questionTimeoutMinutes`:
+   * `hold` (default) keeps blocking pipeline dispatches; `resume` clears the
+   * pause, journals `action:"timeout"`, and lets the next dispatch proceed
+   * with a warning line naming the question.
+   */
+  questionTimeoutAction: "hold" | "resume"
+  /**
+   * Literal marker that, appearing in the user's own prompt, cancels a
+   * pending question without answering it. Default `QUESTION CANCELLED:`.
+   */
+  questionCancelMarker: string
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */
