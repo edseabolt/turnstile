@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="344" viewBox="0 0 880 344" role="img" aria-label="turnstile compact pipeline strip, two rows: planner, plan gate (VERDICT: APPROVE), executor, test gate (GATE: PASS), test-runner, then review gate (VERDICT: APPROVE), reviewer, landing gate, push, with the turnstile.jsonl receipt; blocked stubs mark the gates that can refuse">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="344" viewBox="0 0 880 344" role="img" aria-label="turnstile compact pipeline strip, two rows: planner, plan gate (VERDICT: APPROVE), executor, test gate (GATE: PASS), test-runner, then review gate (VERDICT: APPROVE), reviewer, landing gate, push; blocked stubs mark the gates that can refuse; every decision lands in turnstile.jsonl">
   <defs>
     <linearGradient id="cbg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#181825"/>
@@ -64,99 +64,92 @@
   <!-- header -->
   <text x="24" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="700" fill="#CDD6F4">turnstile</text>
   <text x="24" y="56" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-style="italic" fill="#A6ADC8">gates the runtime enforces, not requests the model honors</text>
+  <text x="856" y="38" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#CBA6F7">every decision → turnstile.jsonl</text>
 
   <!-- band -->
   <rect x="12" y="72" width="856" height="240" rx="12" fill="url(#cglass)" stroke="#89B4FA" stroke-opacity="0.22" stroke-width="1"/>
 
   <!-- row 1 flow line -->
-  <path class="cflow" d="M36 131 H576" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
+  <path class="cflow" d="M36 131 H636" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
 
   <!-- planner entry label -->
-  <text x="54" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">planner</text>
+  <text x="56" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">planner</text>
 
   <!-- plan gate -->
   <g filter="url(#cglow)">
-    <rect x="92" y="96" width="136" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-plan)" stroke-width="2"/>
+    <rect x="100" y="96" width="144" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-plan)" stroke-width="2"/>
   </g>
-  <use href="#cturnstile-arm" transform="translate(108 131)" stroke="#F5C2E7"/>
-  <text x="174" y="122" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#F5C2E7">plan gate</text>
-  <text x="174" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">VERDICT: APPROVE</text>
-  <text x="174" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">human approval</text>
+  <use href="#cturnstile-arm" transform="translate(116 131)" stroke="#F5C2E7"/>
+  <text x="182" y="122" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#F5C2E7">plan gate</text>
+  <text x="182" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">VERDICT: APPROVE</text>
+  <text x="182" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">human approval</text>
 
   <!-- executor label -->
-  <text x="278" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">executor</text>
+  <text x="294" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">executor</text>
 
   <!-- test gate -->
   <g filter="url(#cglow)">
-    <rect x="328" y="96" width="136" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-test)" stroke-width="2"/>
+    <rect x="344" y="96" width="144" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-test)" stroke-width="2"/>
   </g>
-  <use href="#cturnstile-arm" transform="translate(344 131)" stroke="#A6E3A1"/>
-  <text x="410" y="122" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#A6E3A1">test gate</text>
-  <text x="410" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">GATE: PASS</text>
-  <text x="410" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">exit-0 verified</text>
+  <use href="#cturnstile-arm" transform="translate(360 131)" stroke="#A6E3A1"/>
+  <text x="428" y="122" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#A6E3A1">test gate</text>
+  <text x="428" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">GATE: PASS</text>
+  <text x="428" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">exit-0 verified</text>
 
   <!-- test-runner label -->
-  <text x="522" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">test-runner</text>
+  <text x="564" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">test-runner</text>
 
   <!-- connector: row 1 down to row 2 -->
-  <path class="cflow" d="M522 166 V192" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
+  <path class="cflow" d="M564 166 V192" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
 
   <!-- row 2 flow line (right to left) -->
-  <path class="cflow" d="M454 231 H198" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
+  <path class="cflow" d="M438 231 H144" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
 
   <!-- review gate -->
   <g filter="url(#cglow)">
-    <rect x="454" y="196" width="136" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-review)" stroke-width="2"/>
+    <rect x="438" y="196" width="144" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-review)" stroke-width="2"/>
   </g>
-  <use href="#cturnstile-arm" transform="translate(470 231)" stroke="#89B4FA"/>
-  <text x="534" y="222" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#89B4FA">review gate</text>
-  <text x="534" y="240" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">VERDICT: APPROVE</text>
-  <text x="534" y="254" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">ensemble ×2</text>
+  <use href="#cturnstile-arm" transform="translate(454 231)" stroke="#89B4FA"/>
+  <text x="524" y="222" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#89B4FA">review gate</text>
+  <text x="524" y="240" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">VERDICT: APPROVE</text>
+  <text x="524" y="254" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">ensemble ×2</text>
 
   <!-- reviewer label -->
-  <text x="412" y="236" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">reviewer</text>
+  <text x="391" y="236" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">reviewer</text>
 
   <!-- landing gate -->
   <g filter="url(#cglow)">
-    <rect x="234" y="196" width="136" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-push)" stroke-width="2"/>
+    <rect x="196" y="196" width="148" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-push)" stroke-width="2"/>
   </g>
-  <use href="#cturnstile-arm" transform="translate(250 231)" stroke="#F9E2AF"/>
-  <text x="316" y="222" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#F9E2AF">landing gate</text>
-  <text x="316" y="240" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">reviewer approved</text>
-  <text x="316" y="254" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">git push gated</text>
+  <use href="#cturnstile-arm" transform="translate(212 231)" stroke="#F9E2AF"/>
+  <text x="284" y="222" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#F9E2AF">landing gate</text>
+  <text x="284" y="240" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">reviewer approved</text>
+  <text x="284" y="254" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">git push gated</text>
 
   <!-- push endpoint -->
   <g filter="url(#ccardshadow)">
-    <rect x="114" y="203" width="80" height="56" rx="24" fill="#1E1E2E" stroke="#FAB387" stroke-width="1.6"/>
+    <rect x="60" y="203" width="80" height="56" rx="24" fill="#1E1E2E" stroke="#FAB387" stroke-width="1.6"/>
   </g>
-  <text x="154" y="236" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#FAB387">push</text>
-
-  <!-- journal receipt -->
-  <g filter="url(#ccardshadow)">
-    <rect x="634" y="196" width="200" height="70" rx="10" fill="#1E1E2E" stroke="#CBA6F7" stroke-opacity="0.7" stroke-width="1.4"/>
-  </g>
-  <text x="734" y="224" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#A6ADC8">every decision →</text>
-  <text x="734" y="244" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#CBA6F7">turnstile.jsonl</text>
-  <text x="734" y="258" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#A6ADC8">the receipt you can replay</text>
+  <text x="100" y="236" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#FAB387">push</text>
 
   <!-- red blocked stubs, row 1 (above the cards) -->
   <g stroke="#F38BA8" stroke-width="1.8" stroke-linecap="round" fill="none">
-    <path d="M174 96 L 174 86" opacity="0.9"/>
-    <path d="M410 96 L 410 86" opacity="0.9"/>
+    <path d="M182 96 L 182 86" opacity="0.9"/>
+    <path d="M428 96 L 428 86" opacity="0.9"/>
   </g>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#F38BA8" opacity="0.75">
-    <text x="174" y="83" text-anchor="middle">block</text>
-    <text x="410" y="83" text-anchor="middle">block</text>
+    <text x="182" y="83" text-anchor="middle">block</text>
+    <text x="428" y="83" text-anchor="middle">block</text>
   </g>
 
   <!-- red blocked stubs, row 2 (below the cards) -->
   <g stroke="#F38BA8" stroke-width="1.8" stroke-linecap="round" fill="none">
-    <path d="M534 266 L 534 278" opacity="0.9"/>
-    <path d="M316 266 L 316 278" opacity="0.9"/>
+    <path d="M524 266 L 524 278" opacity="0.9"/>
+    <path d="M284 266 L 284 278" opacity="0.9"/>
   </g>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#F38BA8" opacity="0.75">
-    <text x="534" y="290" text-anchor="middle">block</text>
-    <text x="316" y="290" text-anchor="middle">block</text>
+    <text x="524" y="290" text-anchor="middle">block</text>
+    <text x="284" y="290" text-anchor="middle">block</text>
   </g>
 
   <!-- blocked accent line -->
