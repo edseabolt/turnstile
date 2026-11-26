@@ -5,8 +5,9 @@
  * period; origin/relevance classification is exclusively an offline
  * derived-view concern. Entries carry no `ts` field: the journaler prepends
  * it at write time. Payloads stay canonically serializable (stable key order
- * via literal construction, no non-JSON values, no `undefined` fields) so a
- * later RFC 8785 hash chain needs no migration of existing row shapes.
+ * via literal construction, no non-JSON values, no `undefined` fields). The
+ * journal uses these payloads in its hash chain. Keeping them canonical lets
+ * the chain format evolve without changing existing row shapes.
  */
 
 import { redactSecrets } from "./decision-ledger-redact.ts"
