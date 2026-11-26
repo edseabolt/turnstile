@@ -56,6 +56,7 @@ interface StatusSession {
   permissionAsks: number
   permissionDecisions: { once: number; always: number; reject: number }
   suspended: boolean
+  suppressedMarkers: number
 }
 interface StatusJSON {
   journal: string
@@ -157,6 +158,7 @@ const KEYS: Array<keyof StatusSession> = [
   "permissionAsks",
   "permissionDecisions",
   "suspended",
+  "suppressedMarkers",
 ]
 
 /**
@@ -1114,6 +1116,79 @@ test("suspended entries fold last-wins into the suspension flag and SUS column",
       rows.every((r) => r.endsWith("OFF") || r.endsWith("·")),
       "SUS cell on every row",
     )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** Suppressed marker-attempt rows (`type:"suppressed"`) count per session
+ *  into `suppressedMarkers` (gate/verdict kinds only; a `kind:"replay"` drop
+ *  is not an attempt) and render one footer line with the global total,
+ *  absent on a suppression-free journal. */
+test("status counts suppressed marker rows per session, skips replay drops, and renders the footer", () => {
+  const dir = metricsDir()
+  try {
+    const journalPath = join(dir, "turnstile.jsonl")
+    writeJournal(dir, "turnstile.jsonl", [
+      line(1, {
+        type: "suppressed",
+        sessionID: "sp-sup",
+        kind: "gate",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+        reason: "agent not contracted for kind",
+      }),
+      line(2, {
+        type: "suppressed",
+        sessionID: "sp-sup",
+        kind: "verdict",
+        marker: "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
+        reason: "emitter agent unresolved",
+      }),
+      // A replay drop, not an injection attempt: excluded from the count.
+      line(3, { type: "suppressed", sessionID: "sp-sup", kind: "replay", reason: "malformed" }),
+      line(4, {
+        type: "gate",
+        sessionID: "sp-sup",
+        result: "PASS",
+        verified: true,
+        mode: "enforce",
+        marker: "GATE: PASS tests=1 passed=1 failed=0",
+      }),
+    ])
+    const res = runStatus(dir, ["--json"])
+    assert.equal(code(res), 0)
+    const obj = JSON.parse(res.stdout) as StatusJSON
+    assertReplayParity(obj, journalPath)
+    assert.equal(
+      oSession(obj, "sp-sup").suppressedMarkers,
+      2,
+      "gate + verdict attempts count; the replay drop does not",
+    )
+    const table = runStatus(dir, [])
+    assert.equal(code(table), 0)
+    assert.match(table.stdout, /suppressed marker attempts: 2/)
+    // The footer-absent arm: a suppression-free journal renders no line.
+    const clean = metricsDir()
+    try {
+      writeJournal(clean, "turnstile.jsonl", [
+        line(1, {
+          type: "gate",
+          sessionID: "sp-clean",
+          result: "PASS",
+          verified: true,
+          mode: "enforce",
+          marker: "GATE: PASS tests=1 passed=1 failed=0",
+        }),
+      ])
+      const cleanRes = runStatus(clean, [])
+      assert.equal(code(cleanRes), 0)
+      assert.doesNotMatch(cleanRes.stdout, /suppressed marker attempts/)
+      const cleanJson = runStatus(clean, ["--json"])
+      const cleanObj = JSON.parse(cleanJson.stdout) as StatusJSON
+      assert.equal(oSession(cleanObj, "sp-clean").suppressedMarkers, 0, "zero default")
+    } finally {
+      rmSync(clean, { recursive: true, force: true })
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
