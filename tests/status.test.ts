@@ -1123,7 +1123,7 @@ test("suspended entries fold last-wins into the suspension flag and SUS column",
 
 /** Suppressed marker-attempt rows (`type:"suppressed"`) count per session
  *  into `suppressedMarkers` (gate/verdict kinds only; a `kind:"replay"` drop
- *  is not an attempt) and render one footer line with the global total —
+ *  is not an attempt) and render one footer line with the global total,
  *  absent on a suppression-free journal. */
 test("status counts suppressed marker rows per session, skips replay drops, and renders the footer", () => {
   const dir = metricsDir()

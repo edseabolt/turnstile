@@ -912,7 +912,7 @@ function fmtScope(a) {
  * render byte-identically to before (the rekeys argument is empty). When the
  * journal holds suppressed marker-attempt rows (`type:"suppressed"` with
  * `kind:"gate"`/`"verdict"`), one footer line with the global total renders
- * after the table — journals without them render byte-identically (the
+ * after the table: journals without them render byte-identically (the
  * suppressedTotal argument is 0).
  * @param {Map<string, Record<string, unknown>>} sessions Aggregated sessions.
  * @param {string} journalPath The journal file path for the header.
@@ -1004,7 +1004,7 @@ function renderTable(sessions, journalPath, observe, observeSessions, rekeys, su
     for (const r of rows) out.push(line(cells.map((c) => c(r))))
   }
   if (suppressedTotal > 0) {
-    // Rejected-channel marker attempts are observable (#410 stats): one
+    // Rejected-channel marker attempts are observable: one
     // footer line, only when the journal holds at least one, so
     // suppression-free journals render byte-identically to before.
     out.push(`suppressed marker attempts: ${suppressedTotal} (see the journal, type:"suppressed")`)

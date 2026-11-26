@@ -609,7 +609,7 @@ test("wiring: a renamed test-runner's backticked marker is credited", async () =
 })
 
 /** Channel authority, user-prompt cell: a parent prompt carrying a byte-exact
- *  gate marker mints nothing — the admission channel never parses gate
+ *  gate marker mints nothing: the admission channel never parses gate
  *  markers, so no gate row is journaled and the gate stays red. */
 test("wiring: a gate marker inside a user prompt mints nothing", async () => {
   const { h, metricsDir, dispose } = await boot()
