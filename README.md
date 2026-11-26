@@ -6,21 +6,31 @@
 [![deps](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 [![license](https://img.shields.io/npm/l/opencode-turnstile)](LICENSE)
 
+**Gates the runtime enforces, not requests the model can ignore.**
+
+Turnstile is an [OpenCode](https://opencode.ai) v2 plugin that runs your work
+through an enforced pipeline: planner → plan-reviewer → executor →
+test-runner → reviewer. Like its namesake, an agent can't proceed until each
+stage pays the toll: a plan, an approval, a green test run. The journal is
+the receipt.
+
 ![turnstile runs the ensemble end to end: planner → plan-reviewer → executor → test-runner → reviewer, with blocked dispatches (red) until VERDICT: APPROVE and verified GATE: PASS evidence flip each gate green, and every decision lands in turnstile.jsonl](docs/images/demo.svg)
 
-**Verify what your agents claim.** An agent that says "tests pass" is asking
-you to trust it. Turnstile checks instead: dispatches that would violate the
-pipeline throw `BLOCKED by turnstile: <reason>` until a real `GATE: PASS` and
-a plan-reviewer `VERDICT: APPROVE` exist, and every decision appends to an
-auditable JSONL journal (`npx opencode-turnstile status` shows the trail).
-Decisions happen in tool and task-dispatch hooks, outside the model loop.
-Zero runtime dependencies, fails open.
+A real run: the two red `BLOCKED by turnstile:` lines flip green once the
+plan approval and verified `GATE: PASS` land. Every decision appends to
+`turnstile.jsonl`.
 
-Turnstile is an [OpenCode](https://opencode.ai) v2 promise-plugin that
-mechanically enforces an agent pipeline: planner → plan-reviewer → executor →
-test-runner → reviewer, with a gate at every hand-off. The orchestrator policy
-is injected at runtime by the plugin; nothing is written to any instructions
-file.
+**What you see:**
+
+```text
+BLOCKED by turnstile: no plan approval for ".opencode/plans/issue-42.md". …
+VERDICT: APPROVE crit=0 high=0 med=2 low=1
+GATE: PASS tests=12 passed=12 failed=0
+```
+
+Blocked (red), then approved (green), then tests pass (green). You never
+type any of this: the markers are the machine's language. Subagents emit
+them, turnstile checks them, and your only vocabulary is plain prompts.
 
 - Quick start: [below](#tldr--try-it-in-two-minutes)
 - The walkthrough: [using it for real work](#using-it-for-real-work)
@@ -57,7 +67,7 @@ You never invoke the pipeline stages directly. Start a task the way you
 already would, and the enforcement wraps it. The one habit to build: open
 with the planner.
 
-![turnstile, the enforced pipeline: planner → plan-reviewer → executor → test-runner → reviewer, with gates blocking every dispatch](docs/images/hero.svg)
+![turnstile, the enforced pipeline: requirements (optional) → planner → plan gate (VERDICT: APPROVE or human approval) → executor (cites chunk-N / AC-n) → test-runner → test gate (GATE: PASS) → reviewer ×2 → review gate (VERDICT: APPROVE ensemble) → landing gate → push](docs/images/hero.svg)
 
 **1. Start a task by invoking the planner.** Paste an issue or a topic into
 your prompt and ask for a plan:
@@ -430,6 +440,8 @@ tools remain unguarded. The full threat model:
 
 ## Behavior contract
 
+- Zero runtime dependencies: the package ships with none; devDependencies are
+  tooling only.
 - Fail-open by design. Every hook body is guarded; internal errors are
   journaled and the tool call proceeds. The only thrown errors are the
   deliberate `BLOCKED by turnstile:` ones.
