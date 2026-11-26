@@ -155,6 +155,35 @@ name); a requirements dispatch in a still-dormant session is admitted without
 engaging enforcement: the planner dispatch that follows engages and runs the
 full chain.
 
+### Test-overlap corroboration (opt-in)
+
+`requireTestOverlap: true` (default `false`) corroborates a first-sight
+`GATE: PASS` with change-set overlap: the tests that ran must relate to the
+files the task changed. Two capture surfaces feed the evidence tracker
+(`src/evidence.ts`, `src/evidence-hits.ts`; the pure computation lives in
+`src/overlap.ts`):
+
+- Executed test files: path-like tokens from the exit-0 bash/shell command
+  line and from the command's stdout window (tail-capped at 64 KB, scanned
+  and discarded, never retained), classified as test files by the
+  `testOverlapTestFilePattern` regex list (cross-ecosystem defaults:
+  JS/TS, Python, Go, Rust, Java/Kotlin, Ruby, C/C++).
+- Touched files: the write/edit target paths of the parent and its pipeline
+  children, recorded per task window.
+
+At PASS evaluation (`computeOverlapFields` in `src/verdict-capture.ts`) the
+overlap computes beside the ordinary evidence stamp. An empty touched set or
+an executed set with no extractable tokens journals `skipped` and today's
+evidence behavior stands; a touched set entirely matching
+`testOverlapExempt` globs journals `exempt: true`. A zero-overlap verdict
+under `gateEvidence: "enforce"` forces `passVerified = false`: the gate
+stays red, `unverifiedPass` is stamped, and the ordinary
+unverified-PASS/escalation/waiver ladder asks the human (no new block
+path). Under `flag` the event is stamped `overlap` but still flips. The
+computation is fail-open: an error journals `type:"error"` and leaves gate
+behavior byte-identical to the no-overlap path. The evidence rides the
+`type:"gate"` journal row as `overlap` ([persistence](persistence.md)).
+
 ### Key `GateState` fields (`src/types.ts`)
 
 | Field                                                                                        | Set by                                                                                                                                                                                                                                                        | Cleared by                                                                                                                                                                                                  | Blocks                                                                                                                                        |

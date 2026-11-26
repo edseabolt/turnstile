@@ -147,6 +147,26 @@ test("evidence.has with a task window bounds by the latest hit (inclusive)", () 
   assert.equal(t.has("c1"), true)
 })
 
+/** A post-window write/edit touch does not re-qualify a pre-window exit-0
+ *  hit: the windowed `has` bounds on the hit timestamp, not the touch
+ *  timestamp, while the touched set stays readable in the same window. */
+test("evidence.has with a task window ignores a post-window touch of a pre-window hit", async () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.observe("p1", "npm test", 0)
+  const hitLast = t.snapshot()[0]!.last
+  // A distinct-millisecond gap so the touch is strictly after the window.
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  t.touched("p1", "src/a.ts")
+  const since = hitLast + 1
+  assert.equal(t.has("p1", since), false, "the touch cannot re-qualify the pre-window hit")
+  assert.deepEqual(t.testFiles("p1", since), [], "test files window on the hit timestamp too")
+  assert.deepEqual(
+    t.touchedFiles("p1", since),
+    ["src/a.ts"],
+    "the touched set still windows on the touch timestamp",
+  )
+})
+
 /** A windowed miss does not re-key: the child bucket stays under the child,
  *  and a later qualifying call still re-keys it (laziness preserved). */
 test("evidence.has with a task window keeps a filtered-out child keyed under the child", () => {
@@ -260,4 +280,167 @@ test("default evidence pattern rejects near-miss script names and non-test comma
   assert.equal(t.observe("c1", "npm run citation", 0), false)
   assert.equal(t.observe("c1", "node server.js --test", 0), false)
   assert.equal(t.observe("c1", "ls -la", 0), false)
+})
+
+/** touched records a change-set path with no exit/pattern gate, and
+ *  touchedFiles correlates it windowed like has. */
+test("evidence.touched records without a gate and touchedFiles correlates it", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.touched("p1", "/repo/src/a.ts")
+  assert.deepEqual(t.touchedFiles("p1"), ["/repo/src/a.ts"])
+  // A touched-only bucket never counts as test-execution evidence, and its
+  // snapshot hit timestamp stays 0 (the touch has its own timestamp).
+  assert.equal(t.has("p1"), false)
+  assert.equal(t.snapshot()[0]!.last, 0)
+  // Windowed on the touch timestamp: a bound beyond the touch excludes it.
+  assert.deepEqual(t.touchedFiles("p1", Date.now() + 1), [])
+  assert.deepEqual(t.touchedFiles("p1", 0), ["/repo/src/a.ts"])
+})
+
+/** A child's touched paths and test files promote to the parent (re-key),
+ *  mirroring the has attribution. */
+test("evidence attributes a child's touched paths and test files to the parent", () => {
+  const edges = new Map<string, string>([["c1", "p1"]])
+  const parentOf = (raw: string): string => edges.get(raw) ?? raw
+  const t = createEvidenceTracker(cfg(), parentOf)
+  t.observe("c1", "npm test", 0, "ok tests/a.test.ts")
+  t.touched("c1", "src/a.ts")
+  assert.deepEqual(t.testFiles("p1"), ["tests/a.test.ts"])
+  assert.deepEqual(t.touchedFiles("p1"), ["src/a.ts"])
+  // Re-keyed: the child bucket now lives under the parent.
+  assert.deepEqual(
+    t.snapshot().map((e) => e.session),
+    ["p1"],
+  )
+})
+
+/** Promotion merges instead of replacing: a touchedFiles read whose parent
+ *  bucket fails only on lastTouch must not destroy the parent's hit-side
+ *  evidence (has stays true for the in-window parent hit), and the mirror
+ *  has/testFiles read must not destroy the parent's touched set. Both reads
+ *  follow the parseMarkersBody order: touchedFiles before has. */
+test("evidence promotion merges parent and child buckets across window fields", () => {
+  const t = createEvidenceTracker(cfg(), parentOfP1())
+  // Parent hit (in-window) + child touch: the touchedFiles read promotes the
+  // child on lastTouch; the parent's hit evidence must survive the merge.
+  t.observe("p1", "npm test", 0, "ok tests/a.test.ts")
+  const since = Date.now()
+  t.touched("c1", "src/a.ts")
+  assert.deepEqual(t.touchedFiles("p1", since), ["src/a.ts"])
+  assert.equal(t.has("p1", since), true, "parent hit survives the child promotion")
+  assert.deepEqual(t.testFiles("p1", since), ["tests/a.test.ts"])
+  assert.deepEqual(
+    t.snapshot().map((e) => e.session),
+    ["p1"],
+  )
+
+  // Mirror: parent touch-only + child hit. The has read promotes the child
+  // on last; the parent's touched set must survive the merge.
+  const t2 = createEvidenceTracker(cfg(), parentOfP1())
+  t2.touched("p1", "src/b.ts")
+  const since2 = Date.now()
+  t2.observe("c1", "npm test", 0, "ok tests/b.test.ts")
+  assert.equal(t2.has("p1", since2), true)
+  assert.deepEqual(t2.testFiles("p1", since2), ["tests/b.test.ts"])
+  assert.deepEqual(
+    t2.touchedFiles("p1", since2),
+    ["src/b.ts"],
+    "parent touched set survives the child promotion",
+  )
+})
+
+/** The stdout is scanned and discarded: only the extracted tokens are
+ *  retained (redaction contract). */
+test("evidence never retains the stdout, only extracted test-file tokens", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  const secret = "SUPER-SECRET-STDOUT-VALUE"
+  t.observe("p1", "npm test", 0, `ok tests/a.test.ts\n${secret}`)
+  const dumped = JSON.stringify(t.snapshot()) + JSON.stringify(t.testFiles("p1"))
+  assert.ok(!dumped.includes(secret))
+  assert.deepEqual(t.testFiles("p1"), ["tests/a.test.ts"])
+})
+
+/** The per-bucket path sets cap at 32 entries, newest-wins, deduped. */
+test("evidence caps the touched set at 32 deduped newest-wins entries", async () => {
+  const { MAX_PATHS_PER_BUCKET } = await import("../src/evidence-hits.ts")
+  const t = createEvidenceTracker(cfg(), identityParent)
+  for (let i = 0; i < MAX_PATHS_PER_BUCKET + 5; i++) t.touched("p1", `/repo/f${i}.ts`)
+  t.touched("p1", "/repo/f20.ts") // re-touch of a live path moves it to the end
+  const files = t.touchedFiles("p1")
+  assert.equal(files.length, MAX_PATHS_PER_BUCKET)
+  assert.equal(files[files.length - 1], "/repo/f20.ts", "re-seen path moved to the end")
+  assert.equal(files.includes("/repo/f4.ts"), false, "oldest dropped by the cap")
+})
+
+/** observe with a stdout window extracts test files from the command line
+ *  and the stdout union. */
+test("evidence.observe extracts test files from the command line and stdout", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.observe("p1", "node --test tests/cli.test.ts", 0, "ok src/unit.test.ts")
+  assert.deepEqual(t.testFiles("p1").sort(), ["src/unit.test.ts", "tests/cli.test.ts"])
+})
+
+/** An invalid configured testOverlapTestFilePattern is dropped with a
+ *  journaled error; the valid ones still apply. */
+test("evidence drops an invalid testOverlapTestFilePattern with a journaled error", () => {
+  const entries: Array<Record<string, unknown>> = []
+  const t = createEvidenceTracker(
+    { ...cfg(), testOverlapTestFilePattern: ["(", "\\.test\\.ts$"] },
+    identityParent,
+    {
+      journal: (entry: Record<string, unknown>): void => {
+        entries.push(entry)
+      },
+    },
+  )
+  assert.equal(entries.length, 1)
+  assert.match(String(entries[0]!.error), /testOverlapTestFilePattern/)
+  t.observe("p1", "npm test", 0, "ok ./a.test.ts")
+  assert.deepEqual(t.testFiles("p1"), ["./a.test.ts"])
+})
+
+/** An entirely invalid list falls back to the cross-ecosystem defaults. */
+test("evidence falls back to the default test-file patterns when every source is invalid", () => {
+  const entries: Array<Record<string, unknown>> = []
+  const t = createEvidenceTracker(
+    { ...cfg(), testOverlapTestFilePattern: ["(", ")"] },
+    identityParent,
+    {
+      journal: (entry: Record<string, unknown>): void => {
+        entries.push(entry)
+      },
+    },
+  )
+  assert.equal(entries.length, 3) // two per-pattern drops + the fallback row
+  assert.match(String(entries[2]!.error), /using defaults/)
+  t.observe("p1", "pytest", 0, "ok tests/test_foo.py")
+  assert.deepEqual(t.testFiles("p1"), ["tests/test_foo.py"])
+})
+
+/** An explicitly empty pattern list is honored: no test files are ever
+ *  extracted (the overlap rule then skips). */
+test("an explicitly empty testOverlapTestFilePattern extracts nothing", () => {
+  const t = createEvidenceTracker({ ...cfg(), testOverlapTestFilePattern: [] }, identityParent)
+  t.observe("p1", "npm test", 0, "ok tests/a.test.ts")
+  assert.deepEqual(t.testFiles("p1"), [])
+})
+
+/** touched ignores an empty session id or path (no bucket is created), and
+ *  the set readers degrade to empty on an empty id. */
+test("evidence.touched no-ops on an empty id or path", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  t.touched("", "/repo/a.ts")
+  t.touched("p1", "")
+  assert.deepEqual(t.snapshot(), [])
+  assert.deepEqual(t.touchedFiles("p1"), [])
+  assert.equal(t.has(""), false)
+  assert.deepEqual(t.testFiles(""), [])
+  assert.deepEqual(t.touchedFiles(""), [])
+})
+
+/** observe tolerates a nullish command (matched against the empty string). */
+test("evidence.observe treats a nullish command as the empty string", () => {
+  const t = createEvidenceTracker(cfg(), identityParent)
+  assert.equal(t.observe("p1", undefined, 0), false)
+  assert.equal(t.has("p1"), false)
 })

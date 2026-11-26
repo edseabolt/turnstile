@@ -10,6 +10,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { DEFAULT_TEST_FILE_PATTERNS } from "../src/overlap.ts"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -64,6 +65,9 @@ test("defaultConfig reproduces the historical constants", () => {
   assert.equal(cfg.gateEvidence, "enforce")
   assert.equal(cfg.reviewEnsemble, "enforce")
   assert.equal(cfg.evidencePattern, DEFAULT_EVIDENCE_PATTERN)
+  assert.equal(cfg.requireTestOverlap, false)
+  assert.deepEqual(cfg.testOverlapExempt, [])
+  assert.deepEqual(cfg.testOverlapTestFilePattern, DEFAULT_TEST_FILE_PATTERNS)
   assert.deepEqual(cfg.agents, {
     planner: "planner",
     reviewer: "reviewer",
@@ -1590,4 +1594,48 @@ test("mergeConfig copies the tamperEvidence sub-object", () => {
   assert.notEqual(config.tamperEvidence, base.tamperEvidence)
   config.tamperEvidence.enabled = true
   assert.equal(base.tamperEvidence.enabled, false)
+})
+
+/** the test-overlap boolean merges like the other boolean keys. */
+test("mergeConfig accepts requireTestOverlap true and rejects non-booleans", () => {
+  const base = defaultConfig({})
+  const { config, warnings } = mergeConfig(base, { requireTestOverlap: true })
+  assert.deepEqual(warnings, [])
+  assert.equal(config.requireTestOverlap, true)
+  const bad = mergeConfig(base, { requireTestOverlap: "yes" })
+  assert.equal(bad.config.requireTestOverlap, false)
+  assert.deepEqual(bad.warnings, [
+    'config: invalid value for "requireTestOverlap"; keeping default',
+  ])
+})
+
+/** the test-overlap list keys keep their string elements and warn on a
+ *  non-array or non-string elements. */
+test("mergeConfig merges the test-overlap string lists with per-element filtering", () => {
+  const base = defaultConfig({})
+  const ok = mergeConfig(base, {
+    testOverlapExempt: ["docs/**", "**/*.generated.ts"],
+    testOverlapTestFilePattern: ["_test\\.exs$"],
+  })
+  assert.deepEqual(ok.warnings, [])
+  assert.deepEqual(ok.config.testOverlapExempt, ["docs/**", "**/*.generated.ts"])
+  assert.deepEqual(ok.config.testOverlapTestFilePattern, ["_test\\.exs$"])
+  const nonArray = mergeConfig(base, { testOverlapExempt: "docs/**" })
+  assert.deepEqual(nonArray.config.testOverlapExempt, [])
+  assert.deepEqual(nonArray.warnings, [
+    "config: testOverlapExempt must be an array of strings; keeping default",
+  ])
+  const mixed = mergeConfig(base, { testOverlapExempt: ["docs/**", 7, null] })
+  assert.deepEqual(mixed.config.testOverlapExempt, ["docs/**"])
+  assert.deepEqual(mixed.warnings, [
+    "config: testOverlapExempt[1] is not a string; dropping element",
+    "config: testOverlapExempt[2] is not a string; dropping element",
+  ])
+})
+
+/** the digest flips when a test-overlap key overrides its default. */
+test("configDigest flips on test-overlap overrides", () => {
+  const base = defaultConfig({})
+  assert.notEqual(configDigest(base), configDigest({ ...base, requireTestOverlap: true }))
+  assert.notEqual(configDigest(base), configDigest({ ...base, testOverlapExempt: ["docs/**"] }))
 })

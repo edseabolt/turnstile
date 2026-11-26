@@ -324,11 +324,19 @@ function correlateBashEvidence(
 ): void {
   const obsSid = asSessionID(event?.sessionID)
   const exit = meta.exit ?? meta.exitCode ?? meta.code
+  // Test-overlap capture: when the overlap rule is on, the command's stdout
+  // window is scanned for test-file tokens (scanned and discarded — only
+  // the extracted tokens are retained, per the redaction contract). The
+  // window is tail-capped so a pathological output cannot balloon the scan.
+  const stdout = ctx.config.requireTestOverlap
+    ? (typeof event.result?.output === "string" ? event.result.output : "").slice(-65_536)
+    : undefined
   if (
     ctx.evidence.observe(
       obsSid,
       event.input?.command ?? event.input?.cmd ?? event.result?.title ?? "",
       exit,
+      stdout,
     )
   ) {
     ctx.journaler.journal({
@@ -382,11 +390,16 @@ function afterBash(ctx: TurnstileContext, event: ToolHookEvent): void {
  */
 function afterWriteEdit(ctx: TurnstileContext, event: ToolHookEvent): void {
   const sid = asSessionID(event?.sessionID)
+  const filePath = event.input?.filePath ?? event.input?.path
+  const path = typeof filePath === "string" ? filePath : ""
+  // Test-overlap capture: the write/edit target joins the task's change
+  // set. Recorded before the child-status early return: pipeline children's
+  // edits are part of the change set too (the tracker keys under the raw
+  // session and correlates to the parent like the bash evidence).
+  if (ctx.config.requireTestOverlap && path !== "") ctx.evidence.touched(sid, path)
   const agent = typeof event?.agent === "string" ? event.agent : ""
   if (ctx.childStatus(sid, agent) === "child") return
   if (!ctx.config.decisionLedger.enabled) return
-  const filePath = event.input?.filePath ?? event.input?.path
-  const path = typeof filePath === "string" ? filePath : ""
   const child = ctx.overrideAdjacency.findOverride(ctx.ledger.parentOf(sid), path, Date.now())
   if (child === "") return
   try {

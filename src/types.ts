@@ -7,6 +7,10 @@
  * reshapes a field fails open instead of failing hard.
  */
 
+import type { TestOverlapEvidence } from "./overlap.ts"
+
+export type { TestOverlapEvidence } from "./overlap.ts"
+
 /** Task dispatch input as delivered by the host's `task`/`subagent` tools. */
 export interface TaskInput {
   subagent_type?: unknown
@@ -787,6 +791,12 @@ export interface MarkerEvent {
   verified?: boolean
   /** Evidence mode at the time this event was stamped, when `verified` is. */
   mode?: GateEvidenceMode
+  /**
+   * Test-overlap corroboration of a `PASS` gate event, present only when the
+   * overlap computation ran (`requireTestOverlap` on, `gateEvidence` not
+   * `"off"`) and did not throw. See `src/overlap.ts` for the shape.
+   */
+  overlap?: TestOverlapEvidence
   /** Marker matches observed in the same text but not journaled
    *  (latest-wins policy); 0 when this was the only match. Omitted on an
    *  `authority:"suppressed"` event (which stamps nothing).
@@ -1122,6 +1132,31 @@ export interface TurnstileConfig {
    * pytest/make test/go test/cargo test.
    */
   evidencePattern: string
+  /**
+   * Test-overlap corroboration (opt-in, default false): when true, a
+   * first-sight `GATE: PASS` must show file overlap between the tests that
+   * ran (extracted from the command line and the exit-0 command's stdout)
+   * and the files the task touched (write/edit calls by the parent and its
+   * pipeline children). Zero overlap keeps the gate red under `enforce`
+   * (the ordinary unverified-PASS/waiver ladder); requires `gateEvidence`
+   * to be `enforce` or `flag` (inert under `"off"`). See `src/overlap.ts`.
+   */
+  requireTestOverlap: boolean
+  /**
+   * Glob list of paths the test-overlap rule never applies to (docs,
+   * generated code): when every touched path matches some glob, the pass is
+   * accepted and the journal row records `exempt: true`. Default empty.
+   */
+  testOverlapExempt: string[]
+  /**
+   * Regex sources (compiled with `"i"`) deciding which paths count as test
+   * files for the overlap join. The defaults are the cross-ecosystem
+   * convention list in `src/overlap.ts` (JS/TS, Python, Go, Rust,
+   * Java/Kotlin, Ruby, C/C++); a configured list extends it. An invalid
+   * source is dropped with a journaled error; an entirely invalid list
+   * falls back to the defaults.
+   */
+  testOverlapTestFilePattern: string[]
   /**
    * Denylist policy for bash/shell and write/edit tools in `execute.before`.
    * Both `bashDeny` and `pathDeny` default empty (git/gh consent is the host
