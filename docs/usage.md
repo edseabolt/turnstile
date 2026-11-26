@@ -3,8 +3,12 @@
 Day-to-day operation of the turnstile plugin: a worked session from planner
 to landing, waivers and approvals in full, installing and maintaining the
 plugin, the complete configuration reference, journals and retention, and
-the `status` command. For how the plugin works inside (hook surface, gate
-state machine, policy injection), see [`architecture.md`](architecture.md);
+the `status` command. Turnstile is an OpenCode v2 promise-plugin
+(`{ tool.hook, session.hook, permission.hook, event.subscribe }`): the
+orchestrator policy is injected at runtime by the plugin, and nothing is
+written to any instructions file. For how the plugin works inside (hook
+surface, gate state machine, policy injection), see
+[`architecture.md`](architecture.md);
 the module map lives in [`modules.md`](modules.md) and the journal catalog
 in [`journal.md`](journal.md).
 

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="240" viewBox="0 0 880 240" role="img" aria-label="turnstile compact pipeline strip: planner, plan gate (VERDICT: APPROVE), executor, test gate (GATE: PASS), test-runner, review gate (VERDICT: APPROVE x2), reviewer, landing gate, push">
+  <defs>
+    <linearGradient id="cbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#181825"/>
+      <stop offset="0.55" stop-color="#1E1E2E"/>
+      <stop offset="1" stop-color="#11111B"/>
+    </linearGradient>
+    <radialGradient id="cvignette" cx="0.5" cy="0.42" r="0.75">
+      <stop offset="0.55" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+    <linearGradient id="cglass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#CDD6F4" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#CDD6F4" stop-opacity="0.05"/>
+    </linearGradient>
+    <linearGradient id="cacc-plan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F5C2E7"/><stop offset="1" stop-color="#CBA6F7"/>
+    </linearGradient>
+    <linearGradient id="cacc-test" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A6E3A1"/><stop offset="1" stop-color="#94E2D5"/>
+    </linearGradient>
+    <linearGradient id="cacc-review" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#89B4FA"/><stop offset="1" stop-color="#74C7EC"/>
+    </linearGradient>
+    <linearGradient id="cacc-push" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F9E2AF"/><stop offset="1" stop-color="#FAB387"/>
+    </linearGradient>
+    <linearGradient id="cflow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#89B4FA"/>
+      <stop offset="1" stop-color="#CBA6F7"/>
+    </linearGradient>
+    <filter id="cglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="ccardshadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <style>
+      @keyframes cdashmove { to { stroke-dashoffset: -22; } }
+      .cflow { stroke-dasharray: 7 5; animation: cdashmove 1.4s linear infinite; }
+      @media (prefers-reduced-motion: reduce) { .cflow { animation: none; } }
+    </style>
+    <marker id="carrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#89B4FA"/>
+    </marker>
+    <g id="cturnstile-arm">
+      <circle cx="0" cy="0" r="3.5" fill="none" stroke-width="1.6"/>
+      <line x1="0" y1="-4" x2="0" y2="-11" stroke-width="2" stroke-linecap="round"/>
+      <line x1="0" y1="4" x2="0" y2="11" stroke-width="2" stroke-linecap="round"/>
+      <line x1="-4" y1="0" x2="-11" y2="0" stroke-width="2" stroke-linecap="round"/>
+      <line x1="4" y1="0" x2="11" y2="0" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <!-- background -->
+  <rect width="880" height="240" fill="url(#cbg)"/>
+  <rect width="880" height="240" fill="url(#cvignette)"/>
+  <g stroke="#CDD6F4" stroke-opacity="0.035" stroke-width="1">
+    <path d="M0 60H880M0 120H880M0 180H880"/>
+    <path d="M110 0V240M220 0V240M330 0V240M440 0V240M550 0V240M660 0V240M770 0V240"/>
+  </g>
+
+  <!-- header -->
+  <text x="24" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="700" fill="#CDD6F4">turnstile</text>
+  <text x="24" y="56" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-style="italic" fill="#A6ADC8">gates the runtime enforces, not requests the model honors</text>
+  <text x="856" y="38" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#CBA6F7">every decision → turnstile.jsonl</text>
+
+  <!-- band -->
+  <rect x="12" y="72" width="856" height="118" rx="12" fill="url(#cglass)" stroke="#89B4FA" stroke-opacity="0.22" stroke-width="1"/>
+
+  <!-- flow line -->
+  <path class="cflow" d="M40 130 H848" stroke="url(#cflow)" stroke-width="1.8" fill="none" opacity="0.55" marker-end="url(#carrow)"/>
+
+  <!-- planner entry label -->
+  <text x="46" y="135" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">planner</text>
+
+  <!-- plan gate -->
+  <g filter="url(#cglow)">
+    <rect x="82" y="95" width="120" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-plan)" stroke-width="2"/>
+  </g>
+  <use href="#cturnstile-arm" transform="translate(98 130)" stroke="#F5C2E7"/>
+  <text x="152" y="120" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#F5C2E7">plan gate</text>
+  <text x="152" y="138" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" fill="#CDD6F4">VERDICT: APPROVE</text>
+  <text x="152" y="152" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#A6ADC8">or human approval</text>
+
+  <!-- executor label -->
+  <text x="234" y="135" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">executor</text>
+
+  <!-- test gate -->
+  <g filter="url(#cglow)">
+    <rect x="266" y="95" width="120" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-test)" stroke-width="2"/>
+  </g>
+  <use href="#cturnstile-arm" transform="translate(282 130)" stroke="#A6E3A1"/>
+  <text x="336" y="120" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#A6E3A1">test gate</text>
+  <text x="336" y="138" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" fill="#CDD6F4">GATE: PASS</text>
+  <text x="336" y="152" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#A6ADC8">verified by exit-0</text>
+
+  <!-- test-runner label -->
+  <text x="418" y="135" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">test-runner</text>
+
+  <!-- review gate -->
+  <g filter="url(#cglow)">
+    <rect x="450" y="95" width="120" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-review)" stroke-width="2"/>
+  </g>
+  <use href="#cturnstile-arm" transform="translate(466 130)" stroke="#89B4FA"/>
+  <text x="520" y="120" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#89B4FA">review gate</text>
+  <text x="520" y="138" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#CDD6F4">VERDICT: APPROVE ×2</text>
+  <text x="520" y="152" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#A6ADC8">ensemble enforced</text>
+
+  <!-- reviewer label -->
+  <text x="602" y="135" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#CDD6F4">reviewer</text>
+
+  <!-- landing gate -->
+  <g filter="url(#cglow)">
+    <rect x="634" y="95" width="120" height="70" rx="10" fill="#1E1E2E" stroke="url(#cacc-push)" stroke-width="2"/>
+  </g>
+  <use href="#cturnstile-arm" transform="translate(650 130)" stroke="#F9E2AF"/>
+  <text x="704" y="120" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" fill="#F9E2AF">landing gate</text>
+  <text x="704" y="138" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9.5" fill="#CDD6F4">reviewer approved</text>
+  <text x="704" y="152" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#A6ADC8">git push gated</text>
+
+  <!-- push endpoint -->
+  <g filter="url(#ccardshadow)">
+    <rect x="778" y="102" width="62" height="56" rx="24" fill="#1E1E2E" stroke="#FAB387" stroke-width="1.6"/>
+  </g>
+  <text x="809" y="134" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#FAB387">push</text>
+
+  <!-- red blocked stubs -->
+  <g stroke="#F38BA8" stroke-width="1.8" stroke-linecap="round" fill="none">
+    <path d="M152 165 L 152 178" opacity="0.9"/>
+    <path d="M336 165 L 336 178" opacity="0.9"/>
+    <path d="M520 165 L 520 178" opacity="0.9"/>
+    <path d="M704 165 L 704 178" opacity="0.9"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#F38BA8" opacity="0.75">
+    <text x="152" y="188" text-anchor="middle">block</text>
+    <text x="336" y="188" text-anchor="middle">block</text>
+    <text x="520" y="188" text-anchor="middle">block</text>
+    <text x="704" y="188" text-anchor="middle">block</text>
+  </g>
+
+  <!-- blocked accent line -->
+  <text x="440" y="216" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700" fill="#F38BA8">a red gate answers BLOCKED by turnstile: &lt;reason&gt; and escalates to a human ask</text>
+</svg>
