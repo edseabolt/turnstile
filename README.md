@@ -404,28 +404,15 @@ lines, and shas, never session IDs or prompts:
 
     npx opencode-turnstile evidence --task latest --out .turnstile/evidence.json
 
-Commit the JSON and Markdown and a GitHub Action upserts one sticky comment
-per PR. `evidence --validate` re-checks a committed artifact in CI. The
-comment states what it is: a correlated claim, not proof. Re-emit and commit
-both files after every code push to a PR: the journal is per-machine, so CI
-can post the committed badge but never refresh it. To keep a stale badge from
-reading as current, the posting job compares the committed evidence's newest
-journaled timestamp (the plan/verdict, tests, or emit-time event; every
-artifact write journals an `event:"emit"` row that lands in the artifact as
-`emittedAt`) with the latest commit that could have changed code, found by
-walking back from the PR head to the first commit touching anything outside
-`.turnstile/`. Badge staleness therefore means exactly one thing: a code
-commit landed and nobody has re-emitted since: the normal re-emit → commit →
-push cycle is never flagged, on merge commits and mixed commits included.
-The emitter scopes its read to the task's session tree, so another agent's
-journal activity on the same machine cannot refresh the badge's freshness
-signal. One
-workflow
-detail: validation runs on the pull request itself, while the comment posts
-from a trusted `pull_request_target` run; GitHub asks a maintainer to approve
-that run for a first-time contributor's fork PR, so an outside
-contributor's first badge can sit pending; the alternative is a job that
-executes contributor code holding a write token.
+Commit the JSON and Markdown pair and a GitHub Action upserts one sticky
+comment per PR; `evidence --validate` re-checks a committed artifact in CI.
+The comment states what it is: a correlated claim, not proof. Re-emit and
+commit both files after every code push to a PR: the journal is per-machine,
+so CI can post the committed badge but never refresh it. A stale badge means
+exactly one thing: a code commit landed and nobody has re-emitted since. How
+staleness is decided, and the one workflow quirk around first-time
+contributors, are in
+[`docs/journal/replay.md`](docs/journal/replay.md#badge-staleness).
 
 ![turnstile evidence posted on a pull request: one sticky comment with the plan verdict, the verified test counts, and the journal head sha](docs/images/pr-evidence.png)
 
@@ -459,7 +446,7 @@ tools remain unguarded. The full threat model:
 
 | OpenCode host       | turnstile (current) | Status                                                                               |
 | ------------------- | ------------------- | ------------------------------------------------------------------------------------ |
-| ≥ 2.0.22, < 3.0.0   | 0.16.x              | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0, 2.2.5, 2.2.7, 2.3.0, 2.3.2, 2.4.1) |
+| ≥ 2.0.22, < 3.0.0   | 0.18.x              | Supported (tested: 2.0.22, 2.0.27, 2.0.29, 2.2.0, 2.2.5, 2.2.7, 2.3.0, 2.3.2, 2.4.1) |
 | ≥ 3.0.0 or < 2.0.22 | all                 | Refuses to enforce at setup; upgrade turnstile                                       |
 | version unreadable  | all                 | Enforces; one-time journal warning                                                   |
 

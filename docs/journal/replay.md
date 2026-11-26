@@ -119,3 +119,23 @@ a re-emit is visible in the audit trail and carries the emit timestamp
 into the committed artifact's `emittedAt` field, and mirrors the artifact
 to `sessions/<parentID>/evidence.json` beside the sink (best-effort,
 fail-open).
+
+## Badge staleness
+
+The PR posting job compares the committed evidence's newest journaled
+timestamp (the plan/verdict, tests, or emit-time event; every artifact write
+journals an `event:"emit"` row that lands in the artifact as `emittedAt`)
+with the latest commit that could have changed code, found by walking back
+from the PR head to the first commit touching anything outside
+`.turnstile/`. Badge staleness therefore means exactly one thing: a code
+commit landed and nobody has re-emitted since; the normal re-emit → commit →
+push cycle is never flagged, on merge commits and mixed commits included.
+The emitter scopes its read to the task's session tree (see above), so
+another agent's journal activity on the same machine cannot refresh the
+badge's freshness signal.
+
+One workflow detail: validation runs on the pull request itself, while the
+comment posts from a trusted `pull_request_target` run; GitHub asks a
+maintainer to approve that run for a first-time contributor's fork PR, so an
+outside contributor's first badge can sit pending. The alternative is a job
+that executes contributor code holding a write token.
