@@ -62,9 +62,12 @@ export const DEFAULT_TEST_FILE_PATTERNS: readonly string[] = [
 ]
 
 /**
- * Translates a glob to a case-sensitive full-match RegExp: `**` matches
- * anything (including `/`), `*` matches within one segment, `?` matches one
- * non-separator character, everything else is escaped.
+ * Translates a glob to a case-sensitive full-match RegExp: a leading `**`
+ * followed by a slash matches any prefix including none (so
+ * `**\/*.generated.ts` also matches a repo-root-level file); any other `**`
+ * matches anything (including `/`),
+ * `*` matches within one segment, `?` matches one non-separator character,
+ * everything else is escaped.
  * @param glob The glob source (e.g. `docs/**`, `**\/*.generated.ts`).
  * @returns The compiled regex, or null when the glob is empty/blank (the
  *     caller skips it — a silent skip keeps this module pure).
@@ -76,8 +79,13 @@ export function globToRegExp(glob: string): RegExp | null {
     const c = glob[i]!
     if (c === "*") {
       if (glob[i + 1] === "*") {
-        out += ".*"
-        i++
+        if (i === 0 && glob[i + 2] === "/") {
+          out += "(?:.*/)?"
+          i += 2
+        } else {
+          out += ".*"
+          i++
+        }
       } else {
         out += "[^/]*"
       }

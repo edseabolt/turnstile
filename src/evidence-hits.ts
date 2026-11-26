@@ -224,11 +224,33 @@ function recordTouched(
 }
 
 /**
+ * Merges a qualifying child bucket into the parent's existing bucket:
+ * the union of the path sets (through `recordPath`, keeping the dedup/cap
+ * discipline), the max of both window timestamps, and the OR of `hadHit`.
+ * Merging (rather than replacing) keeps each window dimension's evidence
+ * intact: a promotion on one field must never evict the other field's
+ * recorded evidence.
+ * @param target The parent bucket to merge into (mutated).
+ * @param source The child bucket being promoted.
+ * @returns The merged bucket (the mutated target).
+ */
+function mergeBuckets(target: EvidenceBucket, source: EvidenceBucket): EvidenceBucket {
+  target.last = Math.max(target.last, source.last)
+  target.lastTouch = Math.max(target.lastTouch, source.lastTouch)
+  target.hadHit = target.hadHit || source.hadHit
+  for (const file of source.testFiles) recordPath(target.testFiles, file)
+  for (const path of source.touched) recordPath(target.touched, path)
+  return target
+}
+
+/**
  * Correlates a bucket for `sid`: a direct in-window bucket, or an in-window
  * child bucket re-keyed to `sid` (lazy promotion, so an async parent edge
  * established after the record still resolves). A stale direct bucket falls
  * through to the child scan; a filtered-out child stays keyed under the
- * child (no re-key on a miss, preserving laziness for a later call).
+ * child (no re-key on a miss, preserving laziness for a later call). When
+ * the parent already has a bucket, the child merges into it instead of
+ * replacing it (see `mergeBuckets`).
  * @param hits The hits map to read and re-key.
  * @param parentOf Resolves a raw session ID to its parent.
  * @param sid The parent (or raw) session ID to check.
@@ -251,9 +273,10 @@ function correlateBucket(
   for (const [child, bucket] of hits) {
     if (parentOf(child) === sid && windowQualifies(bucket, since, field)) {
       hits.delete(child)
-      hits.set(sid, bucket)
+      const merged = direct ? mergeBuckets(direct, bucket) : bucket
+      hits.set(sid, merged)
       promote(hits, sid)
-      return bucket
+      return merged
     }
   }
   return undefined

@@ -154,6 +154,7 @@ test("glob translation covers **, *, and ?", () => {
   const gen = globToRegExp("**/*.generated.ts")
   assert.ok(gen)
   assert.ok(gen.test("src/x.generated.ts"))
+  assert.ok(gen.test("x.generated.ts"), "leading **/ also matches a root-level file")
   assert.ok(!gen.test("src/x.ts"))
   const q = globToRegExp("d?c/a.ts")
   assert.ok(q)

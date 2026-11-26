@@ -314,6 +314,41 @@ test("evidence attributes a child's touched paths and test files to the parent",
   )
 })
 
+/** Promotion merges instead of replacing: a touchedFiles read whose parent
+ *  bucket fails only on lastTouch must not destroy the parent's hit-side
+ *  evidence (has stays true for the in-window parent hit), and the mirror
+ *  has/testFiles read must not destroy the parent's touched set. Both reads
+ *  follow the parseMarkersBody order: touchedFiles before has. */
+test("evidence promotion merges parent and child buckets across window fields", () => {
+  const t = createEvidenceTracker(cfg(), parentOfP1())
+  // Parent hit (in-window) + child touch: the touchedFiles read promotes the
+  // child on lastTouch; the parent's hit evidence must survive the merge.
+  t.observe("p1", "npm test", 0, "ok tests/a.test.ts")
+  const since = Date.now()
+  t.touched("c1", "src/a.ts")
+  assert.deepEqual(t.touchedFiles("p1", since), ["src/a.ts"])
+  assert.equal(t.has("p1", since), true, "parent hit survives the child promotion")
+  assert.deepEqual(t.testFiles("p1", since), ["tests/a.test.ts"])
+  assert.deepEqual(
+    t.snapshot().map((e) => e.session),
+    ["p1"],
+  )
+
+  // Mirror: parent touch-only + child hit. The has read promotes the child
+  // on last; the parent's touched set must survive the merge.
+  const t2 = createEvidenceTracker(cfg(), parentOfP1())
+  t2.touched("p1", "src/b.ts")
+  const since2 = Date.now()
+  t2.observe("c1", "npm test", 0, "ok tests/b.test.ts")
+  assert.equal(t2.has("p1", since2), true)
+  assert.deepEqual(t2.testFiles("p1", since2), ["tests/b.test.ts"])
+  assert.deepEqual(
+    t2.touchedFiles("p1", since2),
+    ["src/b.ts"],
+    "parent touched set survives the child promotion",
+  )
+})
+
 /** The stdout is scanned and discarded: only the extracted tokens are
  *  retained (redaction contract). */
 test("evidence never retains the stdout, only extracted test-file tokens", () => {
