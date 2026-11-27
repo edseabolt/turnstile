@@ -95,7 +95,7 @@ Unchained rows (tamper evidence off, the default) are not locked: the
 defect is chain forking, which only exists under tamper evidence.
 
 **Differential characterization** (integration-tested in
-`tests/tamper-matrix.test.ts`): for each mutation of a captured honest
+`tests/journal/tamper-matrix.test.ts`): for each mutation of a captured honest
 journal, built through the real write path with a rotation generation and a
 task-completion anchor, the observed `prov --verify` verdict must equal the
 characterized verdict, so a detector regression (false negative or false

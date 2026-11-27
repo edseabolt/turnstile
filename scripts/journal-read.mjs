@@ -8,7 +8,7 @@
 //
 // This is a plain ESM module outside the 100% coverage gate (bin/ and
 // scripts/ never are); the surfaces are exercised by spawn tests
-// (tests/log.test.ts, tests/prov-cli.test.ts, tests/prov-views.test.ts).
+// (tests/cli/log.test.ts, tests/cli/prov-cli.test.ts, tests/cli/prov-views.test.ts).
 
 import * as fs from "node:fs"
 import * as os from "node:os"

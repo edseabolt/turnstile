@@ -6,7 +6,7 @@
 // host, and its only write is `--check-updates`' 24h cache file. It is
 // deliberately a plain ESM script outside the 100%
 // coverage gate (bin/ and scripts/ never are), and it is exercised by
-// tests/status.test.ts via spawn rather than imported.
+// tests/cli/status.test.ts via spawn rather than imported.
 //
 // Journal resolution precedence (mirrors config.ts's env → file → default):
 //   TURNSTILE_METRICS_DIR  →  TURNSTILE_CONFIG's metricsDir  →  ~ default

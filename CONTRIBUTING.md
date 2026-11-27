@@ -13,7 +13,7 @@ npm run ci:installed # install:check — only after `npm run init` on a machine 
 - `npm run typecheck`: `tsc --noEmit`, strict
 - `npm run check:markers`: marker-drift guard (see below)
 - `npm test`: `node --test --experimental-strip-types --experimental-test-isolation=none
-tests/*.test.ts`, with 100% line/branch/function coverage enforced over
+tests/**/*.test.ts`, with 100% line/branch/function coverage enforced over
   `src/` + `turnstile.ts` via node:test's built-in thresholds, so no coverage
   extension is needed. `--experimental-test-isolation=none` makes a green suite deterministic, so a
   red branch report is a real never-executed decision, never a merge artifact.
@@ -86,9 +86,9 @@ event.subscribe }`, with permission registered when the host exposes it),
 ## Tests
 
 Tests live in `tests/` and run the real plugin source against a fake host
-(`tests/helpers.ts`) with injected temp `metricsDir`; no test writes to
+(`tests/support/helpers.ts`) with injected temp `metricsDir`; no test writes to
 the real metrics directory. When changing behavior, update the goldens in
-`tests/default-golden.test.ts` deliberately: they pin journal entry shapes,
+`tests/journal/default-golden.test.ts` deliberately: they pin journal entry shapes,
 trace format, and the exact block messages.
 
 ## Release checklist

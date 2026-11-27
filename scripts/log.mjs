@@ -6,7 +6,7 @@
 // verdicts, suppressions, marker retries — oldest-first, ending with a
 // one-line summary. It never writes anything and never blocks. Like
 // scripts/status.mjs it is a plain ESM script outside the 100% coverage gate
-// (bin/ and scripts/ never are), exercised by tests/log.test.ts via spawn
+// (bin/ and scripts/ never are), exercised by tests/cli/log.test.ts via spawn
 // rather than imported.
 //
 // Sources: the per-session sink `sessions/<sessionID>.jsonl` (+ rotated

@@ -9,7 +9,7 @@
 // `prov:override` (parent overrides of pipeline-child writes) —
 // oldest-first. It never writes anything and never blocks. Like
 // scripts/log.mjs it is a plain ESM script outside the 100% coverage gate
-// (bin/ and scripts/ never are), exercised by tests/prov-cli.test.ts via
+// (bin/ and scripts/ never are), exercised by tests/cli/prov-cli.test.ts via
 // spawn rather than imported.
 //
 // Sources: every per-session sink `sessions/<sessionID>.jsonl` (+ rotated

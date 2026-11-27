@@ -10,7 +10,7 @@
 // across sessions and UTC days. Purely read-time: journal rows are never
 // rewritten, and no derived value feeds gates or capture. Like scripts/prov.mjs
 // it is a plain ESM script outside the 100% coverage gate (bin/ and scripts/
-// never are), exercised by tests/prov-views.test.ts via spawn rather than
+// never are), exercised by tests/cli/prov-views.test.ts via spawn rather than
 // imported.
 //
 // Sources: the same sink walk as `prov` — every per-session sink
