@@ -25,9 +25,9 @@ import {
   setCommandRunner,
   main,
   // @ts-expect-error TS7016: scripts/install.mjs is untyped JS.
-} from "../scripts/install.mjs"
+} from "../../scripts/install.mjs"
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 const AGENT_ORDER = ["planner", "plan-reviewer", "executor", "test-runner", "reviewer", "debugger"]
 

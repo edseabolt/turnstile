@@ -9,16 +9,16 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { turnstile } from "../turnstile.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   agentFromDeliveryEvent,
   agentFromDispatchEvent,
   isPipelineChildDispatch,
   resolveChildStatus,
-} from "../src/dispatch/child-registration.ts"
-import { BlockError } from "../src/gates/gates.ts"
-import type { GateLedger } from "../src/state/ledger.ts"
-import type { ToolHookEvent } from "../src/util/types.ts"
+} from "../../src/dispatch/child-registration.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import type { GateLedger } from "../../src/state/ledger.ts"
+import type { ToolHookEvent } from "../../src/util/types.ts"
 import {
   callSession,
   callTool,
@@ -28,7 +28,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const PASS = "GATE: PASS tests=3 passed=3 failed=0"
 const NAMES = new Set(["executor", "reviewer"])

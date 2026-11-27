@@ -8,7 +8,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-const { planScopeFiles, classifyPlanImpact } = await import("../src/gates/plan-scope.ts")
+const { planScopeFiles, classifyPlanImpact } = await import("../../src/gates/plan-scope.ts")
 
 /** A spec region with paths in both halves plus prose that must not match. */
 const SPEC = [
@@ -16,7 +16,7 @@ const SPEC = [
   "Update `README.md` and src/gates.ts to add the advisory.",
   "See chunk-1 and the docs for context.",
   "## Decomposition",
-  "- chunk-1: rewrite `./src/ledger.ts` and tests/plan-scope.test.ts",
+  "- chunk-1: rewrite `./src/ledger.ts` and tests/gates/plan-scope.test.ts",
   "- chunk-2: touch src/policy.ts",
 ].join("\n")
 
@@ -26,7 +26,7 @@ test("planScopeFiles: Decomposition-section paths are structural, steps paths ad
   assert.deepEqual([...scope.structuralFiles].sort(), [
     "src/ledger.ts",
     "src/policy.ts",
-    "tests/plan-scope.test.ts",
+    "tests/gates/plan-scope.test.ts",
   ])
   assert.deepEqual([...scope.advisoryFiles].sort(), ["README.md", "src/gates.ts"])
 })

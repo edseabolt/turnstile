@@ -13,9 +13,9 @@ import {
   evaluateHostCompat,
   HOST_COMPAT,
   parseSemver,
-} from "../src/hooks/host-compat.ts"
-import { createTurnstile } from "../src/hooks/setup.ts"
-import { journalEntries, makeFakeHost, tmpDir, waitUntil, isolatedEnv } from "./helpers.ts"
+} from "../../src/hooks/host-compat.ts"
+import { createTurnstile } from "../../src/hooks/setup.ts"
+import { journalEntries, makeFakeHost, tmpDir, waitUntil, isolatedEnv } from "../support/helpers.ts"
 
 /**
  * Builds a fully isolated env whose journal lands in `dir` (isolatedEnv only

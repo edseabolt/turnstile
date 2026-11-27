@@ -17,9 +17,9 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger } from "../src/state/ledger.ts"
-import { LANDING_REQUIREMENT } from "../src/tool-policy/tool-policy.ts"
-import { turnstile } from "../turnstile.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { LANDING_REQUIREMENT } from "../../src/tool-policy/tool-policy.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callPermission,
   callSession,
@@ -31,7 +31,7 @@ import {
   traceText as helpersTraceText,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"

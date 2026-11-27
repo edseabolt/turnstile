@@ -12,9 +12,9 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { sha256Hex16 } from "../src/journal/chain.ts"
+import { turnstile } from "../../turnstile.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { sha256Hex16 } from "../../src/journal/chain.ts"
 import {
   callTool,
   isolatedEnv,
@@ -22,7 +22,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots the plugin over a fake host with a temp metrics dir and a session
  *  record resolving the child c1 to parent p1 (so the delivery's edge

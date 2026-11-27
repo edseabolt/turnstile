@@ -15,8 +15,8 @@ import {
   parseGateMarkers,
   GATE_RE,
   VERDICT_RE,
-} from "../src/markers/markers.ts"
-import { newState } from "../src/state/state.ts"
+} from "../../src/markers/markers.ts"
+import { newState } from "../../src/state/state.ts"
 
 /** verdictResultOf classifies from the capture group, not substrings. */
 test("verdictResultOf classifies from the capture group, not substrings", () => {

@@ -12,14 +12,14 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { isScratchTarget } from "../src/tool-policy/scratch.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import type { Journaler } from "../src/journal/journal.ts"
-import type { TurnstileConfig } from "../src/util/types.ts"
-import { createToolPolicy, type ToolPolicy } from "../src/tool-policy/tool-policy.ts"
+import { isScratchTarget } from "../../src/tool-policy/scratch.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import type { Journaler } from "../../src/journal/journal.ts"
+import type { TurnstileConfig } from "../../src/util/types.ts"
+import { createToolPolicy, type ToolPolicy } from "../../src/tool-policy/tool-policy.ts"
 
 /** The repo root (never under the platform temp dir). */
-const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..")
+const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 /**
  * Builds a capturing Journaler: every journal entry is deep-copied into

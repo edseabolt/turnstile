@@ -13,12 +13,12 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { BlockError, createGates } from "../src/gates/gates.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import { createJournaler } from "../src/journal/journal.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { parseWaiverScope } from "../src/markers/markers.ts"
-import { turnstile } from "../turnstile.ts"
+import { BlockError, createGates } from "../../src/gates/gates.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import { createJournaler } from "../../src/journal/journal.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { parseWaiverScope } from "../../src/markers/markers.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -27,7 +27,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** The configured agent names of the default config (incl. the `bareOutput`
  *  array entry the parser must skip). */

@@ -20,9 +20,9 @@ import {
   newState,
   REVIEW_ENSEMBLE_SIZE,
   type PipelineStages,
-} from "../src/state/state.ts"
-import type { GateState } from "../src/util/types.ts"
-import { GATE_RE, VERDICT_RE } from "../src/markers/markers.ts"
+} from "../../src/state/state.ts"
+import type { GateState } from "../../src/util/types.ts"
+import { GATE_RE, VERDICT_RE } from "../../src/markers/markers.ts"
 
 /** The default configured agent names (mirrors `defaultConfig().agents`). */
 const DEFAULT_STAGES: PipelineStages = {

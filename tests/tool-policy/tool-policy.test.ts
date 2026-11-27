@@ -9,12 +9,16 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 
-import { turnstile } from "../turnstile.ts"
-import { BlockError } from "../src/gates/gates.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import { createToolPolicy, type ToolPolicy } from "../src/tool-policy/tool-policy.ts"
-import type { Journaler } from "../src/journal/journal.ts"
-import type { TurnstileConfig, TurnstileGitGates, TurnstileToolPolicy } from "../src/util/types.ts"
+import { turnstile } from "../../turnstile.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import { createToolPolicy, type ToolPolicy } from "../../src/tool-policy/tool-policy.ts"
+import type { Journaler } from "../../src/journal/journal.ts"
+import type {
+  TurnstileConfig,
+  TurnstileGitGates,
+  TurnstileToolPolicy,
+} from "../../src/util/types.ts"
 import {
   callTool,
   isolatedEnv,
@@ -22,7 +26,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /**
  * Builds a capturing Journaler: every journal entry is deep-copied into

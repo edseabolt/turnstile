@@ -11,8 +11,8 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 
-import { isEmptyDiffPush, planPushRefs } from "../src/tool-policy/empty-diff.ts"
-import { tmpDir } from "./helpers.ts"
+import { isEmptyDiffPush, planPushRefs } from "../../src/tool-policy/empty-diff.ts"
+import { tmpDir } from "../support/helpers.ts"
 
 /** True when git is available (the real-exec fixture cases skip otherwise). */
 const hasGit = spawnSync("git", ["--version"]).error === undefined

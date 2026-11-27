@@ -14,10 +14,10 @@ import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { BlockError } from "../src/gates/gates.ts"
-import { turnstile } from "../turnstile.ts"
-import { newState } from "../src/state/state.ts"
-import { worktreeFingerprint, shouldCarryGate } from "../src/state/fingerprint.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { turnstile } from "../../turnstile.ts"
+import { newState } from "../../src/state/state.ts"
+import { worktreeFingerprint, shouldCarryGate } from "../../src/state/fingerprint.ts"
 import {
   callSession,
   callTool,
@@ -27,8 +27,8 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
-import type { GateState } from "../src/util/types.ts"
+} from "../support/helpers.ts"
+import type { GateState } from "../../src/util/types.ts"
 
 /** The exact reviewer gate no-gate-pass block message. */
 const NO_GATE_MESSAGE =

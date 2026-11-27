@@ -14,11 +14,11 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { foldChain } from "../src/journal/chain.ts"
-import type { ParsedRow } from "../src/journal/chain.ts"
-import { createJournaler } from "../src/journal/journal.ts"
-import type { Journaler } from "../src/journal/journal.ts"
-import { tmpDir } from "./helpers.ts"
+import { foldChain } from "../../src/journal/chain.ts"
+import type { ParsedRow } from "../../src/journal/chain.ts"
+import { createJournaler } from "../../src/journal/journal.ts"
+import type { Journaler } from "../../src/journal/journal.ts"
+import { tmpDir } from "../support/helpers.ts"
 
 /** Options shared by both contending journalers: same metrics dir, tamper
  *  evidence on (the chain fork only exists under tamper evidence). */

@@ -11,7 +11,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const agentsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "agents")
+const agentsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "agents")
 
 /** One parsed edit permission rule from an agent frontmatter block. */
 interface EditRule {

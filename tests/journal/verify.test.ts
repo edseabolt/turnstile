@@ -12,13 +12,13 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { merkleRoot, recordHash } from "../src/journal/chain.ts"
-import { appendLine } from "../src/journal/journal-sinks.ts"
-import { createJournaler } from "../src/journal/journal.ts"
-import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
-import { createEventHandlers } from "../src/hooks/event-stream-handlers.ts"
-import { verifyJournalChain } from "../src/journal/verify.ts"
-import type { AnchorRef, AnchorSink, TurnstileConfig } from "../src/util/types.ts"
+import { merkleRoot, recordHash } from "../../src/journal/chain.ts"
+import { appendLine } from "../../src/journal/journal-sinks.ts"
+import { createJournaler } from "../../src/journal/journal.ts"
+import { createHooksCore, type TurnstileContext } from "../../src/hooks/hooks-core.ts"
+import { createEventHandlers } from "../../src/hooks/event-stream-handlers.ts"
+import { verifyJournalChain } from "../../src/journal/verify.ts"
+import type { AnchorRef, AnchorSink, TurnstileConfig } from "../../src/util/types.ts"
 import {
   callSession,
   isolatedEnv,
@@ -26,8 +26,8 @@ import {
   makeFakeHost,
   tmpDir,
   waitUntil,
-} from "./helpers.ts"
-import { turnstile } from "../turnstile.ts"
+} from "../support/helpers.ts"
+import { turnstile } from "../../turnstile.ts"
 
 /** Builds the plugin setup bound to a fake host with injected config.
  *  @param host The fake host.

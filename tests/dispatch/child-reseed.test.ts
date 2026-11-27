@@ -13,11 +13,11 @@ import { test } from "node:test"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger } from "../src/state/ledger.ts"
-import { createHooksCore } from "../src/hooks/hooks-core.ts"
-import { createTurnstile } from "../src/hooks/setup.ts"
-import type { TurnstileOptions } from "../src/util/types.ts"
-import { journalEntries, makeFakeHost, tmpDir, isolatedEnv } from "./helpers.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { createHooksCore } from "../../src/hooks/hooks-core.ts"
+import { createTurnstile } from "../../src/hooks/setup.ts"
+import type { TurnstileOptions } from "../../src/util/types.ts"
+import { journalEntries, makeFakeHost, tmpDir, isolatedEnv } from "../support/helpers.ts"
 
 /**
  * Builds isolated options whose journal and config land in `dir`.

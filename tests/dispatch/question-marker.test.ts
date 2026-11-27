@@ -12,17 +12,17 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { BlockError } from "../src/gates/gates.ts"
-import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { defaultConfig, mergeConfig } from "../src/config/config.ts"
-import { QUESTION_RE, deTokenizeMarker, parseQuestionMarker } from "../src/markers/markers.ts"
-import { toolHooksAfter } from "../src/hooks/tool-hooks-after.ts"
-import { formatGateSnapshot } from "../src/state/state.ts"
-import { orchestratorPolicyFor } from "../src/policy/policy.ts"
-import { newState } from "../src/state/state-carry.ts"
-import type { TurnstileConfig } from "../src/util/types.ts"
-import { turnstile } from "../turnstile.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { createHooksCore, type TurnstileContext } from "../../src/hooks/hooks-core.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { defaultConfig, mergeConfig } from "../../src/config/config.ts"
+import { QUESTION_RE, deTokenizeMarker, parseQuestionMarker } from "../../src/markers/markers.ts"
+import { toolHooksAfter } from "../../src/hooks/tool-hooks-after.ts"
+import { formatGateSnapshot } from "../../src/state/state.ts"
+import { orchestratorPolicyFor } from "../../src/policy/policy.ts"
+import { newState } from "../../src/state/state-carry.ts"
+import type { TurnstileConfig } from "../../src/util/types.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -32,7 +32,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** The default cancel literal. */
 const CANCEL = "QUESTION CANCELLED:"
@@ -523,7 +523,7 @@ test("policy: the question section is always present with the marker example", (
 
 test("agents/executor.md carries the asking-instead-of-guessing section", () => {
   const text = fs.readFileSync(
-    path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "executor.md"),
+    path.join(path.dirname(new URL(import.meta.url).pathname), "..", "..", "agents", "executor.md"),
     "utf8",
   )
   assert.match(text, /## Asking instead of guessing/)

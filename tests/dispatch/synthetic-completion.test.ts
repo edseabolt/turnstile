@@ -14,10 +14,10 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import type { FakeHost } from "./helpers.ts"
-import { isolatedEnv, journalEntries, makeFakeHost, tmpDir } from "./helpers.ts"
+import { turnstile } from "../../turnstile.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import type { FakeHost } from "../support/helpers.ts"
+import { isolatedEnv, journalEntries, makeFakeHost, tmpDir } from "../support/helpers.ts"
 
 /** A canonical plan-reviewer verdict marker matching the default regex. */
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"

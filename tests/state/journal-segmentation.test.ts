@@ -11,10 +11,10 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createJournaler, sessionJournalPath } from "../src/journal/journal.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { isolatedEnv, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
-import { turnstile } from "../turnstile.ts"
+import { createJournaler, sessionJournalPath } from "../../src/journal/journal.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { isolatedEnv, makeFakeHost, tmpDir, waitUntil } from "../support/helpers.ts"
+import { turnstile } from "../../turnstile.ts"
 
 /**
  * Builds a journaler bound to a temp metrics dir with per-session routing.

@@ -11,17 +11,17 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import turnstileModule, { turnstile } from "../turnstile.ts"
-import { readPluginVersion } from "../src/hooks/setup.ts"
-import { validateResolved, defaultConfig } from "../src/config/config.ts"
-import { createGates, BlockError } from "../src/gates/gates.ts"
-import { createJournaler, appendLine } from "../src/journal/journal.ts"
-import { parseGateMarkers, agentFromTaskInput } from "../src/markers/markers.ts"
-import { newState } from "../src/state/state.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { createEvidenceTracker } from "../src/policy/evidence.ts"
-import { createToolPolicy } from "../src/tool-policy/tool-policy.ts"
-import type { Host, StreamEvent } from "../src/util/types.ts"
+import turnstileModule, { turnstile } from "../../turnstile.ts"
+import { readPluginVersion } from "../../src/hooks/setup.ts"
+import { validateResolved, defaultConfig } from "../../src/config/config.ts"
+import { createGates, BlockError } from "../../src/gates/gates.ts"
+import { createJournaler, appendLine } from "../../src/journal/journal.ts"
+import { parseGateMarkers, agentFromTaskInput } from "../../src/markers/markers.ts"
+import { newState } from "../../src/state/state.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { createEvidenceTracker } from "../../src/policy/evidence.ts"
+import { createToolPolicy } from "../../src/tool-policy/tool-policy.ts"
+import type { Host, StreamEvent } from "../../src/util/types.ts"
 import {
   callSession,
   callTool,
@@ -31,7 +31,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 

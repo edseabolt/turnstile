@@ -30,7 +30,7 @@ import {
   singleEntryManifest,
   spawnInstaller,
   writeManifest,
-} from "./install-harness.ts"
+} from "../support/install-harness.ts"
 
 /** Uninstall after a link install removes the repo-owned symlink and exits 0. */
 test("uninstall: removes repo-owned symlinks from a link install and exits 0", (t) => {

@@ -14,10 +14,10 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
-import { BlockError } from "../src/gates/gates.ts"
-import { createHooksCore } from "../src/hooks/hooks-core.ts"
-import { createLedger } from "../src/state/ledger.ts"
+import { turnstile } from "../../turnstile.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { createHooksCore } from "../../src/hooks/hooks-core.ts"
+import { createLedger } from "../../src/state/ledger.ts"
 import {
   callTool,
   isolatedEnv,
@@ -25,7 +25,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** A plan whose spec region names an advisory file and a Decomposition file. */
 const PLAN_BODY = [

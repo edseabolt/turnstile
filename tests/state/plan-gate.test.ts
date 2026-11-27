@@ -15,12 +15,12 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
 
-import { turnstile } from "../turnstile.ts"
-import { createGates, type Gates } from "../src/gates/gates.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import { createJournaler } from "../src/journal/journal.ts"
-import { createLedger, type GateLedger } from "../src/state/ledger.ts"
-import { planSpecRegion } from "../src/gates/plan-region.ts"
+import { turnstile } from "../../turnstile.ts"
+import { createGates, type Gates } from "../../src/gates/gates.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import { createJournaler } from "../../src/journal/journal.ts"
+import { createLedger, type GateLedger } from "../../src/state/ledger.ts"
+import { planSpecRegion } from "../../src/gates/plan-region.ts"
 import {
   callPermission,
   callSession,
@@ -31,7 +31,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 const BLOCK = "VERDICT: BLOCK crit=1 high=0 med=0 low=0"

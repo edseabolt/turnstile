@@ -12,7 +12,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { turnstile } from "../turnstile.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -22,7 +22,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const PASS = "GATE: PASS tests=3 passed=3 failed=0"
 

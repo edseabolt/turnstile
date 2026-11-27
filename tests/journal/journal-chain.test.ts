@@ -11,11 +11,11 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { foldChain, merkleRoot, recordHash } from "../src/journal/chain.ts"
-import type { ParsedRow } from "../src/journal/chain.ts"
-import { createJournaler, sessionJournalPath } from "../src/journal/journal.ts"
-import type { AnchorRef, AnchorSink, AnchorVerdict } from "../src/util/types.ts"
-import { tmpDir } from "./helpers.ts"
+import { foldChain, merkleRoot, recordHash } from "../../src/journal/chain.ts"
+import type { ParsedRow } from "../../src/journal/chain.ts"
+import { createJournaler, sessionJournalPath } from "../../src/journal/journal.ts"
+import type { AnchorRef, AnchorSink, AnchorVerdict } from "../../src/util/types.ts"
+import { tmpDir } from "../support/helpers.ts"
 
 /** Builds a journaler bound to a temp metrics dir with per-session routing.
  *  @param opts Optional overrides: `epochEntries` (default 512),

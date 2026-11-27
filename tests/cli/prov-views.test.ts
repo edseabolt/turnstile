@@ -31,7 +31,7 @@ import { createHash } from "node:crypto"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..")
 const viewsScript = join(repoRoot, "scripts", "prov-views.mjs")
 
 /** A journaled entry; fields are deliberately loose (typed `any`). */

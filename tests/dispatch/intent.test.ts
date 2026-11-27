@@ -10,8 +10,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { classifyIntent } from "../src/dispatch/intent.ts"
-import { turnstile } from "../turnstile.ts"
+import { classifyIntent } from "../../src/dispatch/intent.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -20,7 +20,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots the plugin over a fake host with a temp metrics dir. */
 async function boot(

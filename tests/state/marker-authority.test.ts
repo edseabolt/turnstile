@@ -17,10 +17,10 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
-import { newState } from "../src/state/state.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers/markers.ts"
+import { turnstile } from "../../turnstile.ts"
+import { newState } from "../../src/state/state.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../../src/markers/markers.ts"
 import {
   journalEntries,
   makeFakeHost,
@@ -30,7 +30,7 @@ import {
   callTool,
   callSession,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const GATE_PASS = "GATE: PASS tests=5 passed=5 failed=0"
 const GATE_FAIL = "GATE: FAIL tests=1 passed=0 failed=1"

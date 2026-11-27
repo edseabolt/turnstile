@@ -27,11 +27,11 @@ import {
   spawnInstaller,
   spawnNode,
   writeManifest,
-} from "./install-harness.ts"
+} from "../support/install-harness.ts"
 
 // @ts-expect-error TS7016: scripts/install.mjs is untyped JS; tests import its
 // pure exports directly rather than spawning the CLI.
-import { detectMode, resolveMode, normalizeLedger } from "../scripts/install.mjs"
+import { detectMode, resolveMode, normalizeLedger } from "../../scripts/install.mjs"
 
 /** Auto-detect keys off .git presence next to the module: link in a checkout, copy in a package. */
 test("detectMode keys off .git presence", () => {

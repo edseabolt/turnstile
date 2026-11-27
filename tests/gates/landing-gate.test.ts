@@ -16,11 +16,11 @@ import {
   isPushLanding,
   type LandingGateCapability,
   type ToolPolicy,
-} from "../src/tool-policy/tool-policy.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import { BlockError } from "../src/gates/gates.ts"
-import type { Journaler } from "../src/journal/journal.ts"
-import type { TurnstileConfig, TurnstileGitGates } from "../src/util/types.ts"
+} from "../../src/tool-policy/tool-policy.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import type { Journaler } from "../../src/journal/journal.ts"
+import type { TurnstileConfig, TurnstileGitGates } from "../../src/util/types.ts"
 
 /**
  * Builds a capturing Journaler: every journal entry is deep-copied into

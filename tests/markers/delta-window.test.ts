@@ -11,17 +11,17 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
-import { createEventHandlers } from "../src/hooks/event-stream-handlers.ts"
+import { createHooksCore, type TurnstileContext } from "../../src/hooks/hooks-core.ts"
+import { createEventHandlers } from "../../src/hooks/event-stream-handlers.ts"
 import {
   GATE_RE,
   VERDICT_RE,
   deltaWindowFloorChars,
   findTruncatedMarkerSpans,
-} from "../src/markers/markers.ts"
-import type { TurnstileConfig } from "../src/util/types.ts"
-import { turnstile } from "../turnstile.ts"
-import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
+} from "../../src/markers/markers.ts"
+import type { TurnstileConfig } from "../../src/util/types.ts"
+import { turnstile } from "../../turnstile.ts"
+import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, waitUntil } from "../support/helpers.ts"
 
 /** A literal marker text past the 512 floor, shared by the seam and
  *  reassembly tests (no regex metacharacters, so it compiles verbatim). */

@@ -8,8 +8,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { turnstile } from "../turnstile.ts"
-import { markerRetryPrompt } from "../src/markers/markers.ts"
+import { turnstile } from "../../turnstile.ts"
+import { markerRetryPrompt } from "../../src/markers/markers.ts"
 import {
   callTool,
   isolatedEnv,
@@ -18,7 +18,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots the plugin over a fake host with a temp metrics dir and optional
  *  config/host overrides for the retry scenarios. */
@@ -409,7 +409,7 @@ test("empty-origin delivery with a metadata child still classifies as child outp
  *  parent-authored with empty text; child-keyed and empty-origin payloads
  *  stay on the string path. */
 test("classifyDelivery applies the origin rule", async () => {
-  const { classifyDelivery } = await import("../src/hooks/delivery.ts")
+  const { classifyDelivery } = await import("../../src/hooks/delivery.ts")
   const incident = classifyDelivery({
     tool: "task",
     sessionID: "p1",

@@ -25,7 +25,7 @@ import {
   repoRoot,
   singleEntryManifest,
   spawnInstaller,
-} from "./install-harness.ts"
+} from "../support/install-harness.ts"
 
 /** Current package version, read the same way install.mjs derives pkgVersion. */
 const pkgVersion = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"))

@@ -16,8 +16,8 @@ import * as path from "node:path"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { createLedger } from "../src/state/ledger.ts"
-import { turnstile } from "../turnstile.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callTool,
   isolatedEnv,
@@ -25,7 +25,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 

@@ -15,15 +15,15 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   addTotals,
   extractStepUsage,
   extractUsage,
   zeroTotals,
-} from "../src/dispatch/token-usage.ts"
-import { createHooksCore } from "../src/hooks/hooks-core.ts"
-import { startEventStream } from "../src/hooks/hooks-events.ts"
+} from "../../src/dispatch/token-usage.ts"
+import { createHooksCore } from "../../src/hooks/hooks-core.ts"
+import { startEventStream } from "../../src/hooks/hooks-events.ts"
 import {
   isolatedEnv,
   journalEntries,
@@ -31,7 +31,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** A completed assistant snapshot with the issue-derived payload shape. */
 const assistantInfo = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({

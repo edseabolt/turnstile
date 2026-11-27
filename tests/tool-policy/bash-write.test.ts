@@ -9,8 +9,12 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { classifyBashWrite, splitCommands, tokenizeWords } from "../src/tool-policy/bash-write.ts"
-import { splitCommands as reExportedSplit } from "../src/tool-policy/tool-policy.ts"
+import {
+  classifyBashWrite,
+  splitCommands,
+  tokenizeWords,
+} from "../../src/tool-policy/bash-write.ts"
+import { splitCommands as reExportedSplit } from "../../src/tool-policy/tool-policy.ts"
 
 test("classifyBashWrite: gated writer shapes", () => {
   const cases = [

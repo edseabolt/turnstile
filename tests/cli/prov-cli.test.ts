@@ -28,7 +28,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..")
 const provScript = join(repoRoot, "scripts", "prov.mjs")
 
 /** A journaled entry; fields are deliberately loose (typed `any`). */

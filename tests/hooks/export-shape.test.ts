@@ -8,9 +8,9 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { rotateIfLarge } from "../src/journal/journal.ts"
-import turnstileModule, { turnstile } from "../turnstile.ts"
-import { tmpDir } from "./helpers.ts"
+import { rotateIfLarge } from "../../src/journal/journal.ts"
+import turnstileModule, { turnstile } from "../../turnstile.ts"
+import { tmpDir } from "../support/helpers.ts"
 
 /** The default export must have exactly the keys id, server, setup, with id "turnstile". */
 test("default export has the frozen plugin shape", () => {
@@ -31,7 +31,7 @@ test("the named factory export is a function", () => {
 
 /** The gates composition module must expose exactly BlockError and createGates at runtime. */
 test("gates.ts exposes only BlockError and createGates at runtime", async () => {
-  const mod = await import("../src/gates/gates.ts")
+  const mod = await import("../../src/gates/gates.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["BlockError", "createGates"])
 })
 
@@ -46,7 +46,7 @@ test("gates.ts exposes only BlockError and createGates at runtime", async () => 
  * registry/credit-trace factories at runtime (the deps/types are erased).
  */
 test("ledger-registry.ts exposes the LRU primitives and factories", async () => {
-  const mod = await import("../src/state/ledger-registry.ts")
+  const mod = await import("../../src/state/ledger-registry.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "cap",
     "createCreditTrace",
@@ -56,7 +56,7 @@ test("ledger-registry.ts exposes the LRU primitives and factories", async () => 
 })
 
 test("gates-common.ts exposes the block error, waiver helpers, and composers", async () => {
-  const mod = await import("../src/gates/gates-common.ts")
+  const mod = await import("../../src/gates/gates-common.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "BlockError",
     "decisionEntry",
@@ -75,7 +75,7 @@ test("gates-common.ts exposes the block error, waiver helpers, and composers", a
  * builders at runtime (the EvidenceSearch type is erased).
  */
 test("gate-messages.ts exposes the shared gate-message builders", async () => {
-  const mod = await import("../src/gates/gate-messages.ts")
+  const mod = await import("../../src/gates/gate-messages.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "capBlockMessage",
     "searchSummary",
@@ -90,7 +90,7 @@ test("gate-messages.ts exposes the shared gate-message builders", async () => {
  * DispatchGateState type is erased).
  */
 test("dispatch-review-gate.ts exposes the review gate factory", async () => {
-  const mod = await import("../src/dispatch/dispatch-review-gate.ts")
+  const mod = await import("../../src/dispatch/dispatch-review-gate.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "blockWithEscalation",
     "countReviewerEnsemble",
@@ -103,13 +103,13 @@ test("dispatch-review-gate.ts exposes the review gate factory", async () => {
  * searched-ID helper at runtime.
  */
 test("dispatch-budget.ts exposes the budget factory and search helper", async () => {
-  const mod = await import("../src/dispatch/dispatch-budget.ts")
+  const mod = await import("../../src/dispatch/dispatch-budget.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createDispatchBudget"])
 })
 
 /** The dispatch gates module must expose exactly createDispatchGates at runtime. */
 test("gates-dispatch.ts exposes only createDispatchGates at runtime", async () => {
-  const mod = await import("../src/gates/gates-dispatch.ts")
+  const mod = await import("../../src/gates/gates-dispatch.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGates"])
 })
 
@@ -118,7 +118,7 @@ test("gates-dispatch.ts exposes only createDispatchGates at runtime", async () =
  * unreadable-dir journal helper at runtime (the PlansScan type is erased).
  */
 test("plans-scan.ts exposes the scan-cache factory", async () => {
-  const mod = await import("../src/gates/plans-scan.ts")
+  const mod = await import("../../src/gates/plans-scan.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "createPlansScanCache",
     "journalPlansUnreadable",
@@ -131,7 +131,7 @@ test("plans-scan.ts exposes the scan-cache factory", async () => {
  * shared helpers at runtime (the PlanGateRed type is erased).
  */
 test("plan-gate-status.ts exposes the status factory and helpers", async () => {
-  const mod = await import("../src/gates/plan-gate-status.ts")
+  const mod = await import("../../src/gates/plan-gate-status.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "createPlanGateStatus",
     "decompFallback",
@@ -146,13 +146,13 @@ test("plan-gate-status.ts exposes the status factory and helpers", async () => {
  * runtime.
  */
 test("plan-gate-enforce.ts exposes the enforcement factory", async () => {
-  const mod = await import("../src/gates/plan-gate-enforce.ts")
+  const mod = await import("../../src/gates/plan-gate-enforce.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createPlanGateEnforce"])
 })
 
 /** The plan gates module must expose exactly createPlanGates at runtime. */
 test("gates-plan.ts exposes only createPlanGates at runtime", async () => {
-  const mod = await import("../src/gates/gates-plan.ts")
+  const mod = await import("../../src/gates/gates-plan.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createPlanGates"])
 })
 
@@ -162,7 +162,7 @@ test("gates-plan.ts exposes only createPlanGates at runtime", async () => {
  * prefixes at runtime.
  */
 test("delivery.ts exposes only the delivery helpers and key tables at runtime", async () => {
-  const mod = await import("../src/hooks/delivery.ts")
+  const mod = await import("../../src/hooks/delivery.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "AGENT_KEYS",
     "DIRECTORY_KEYS",
@@ -190,37 +190,37 @@ test("delivery.ts exposes only the delivery helpers and key tables at runtime", 
  * runtime (the TurnstileContext interface is type-only and erased).
  */
 test("hooks-core.ts exposes only createHooksCore at runtime", async () => {
-  const mod = await import("../src/hooks/hooks-core.ts")
+  const mod = await import("../../src/hooks/hooks-core.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createHooksCore"])
 })
 
 /** The session-surface module must expose exactly its hook factory at runtime. */
 test("hooks-session.ts exposes only createSessionHooks at runtime", async () => {
-  const mod = await import("../src/hooks/hooks-session.ts")
+  const mod = await import("../../src/hooks/hooks-session.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createSessionHooks"])
 })
 
 /** The permission-surface module must expose exactly its hook factory at runtime. */
 test("hooks-permission.ts exposes only createPermissionHooks at runtime", async () => {
-  const mod = await import("../src/hooks/hooks-permission.ts")
+  const mod = await import("../../src/hooks/hooks-permission.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createPermissionHooks"])
 })
 
 /** The tool-surface module must expose exactly its hook factory at runtime. */
 test("hooks-tool.ts exposes only createToolHooks at runtime", async () => {
-  const mod = await import("../src/hooks/hooks-tool.ts")
+  const mod = await import("../../src/hooks/hooks-tool.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createToolHooks"])
 })
 
 /** The event-surface module must expose exactly its stream starter at runtime. */
 test("hooks-events.ts exposes only startEventStream at runtime", async () => {
-  const mod = await import("../src/hooks/hooks-events.ts")
+  const mod = await import("../../src/hooks/hooks-events.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["startEventStream"])
 })
 
 /** The config-merge module must expose exactly the default sub-object builders and the merge dispatcher. */
 test("config-merge.ts exposes the default sub-object builders and merge dispatcher", async () => {
-  const mod = await import("../src/config/config-merge.ts")
+  const mod = await import("../../src/config/config-merge.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "CANONICAL_REVIEWER_AGENT",
     "DEFAULT_COMMIT_FORMAT",
@@ -241,7 +241,7 @@ test("config-merge.ts exposes the default sub-object builders and merge dispatch
 
 /** The config-validate module must expose exactly the scalar validator and the resolved-config invariants. */
 test("config-validate.ts exposes the scalar validator and validateResolved", async () => {
-  const mod = await import("../src/config/config-validate.ts")
+  const mod = await import("../../src/config/config-validate.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "BARE_OUTPUT_UNSET",
     "isValidScalar",
@@ -251,13 +251,13 @@ test("config-validate.ts exposes the scalar validator and validateResolved", asy
 
 /** The gate-marker parsing module must expose exactly the marker parser. */
 test("gate-markers-parse.ts exposes only the marker parsers at runtime", async () => {
-  const mod = await import("../src/markers/gate-markers-parse.ts")
+  const mod = await import("../../src/markers/gate-markers-parse.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["parseGateMarkers", "parseQuestionMarker"])
 })
 
 /** The state-carry module must expose exactly the fresh-bucket factory and the replay carry merge. */
 test("state-carry.ts exposes only newState and mergeAfterReplay at runtime", async () => {
-  const mod = await import("../src/state/state-carry.ts")
+  const mod = await import("../../src/state/state-carry.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["mergeAfterReplay", "newState"])
 })
 
@@ -310,7 +310,7 @@ test("rotateIfLarge no-ops when the file is missing", () => {
  * trace-line formatter at runtime.
  */
 test("journal-sinks.ts exposes the persistence primitives and sink factory", async () => {
-  const mod = await import("../src/journal/journal-sinks.ts")
+  const mod = await import("../../src/journal/journal-sinks.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "REPLAY_SESSION_RE",
     "appendLine",
@@ -328,7 +328,7 @@ test("journal-sinks.ts exposes the persistence primitives and sink factory", asy
  * and the per-session ring cap at runtime.
  */
 test("evidence-hits.ts exposes the hits factory and the bucket path cap", async () => {
-  const mod = await import("../src/policy/evidence-hits.ts")
+  const mod = await import("../../src/policy/evidence-hits.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["MAX_PATHS_PER_BUCKET", "createEvidenceHits"])
 })
 
@@ -337,7 +337,7 @@ test("evidence-hits.ts exposes the hits factory and the bucket path cap", async 
  * execute.before body at runtime.
  */
 test("tool-hooks-before.ts exposes the before hook body", async () => {
-  const mod = await import("../src/hooks/tool-hooks-before.ts")
+  const mod = await import("../../src/hooks/tool-hooks-before.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["toolHooksBefore"])
 })
 
@@ -346,7 +346,7 @@ test("tool-hooks-before.ts exposes the before hook body", async () => {
  * execute.after body at runtime.
  */
 test("tool-hooks-after.ts exposes the after hook body", async () => {
-  const mod = await import("../src/hooks/tool-hooks-after.ts")
+  const mod = await import("../../src/hooks/tool-hooks-after.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["toolHooksAfter"])
 })
 
@@ -355,7 +355,7 @@ test("tool-hooks-after.ts exposes the after hook body", async () => {
  * body at runtime.
  */
 test("permission-evaluate.ts exposes the permission evaluate body", async () => {
-  const mod = await import("../src/hooks/permission-evaluate.ts")
+  const mod = await import("../../src/hooks/permission-evaluate.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["permissionEvaluate"])
 })
 
@@ -364,7 +364,7 @@ test("permission-evaluate.ts exposes the permission evaluate body", async () => 
  * compilers, pure helpers, and gate texts at runtime (interfaces are erased).
  */
 test("tool-policy-guards.ts exposes the guard creators and helpers", async () => {
-  const mod = await import("../src/tool-policy/tool-policy-guards.ts")
+  const mod = await import("../../src/tool-policy/tool-policy-guards.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "HANDSON_REQUIREMENT",
     "LANDING_REQUIREMENT",
@@ -388,7 +388,7 @@ test("tool-policy-guards.ts exposes the guard creators and helpers", async () =>
  * factory at runtime (the EventHandler type is erased).
  */
 test("event-stream-handlers.ts exposes the handler-table factory", async () => {
-  const mod = await import("../src/hooks/event-stream-handlers.ts")
+  const mod = await import("../../src/hooks/event-stream-handlers.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createEventHandlers"])
 })
 
@@ -397,7 +397,7 @@ test("event-stream-handlers.ts exposes the handler-table factory", async () => {
  * bodies at runtime.
  */
 test("hooks-session-bodies.ts exposes the four session hook bodies", async () => {
-  const mod = await import("../src/hooks/hooks-session-bodies.ts")
+  const mod = await import("../../src/hooks/hooks-session-bodies.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "sessionCompactionBody",
     "sessionContextBody",
@@ -411,7 +411,7 @@ test("hooks-session-bodies.ts exposes the four session hook bodies", async () =>
  * runtime (the cluster reader is module-private).
  */
 test("commit-args.ts exposes only parseCommitArgs at runtime", async () => {
-  const mod = await import("../src/tool-policy/commit-args.ts")
+  const mod = await import("../../src/tool-policy/commit-args.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["parseCommitArgs"])
 })
 
@@ -420,7 +420,7 @@ test("commit-args.ts exposes only parseCommitArgs at runtime", async () => {
  * redirect scanner, and the device/fd-target predicate at runtime.
  */
 test("shell-parse.ts exposes the tokenizer pair, redirect scanner, and target predicate", async () => {
-  const mod = await import("../src/tool-policy/shell-parse.ts")
+  const mod = await import("../../src/tool-policy/shell-parse.ts")
   assert.deepEqual(Object.keys(mod).sort(), [
     "isDevOrFdTarget",
     "scanRedirects",
@@ -434,7 +434,7 @@ test("shell-parse.ts exposes the tokenizer pair, redirect scanner, and target pr
  * runtime (the flags/state interfaces are erased).
  */
 test("context-surface.ts exposes only createContextSurface at runtime", async () => {
-  const mod = await import("../src/hooks/context-surface.ts")
+  const mod = await import("../../src/hooks/context-surface.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createContextSurface"])
 })
 
@@ -443,7 +443,7 @@ test("context-surface.ts exposes only createContextSurface at runtime", async ()
  * runtime (the state interface is erased).
  */
 test("parent-resolution.ts exposes only createParentResolution at runtime", async () => {
-  const mod = await import("../src/hooks/parent-resolution.ts")
+  const mod = await import("../../src/hooks/parent-resolution.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createParentResolution"])
 })
 
@@ -452,7 +452,7 @@ test("parent-resolution.ts exposes only createParentResolution at runtime", asyn
  * runtime (the state interface is erased).
  */
 test("verdict-capture.ts exposes only createVerdictCapture at runtime", async () => {
-  const mod = await import("../src/dispatch/verdict-capture.ts")
+  const mod = await import("../../src/dispatch/verdict-capture.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createVerdictCapture"])
 })
 
@@ -461,7 +461,7 @@ test("verdict-capture.ts exposes only createVerdictCapture at runtime", async ()
  * (the state interface is erased).
  */
 test("plan-verdict.ts exposes only createPlanVerdict at runtime", async () => {
-  const mod = await import("../src/dispatch/plan-verdict.ts")
+  const mod = await import("../../src/dispatch/plan-verdict.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createPlanVerdict"])
 })
 
@@ -470,7 +470,7 @@ test("plan-verdict.ts exposes only createPlanVerdict at runtime", async () => {
  * runtime (the state interface is erased).
  */
 test("dispatch-guard.ts exposes only createDispatchGuard at runtime", async () => {
-  const mod = await import("../src/dispatch/dispatch-guard.ts")
+  const mod = await import("../../src/dispatch/dispatch-guard.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createDispatchGuard", "dispatchStampKey"])
 })
 
@@ -479,7 +479,7 @@ test("dispatch-guard.ts exposes only createDispatchGuard at runtime", async () =
  * runtime (the state interface is erased).
  */
 test("bash-write-guard.ts exposes only createBashWriteGuard at runtime", async () => {
-  const mod = await import("../src/hooks/bash-write-guard.ts")
+  const mod = await import("../../src/hooks/bash-write-guard.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createBashWriteGuard"])
 })
 
@@ -488,6 +488,6 @@ test("bash-write-guard.ts exposes only createBashWriteGuard at runtime", async (
  * runtime (the state/flags interfaces are erased).
  */
 test("prompt-admission.ts exposes only createPromptAdmission at runtime", async () => {
-  const mod = await import("../src/dispatch/prompt-admission.ts")
+  const mod = await import("../../src/dispatch/prompt-admission.ts")
   assert.deepEqual(Object.keys(mod).sort(), ["createPromptAdmission"])
 })

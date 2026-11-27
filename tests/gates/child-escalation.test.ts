@@ -20,8 +20,8 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 
-import { BlockError } from "../src/gates/gates.ts"
-import { turnstile } from "../turnstile.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -31,7 +31,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** The round-limit body through its escalation payload (shared by the parent
  *  and child arms; the recovery tail is what differs). */

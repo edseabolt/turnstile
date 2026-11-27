@@ -1,7 +1,7 @@
 // CLI-side mirror of the journal hash-chain fold (`src/journal/chain.ts` + the
 // family walk of `src/journal/verify.ts`). scripts/*.mjs spawn under plain node and
 // cannot import src/*.ts, so the fold is re-implemented here; the sync
-// obligation is cross-checked by tests/prov-verify-cli.test.ts, which seeds
+// obligation is cross-checked by tests/cli/prov-verify-cli.test.ts, which seeds
 // journals through the real src/ path and verifies through this mirror.
 // This is the repo's one deliberate DRY exception (the journal-read.mjs
 // precedent).

@@ -44,10 +44,10 @@ import * as path from "node:path"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { turnstile } from "../turnstile.ts"
-import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers/markers.ts"
-import { newState } from "../src/state/state.ts"
-import { createLedger } from "../src/state/ledger.ts"
+import { turnstile } from "../../turnstile.ts"
+import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../../src/markers/markers.ts"
+import { newState } from "../../src/state/state.ts"
+import { createLedger } from "../../src/state/ledger.ts"
 import {
   callSession,
   callTool,
@@ -58,7 +58,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const SUBAGENT_NAMES = [
   "planner",

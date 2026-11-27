@@ -12,13 +12,13 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
-import { createEventHandlers } from "../src/hooks/event-stream-handlers.ts"
-import { journalProvWaiver } from "../src/gates/gates-common.ts"
-import { defaultAgents } from "../src/config/config-merge.ts"
-import { planGateStages } from "../src/gates/plan-gate-status.ts"
-import { turnstile } from "../turnstile.ts"
-import type { TurnstileConfig } from "../src/util/types.ts"
+import { createHooksCore, type TurnstileContext } from "../../src/hooks/hooks-core.ts"
+import { createEventHandlers } from "../../src/hooks/event-stream-handlers.ts"
+import { journalProvWaiver } from "../../src/gates/gates-common.ts"
+import { defaultAgents } from "../../src/config/config-merge.ts"
+import { planGateStages } from "../../src/gates/plan-gate-status.ts"
+import { turnstile } from "../../turnstile.ts"
+import type { TurnstileConfig } from "../../src/util/types.ts"
 import {
   callSession,
   callTool,
@@ -27,7 +27,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Creates a fresh hooks-core context over an isolated env and a temp
  *  metrics dir, so neither config resolution nor journaling touches the
@@ -371,7 +371,7 @@ test("a waiver-capture failure journals an error row and never throws", () => {
 
 // ── prov:override wiring ─────────────────────────────────────────────────────
 
-import { toolHooksAfter } from "../src/hooks/tool-hooks-after.ts"
+import { toolHooksAfter } from "../../src/hooks/tool-hooks-after.ts"
 
 /** The `childWrite` telemetry rows of a metrics dir with `ts` stripped.
  *  @param metricsDir The metrics dir to read.

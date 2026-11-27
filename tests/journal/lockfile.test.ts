@@ -12,8 +12,8 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { withFileLock } from "../src/journal/lockfile.ts"
-import { tmpDir } from "./helpers.ts"
+import { withFileLock } from "../../src/journal/lockfile.ts"
+import { tmpDir } from "../support/helpers.ts"
 
 /**
  * Backdates a lock directory's mtime well past any staleness bound.

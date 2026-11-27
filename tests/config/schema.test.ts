@@ -13,7 +13,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 
-import { defaultConfig } from "../src/config/config.ts"
+import { defaultConfig } from "../../src/config/config.ts"
 
 /** One node of the schema's `properties` object. */
 interface SchemaNode {
@@ -24,7 +24,7 @@ interface SchemaNode {
 }
 
 const schema = JSON.parse(
-  readFileSync(new URL("../schemas/turnstile.schema.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../schemas/turnstile.schema.json", import.meta.url), "utf8"),
 ) as {
   $schema: string
   additionalProperties: boolean
@@ -125,7 +125,7 @@ test("schema property types and enums match the runtime defaults recursively", (
  *  schema property — a structural subset check. */
 test("every key in the example config exists in the schema properties", () => {
   const example = JSON.parse(
-    readFileSync(new URL("../examples/turnstile.example.json", import.meta.url), "utf8"),
+    readFileSync(new URL("../../examples/turnstile.example.json", import.meta.url), "utf8"),
   ) as Record<string, unknown>
   for (const [key, value] of Object.entries(example)) {
     assert.ok(key in schema.properties, `example key ${key} has a schema property`)

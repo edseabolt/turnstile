@@ -10,7 +10,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { evictTo } from "../src/util/bounded.ts"
+import { evictTo } from "../../src/util/bounded.ts"
 
 /** A map whose values are numbers and whose stamp order differs from insertion order. */
 function numericMap(): Map<string, number> {

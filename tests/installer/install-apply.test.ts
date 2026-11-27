@@ -37,7 +37,7 @@ import {
   singleEntryManifest,
   spawnInstaller,
   writeManifest,
-} from "./install-harness.ts"
+} from "../support/install-harness.ts"
 
 /** sha256 hex of a file's content, mirroring the installer's hashContent. */
 function sha256(file: string): string {

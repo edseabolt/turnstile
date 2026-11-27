@@ -14,8 +14,8 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger, type GateLedger } from "../src/state/ledger.ts"
-import { journalEntries, tmpDir } from "./helpers.ts"
+import { createLedger, type GateLedger } from "../../src/state/ledger.ts"
+import { journalEntries, tmpDir } from "../support/helpers.ts"
 
 /**
  * A well-shaped sha256-hex content key with a stable, readable character.

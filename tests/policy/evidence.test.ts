@@ -9,9 +9,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { DEFAULT_EVIDENCE_PATTERN } from "../src/config/config.ts"
-import { createEvidenceTracker } from "../src/policy/evidence.ts"
-import { defaultConfig } from "../src/config/config.ts"
+import { DEFAULT_EVIDENCE_PATTERN } from "../../src/config/config.ts"
+import { createEvidenceTracker } from "../../src/policy/evidence.ts"
+import { defaultConfig } from "../../src/config/config.ts"
 
 /** A pass-through parent resolver: every raw session resolves to itself. */
 const identityParent = (raw: string): string => raw
@@ -362,7 +362,7 @@ test("evidence never retains the stdout, only extracted test-file tokens", () =>
 
 /** The per-bucket path sets cap at 32 entries, newest-wins, deduped. */
 test("evidence caps the touched set at 32 deduped newest-wins entries", async () => {
-  const { MAX_PATHS_PER_BUCKET } = await import("../src/policy/evidence-hits.ts")
+  const { MAX_PATHS_PER_BUCKET } = await import("../../src/policy/evidence-hits.ts")
   const t = createEvidenceTracker(cfg(), identityParent)
   for (let i = 0; i < MAX_PATHS_PER_BUCKET + 5; i++) t.touched("p1", `/repo/f${i}.ts`)
   t.touched("p1", "/repo/f20.ts") // re-touch of a live path moves it to the end

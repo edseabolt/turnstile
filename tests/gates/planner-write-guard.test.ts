@@ -13,10 +13,10 @@ import assert from "node:assert/strict"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
-import { toolHooksAfter } from "../src/hooks/tool-hooks-after.ts"
-import type { TurnstileConfig } from "../src/util/types.ts"
-import { isolatedEnv, journalEntries, tmpDir } from "./helpers.ts"
+import { createHooksCore, type TurnstileContext } from "../../src/hooks/hooks-core.ts"
+import { toolHooksAfter } from "../../src/hooks/tool-hooks-after.ts"
+import type { TurnstileConfig } from "../../src/util/types.ts"
+import { isolatedEnv, journalEntries, tmpDir } from "../support/helpers.ts"
 
 /** Creates a fresh hooks-core context over an isolated env and a temp
  *  metrics dir, so neither config resolution nor journaling touches the

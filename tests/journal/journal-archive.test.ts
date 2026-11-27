@@ -14,10 +14,10 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as zlib from "node:zlib"
 
-import { createJournaler } from "../src/journal/journal.ts"
-import { verifyJournalChain } from "../src/journal/verify.ts"
-import { defaultConfig, mergeConfig } from "../src/config/config.ts"
-import { tmpDir } from "./helpers.ts"
+import { createJournaler } from "../../src/journal/journal.ts"
+import { verifyJournalChain } from "../../src/journal/verify.ts"
+import { defaultConfig, mergeConfig } from "../../src/config/config.ts"
+import { tmpDir } from "../support/helpers.ts"
 
 /** Builds a journaler bound to a fresh temp metrics dir.
  *  @param opts Rotation and archive bounds plus the tamper-evidence cadence.

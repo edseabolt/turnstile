@@ -13,8 +13,8 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { BlockError } from "../src/gates/gates.ts"
-import { turnstile } from "../turnstile.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -23,7 +23,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Planner loop-cap block message at cap 2. */
 const PLANNER_LOOP_CAP_MESSAGE =

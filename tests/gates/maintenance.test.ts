@@ -14,15 +14,15 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 
-import { turnstile } from "../turnstile.ts"
-import { createGates } from "../src/gates/gates.ts"
+import { turnstile } from "../../turnstile.ts"
+import { createGates } from "../../src/gates/gates.ts"
 import {
   MAINTENANCE_MAX_PER_PLAN,
   maintenanceDeclared,
   maintenanceDiffEligible,
   maintenanceFileEligible,
   maintenanceMarkerSensitive,
-} from "../src/gates/maintenance.ts"
+} from "../../src/gates/maintenance.ts"
 import {
   callPermission,
   callTool,
@@ -32,7 +32,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 
@@ -71,7 +71,7 @@ test("maintenance rules: per-file eligibility matrix", () => {
     "src/gates-plan.ts",
     "src/config.ts",
     "src/types.ts",
-    "tests/maintenance.test.ts",
+    "tests/gates/maintenance.test.ts",
     "bin/cli.mjs",
     "scripts/status.mjs",
     "examples/turnstile.example.json",
@@ -531,8 +531,8 @@ test("maintenance flow: an absolute custom plansDir is recognized (relativized a
 })
 
 test("plan keying: a spec-region edit invalidates the bound approval (plan-edited)", async () => {
-  const { defaultConfig } = await import("../src/config/config.ts")
-  const { createJournaler } = await import("../src/journal/journal.ts")
+  const { defaultConfig } = await import("../../src/config/config.ts")
+  const { createJournaler } = await import("../../src/journal/journal.ts")
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   const body = "# Progress\n\n- x\n\n# Objective\n\nSpec.\n"

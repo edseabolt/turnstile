@@ -9,14 +9,17 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { GATE_RE, VERDICT_RE } from "../src/markers/markers.ts"
-import { createVerdictCapture, type VerdictCaptureState } from "../src/dispatch/verdict-capture.ts"
-import { createEvidenceTracker } from "../src/policy/evidence.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import { newState } from "../src/state/state-carry.ts"
-import type { GateState, MarkerEvent, TurnstileConfig } from "../src/util/types.ts"
-import { turnstile } from "../turnstile.ts"
-import { callTool, isolatedEnv, journalEntries, makeFakeHost, tmpDir } from "./helpers.ts"
+import { GATE_RE, VERDICT_RE } from "../../src/markers/markers.ts"
+import {
+  createVerdictCapture,
+  type VerdictCaptureState,
+} from "../../src/dispatch/verdict-capture.ts"
+import { createEvidenceTracker } from "../../src/policy/evidence.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import { newState } from "../../src/state/state-carry.ts"
+import type { GateState, MarkerEvent, TurnstileConfig } from "../../src/util/types.ts"
+import { turnstile } from "../../turnstile.ts"
+import { callTool, isolatedEnv, journalEntries, makeFakeHost, tmpDir } from "../support/helpers.ts"
 
 /** A pass-through parent resolver: every raw session resolves to itself. */
 const identityParent = (raw: string): string => raw

@@ -11,7 +11,7 @@ import * as path from "node:path"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { turnstile } from "../turnstile.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callPermission,
   callSession,
@@ -22,7 +22,7 @@ import {
   tmpDir,
   traceText,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots with default config over a temp metrics dir. */
 async function bootDefault(): Promise<{ h: FakeHost; dispose: () => void; metricsDir: string }> {

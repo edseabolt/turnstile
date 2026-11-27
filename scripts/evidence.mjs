@@ -4,7 +4,7 @@
 // This is the `turnstile evidence` surface: it derives, for a single task, a
 // whitelist projection of the JSONL journal that is safe to publish. It is
 // deliberately a plain ESM script outside the 100% coverage gate (bin/ and
-// scripts/ never are), and it is exercised by tests/evidence-cli.test.ts via
+// scripts/ never are), and it is exercised by tests/cli/evidence-cli.test.ts via
 // spawn rather than import.
 //
 // The document is built key by key — that is the redaction mechanism — so a

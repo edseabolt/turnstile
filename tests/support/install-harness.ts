@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url"
 import type { TestContext } from "node:test"
 
 /** The repo root, derived from this file's location like install.mjs does. */
-export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 /** The synthetic ~-destination most synthetic manifests install to. */
 export const DEST = "~/.config/opencode/agents/x"

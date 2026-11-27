@@ -20,11 +20,11 @@ import {
   approvalResetsScope,
   isInterruptedReview,
   keepsTaskScope,
-} from "../src/state/task-scope.ts"
-import { worktreeFingerprint } from "../src/state/fingerprint.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { newState } from "../src/state/state.ts"
-import { turnstile } from "../turnstile.ts"
+} from "../../src/state/task-scope.ts"
+import { worktreeFingerprint } from "../../src/state/fingerprint.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { newState } from "../../src/state/state.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -33,8 +33,8 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
-import { BlockError } from "../src/gates/gates.ts"
+} from "../support/helpers.ts"
+import { BlockError } from "../../src/gates/gates.ts"
 
 const APPROVE = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
 

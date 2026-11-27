@@ -18,12 +18,12 @@ import { fileURLToPath } from "node:url"
 
 // @ts-expect-error TS7016: scripts/install.mjs is untyped JS; tests import
 // removeEntry directly rather than spawning the CLI.
-import { removeEntry } from "../scripts/install.mjs"
+import { removeEntry } from "../../scripts/install.mjs"
 
 // Derive the repo root the same way install.mjs does, so a symlink created in
 // this test resolves back into the same checkout that removeEntry/ownedByRepo
 // keys off.
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 
 /** Creates a fresh temp directory, registers its removal, and returns its path. */
 function scratch(testCtx: { after: (fn: () => void) => void }): string {

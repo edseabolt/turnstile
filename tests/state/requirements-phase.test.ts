@@ -12,12 +12,12 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { BlockError } from "../src/gates/gates.ts"
-import { turnstile } from "../turnstile.ts"
-import { defaultConfig, mergeConfig } from "../src/config/config.ts"
-import { orchestratorPolicyFor } from "../src/policy/policy.ts"
-import { clearMeteringCounters, formatPipelineStatus, newState } from "../src/state/state.ts"
-import { isPipelineChildDispatch } from "../src/dispatch/child-registration.ts"
+import { BlockError } from "../../src/gates/gates.ts"
+import { turnstile } from "../../turnstile.ts"
+import { defaultConfig, mergeConfig } from "../../src/config/config.ts"
+import { orchestratorPolicyFor } from "../../src/policy/policy.ts"
+import { clearMeteringCounters, formatPipelineStatus, newState } from "../../src/state/state.ts"
+import { isPipelineChildDispatch } from "../../src/dispatch/child-registration.ts"
 import {
   callSession,
   callTool,
@@ -27,7 +27,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots the plugin over a fake host with a temp metrics dir and the given
  *  config override. */

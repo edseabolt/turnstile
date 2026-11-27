@@ -13,19 +13,19 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
-import { readJournalEntries } from "../src/journal/journal.ts"
-import type { Host } from "../src/util/types.ts"
+import { turnstile } from "../../turnstile.ts"
+import { readJournalEntries } from "../../src/journal/journal.ts"
+import type { Host } from "../../src/util/types.ts"
 import {
   countSessionActivity,
   formatAllGreenLine,
   formatSessionSummary,
   isInactive,
   sessionTokenTotals,
-} from "../src/journal/summary.ts"
-import { zeroTotals } from "../src/dispatch/token-usage.ts"
-import { createHooksCore } from "../src/hooks/hooks-core.ts"
-import { startEventStream } from "../src/hooks/hooks-events.ts"
+} from "../../src/journal/summary.ts"
+import { zeroTotals } from "../../src/dispatch/token-usage.ts"
+import { createHooksCore } from "../../src/hooks/hooks-core.ts"
+import { startEventStream } from "../../src/hooks/hooks-events.ts"
 import {
   isolatedEnv,
   journalEntries,
@@ -33,7 +33,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** A gate PASS marker first-sight entry for a parent. */
 const pass = (sid: string): Record<string, unknown> => ({

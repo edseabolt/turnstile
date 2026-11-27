@@ -82,7 +82,7 @@ const args = process.argv.slice(2)
 const testFiles = args.filter((a) => !a.startsWith("--"))
 const files = testFiles.length
   ? testFiles
-  : readdirSync("tests")
+  : readdirSync("tests", { recursive: true })
       .filter((f) => f.endsWith(".test.ts"))
       .map((f) => `tests/${f}`)
 const covDir = mkdtempSync(join(tmpdir(), "branch-cov-"))

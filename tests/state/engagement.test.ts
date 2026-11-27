@@ -15,11 +15,11 @@ import * as path from "node:path"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { turnstile } from "../turnstile.ts"
-import { createHooksCore } from "../src/hooks/hooks-core.ts"
-import { shouldEngage, engagementEntry } from "../src/dispatch/engagement.ts"
-import { classifyIntent } from "../src/dispatch/intent.ts"
-import { newState, formatGateSnapshot } from "../src/state/state.ts"
+import { turnstile } from "../../turnstile.ts"
+import { createHooksCore } from "../../src/hooks/hooks-core.ts"
+import { shouldEngage, engagementEntry } from "../../src/dispatch/engagement.ts"
+import { classifyIntent } from "../../src/dispatch/intent.ts"
+import { newState, formatGateSnapshot } from "../../src/state/state.ts"
 import {
   expectedPolicy,
   isolatedEnv,
@@ -29,7 +29,7 @@ import {
   callSession,
   callTool,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots the plugin over a fake host with a temp metrics dir (dormant by
  *  default; pass `alwaysEnforce: true` explicitly for legacy behavior). */

@@ -16,11 +16,11 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createGates } from "../src/gates/gates.ts"
-import { defaultConfig } from "../src/config/config.ts"
-import { createJournaler } from "../src/journal/journal.ts"
-import { createLedger } from "../src/state/ledger.ts"
-import { turnstile } from "../turnstile.ts"
+import { createGates } from "../../src/gates/gates.ts"
+import { defaultConfig } from "../../src/config/config.ts"
+import { createJournaler } from "../../src/journal/journal.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callSession,
   callTool,
@@ -28,7 +28,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** The default config, read once for the cap values the crafted counters
  *  must reach (never hardcoded literals — the caps are configurable). */

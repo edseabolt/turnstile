@@ -21,7 +21,7 @@ import * as path from "node:path"
 const xdgTmp = fs.mkdtempSync(path.join(os.tmpdir(), "turnstile-xdg-"))
 process.env.XDG_DATA_HOME = xdgTmp
 
-import { turnstile } from "../turnstile.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callTool,
   expectedPolicy,
@@ -30,7 +30,7 @@ import {
   makeFakeHost,
   tmpDir,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /** Boots the plugin over a fake host with a temp metrics dir and the given
  *  config override. */

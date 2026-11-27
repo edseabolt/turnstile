@@ -9,9 +9,9 @@ import assert from "node:assert/strict"
 import * as os from "node:os"
 import * as path from "node:path"
 import type { TestContext } from "node:test"
-import { defaultConfig, mergeConfig } from "../src/config/config.ts"
-import { orchestratorPolicyFor } from "../src/policy/policy.ts"
-import type { Host } from "../src/util/types.ts"
+import { defaultConfig, mergeConfig } from "../../src/config/config.ts"
+import { orchestratorPolicyFor } from "../../src/policy/policy.ts"
+import type { Host } from "../../src/util/types.ts"
 
 // Fake-host payloads are intentionally loose (typed `any`); assertions
 // check concrete shapes.

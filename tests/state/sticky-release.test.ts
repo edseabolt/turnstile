@@ -11,10 +11,10 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger } from "../src/state/ledger.ts"
-import { decisionEntry } from "../src/gates/gates-common.ts"
-import { mergeAfterReplay as carryAfterReplay, newState } from "../src/state/state.ts"
-import { turnstile } from "../turnstile.ts"
+import { createLedger } from "../../src/state/ledger.ts"
+import { decisionEntry } from "../../src/gates/gates-common.ts"
+import { mergeAfterReplay as carryAfterReplay, newState } from "../../src/state/state.ts"
+import { turnstile } from "../../turnstile.ts"
 import {
   callPermission,
   callSession,
@@ -26,8 +26,8 @@ import {
   waitUntil,
   type FakeHost,
   frozenClock,
-} from "./helpers.ts"
-import { BlockError } from "../src/gates/gates.ts"
+} from "../support/helpers.ts"
+import { BlockError } from "../../src/gates/gates.ts"
 
 /**
  * Writes the given raw lines as the journal of a fresh temp metrics dir.

@@ -12,9 +12,9 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { turnstile } from "../turnstile.ts"
-import { newState, formatGateSnapshot } from "../src/state/state.ts"
-import { deTokenizeMarker } from "../src/markers/markers.ts"
+import { turnstile } from "../../turnstile.ts"
+import { newState, formatGateSnapshot } from "../../src/state/state.ts"
+import { deTokenizeMarker } from "../../src/markers/markers.ts"
 import {
   callSession,
   callTool,
@@ -24,7 +24,7 @@ import {
   tmpDir,
   waitUntil,
   type FakeHost,
-} from "./helpers.ts"
+} from "../support/helpers.ts"
 
 /**
  * Boots the plugin in an isolated temp project with a readable plans dir, so

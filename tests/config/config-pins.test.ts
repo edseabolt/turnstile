@@ -10,8 +10,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { defaultConfig, mergeConfig } from "../src/config/config.ts"
-import type { TurnstileConfig } from "../src/util/types.ts"
+import { defaultConfig, mergeConfig } from "../../src/config/config.ts"
+import type { TurnstileConfig } from "../../src/util/types.ts"
 
 /** The boolean-family keys (a non-boolean value is always rejected). */
 const BOOLEAN_KEYS = [
