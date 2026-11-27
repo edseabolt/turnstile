@@ -12,13 +12,13 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { merkleRoot, recordHash } from "../src/chain.ts"
-import { appendLine } from "../src/journal-sinks.ts"
-import { createJournaler } from "../src/journal.ts"
-import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
-import { createEventHandlers } from "../src/event-stream-handlers.ts"
-import { verifyJournalChain } from "../src/verify.ts"
-import type { AnchorRef, AnchorSink, TurnstileConfig } from "../src/types.ts"
+import { merkleRoot, recordHash } from "../src/journal/chain.ts"
+import { appendLine } from "../src/journal/journal-sinks.ts"
+import { createJournaler } from "../src/journal/journal.ts"
+import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
+import { createEventHandlers } from "../src/hooks/event-stream-handlers.ts"
+import { verifyJournalChain } from "../src/journal/verify.ts"
+import type { AnchorRef, AnchorSink, TurnstileConfig } from "../src/util/types.ts"
 import {
   callSession,
   isolatedEnv,

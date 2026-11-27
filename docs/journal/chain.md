@@ -6,18 +6,18 @@ untouched), every journaled row carries three chain fields appended after
 the payload: `seq` (per-file monotonic counter starting at 0), `prevHash`
 (the previous row's hash, `""` for the first), and `hash`, the SHA-256 over
 the canonical JSON (RFC 8785-style: sorted keys, no whitespace) of
-`{prevHash, ts, payload}` (`src/chain.ts`, `node:crypto` only, zero runtime
+`{prevHash, ts, payload}` (`src/journal/chain.ts`, `node:crypto` only, zero runtime
 dependencies). Editing, deleting, or reordering any row breaks every hash
 after it.
 
 One class of rows is deliberately unchained, defined by origin, not
 payload: the rows written from inside the chained path itself, in
-`src/journal.ts` (`journalLockError`, the degraded-append warning) and
-`src/journal-sinks.ts` (`tickRotate`'s `rotation-lock-stale:` row), when
+`src/journal/journal.ts` (`journalLockError`, the degraded-append warning) and
+`src/journal/journal-sinks.ts` (`tickRotate`'s `rotation-lock-stale:` row), when
 that path is degraded. Chaining them would recurse: the chained append is
 what failed. Ledger-side rows whose payload happens to begin with
 `journal-lock:` (for example the approval-lock error row) are NOT in this
-class: they are written from `src/ledger.ts` and are chained like every
+class: they are written from `src/state/ledger.ts` and are chained like every
 other ledger row.
 
 Epochs batch the chain for verification and
@@ -32,7 +32,7 @@ chain: `chain-epoch` (the commit above) and `chain-verify` (the session-end
 verdict; verification is described below, anchor sinks in
 [anchors.md](anchors.md)).
 
-**Verification.** `verifyJournalChain` (`src/verify.ts`) folds every journal
+**Verification.** `verifyJournalChain` (`src/journal/verify.ts`) folds every journal
 file family (shared + per-session sinks) across its rotation generations
 oldest-first, re-derives each row's hash and each epoch's Merkle root, and
 reports the first broken link (`<family>:<line>: prevHash|seq|hash mismatch`
@@ -60,7 +60,7 @@ Row-level inclusion proofs (`prov --verify --session <id>`) are described in
 dir append to the same journal files. Without coordination, both could read
 the same chain tail and both append, forking the chain (two rows with the
 same `seq` and `prevHash`), which the verify fold reports as broken. The
-append path closes that window (`src/lockfile.ts`, `src/journal.ts`):
+append path closes that window (`src/journal/lockfile.ts`, `src/journal/journal.ts`):
 
 - Every chained append runs inside an advisory mkdir mutex at
   `<journal>.lock` (`withFileLock`), and the chain head is **re-read from

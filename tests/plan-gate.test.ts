@@ -16,11 +16,11 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 
 import { turnstile } from "../turnstile.ts"
-import { createGates, type Gates } from "../src/gates.ts"
-import { defaultConfig } from "../src/config.ts"
-import { createJournaler } from "../src/journal.ts"
-import { createLedger, type GateLedger } from "../src/ledger.ts"
-import { planSpecRegion } from "../src/plan-region.ts"
+import { createGates, type Gates } from "../src/gates/gates.ts"
+import { defaultConfig } from "../src/config/config.ts"
+import { createJournaler } from "../src/journal/journal.ts"
+import { createLedger, type GateLedger } from "../src/state/ledger.ts"
+import { planSpecRegion } from "../src/gates/plan-region.ts"
 import {
   callPermission,
   callSession,

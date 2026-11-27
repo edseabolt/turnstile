@@ -15,9 +15,9 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { BlockError } from "../src/gates.ts"
-import { createHooksCore } from "../src/hooks-core.ts"
-import { createLedger } from "../src/ledger.ts"
+import { BlockError } from "../src/gates/gates.ts"
+import { createHooksCore } from "../src/hooks/hooks-core.ts"
+import { createLedger } from "../src/state/ledger.ts"
 import {
   callTool,
   isolatedEnv,

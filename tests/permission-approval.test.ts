@@ -18,14 +18,14 @@ import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
 import { turnstile } from "../turnstile.ts"
-import { createHooksCore } from "../src/hooks-core.ts"
-import { BlockError, createGates } from "../src/gates.ts"
-import { defaultConfig } from "../src/config.ts"
-import { createJournaler } from "../src/journal.ts"
-import { createLedger } from "../src/ledger.ts"
-import { LANDING_REQUIREMENT } from "../src/tool-policy.ts"
-import { HANDSON_ASK_MESSAGE_PREFIX } from "../src/delivery.ts"
-import { PLAN_ASK_MESSAGE_PREFIX } from "../src/delivery.ts"
+import { createHooksCore } from "../src/hooks/hooks-core.ts"
+import { BlockError, createGates } from "../src/gates/gates.ts"
+import { defaultConfig } from "../src/config/config.ts"
+import { createJournaler } from "../src/journal/journal.ts"
+import { createLedger } from "../src/state/ledger.ts"
+import { LANDING_REQUIREMENT } from "../src/tool-policy/tool-policy.ts"
+import { HANDSON_ASK_MESSAGE_PREFIX } from "../src/hooks/delivery.ts"
+import { PLAN_ASK_MESSAGE_PREFIX } from "../src/hooks/delivery.ts"
 import {
   callPermission,
   callSession,

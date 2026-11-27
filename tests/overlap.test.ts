@@ -15,7 +15,7 @@ import {
   extractTestFiles,
   globToRegExp,
   MAX_PATH_TOKENS,
-} from "../src/overlap.ts"
+} from "../src/policy/overlap.ts"
 
 /** Compiles regex sources the way the tracker boundary does (with `"i"`). */
 const compile = (sources: readonly string[]): RegExp[] => sources.map((s) => new RegExp(s, "i"))

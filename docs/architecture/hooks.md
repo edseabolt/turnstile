@@ -1,7 +1,7 @@
 # Hooks: where the plugin intercepts the host
 
 Before any registration, `setup(h)` runs the host-compat guard
-(`src/host-compat.ts`): the host version (`app.version`) is compared against
+(`src/hooks/host-compat.ts`): the host version (`app.version`) is compared against
 the shipped range (`HOST_COMPAT`, ≥ 2.0.22 and < 3.0.0). An **incompatible**
 host is journaled (`type:"compat"`, `event:"incompatible"`), toasted with the
 upgrade instruction, and turnstile degrades to a full no-op: no hook is
@@ -32,7 +32,7 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
   - _Waiver and approval capture._ The body captures `USER WAIVER:` /
     `PLAN APPROVED:` literals. A waiver capture also parses its scope, the
     configured agent names named in the waiver text (`parseWaiverScope` in
-    `src/markers.ts`), into `userWaiverScope`.
+    `src/markers/markers.ts`), into `userWaiverScope`.
   - _Suspend and resume._ `captureSuspend` scans for the configured
     `suspendMarker` / `resumeMarker` literals (defaults `TURNSTILE OFF:` /
     `TURNSTILE ON:`) by strict `indexOf`; the later-occurring marker wins,
@@ -52,7 +52,7 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
     This is diagnostic-only: the strict literal capture is untouched, the
     hits are journaled `type:"marker"` and parked for one-shot surfacing.
   - _Intent nudge._ Under `intentNudge` (default on), admission also
-    classifies the prompt via `classifyIntent` (`src/intent.ts`). A
+    classifies the prompt via `classifyIntent` (`src/dispatch/intent.ts`). A
     detected implementation intent with no plan approval in the same
     admission journals `type:"intent"` (sessionID + signal kind) and arms
     a one-shot advisory nudge (one nudge per detected intent signal per
@@ -60,11 +60,11 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
     prepending marker-syntax-free advisory prose to the first task
     delivery or the parent's own read delivery (`prependIntentNudge` /
     `prependIntentNudgeRead` in `hooks-core.ts`'s delivery helpers, text
-    from `intentNudge` in `src/policy.ts`). Advisory only: nothing gates,
+    from `intentNudge` in `src/policy/policy.ts`). Advisory only: nothing gates,
     and a throw in classification journals `type:"error"` and never
     propagates from the prompt path.
   - _Decision-ledger capture._ `captureLedgerBody`
-    (`src/prompt-admission.ts`), placed after the dedupe check and after
+    (`src/dispatch/prompt-admission.ts`), placed after the dedupe check and after
     the approval/waiver capture sequence, journals one `prov:stated` entry
     per admitted parent prompt, verbatim after redaction, capped at 2000
     chars, no relevance filtering ("continue" included). Pipeline-child
@@ -94,7 +94,7 @@ per-surface modules named below; `setup.ts` wires them and owns the lifecycle.
     (`ledger.childToParent`), or an unresolvable session id each skips
     with a journaled `reason` (`context-agent` / `context-child` /
     `context-no-id`).
-  - _Shared latch._ The shared `policyInjected` latch (src/state.ts)
+  - _Shared latch._ The shared `policyInjected` latch (src/state/state.ts)
     dedupes against the `execute.after` prepend (whichever channel fires
     first wins), and the nudge is consumed one-shot from the same pending
     map.
@@ -232,7 +232,7 @@ contract for that kind (a `GATE:` from `test-runner`, a `VERDICT:` from
 `suppressed` rather than flipping state, permission ask/reply bookkeeping
 (whose three human-reject sites, the plan, landing, and hands-on ask
 replies, each journal one `prov:denied` entry via `journalProvDenied`
-(`src/event-stream-handlers.ts`), carrying the ask `kind`; gated on
+(`src/hooks/event-stream-handlers.ts`), carrying the ask `kind`; gated on
 `decisionLedger.enabled`, replay-inert),
 prompt admission via `session.inbox.enqueued` (opencode ≥ 2.0.29; an
 additive channel the host publishes immediately after the prompt hook fires,

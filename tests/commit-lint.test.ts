@@ -10,11 +10,15 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { createToolPolicy, describeCommitMismatch, type ToolPolicy } from "../src/tool-policy.ts"
-import { defaultConfig, DEFAULT_COMMIT_FORMAT } from "../src/config.ts"
-import { BlockError } from "../src/gates.ts"
-import type { Journaler } from "../src/journal.ts"
-import type { TurnstileConfig, TurnstileGitGates } from "../src/types.ts"
+import {
+  createToolPolicy,
+  describeCommitMismatch,
+  type ToolPolicy,
+} from "../src/tool-policy/tool-policy.ts"
+import { defaultConfig, DEFAULT_COMMIT_FORMAT } from "../src/config/config.ts"
+import { BlockError } from "../src/gates/gates.ts"
+import type { Journaler } from "../src/journal/journal.ts"
+import type { TurnstileConfig, TurnstileGitGates } from "../src/util/types.ts"
 
 /**
  * Builds a capturing Journaler: every journal entry is deep-copied into

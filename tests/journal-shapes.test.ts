@@ -10,14 +10,14 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
+import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
 import {
   decisionEntry,
   observeEntry,
   reviewerEnsembleEntry,
   wouldBlockEntry,
-} from "../src/gates-common.ts"
-import type { TurnstileConfig } from "../src/types.ts"
+} from "../src/gates/gates-common.ts"
+import type { TurnstileConfig } from "../src/util/types.ts"
 import { callTool, isolatedEnv, journalEntries, tmpDir } from "./helpers.ts"
 
 void callTool

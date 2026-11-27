@@ -1,6 +1,6 @@
 # Configuration
 
-Defaults live in code (`src/config.ts`); override via
+Defaults live in code (`src/config/config.ts`); override via
 `~/.config/opencode/turnstile.json`, environment variables, or both.
 
 **Quick start: copy the example config**,
@@ -34,8 +34,8 @@ installed package's schema file):
 
 The `$schema` key is ignored at load when it is a string (a non-string
 warns; it is not a turnstile key), and validation itself runs inside
-`mergeConfig` (per-key merge arms in `src/config-merge.ts`, the value rules
-and resolved invariants in `src/config-validate.ts`); the schema is an
+`mergeConfig` (per-key merge arms in `src/config/config-merge.ts`, the value rules
+and resolved invariants in `src/config/config-validate.ts`); the schema is an
 editor and documentation artifact, not a runtime validator.
 
 Precedence: defaults < config file < env. The plugin reads config once, at

@@ -12,7 +12,7 @@ import {
   REDACTION_SENTINEL,
   SECRET_PATTERNS,
   redactSecrets,
-} from "../src/decision-ledger-redact.ts"
+} from "../src/journal/decision-ledger-redact.ts"
 
 // ── pattern table: positive + near-miss negative per pattern ─────────────────
 

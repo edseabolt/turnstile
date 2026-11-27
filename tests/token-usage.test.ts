@@ -16,9 +16,14 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { addTotals, extractStepUsage, extractUsage, zeroTotals } from "../src/token-usage.ts"
-import { createHooksCore } from "../src/hooks-core.ts"
-import { startEventStream } from "../src/hooks-events.ts"
+import {
+  addTotals,
+  extractStepUsage,
+  extractUsage,
+  zeroTotals,
+} from "../src/dispatch/token-usage.ts"
+import { createHooksCore } from "../src/hooks/hooks-core.ts"
+import { startEventStream } from "../src/hooks/hooks-events.ts"
 import {
   isolatedEnv,
   journalEntries,

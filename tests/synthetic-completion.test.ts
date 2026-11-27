@@ -15,7 +15,7 @@ import assert from "node:assert/strict"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { createLedger } from "../src/ledger.ts"
+import { createLedger } from "../src/state/ledger.ts"
 import type { FakeHost } from "./helpers.ts"
 import { isolatedEnv, journalEntries, makeFakeHost, tmpDir } from "./helpers.ts"
 

@@ -24,7 +24,7 @@ A typical enforced run:
    dispatch** (prompt declares maintenance scope for the live bound plan and
    the working-tree diff touches only non-src surfaces) rides a lighter
    path: it skips the plan-approval and decomposition gates and is capped at
-   4 per plan. Eligibility is canonical in `src/maintenance.ts`; the journaling
+   4 per plan. Eligibility is canonical in `src/gates/maintenance.ts`; the journaling
    semantics are in [journal/entry-types.md](../journal/entry-types.md)'s `maintenance` entry.
    An executor result may instead stop with a `QUESTION:` marker: the pipeline
    pauses until the user's answer (the next dispatch prompt), a cancel, or the

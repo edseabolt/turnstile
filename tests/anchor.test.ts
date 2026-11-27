@@ -21,8 +21,8 @@ import {
   sessionStateSink,
   verifyAnchors,
   weakestTrustDomain,
-} from "../src/anchor.ts"
-import type { AnchorRef, AnchorSink, AnchorVerdict } from "../src/types.ts"
+} from "../src/journal/anchor.ts"
+import type { AnchorRef, AnchorSink, AnchorVerdict } from "../src/util/types.ts"
 import { pathToFileURL } from "node:url"
 
 /** Creates a temp metrics dir and project dir (a real git repo).

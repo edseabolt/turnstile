@@ -45,9 +45,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
-import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers.ts"
-import { newState } from "../src/state.ts"
-import { createLedger } from "../src/ledger.ts"
+import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers/markers.ts"
+import { newState } from "../src/state/state.ts"
+import { createLedger } from "../src/state/ledger.ts"
 import {
   callSession,
   callTool,

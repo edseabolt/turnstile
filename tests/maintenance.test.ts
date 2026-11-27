@@ -15,14 +15,14 @@ import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 
 import { turnstile } from "../turnstile.ts"
-import { createGates } from "../src/gates.ts"
+import { createGates } from "../src/gates/gates.ts"
 import {
   MAINTENANCE_MAX_PER_PLAN,
   maintenanceDeclared,
   maintenanceDiffEligible,
   maintenanceFileEligible,
   maintenanceMarkerSensitive,
-} from "../src/maintenance.ts"
+} from "../src/gates/maintenance.ts"
 import {
   callPermission,
   callTool,
@@ -531,8 +531,8 @@ test("maintenance flow: an absolute custom plansDir is recognized (relativized a
 })
 
 test("plan keying: a spec-region edit invalidates the bound approval (plan-edited)", async () => {
-  const { defaultConfig } = await import("../src/config.ts")
-  const { createJournaler } = await import("../src/journal.ts")
+  const { defaultConfig } = await import("../src/config/config.ts")
+  const { createJournaler } = await import("../src/journal/journal.ts")
   const project = tmpDir()
   fs.mkdirSync(path.join(project, ".opencode", "plans"), { recursive: true })
   const body = "# Progress\n\n- x\n\n# Objective\n\nSpec.\n"

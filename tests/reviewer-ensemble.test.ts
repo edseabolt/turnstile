@@ -17,8 +17,8 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { createLedger } from "../src/ledger.ts"
-import { LANDING_REQUIREMENT } from "../src/tool-policy.ts"
+import { createLedger } from "../src/state/ledger.ts"
+import { LANDING_REQUIREMENT } from "../src/tool-policy/tool-policy.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callPermission,

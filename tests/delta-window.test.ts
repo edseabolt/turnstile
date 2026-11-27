@@ -11,15 +11,15 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
-import { createEventHandlers } from "../src/event-stream-handlers.ts"
+import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
+import { createEventHandlers } from "../src/hooks/event-stream-handlers.ts"
 import {
   GATE_RE,
   VERDICT_RE,
   deltaWindowFloorChars,
   findTruncatedMarkerSpans,
-} from "../src/markers.ts"
-import type { TurnstileConfig } from "../src/types.ts"
+} from "../src/markers/markers.ts"
+import type { TurnstileConfig } from "../src/util/types.ts"
 import { turnstile } from "../turnstile.ts"
 import { isolatedEnv, journalEntries, makeFakeHost, tmpDir, waitUntil } from "./helpers.ts"
 

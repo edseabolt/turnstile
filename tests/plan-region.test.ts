@@ -10,7 +10,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 
-import { planSpecRegion, PROGRESS_HEADER } from "../src/plan-region.ts"
+import { planSpecRegion, PROGRESS_HEADER } from "../src/gates/plan-region.ts"
 
 const keyOf = (text: string): string => {
   const bytes = Buffer.from(text, "utf8")

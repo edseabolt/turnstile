@@ -12,7 +12,7 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { withFileLock } from "../src/lockfile.ts"
+import { withFileLock } from "../src/journal/lockfile.ts"
 import { tmpDir } from "./helpers.ts"
 
 /**

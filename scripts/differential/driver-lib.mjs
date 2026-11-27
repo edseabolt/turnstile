@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url"
 /**
  * Dynamically imports one repo-relative module from a tree root.
  * @param {string} treeRoot The tree root directory.
- * @param {string} spec The repo-relative specifier (e.g. "src/config.ts").
+ * @param {string} spec The repo-relative specifier (e.g. "src/config/config.ts").
  * @returns {Promise<unknown>} The module namespace.
  */
 export async function importFrom(treeRoot, spec) {

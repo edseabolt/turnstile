@@ -15,7 +15,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import type { TurnstileConfig } from "../src/types.ts"
+import type { TurnstileConfig } from "../src/util/types.ts"
 import {
   callPermission,
   callTool,

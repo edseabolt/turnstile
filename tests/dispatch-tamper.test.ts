@@ -13,8 +13,8 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { createLedger } from "../src/ledger.ts"
-import { sha256Hex16 } from "../src/chain.ts"
+import { createLedger } from "../src/state/ledger.ts"
+import { sha256Hex16 } from "../src/journal/chain.ts"
 import {
   callTool,
   isolatedEnv,

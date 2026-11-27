@@ -14,9 +14,9 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as zlib from "node:zlib"
 
-import { createJournaler } from "../src/journal.ts"
-import { verifyJournalChain } from "../src/verify.ts"
-import { defaultConfig, mergeConfig } from "../src/config.ts"
+import { createJournaler } from "../src/journal/journal.ts"
+import { verifyJournalChain } from "../src/journal/verify.ts"
+import { defaultConfig, mergeConfig } from "../src/config/config.ts"
 import { tmpDir } from "./helpers.ts"
 
 /** Builds a journaler bound to a fresh temp metrics dir.

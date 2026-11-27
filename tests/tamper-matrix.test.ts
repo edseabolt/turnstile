@@ -23,8 +23,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-import { merkleRoot, recordHash } from "../src/chain.ts"
-import { createJournaler } from "../src/journal.ts"
+import { merkleRoot, recordHash } from "../src/journal/chain.ts"
+import { createJournaler } from "../src/journal/journal.ts"
 import {
   commitTrailerSink,
   gitNoteSink,
@@ -32,9 +32,9 @@ import {
   resolveAnchorSinks,
   sessionStateSink,
   verifyAnchors,
-} from "../src/anchor.ts"
-import type { AnchorRef } from "../src/types.ts"
-import { verifyJournalChain } from "../src/verify.ts"
+} from "../src/journal/anchor.ts"
+import type { AnchorRef } from "../src/util/types.ts"
+import { verifyJournalChain } from "../src/journal/verify.ts"
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const provScript = join(repoRoot, "scripts", "prov.mjs")

@@ -13,7 +13,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 
-import { defaultConfig } from "../src/config.ts"
+import { defaultConfig } from "../src/config/config.ts"
 
 /** One node of the schema's `properties` object. */
 interface SchemaNode {

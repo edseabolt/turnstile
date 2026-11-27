@@ -62,8 +62,8 @@ function scalarKeys(base) {
  *     The scenario result.
  */
 export async function scenario(treeRoot) {
-  return withModules(treeRoot, ["src/config.ts"], async (modules) => {
-    const config = modules["src/config.ts"]
+  return withModules(treeRoot, ["src/config/config.ts"], async (modules) => {
+    const config = modules["src/config/config.ts"]
     const base = config.defaultConfig({})
     const cells = {}
     for (const key of scalarKeys(base)) {

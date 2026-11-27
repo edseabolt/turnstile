@@ -18,7 +18,7 @@
 // The journal file is `turnstile.jsonl`; its rotated generations
 // (`${journal}.1`, `.2`, …) are walked newest-first with an early stop, so the
 // `replayTailLines` replay tail (default 2000) holds across all retained
-// generations — replay parity with src/ledger.ts. The task window is scoped
+// generations — replay parity with src/state/ledger.ts. The task window is scoped
 // to the task's session tree: its per-session sink, the child sinks its
 // `child-edge` rows name, and the shared file filtered to those sessions —
 // another session's journal activity can neither enter the artifact nor
@@ -75,7 +75,7 @@ const SCHEMA = "turnstile-evidence/v1"
 const DEFAULT_REPLAY_TAIL_LINES = 2000
 
 /**
- * The reviewer-ensemble size (src/state.ts `REVIEW_ENSEMBLE_SIZE`). The
+ * The reviewer-ensemble size (src/state/state.ts `REVIEW_ENSEMBLE_SIZE`). The
  * standalone script cannot import TS source, so the constant is copied: under
  * the default `enforce` mode the landing gate credits at two unwaived reviewer
  * dispatches, so that is the bar the artifact reports against.
@@ -83,7 +83,7 @@ const DEFAULT_REPLAY_TAIL_LINES = 2000
 const REVIEW_ENSEMBLE_SIZE = 2
 
 /**
- * The default `reviewEnsemble` mode (src/config.ts). `enforce` requires the
+ * The default `reviewEnsemble` mode (src/config/config.ts). `enforce` requires the
  * full ensemble; `advise` credits a single reviewer APPROVE, so the reported
  * bar is one.
  */
@@ -91,14 +91,14 @@ const DEFAULT_REVIEW_ENSEMBLE = "enforce"
 
 /**
  * Host session-ID alphabet, length-capped. Mirrors the canonical constant in
- * src/ledger.ts (this standalone script cannot import TS source): a session
+ * src/state/ledger.ts (this standalone script cannot import TS source): a session
  * whose ID fails the shape is not a session, so a hostile journal line mints no
  * task key.
  */
 const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
 
 /**
- * The canonical marker pair, rebuilt from the parser shape in src/markers.ts.
+ * The canonical marker pair, rebuilt from the parser shape in src/markers/markers.ts.
  * A journaled `marker` string is emitted only when it matches this verbatim;
  * an oversized or free-text marker (the journaled field is length-bounded)
  * degrades to null, so the artifact carries counts, canonical marker lines,
@@ -456,7 +456,7 @@ function greenRule(plan, tests, review) {
 
 /**
  * Folds one `ensemble` entry into the task's last-wins ensemble state, mirroring
- * src/ledger.ts's `foldEnsemble`: `ensemble` entries carry the RUNNING
+ * src/state/ledger.ts's `foldEnsemble`: `ensemble` entries carry the RUNNING
  * unwaived-dispatch count, so the state is overwritten (never summed), the
  * count is clamped to the reviewer bar (the configured ensemble size — equal
  * to ledger's REVIEW_ENSEMBLE_SIZE under the enforce default, smaller under
@@ -482,7 +482,7 @@ function foldEnsembleEntry(entry, expected, state) {
 /**
  * The review credit, encoded in the reported approval count so the green rule
  * stays a pure read of the document. Mirrors the runtime's own rule
- * (src/ledger.ts `restoreHumanGrants` + the gate's ensemble check): the
+ * (src/state/ledger.ts `restoreHumanGrants` + the gate's ensemble check): the
  * ensemble is satisfied at the bar with the last stamp not a refusal, or a
  * human release cleared one — a release outranks the mechanical ensemble, so
  * the artifact reports the review requirement as satisfied by the same
@@ -531,7 +531,7 @@ function foldTask(acc) {
   let waivers = 0
   let exitZeroRuns = 0
   let emitTs = ""
-  // The ensemble fold mirrors src/ledger.ts's replay (foldEnsemble +
+  // The ensemble fold mirrors src/state/ledger.ts's replay (foldEnsemble +
   // restoreHumanGrants): `ensemble` entries carry the RUNNING dispatch count,
   // so last-wins — not summation — is the honest read. Summing the running
   // counts reported a two-dispatch, fully-credited ensemble as three approvals.

@@ -58,8 +58,8 @@ function freshState() {
  *     The scenario result.
  */
 export async function scenario(treeRoot) {
-  return withModules(treeRoot, ["src/markers.ts"], async (modules) => {
-    const markers = modules["src/markers.ts"]
+  return withModules(treeRoot, ["src/markers/markers.ts"], async (modules) => {
+    const markers = modules["src/markers/markers.ts"]
     const cells = {}
     for (const [name, text] of Object.entries(CORPUS)) {
       const state = freshState()

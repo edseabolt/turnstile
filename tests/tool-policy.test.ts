@@ -10,11 +10,11 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 
 import { turnstile } from "../turnstile.ts"
-import { BlockError } from "../src/gates.ts"
-import { defaultConfig } from "../src/config.ts"
-import { createToolPolicy, type ToolPolicy } from "../src/tool-policy.ts"
-import type { Journaler } from "../src/journal.ts"
-import type { TurnstileConfig, TurnstileGitGates, TurnstileToolPolicy } from "../src/types.ts"
+import { BlockError } from "../src/gates/gates.ts"
+import { defaultConfig } from "../src/config/config.ts"
+import { createToolPolicy, type ToolPolicy } from "../src/tool-policy/tool-policy.ts"
+import type { Journaler } from "../src/journal/journal.ts"
+import type { TurnstileConfig, TurnstileGitGates, TurnstileToolPolicy } from "../src/util/types.ts"
 import {
   callTool,
   isolatedEnv,

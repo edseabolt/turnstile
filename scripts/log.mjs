@@ -50,7 +50,7 @@ Options:
 
 /**
  * Marker length bound for credited verdicts; mirrors the replay fold's
- * MAX_REPLAY_MARKER_LEN in src/ledger.ts (a longer marker is a shape drop).
+ * MAX_REPLAY_MARKER_LEN in src/state/ledger.ts (a longer marker is a shape drop).
  */
 const MAX_REPLAY_MARKER_LEN = 512
 
@@ -483,7 +483,7 @@ function finalGateOf(entries) {
 
 /**
  * Folds the credited-approval status the way the replay fold does
- * (src/ledger.ts foldVerdict/foldEnsemble/restoreReviewApprovals/
+ * (src/state/ledger.ts foldVerdict/foldEnsemble/restoreReviewApprovals/
  * restoreHumanGrants): only `verdict` rows with `source === "task-result"`
  * count, last task-result verdict wins, and a shape-invalid marker (non-string
  * or over the marker bound) is dropped — the previous verdict stays intact.
