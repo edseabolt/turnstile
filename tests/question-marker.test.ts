@@ -17,6 +17,7 @@ import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
 import { createLedger } from "../src/ledger.ts"
 import { defaultConfig, mergeConfig } from "../src/config.ts"
 import { QUESTION_RE, deTokenizeMarker, parseQuestionMarker } from "../src/markers.ts"
+import { toolHooksAfter } from "../src/tool-hooks-after.ts"
 import { formatGateSnapshot } from "../src/state.ts"
 import { orchestratorPolicyFor } from "../src/policy.ts"
 import { newState } from "../src/state-carry.ts"
@@ -153,6 +154,13 @@ test("parseQuestionMarker: no marker or empty text returns null", () => {
   assert.equal(parseQuestionMarker(s, ""), null)
 })
 
+test("parseQuestionMarker: a custom source without the QUESTION: token yields empty text", () => {
+  const s = newState()
+  const event = parseQuestionMarker(s, "Q: which queue?", /Q: .+/gm, "scope", "c1")
+  assert.ok(event)
+  assert.equal(event!.question, "", "no token to split on")
+})
+
 // ── Snapshot line ────────────────────────────────────────────────────────────
 
 test("snapshot: the question line renders PENDING only while a question is open", () => {
@@ -212,6 +220,7 @@ test("replay: the question fold restores pending last-wins and the open clock", 
     questionLine("p5", "timeout"),
     questionLine("p6", "open", { question: 42 }),
     questionLine("p7", "hostile"),
+    JSON.stringify({ type: "question", sessionID: "p8", action: "open", question: "no ts" }),
   ])
   const ledger = createLedger(journalPath, 64, 2000)
   const p1 = ledger.peek("p1")
@@ -227,6 +236,7 @@ test("replay: the question fold restores pending last-wins and the open clock", 
   assert.equal(ledger.peek("p5")?.questionPending, "", "a timeout clears")
   assert.equal(ledger.peek("p6")?.questionPending, "", "a hostile question degrades to empty")
   assert.equal(ledger.peek("p7"), undefined, "a hostile action mints no bucket")
+  assert.equal(ledger.peek("p8")?.questionOpenedAt, 0, "an unparseable ts degrades to no clock")
 })
 
 // ── Pause, answer, cancel, timeout (end-to-end) ──────────────────────────────
@@ -430,6 +440,74 @@ test("an internal question-pause error journals and the dispatch proceeds", asyn
     errors.some((r) => String(r.error).includes("question pause:")),
     "the pause error is journaled",
   )
+})
+
+test("a hostile question-parse delivery journals the capture error and is not blocked", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  ctx.admitPrompt("p1", { text: "do work" }, "")
+  const s = ctx.ledger.state("p1")
+  Object.defineProperty(s, "seen", {
+    get(): never {
+      throw new Error("dedup down")
+    },
+    configurable: true,
+  })
+  await toolHooksAfter(ctx, {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "executor" },
+    result: { output: "QUESTION: which queue?" },
+  })
+  const errors = entriesOf(metricsDir, "error")
+  assert.ok(
+    errors.some((r) => String(r.error).includes("question open capture:")),
+    "the capture error is journaled",
+  )
+})
+
+test("a QUESTION on an unparented delivery opens nothing", async () => {
+  const { ctx, metricsDir } = coreWith({})
+  await toolHooksAfter(ctx, {
+    tool: "task",
+    sessionID: "",
+    input: { agent: "executor" },
+    result: { output: "QUESTION: which queue?" },
+  })
+  assert.deepEqual(entriesOf(metricsDir, "question"), [], "no parent edge, no open row")
+})
+
+test("a timeout resume writes the warning into the host dispatch input", async () => {
+  const { ctx, metricsDir } = coreWith({
+    questionTimeoutMinutes: 1,
+    questionTimeoutAction: "resume",
+  })
+  ctx.admitPrompt("p1", { text: "do work" }, "")
+  const s = ctx.ledger.state("p1")
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = Date.now() - 2 * 60_000
+  const event: Record<string, unknown> = {
+    tool: "task",
+    sessionID: "p1",
+    input: { agent: "test-runner", prompt: "run tests" },
+  }
+  await ctx.handleTaskDispatch(event as never)
+  const prompt = (event.input as { prompt: string }).prompt
+  assert.match(prompt, /question timed out unanswered/)
+  assert.match(prompt, /which queue\?/)
+  assert.equal(s.questionPending, "")
+  assert.ok(entriesOf(metricsDir, "question").some((e) => e.action === "timeout"))
+})
+
+test("a timeout resume with no dispatch input still proceeds (guard skips the write-back)", async () => {
+  const { ctx } = coreWith({
+    questionTimeoutMinutes: 1,
+    questionTimeoutAction: "resume",
+  })
+  const s = ctx.ledger.state("p1")
+  s.questionPending = "which queue?"
+  s.questionOpenedAt = Date.now() - 2 * 60_000
+  await ctx.handleTaskDispatch({ tool: "task", sessionID: "p1" } as never)
+  assert.equal(s.questionPending, "", "the pause resolved")
 })
 
 // ── Policy + agent text ──────────────────────────────────────────────────────

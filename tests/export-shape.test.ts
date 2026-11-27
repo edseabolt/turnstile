@@ -250,9 +250,9 @@ test("config-validate.ts exposes the scalar validator and validateResolved", asy
 })
 
 /** The gate-marker parsing module must expose exactly the marker parser. */
-test("gate-markers-parse.ts exposes only parseGateMarkers at runtime", async () => {
+test("gate-markers-parse.ts exposes only the marker parsers at runtime", async () => {
   const mod = await import("../src/gate-markers-parse.ts")
-  assert.deepEqual(Object.keys(mod).sort(), ["parseGateMarkers"])
+  assert.deepEqual(Object.keys(mod).sort(), ["parseGateMarkers", "parseQuestionMarker"])
 })
 
 /** The state-carry module must expose exactly the fresh-bucket factory and the replay carry merge. */

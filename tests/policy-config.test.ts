@@ -70,9 +70,9 @@ test("policy config: the custom metrics dir renders both journal paths without t
 })
 
 /** 4. The default build keeps the documented shape: an opening paragraph, a
- *  blank line, then eleven section lines in pipeline order, and the default
+ *  blank line, then twelve section lines in pipeline order, and the default
  *  enforcement digits render. */
-test("policy config: the default build keeps the two-paragraph, eleven-section shape", () => {
+test("policy config: the default build keeps the two-paragraph, twelve-section shape", () => {
   const policy = expectedPolicy()
   const paragraphs = policy.split("\n\n")
   assert.equal(paragraphs.length, 2, "exactly one blank line separates the paragraphs")
@@ -80,7 +80,7 @@ test("policy config: the default build keeps the two-paragraph, eleven-section s
   assert.ok(opening, "the opening paragraph is present")
   assert.ok(body, "the section body is present")
   const lines = body!.split("\n")
-  assert.equal(lines.length, 11, "one line per section")
+  assert.equal(lines.length, 12, "one line per section")
   const labels = [
     "Pipeline order:",
     "Continuation (imperative):",
@@ -93,6 +93,7 @@ test("policy config: the default build keeps the two-paragraph, eleven-section s
     "Worktree/commit:",
     "Trace (works with the plugin off):",
     "Verification:",
+    "Questions (executor):",
   ]
   lines.forEach((line, i) => {
     assert.ok(line.startsWith(labels[i]!), `section ${i + 1} is ${labels[i]}`)
