@@ -17,8 +17,8 @@ import * as zlib from "node:zlib"
 
 /**
  * Host session-ID alphabet, length-capped. Standalone-script copy of the
- * canonical constant in src/journal-sinks.ts (scripts cannot import TS
- * source; src/ledger.ts re-imports the same constant).
+ * canonical constant in src/journal/journal-sinks.ts (scripts cannot import TS
+ * source; src/state/ledger.ts re-imports the same constant).
  */
 export const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
 
@@ -27,7 +27,7 @@ export const DEFAULT_REPLAY_TAIL_LINES = 2000
 
 /**
  * Canonical default reviewer agent name; mirrors CANONICAL_REVIEWER_AGENT in
- * src/config.ts (the `agents.reviewer` default).
+ * src/config/config.ts (the `agents.reviewer` default).
  */
 const DEFAULT_REVIEWER_AGENT = "reviewer"
 

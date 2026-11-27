@@ -1,0 +1,1360 @@
+/**
+ * @fileoverview Shared type definitions for the turnstile plugin: the
+ * OpenCode v2 host wire shape, hook payloads, and gate-state structures.
+ *
+ * The host boundary is intentionally permissive: payloads crossing the
+ * plugin boundary are typed as optional fields so a host that omits or
+ * reshapes a field fails open instead of failing hard.
+ */
+
+import type { TestOverlapEvidence } from "../policy/overlap.ts"
+
+export type { TestOverlapEvidence } from "../policy/overlap.ts"
+
+/** Task dispatch input as delivered by the host's `task`/`subagent` tools. */
+export interface TaskInput {
+  subagent_type?: unknown
+  agent?: unknown
+  subagent?: unknown
+  prompt?: unknown
+  description?: unknown
+  command?: unknown
+  cmd?: unknown
+  /**
+   * Target path as delivered by the host's `write`/`edit` tools. The shape is
+   * unconfirmed on v2.0.27, hence `unknown`; `src/tool-policy.ts` reads it as a
+   * documented candidate (`filePath ?? path`) and fails open when absent.
+   */
+  filePath?: unknown
+  /** Alternate candidate key for the same write/edit target path. */
+  path?: unknown
+  /**
+   * New content as delivered by the host's `write` tool. The shape is
+   * unconfirmed on the current host, hence `unknown`; the write-time secret
+   * guard reads it as a documented candidate (`content ?? newString`) and
+   * no-ops when absent.
+   */
+  content?: unknown
+  /** Alternate candidate key for the same write/edit new content. */
+  newString?: unknown
+}
+
+/**
+ * Tool result as delivered by the host's `execute.after` hook. Two host
+ * delivery shapes are observed: the v1 `task` shape, where `output` is the
+ * child's result string and the event is child-keyed; and the v2 `subagent`
+ * shape, where `output` is a structured object (`{ sessionID, status,
+ * output }`) whose `output` string is the child's canonical result text,
+ * the child session ID rides on `metadata.sessionID` (the structured
+ * `output` object carries it too), and `content` is the model-visible text
+ * — a string or an array of content blocks — that the host normalizes into
+ * the transcript, stringifying `output` only when `content` is absent.
+ * Fields are `unknown` because the host does not type them; `src/delivery.ts`
+ * classifies the shape once per delivery (`classifyDelivery`) and fails
+ * open on an unrecognized one.
+ */
+export interface ToolResult {
+  output?: unknown
+  title?: unknown
+  input?: unknown
+  /**
+   * Model-visible text on structured subagent results: a string, or an
+   * array of content blocks (e.g. `{ type: "text", text: "…" }`) that the
+   * host passes through to the transcript. Absent on the v1 string shape,
+   * whose text is `output` itself; the child's canonical text on the
+   * structured shape is the structured `output` string.
+   */
+  content?: unknown
+  metadata?: {
+    exit?: unknown
+    exitCode?: unknown
+    code?: unknown
+    /** Child session ID on structured subagent results (v2 shape). */
+    sessionID?: unknown
+    /** Dispatch state on structured subagent results (e.g. `"completed"`). */
+    status?: unknown
+  }
+}
+
+/** Payload of the `tool.execute.before` and `tool.execute.after` hooks. */
+export interface ToolHookEvent {
+  tool?: unknown
+  /**
+   * Dispatched subagent/agent name, observed on v2.0.27
+   * execute.before/after payloads. The host contract does not type this
+   * field, hence `unknown`; `src/hooks-core.ts` reads it (against the configured
+   * agent-name set) as a conservative exclusion fallback for orchestrator
+   * policy injection: it applies only when the child→parent edge is
+   * unresolvable, to avoid injecting into an unregistered child's own text;
+   * every such skip is journaled (`skipped:true`, `reason:"agent-name"`).
+   */
+  agent?: unknown
+  sessionID?: unknown
+  input?: TaskInput
+  result?: ToolResult
+}
+
+/** Payload of the `session.prompt` hook. */
+export interface PromptHookProperties {
+  sessionID?: unknown
+  /**
+   * Candidate key for the raw user prompt text on v2.0.27. The host does not
+   * type this field, hence `unknown`; `src/delivery.ts` reads it (via
+   * `promptTextOf`, against the
+   * candidate `text ?? prompt`) to capture user-authored waiver/approval markers
+   * at prompt admission. Fails open when absent.
+   */
+  text?: unknown
+  /**
+   * Alternate candidate key for the raw user prompt text. On opencode ≥ 2.0.29
+   * the host may instead send its mutable prompt input object
+   * (`{text, files, agents, skills}`) here; `src/delivery.ts` reads the object's
+   * `text` field as a THIRD candidate (via `promptTextOf`'s guarded cast), so a user
+   * waiver/approval marker in `prompt.text` is captured too. Fails open when
+   * absent.
+   */
+  prompt?: unknown
+  /**
+   * Host message id on the session prompt hook payload (opencode ≥ 2.0.29).
+   * This is the same id the inbox stream delivers as `inboxID`, so a prompt
+   * admitted via both transports dedupes on `${sessionID}:${messageID}`.
+   */
+  messageID?: unknown
+}
+
+/**
+ * Generation draft passed to the `session.generate`/`session.context` hooks.
+ * The context hook is the primary-turn surface (v2.2.x): its draft carries
+ * the mutable system block array the policy head and intent nudge append to.
+ */
+export interface GenerateDraft {
+  agent?: unknown
+  options?: { temperature?: number }
+  /** Lenient: the v2.2.x primary-turn draft carries the host session id. */
+  sessionID?: unknown
+  /** Lenient: mutable system block array on the context draft (v2.2.x). */
+  system?: Array<{ type?: string; text?: string }>
+  /** Lenient: message list on the context draft (never read, only described). */
+  messages?: unknown
+}
+
+/** Compaction draft passed to the `session.compaction` hook. */
+export interface CompactionDraft {
+  system?: Array<{ type: string; text?: string }>
+  /**
+   * Session identity on v2.x's compaction payload (host contract mirrors the
+   * session-scoped prompt/generate payloads, which carry a lenient
+   * `sessionID?: unknown`). Read through the `asSessionID` helper (defined in
+   * `src/delivery.ts`) from `src/hooks-session-bodies.ts` so the snapshot
+   * hydrates the parent bucket; a missing or
+   * hostile value degrades to instruction-only (fail-open).
+   */
+  sessionID?: unknown
+}
+
+/** Session record returned by the host's `session.get`. */
+export interface SessionRecord {
+  parentID?: unknown
+  /**
+   * Directory of the session's current checkout, as delivered by the host.
+   * The host does not type this field, hence `unknown`; `src/parent-resolution.ts`
+   * reads it (via `readRecordString` against the candidate keys `directory` /
+   * `data.directory`) to resolve the
+   * project directory per dispatch and fails open when absent.
+   */
+  directory?: unknown
+  /**
+   * Agent name of the session, as delivered by the host. The host does not
+   * type this field, hence `unknown`; `src/parent-resolution.ts` reads it (via
+   * `readRecordString` against the candidate keys `agent` / `data.agent`, the
+   * shared `AGENT_KEYS` in `src/delivery.ts`) to decide
+   * whether the session's `GATE:`/`VERDICT:` marker text is authoritative for
+   * that kind. Fails open to unresolved: an unproven agent is denied (fail-closed
+   * for text observation), and the `execute.after` delivery path seeds the agent
+   * from dispatch input as the recovery channel.
+   */
+  agent?: unknown
+  /**
+   * Hosted directory of the session's current checkout, as delivered by the
+   * host. The host does not type this field, hence `unknown`;
+   * `src/parent-resolution.ts` reads `location.directory` as a fourth candidate
+   * (via `readRecordString`) and fails open when absent.
+   */
+  location?: { directory?: unknown }
+  data?: {
+    parentID?: unknown
+    directory?: unknown
+    agent?: unknown
+    location?: { directory?: unknown }
+  }
+}
+
+/** Properties bag carried by host stream events. */
+export interface EventProperties {
+  type?: unknown
+  /**
+   * Agent name carried on a `session.created` event, when the host includes
+   * it. `unknown` (untyped by the host); `src/event-stream-handlers.ts` reads it
+   * against `typeof ... === "string"` to seed the emitter-authority cache. Fails open
+   * to empty: a created event without the agent stays unseeded at streaming
+   * time and rests on the `execute.after` delivery seed.
+   */
+  agent?: unknown
+  sessionID?: unknown
+  parentID?: unknown
+  directory?: unknown
+  location?: { directory?: unknown }
+  part?: { type?: unknown; text?: unknown; sessionID?: unknown }
+  text?: unknown
+  delta?: unknown
+  error?: unknown
+  /**
+   * Host request id on `permission.asked`; the matched id on `permission.replied`.
+   * Present only on the permission stream events (opencode v2.0.27+).
+   */
+  id?: unknown
+  requestID?: unknown
+  /**
+   * A human reply to a permission ask: `"once"`, `"always"`, or `"reject"`.
+   * Present only on `permission.replied`.
+   */
+  reply?: unknown
+  /**
+   * The ask message echoed by the host on `permission.asked`. Read to
+   * recognize plan-gate asks (the evaluate handler stamps a known prefix);
+   * unknown-typed, hence `unknown`.
+   */
+  message?: unknown
+  /**
+   * Host inbox request id on admission stream events (`session.inbox.enqueued`,
+   * opencode ≥ 2.0.29). This is the same id the session prompt hook delivers as
+   * `messageID`, so a prompt admitted via the inbox stream dedupes against the
+   * hook path on `${sessionID}:${inboxID}`. Present only on inbox events.
+   */
+  inboxID?: unknown
+  /**
+   * Admission provenance for a host inbox stream event (`session.inbox.enqueued`,
+   * opencode ≥ 2.0.29). `type:"user"` admits user-authored text whose
+   * `payload.text` carries the user's words; `"synthetic"` / `"compaction"` /
+   * `"move"` are agent/composition arrivals that never carry a user prompt and
+   * are never admitted. `payload.text` is the user prompt text when `type` is
+   * `"user"`; on a `"synthetic"` item `payload.metadata` may name a background
+   * subagent completion (`source:"subagent"`, `childID`, `agent`) whose
+   * `payload.text` is parsed for markers.
+   */
+  item?: { type?: unknown; payload?: { text?: unknown; metadata?: unknown } }
+  /**
+   * Full message snapshot carried by `message.updated` (assistant and user
+   * turns, parent and child sessions). Untyped by the host contract this
+   * plugin relies on, hence `unknown`; `src/token-usage.ts` reads
+   * `role`, `id`, `sessionID`, `modelID`, `providerID`, `tokens`, `cost`,
+   * `finish`, and `time.completed` against runtime guards and fails open
+   * when absent.
+   */
+  info?: unknown
+  /**
+   * On hosts ≥ 2.4.1 the per-step carrier is `session.step.ended`, whose
+   * properties carry `sessionID`, `assistantMessageID`, `finish`, `cost`,
+   * and `tokens` at the top level; `extractStepUsage` reads those fields
+   * against the same runtime guards.
+   */
+}
+
+/** A single host stream event delivered by `event.subscribe`. */
+export interface StreamEvent {
+  type: string
+  data?: EventProperties
+  properties?: EventProperties
+}
+
+/**
+ * Evidence-correlation mode for the reviewer gate. `enforce` (default) refuses
+ * to flip `hasGatePass` on a `GATE: PASS` with no correlated exit-0
+ * bash/shell test execution; `flag` flips but still stamps `verified`;
+ * `off` behaves exactly as before (no correlation).
+ */
+export type GateEvidenceMode = "enforce" | "flag" | "off"
+
+/**
+ * Enforcement mode for the reviewer ensemble. `enforce` (default): a reviewer
+ * `VERDICT: APPROVE` credits the task (`hasReviewApprove`) only when at least
+ * two unwaived reviewer dispatches were counted this task; `advise`: the count
+ * is tracked and journaled but the credit is unconditional (today's
+ * advisory-prose behavior). Mirrors `GateEvidenceMode` (both default to
+ * `enforce`) and, like it, is a resolved literal validated at merge time.
+ */
+export type ReviewEnsembleMode = "enforce" | "advise"
+
+/**
+ * Denylist policy governing the tools that flow through `execute.before`:
+ * bash/shell commands and write/edit target paths. Both denylists default
+ * empty — the "unless the user explicitly asks" semantics for git/gh
+ * operations belongs to the host permission system's `ask` rules, not a
+ * hardcoded denylist — and a configured rule blocks the moment it is added
+ * (an empty list is a harmless no-op; the session-wide escape hatch is the
+ * suspend marker). `pathDeny` stays empty for ordinary editing (a decision is
+ * made and, on block, journaled, with no default blocks). Regex sources are
+ * case-insensitive, compiled once at setup, and matched with `RegExp.test`.
+ */
+export interface TurnstileToolPolicy {
+  /** Case-insensitive regex sources matched against bash/shell commands. */
+  bashDeny: string[]
+  /** Case-insensitive regex sources matched against write/edit target paths. */
+  pathDeny: string[]
+  /** Journal `session_move` dispatches (never blocks). */
+  observeSessionMove: boolean
+  /**
+   * Gate confident file-writing bash commands (redirects from writer
+   * commands, `tee`, `sed -i`/`--in-place`, `cp`/`mv`/`dd`/`truncate`/
+   * `touch`) through the parent hands-on ladder; write-shaped commands
+   * always journal `handsOn` telemetry.
+   */
+  bashWriteGate: boolean
+}
+
+/**
+ * Git-and-commit gate configuration backing the mechanical gates in
+ * `src/tool-policy.ts`. There is no meta-mode: each boolean key is the
+ * per-feature switch (`commitMessages` lints commit subjects, `landingGate`
+ * gates pushes/PR landing on a reviewer verdict), enforced unconditionally
+ * while true; the session-wide escape hatch is the suspend marker.
+ *
+ * `commitFormat` is a conventional-commits regex SOURCE string (no leading
+ * `^`/trailing `$`): callers compile it with `new RegExp("^" + source + "$",
+ * "s")`. It accepts one of the default types `{feat,fix,docs,style,refactor,
+ * perf,test,build,ci,chore,revert}`, an optional `(scope)`, a required `!` or
+ * `:` separator (only one is needed — no `BREAKING CHANGE` trailer), a subject
+ * of up to 72 characters on the first line, and one optional following body
+ * line.
+ */
+export interface TurnstileGitGates {
+  /** Whether `git commit` messages are linted as conventional commits. */
+  commitMessages: boolean
+  /** Conventional-commit regex SOURCE string (compiled by callers with `"^…$"` + `"s"`). */
+  commitFormat: string
+  /** Whether pushing/PR-landing is gated on a reviewer `VERDICT: APPROVE`. */
+  landingGate: boolean
+  /** Whether a statically-provable empty-diff `git push` (ref-equal to upstream) skips the landing gate (default true; `false` is the strict opt-out). */
+  emptyDiffExempt: boolean
+  /**
+   * Blind-retry escalation: failed `invalid-commit-message` attempts for the
+   * same session within `commitRetryWindowMs` before the block message appends
+   * a full canonical example (default 3).
+   */
+  commitRetryThreshold: number
+  /** Window in milliseconds for `commitRetryThreshold` burst counting (default 60000). */
+  commitRetryWindowMs: number
+}
+
+/**
+ * Observe-only decision-ledger configuration backing the `prov:*` journal
+ * capture in `src/decision-ledger.ts`. There is no enforcement surface: the ledger
+ * only records; `enabled: false` silences every `prov:*` journal write and
+ * changes no other behavior.
+ */
+export interface TurnstileDecisionLedger {
+  /**
+   * Whether decision-ledger capture is on (default true): parent-session
+   * human prompts journal `prov:stated` and human permission denials journal
+   * `prov:denied`. `false` disables all `prov:*` journaling; no other
+   * behavior changes.
+   */
+  enabled: boolean
+}
+
+/**
+ * Write-time secret-guard mode. `off` disables the surface entirely;
+ * `advise` (the default) journals an advisory row and stashes one nudge for
+ * the next delivery, never blocking; `enforce` blocks the matching write
+ * with the standard `BLOCKED by turnstile:` composer.
+ */
+export type SecretWriteGuardMode = "off" | "advise" | "enforce"
+
+/**
+ * Secret-detection configuration backing journal redaction and the
+ * write-time guard in `src/tool-policy-guards.ts`. The built-in pattern list
+ * (in `src/secret-patterns.ts`) is the single canonical source both surfaces
+ * consume; `patterns` only ever extends it (append semantics: redaction at
+ * capture time cannot be taken back, so a config typo can never disarm the
+ * built-ins).
+ */
+export interface TurnstileSecrets {
+  /**
+   * Extra regex sources (compiled with `"g"`) appended to the built-ins for
+   * BOTH journal redaction and the write-time guard. An invalid source is
+   * dropped with a journaled error; the built-ins are never replaceable.
+   */
+  patterns: string[]
+  /** Write-time guard mode (default `advise`). */
+  writeGuard: SecretWriteGuardMode
+  /**
+   * Advisory-only high-entropy heuristic (default false): when true, a write
+   * whose content carries a high-entropy literal journals an advisory row
+   * (never blocks, even under `enforce`).
+   */
+  entropy: boolean
+}
+
+/**
+ * One anchor-sink selection: a builtin sink name (`session-state`,
+ * `git-note`, `commit-trailer`), an external plugin sink, or an array of
+ * those (all selected sinks publish; verify intersects).
+ */
+export type AnchorSelection =
+  | string
+  | { plugin: string; options?: Record<string, unknown> }
+  | Array<string | { plugin: string; options?: Record<string, unknown> }>
+
+/**
+ * Tamper-evidence configuration backing the journal hash chain in
+ * `src/journal.ts` and the anchor-sink boundary in `src/anchor.ts`.
+ */
+export interface TurnstileTamperEvidence {
+  /**
+   * Master switch for the per-record journal hash chain. `false` (the
+   * default) restores the legacy unchained row shape byte-for-byte;
+   * `true` appends `seq`/`prevHash`/`hash` to every row and commits
+   * `chain-epoch` Merkle rows.
+   */
+  enabled: boolean
+  /** Anchor sink(s): a builtin name, an external `{plugin}`, or an array. */
+  anchor: AnchorSelection
+  /** Data rows per Merkle epoch, per journal file family. */
+  epochEntries: number
+  /** Run a chain+anchor verify at session idle; journal the verdict. */
+  verifyOnSessionEnd: boolean
+}
+
+/** Default data rows per Merkle epoch (`tamperEvidence.epochEntries`). */
+export const DEFAULT_EPOCH_ENTRIES = 512
+
+/**
+ * One publishable anchor reference: a committed epoch's Merkle root and
+ * head, published to anchor sinks. `source` names the journal file family
+ * ("shared" or the parent session ID) so verify can match a ref to the
+ * family that produced it; `sink` is filled with the publishing sink's id
+ * at publish time ("" while pending).
+ */
+export interface AnchorRef {
+  /** The publishing sink's id ("" while the ref is pending). */
+  sink: string
+  /** The journal file family the epoch belongs to. */
+  source: string
+  /** 0-based epoch index within the family. */
+  epoch: number
+  /** The committed Merkle root over the epoch's data-row hashes. */
+  root: string
+  /** The last data-row hash of the epoch. */
+  head: string
+  /** The ISO timestamp the epoch row was written at. */
+  ts: string
+}
+
+/** The outcome of verifying one anchor ref against one sink. */
+export type AnchorVerdict =
+  | { status: "ok"; anchoredAt: string }
+  | { status: "mismatch"; detail: string }
+  | { status: "missing"; detail: string }
+
+/**
+ * One anchor sink: a durable store a committed epoch ref is published to
+ * and later verified against. `trustDomain` declares how independently the
+ * store survives a journal rewrite (`host` = same host filesystem,
+ * `repo` = git object store, `external` = outside both).
+ */
+export interface AnchorSink {
+  /** Stable sink identifier (used in error rows and verdicts). */
+  readonly id: string
+  /** The trust domain the sink's store lives in. */
+  readonly trustDomain: "host" | "repo" | "external"
+  /**
+   * Publishes one anchor ref. May be sync or async; a rejection is
+   * journaled fail-open by the caller.
+   * @param ref The anchor ref to publish.
+   */
+  publish(ref: AnchorRef): void | Promise<void>
+  /**
+   * Verifies a previously published ref.
+   * @param ref The anchor ref to look up.
+   * @returns The verdict for this sink.
+   */
+  verify(ref: AnchorRef): AnchorVerdict | Promise<AnchorVerdict>
+}
+
+/** Gate state for one parent session. */
+export interface GateState {
+  hasGatePass: boolean
+  /**
+   * Last `GATE: PASS` rejected for lack of correlated test execution (an
+   * unverified claim under `enforce`); "" when none. Cleared on a green flip,
+   * on `GATE: FAIL`, and on a task reset. Task-scoped: never carried through
+   * `mergeAfterReplay`.
+   */
+  unverifiedPass: string
+  /**
+   * Verbatim text of the task's last first-sight `GATE:` marker, de-tokenized
+   * (leading `GATE:` lowercased) so an injected echo can never re-parse as an
+   * authoritative marker; "" until observed. Task-scoped: fresh "" on every
+   * task-scope reset and never carried through mergeAfterReplay. Display only —
+   * rendered into the compaction snapshot, never consulted by enforcement.
+   */
+  lastGateMarker: string
+  /**
+   * Same for the task's last first-sight `VERDICT:` marker (reviewer or
+   * plan-reviewer), de-tokenized for echo-safety. "" until observed.
+   * Task-scoped: fresh "" on every task-scope reset and never carried through
+   * mergeAfterReplay. Display only.
+   */
+  lastVerdictMarker: string
+  /** True when this task's plan has a current plan-reviewer APPROVE. */
+  hasPlanVerdict: boolean
+  /**
+   * True once this task's reviewer `execute.after` delivery has carried a
+   * `VERDICT: APPROVE` for the parent — the landing gate's release signal.
+   * Restart-sticky like `hasPlanVerdict`: restored by journal replay across a
+   * restart and carried one prompt via `mergeAfterReplay`; fresh
+   * `false` on an ordinary task-scope reset.
+   */
+  hasReviewApprove: boolean
+  /**
+   * Latest user-authored prompt text containing the waiver marker; "" when
+   * none. Non-empty ⇒ the current task's reviewer/dispatch gates are waived
+   * per the canonical waiver semantics: a waiver covers every gate while
+   * unscoped, but the reviewer gate consumes an unscoped waiver on the first
+   * dispatch it unlocks; naming configured agent names in the waiver text
+   * scopes it to those stages' gates (the plan gate is covered by either its
+   * plan-reviewer or executor stage name), and a scoped waiver stays live
+   * until that stage's waiver allowance is spent — metered separately from
+   * the ordinary dispatch caps. The waiver holds for the whole task scope: a
+   * same-scope prompt never drops it (only a task-scope change does — a
+   * different-plan approval, a task retire, or a planless fingerprint
+   * change). Task-scoped: cleared on a scope-changing reset, but carried
+   * one prompt through `mergeAfterReplay` exactly like the restart-sticky
+   * gate flags, so a continuation-carry or replay grace prompt keeps the
+   * waiver and its scope, consumed flag, and spent allowance the block
+   * messages will read.
+   */
+  userWaiver: string
+  /**
+   * Configured agent names named by the waiver text at capture (the parsed
+   * scope); `[]` = unscoped (covers every gate). See the canonical semantics
+   * on `userWaiver`. Task-scoped: cleared when the task scope changes (an
+   * approval binding a different plan, a task retire, or a planless
+   * fingerprint change), but carried one prompt through `mergeAfterReplay`
+   * exactly like the restart-sticky gate flags, so a continuation-carry or
+   * replay grace prompt keeps the waiver's scope the block messages will
+   * read. A same-scope prompt (every prompt while a plan is bound and not
+   * retired) never clears it — the waiver holds for the whole task.
+   */
+  userWaiverScope: string[]
+  /**
+   * True once the reviewer gate consumed an unscoped waiver on the first
+   * dispatch it unlocked; reports the consumed state to block messages and
+   * the compaction snapshot. Task-scoped: cleared on an ordinary prompt
+   * reset, but carried one prompt through `mergeAfterReplay` exactly like
+   * the restart-sticky gate flags, so a continuation-carry or replay grace
+   * prompt keeps the consumed flag the block messages will read.
+   */
+  userWaiverConsumed: boolean
+  /**
+   * Waiver-allowance slots spent by scoped-waived reviewer dispatches.
+   * Deliberately NOT shared with `reviewRounds`: that counter is deliberately
+   * neither journal-replayed nor restart-sticky (`mergeAfterReplay` skips
+   * loop-cap counters by design), so a shared counter would mis-attribute
+   * spent slots to the waiver after a
+   * mid-task restart and would break the "waived dispatches don't count
+   * toward the cap" invariant. Lifecycle mirrors the `userWaiver` pair:
+   * task-scoped, fresh `0` on an ordinary task-scope reset, never replay-
+   * restored, but carried one prompt through `mergeAfterReplay` exactly like
+   * the restart-sticky gate flags, so a continuation-carry or replay grace
+   * prompt keeps the spent allowance the block messages will read — the
+   * waiver's own allowance travels with the waiver, while `reviewRounds`
+   * (the metered dispatch count) does not.
+   */
+  reviewWaiverRounds: number
+  /**
+   * Provenance flag: true once a human (prompt marker or permission reply)
+   * rather than the plan-reviewer subagent released the plan gate. Provenance
+   * only — `execute.before` never consults it; it is read by the status CLI and
+   * trace lines. Fresh `false` on each task-scope reset, but restart-restored values
+   * survive the first post-restart prompt via `mergeAfterReplay`, exactly like
+   * `hasPlanVerdict`.
+   */
+  humanApproval: boolean
+  /**
+   * A single-dispatch grant — the matched host `requestID` for a once-granted
+   * human approval, keyed per ask-reason so a plan-gate `once` grant (releasing
+   * exactly one executor dispatch) can never be consumed by a landing-gate
+   * `once` grant (releasing exactly one push) and vice versa: `{ plan }` for the
+   * plan gate (consumed by the executor dispatch short-circuit), `{ landing }`
+   * for the landing gate (consumed by the bash short-circuit). "" per reason
+   * when none. Task-scoped: cleared immediately after the single dispatch
+   * consumes it (a stale grant cannot outlive one dispatch) and never carried
+   * through `mergeAfterReplay`.
+   */
+  pendingOnceGrant: {
+    /** Plan-gate once grant: the matched requestID, or "" when none. */
+    plan: string
+    /** Landing-gate once grant: the matched requestID, or "" when none. */
+    landing: string
+    /** Hands-on-gate once grant: the matched requestID, or "" when none. */
+    handsOn: string
+  }
+  /**
+   * True once this task's first parent task/subagent result delivery has
+   * carried the injected orchestrator policy forward into model context.
+   * Cleared by `ledger.resetState()` on every task-scope reset, so the
+   * policy is re-injected per task (the intended per-task re-supply, which
+   * also re-applies it after compaction).
+   */
+  policyInjected: boolean
+  /**
+   * Dedup key → raw session ID that first observed the marker; written
+   * alongside `seen.add` by `observeMarker`. Tracks first-sight provenance so
+   * a dedup hit from a different raw session can be accounted as cross-child
+   * suppression (a different raw session than the stored provenance).
+   *
+   * Holds gate-kind provenance only: verdict-kind streaming dedup lives in the
+   * per-child `childVerdicts` store, not here.
+   */
+  seenFrom: Map<string, string>
+  /**
+   * Cross-child suppressions pending attribution on the next emitted
+   * `MarkerEvent` (a `GATE:` dedup hit whose raw session differs from the
+   * provenance stored in `seenFrom`). Read and zeroed when an event emits; 0 on
+   * a fresh bucket. Verdict-kind deliveries use the per-child store instead, so
+   * this counter is now gated on gate-kind hits only.
+   */
+  suppressedPending: number
+  reviewRounds: number
+  /**
+   * Task-scoped ensemble count of *unwaived* `task -> reviewer` dispatches.
+   * The landing credit (`hasReviewApprove`) requires `>= 2`. Unlike
+   * `reviewRounds` it is restart-sticky: restored by journal replay across a
+   * restart and carried one prompt via `mergeAfterReplay`; fresh `0` on an
+   * ordinary task-scope reset. Waived dispatches never advance it (the waiver
+   * short-circuits before counting, mirroring `reviewRounds`).
+   */
+  reviewerDispatches: number
+  /**
+   * Task-scoped planner dispatch count. Exceeded ⇒ the planner leg is spinning;
+   * see `maxPlannerRounds`. Waived dispatches are exempt (the waiver
+   * short-circuits before counting, mirroring the reviewer-cap precedent).
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  plannerRounds: number
+  /**
+   * Task-scoped plan-reviewer dispatch count. Exceeded ⇒ the plan is going in
+   * circles; see `maxPlanReviewerRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  planReviewerRounds: number
+  /**
+   * Task-scoped test-runner dispatch count. Exceeded ⇒ the test loop is
+   * spinning; see `maxTestRunnerRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  testRunnerRounds: number
+  /**
+   * Task-scoped requirements-phase dispatch count. Exceeded ⇒ the spec is not
+   * converging; see `maxRequirementsRounds`. Waived dispatches are exempt.
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  requirementsRounds: number
+  /**
+   * Every task/subagent dispatch this task across all legs (planner,
+   * plan-reviewer, executor, test-runner, reviewer, debugger, unknown),
+   * capped by `maxTotalDispatches` as the global loop backstop. Waived
+   * dispatches are exempt (the waiver short-circuits before counting).
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  totalDispatches: number
+  /**
+   * Count of `git push`/PR-landing blocks this task under the landing gate —
+   * telemetry that arms the permission-ask escalation on a repeat attempt.
+   * Task-scoped: fresh `0` on each task-scope reset and never carried through
+   * `mergeAfterReplay`.
+   */
+  landingBlocks: number
+  /**
+   * Task-scoped count of parent hands-on (write/edit) blocks this task under
+   * the hands-on gate — arms the permission-ask escalation on a repeat
+   * attempt. Task-scoped: fresh `0` on each task-scope reset and never carried
+   * through `mergeAfterReplay`. A restart mid-task drops it (never
+   * replay-restored), so the ladder re-blocks and re-arms — the
+   * fail-toward-strict direction.
+   */
+  handsOnBlocks: number
+  /**
+   * Task-scoped standing release from a human `always` reply to a hands-on
+   * ask: the rest of this task's parent write/edit calls are allowed. Fresh
+   * `false` on every task-scope reset; restart-restored by the sticky-decision
+   * replay (a replayed `always` hands-on decision row re-stamps it) and
+   * carried through `mergeAfterReplay` like the other standing releases —
+   * a restart mid-task keeps the release (task-scoped human releases).
+   */
+  handsOnRelease: boolean
+  /**
+   * Task-scoped standing human release provenance: true once this task's
+   * waiver was journaled through the sticky decision-row family (capture)
+   * or restored by it (replay). Provenance/status only — the gates keep
+   * reading the waiver family itself (`userWaiver`/`userWaiverScope`), so
+   * each surface keeps exactly one release source of truth. Fresh `false`;
+   * restart-sticky through `mergeAfterReplay`.
+   */
+  stickyRelease: boolean
+  reads: number
+  /**
+   * True once this task's read-budget warning prefix has been injected into a
+   * whole-file read result. The prefix is a once-per-task nudge: the corrected
+   * `reads` counter is not monotonic (a failed read's charge is corrected
+   * back down), so equality with `readWarn` could inject the warning again on
+   * a later climb. Task-scoped: fresh `false` on every task-scope reset, never
+   * carried through `mergeAfterReplay`, never replay-restored (`reads` itself
+   * restarts at 0, so a restarted session may warn once again — intended).
+   */
+  readWarned: boolean
+  seen: Set<string>
+  /**
+   * Plans-dir signature the approval was issued against; "" means unstampable
+   * (absent/unreadable dir) or restored from a field-less legacy journal line,
+   * and is accepted once, then stamped, on the next enforcing dispatch. A
+   * journaled APPROVE's `plansSig` field restores it verbatim, so a replayed
+   * unbound approval validates against the current dir like a live one.
+   * Governs unbound approvals only.
+   */
+  plansSignature: string
+  /**
+   * Name of the plan file this task's plan approval is bound to; "" = unbound
+   * (human release, legacy journal replay, or an approval whose dispatch
+   * prompt named no single existing plan file). Restart-sticky and paired with
+   * `hasPlanVerdict`: restored by journal replay (a `plan` entry's optional
+   * `plan` field) and carried one prompt via `mergeAfterReplay`; fresh "" on
+   * an ordinary task-scope reset.
+   */
+  approvedPlan: string
+  /**
+   * The active task's identity: the path-free name of the most recently
+   * plan-approved plan file for this parent (the `PLAN APPROVED:` capture or
+   * a reviewer-verdict binding), "" while the parent works without a bound
+   * plan (the worktree `taskFingerprint` fallback governs scope instead).
+   * Established ONLY by a plan-approval event — prompt mentions of plan files
+   * never establish or flip scope. Scope resets exactly on: an approval
+   * binding a different plan (the capture resets before stamping), an
+   * explicit retire (`taskComplete`), or a fingerprint change while this is
+   * "". Journaled in the plan-approval entry's `plan` field and restored by
+   * the ordered scope fold at replay; carried through `mergeAfterReplay`
+   * while `hasPlanVerdict` holds (and never out of a `taskComplete` bucket,
+   * except the interrupted-review recovery: a retired task whose review was
+   * interrupted mid-flight carries it via `isInterruptedReview`).
+   */
+  activePlan: string
+  /**
+   * True once the active task retired: a `GATE: PASS` journaling flip (the
+   * gate entry's `task-complete` companion row) or a user prompt carrying the
+   * configured `taskDoneMarker` literal (admission-only — child results and
+   * dispatch prompts never retire a task). The NEXT admitted task-scope resets
+   * for a fresh task; within the retiring turn, pipeline legs keep their
+   * counters. Never carried through `mergeAfterReplay`: a completed task
+   * contributes no flags, releases, or counters to the next task. Restored
+   * by the ordered scope fold at replay (a `task-complete` row marks it; a
+   * later plan APPROVE clears it).
+   */
+  taskComplete: boolean
+  /**
+   * sha256 hex of the bound plan file's bytes at approval time; "" = unknown.
+   * A bound approval is stale when the bound plan's current file hash differs
+   * (`plan-edited`) or the file no longer exists (`plan-missing`); changes to
+   * other plans-dir files do not invalidate it. Paired with `approvedPlan`
+   * across replay and the grace-prompt carry.
+   */
+  approvedPlanKey: string
+  /**
+   * True while a journal-replayed bucket's unconsumed one-prompt grace is
+   * outstanding: the next reset carries hasGatePass/hasPlanVerdict forward
+   * instead of wiping them. Cleared by the first reset; re-granted only by
+   * journal replay at ledger creation (process restart or plugin reload).
+   */
+  replayGrace: boolean
+  /**
+   * Worktree/branch identity the current task was admitted against; "" until
+   * the first enabled prompt stamps it (see src/fingerprint.ts). When the
+   * carry is on, a prompt re-admitted in the same worktree/branch re-arms
+   * replayGrace to carry the restart-sticky gate flags across the reset
+   * instead of wiping them — but only if a gate flag was actually earned
+   * (`hasGatePass`), so a continuation arriving before any GATE: PASS still
+   * resets fully. A pure replay-resume bucket arrives with replayGrace
+   * pre-armed and taskFingerprint still "" (it is never carried through
+   * mergeAfterReplay): it carries via replayGrace rather than the carry
+   * machinery, journals no continuation entry, and stamps this fingerprint
+   * for subsequent prompts. "" is the pre-stamp "not-yet-a-task" state; a
+   * fingerprint mismatch signals a reset.
+   */
+  taskFingerprint: string
+  /**
+   * Dormant-until-engaged pipeline switch: `false` (default) means the
+   * reactive gates (hands-on, bash-write, landing, commit lint, dispatch
+   * guards, read limit) sleep — only the user-configured denylists and the
+   * telemetry run. Set true by engagement capture (a `PLAN APPROVED:`
+   * prompt, a plan-ref/dispatch classified prompt, or an actual planner
+   * dispatch); cleared by task retire, the `TURNSTILE OFF:` abort, and a
+   * no-credit new prompt (the ordinary reset drops it — it is carried only
+   * through the restart-sticky carry in `mergeAfterReplay`, exactly like
+   * `hasPlanVerdict`). Every transition journals a `type:"engagement"` row
+   * that replay restores last-wins.
+   */
+  engaged: boolean
+  /**
+   * A planner dispatch was admitted and the user has not yet accepted or
+   * rejected the written plan. Restart-sticky: carried across task-scope
+   * resets via `carryStickyFlags` and restored by the `plan-review` journal
+   * fold. Cleared only by the accept capture or the reject retire. Consulted
+   * only while `planUserReview` is on.
+   */
+  planReviewPending: boolean
+  /**
+   * The pending executor question text; "" when none. Set by a first-sight
+   * authoritative `QUESTION:` marker on an executor task-result delivery;
+   * cleared by the answer dispatch, the cancel capture, or a `resume`
+   * timeout. Task-scoped (fresh "" on a task-scope reset) and
+   * restart-sticky through `mergeAfterReplay` (exactly like
+   * `planReviewPending`) and restored by the `question` journal fold.
+   */
+  questionPending: string
+  /**
+   * Epoch ms when the pending question was opened (the journal row's `ts`);
+   * 0 when none. Restored at replay from the journaled open row so a
+   * restart does not reset the timeout clock; carried with
+   * `questionPending`.
+   */
+  questionOpenedAt: number
+}
+
+/** One first-sight marker observation returned by the marker parser. */
+export interface MarkerEvent {
+  kind: "gate" | "verdict"
+  marker: string
+  result?: "PASS" | "FAIL"
+  rounds?: number
+  /**
+   * Evidence verdict of a `PASS` gate event: true (correlated exit-0 test
+   * execution exists for this session) or false (flagged, unverified). Present
+   * only on `PASS` gate events when the evidence mode is not `"off"`.
+   */
+  verified?: boolean
+  /** Evidence mode at the time this event was stamped, when `verified` is. */
+  mode?: GateEvidenceMode
+  /**
+   * Test-overlap corroboration of a `PASS` gate event, present only when the
+   * overlap computation ran (`requireTestOverlap` on, `gateEvidence` not
+   * `"off"`) and did not throw. See `src/overlap.ts` for the shape.
+   */
+  overlap?: TestOverlapEvidence
+  /** Marker matches observed in the same text but not journaled
+   *  (latest-wins policy); 0 when this was the only match. Omitted on an
+   *  `authority:"suppressed"` event (which stamps nothing).
+   */
+  suppressed?: number
+  /**
+   * Present only on a marker observation denied authority: the emitting
+   * session's resolved agent name was not contracted for this kind (gate↔
+   * test-runner, verdict↔reviewer/plan-reviewer). The caller journals a
+   * `type:"suppressed"` audit entry for it and applies nothing, so a quoted or
+   * echoed marker from an unauthoritative session flips no state. `result` /
+   * `rounds` / `verified` / the numeric `suppressed` count are all omitted on
+   * such an event (it stamps nothing; the marker string alone carries the
+   * digits for audit). The field name `authority` is intentionally distinct
+   * from the numeric `suppressed` match count above.
+   */
+  authority?: "suppressed"
+}
+
+/** One marker-shaped near miss found in user prompt text: the exact token
+ * that was seen (`found`), which gate it tried to move (`label`, e.g.
+ * "waiver"), and the exact configured literal it must match (`literal`). */
+export interface MarkerNearMiss {
+  found: string
+  label: string
+  literal: string
+}
+
+/**
+ * The latest `VERDICT:` marker observation for a single child session and the
+ * provenance label of the pipeline that carried it. The store is
+ * verdict-kind only: only `VERDICT:` markers are stored (never `GATE:`), so a
+ * GATE-only child can never suppress a plan-reviewer bare-output violation.
+ *
+ * It is also the streamed-verdict observation ledger: `recordChildVerdict`
+ * returns whether the observation changed (first-record, marker flip, or
+ * source change), so a caller can distinguish a flip from an identical
+ * re-record without re-reading the store. Gate-kind (`GATE:`) dedup still
+ * lives in `GateState.seen`; this store is verdict-kind only.
+ */
+export interface ChildVerdict {
+  /** Last `VERDICT:` marker observed for the child, or "" when none. */
+  marker: string
+  /** Pipeline provenance label, e.g. "child-text" or "child-message". */
+  source: string
+  /**
+   * `Date.now()` when this verdict was last recorded; `0` on the empty default.
+   *
+   * Used by the plausibility join: an unresolved-child verdict is
+   * plausible for a parent only when it was recorded at-or-after that parent's
+   * most recent plan-reviewer dispatch.
+   */
+  recordedAt: number
+}
+
+/** Agent names turnstile recognizes in dispatches and generation drafts. */
+export interface TurnstileAgents {
+  /** Planner: first in the pipeline; the primary session's plan gate gates dispatch. */
+  planner: string
+  reviewer: string
+  /** Plan reviewer: adversarial review of the implementation plan. */
+  planReviewer: string
+  executor: string
+  testRunner: string
+  debugger: string
+  /** Requirements: pre-planner spec extraction (opt-in via `requirementsPhase`). */
+  requirements: string
+  /** Agents contracted to emit GATE/VERDICT markers (bare-output check). */
+  bareOutput: string[]
+}
+
+/**
+ * Layered plugin configuration. Defaults in `src/config.ts`; user overrides
+ * via `~/.config/opencode/turnstile.json`, then env vars, then injected
+ * options (tests). Read once at setup; restart sessions to apply.
+ */
+export interface TurnstileConfig {
+  /** Directory holding the JSONL journal and trace files. */
+  metricsDir: string
+  /** Rotate a journal file when it exceeds this many bytes. */
+  journalMaxBytes: number
+  /** Number of rotated journal generations to keep. */
+  journalMaxGenerations: number
+  /**
+   * Archived generations kept per journal file family in the sibling
+   * archive/ directory; 0 disables archiving. Default 5, matching
+   * journalMaxGenerations.
+   */
+  journalArchiveGenerations: number
+  /**
+   * Size-check/rotation cadence: the journal append hot path only stats and
+   * rotates once per this many appends; entries between the check and the
+   * rename are the bounded overshoot.
+   */
+  journalRotateEveryEntries: number
+  /**
+   * Segment the JSONL journal per parent session: entries carrying a
+   * resolvable parent sessionID append to `sessions/<parentID>.jsonl` under
+   * the metrics dir (same rotation bounds per file); entries without a
+   * sessionID land in the shared `turnstile.jsonl`. False restores the
+   * single-file layout.
+   */
+  journalPerSession: boolean
+  /**
+   * Replay tail window in lines: the most recent this-many journal lines,
+   * walked newest-first across all retained generations (current file plus
+   * rotated generations), are replayed at boot; older lines are dropped.
+   */
+  replayTailLines: number
+  /**
+   * Max reviewer dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxReviewerRounds: number
+  /**
+   * Max planner dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxPlannerRounds: number
+  /**
+   * Max plan-reviewer dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxPlanReviewerRounds: number
+  /**
+   * Max test-runner dispatches per task; the cap counts dispatches, applies
+   * regardless of gate state, and is bypassed by an explicit waiver.
+   */
+  maxTestRunnerRounds: number
+  /**
+   * Max requirements-phase dispatches per task; the cap counts dispatches,
+   * applies regardless of gate state, and is bypassed by an explicit waiver.
+   * Consulted only while `requirementsPhase` is on.
+   */
+  maxRequirementsRounds: number
+  /**
+   * Total task/subagent dispatches per task across all legs, the global loop
+   * backstop; the cap counts dispatches and is bypassed by an explicit waiver.
+   */
+  maxTotalDispatches: number
+  /** Cap on tracked sessions (LRU); oldest state evicted beyond this. */
+  maxSessions: number
+  /**
+   * Compliance re-prompts per child delivery that returned no GATE/VERDICT
+   * marker (bare-output). 0 disables the retry: the first marker-less
+   * delivery counts a violation immediately.
+   */
+  agentMarkerRetry: number
+  /** Whole-file read count at which the horizon warning is injected. */
+  readWarn: number
+  /** Whole-file read count at which further reads are blocked. */
+  readBlock: number
+  /**
+   * Number of admitted parent sessions that run in observe mode
+   * (decisions journaled, nothing blocked) before enforcement switches
+   * on. 0 (default) enforces from the first session.
+   */
+  observeSessions: number
+  /** Literal marker that waives the reviewer gate when in the prompt. */
+  waiverMarker: string
+  /**
+   * Literal marker that releases the plan gate via an explicit human
+   * approval, captured from the user's prompt at admission and honored like
+   * a plan-reviewer verdict. Defaults to `PLAN APPROVED:`.
+   */
+  approvalMarker: string
+  /** Project-relative directory scanned for `## Decomposition` plans. */
+  plansDir: string
+  /** Whether the human-readable trace file is written (JSONL journal always). */
+  trace: boolean
+  /**
+   * Session-end summary surface. `quiet` (default) prints one recap line at
+   * `session.idle` for sessions that did something (verified test-claims,
+   * blocked dispatches, waivers — counts derived from the journal) and is
+   * silent for zero-activity sessions; `on` additionally prints an
+   * all-gates-green line for zero-activity sessions; `off` disables the
+   * surface entirely. See `src/summary.ts` and the `session.idle` handler in
+   * `src/hooks-events.ts`.
+   */
+  sessionSummary: "on" | "quiet" | "off"
+  /**
+   * Token-usage journaling surface. `summary` (default) accumulates
+   * completed assistant-turn usage in memory and journals one
+   * `token-usage` rollup row per session at `session.idle`; `per-message`
+   * journals one row per completed assistant turn as it completes;
+   * `off` disables the surface entirely (no rows, no accumulation). See
+   * `src/token-usage.ts` and the `message.updated` / `session.idle`
+   * handlers in `src/event-stream-handlers.ts`.
+   */
+  tokenUsage: "off" | "summary" | "per-message"
+  /**
+   * Repeat-attempt escalation mode for the landing and hands-on gates.
+   * Both modes are ask-first: an armed repeat
+   * attempt arms the one-shot ask latch and forces the host permission ask
+   * (the block-throw fires only when the latch cannot be armed — a
+   * within-window duplicate arm — or the host never surfaces the ask). The
+   * mode also governs the plan-gate task arm: under "ask" a red plan gate
+   * forces the dispatch permission ask, while "block" (the default) keeps
+   * the arm inert — the dispatch guard blocks and release flows via
+   * `PLAN APPROVED:` plus the sticky waiver/ask paths.
+   */
+  escalation: "ask" | "block"
+  /**
+   * When true, a prompt admitted in an unchanged worktree/branch carries the
+   * current task's restart-sticky gate flags across the task-scope reset instead
+   * of wiping them (a continuation, not a new task). The carry is
+   * CREDIT-SCOPED: only earned credit (an earned gate pass `hasGatePass` or
+   * a landing approval `hasReviewApprove`, each paired with the restart-
+   * sticky ensemble count) is carried, so a continuation arriving before any
+   * `GATE: PASS` or reviewer `VERDICT: APPROVE` still starts a clean cycle.
+   * Default true: a reviewer-approved landing prompt re-arms earned credit
+   * when the worktree/branch is unchanged; set false to restore a clean
+   * cycle every prompt. A genuinely new task on the same branch is
+   * indistinguishable from a continuation, and a carried landing approval
+   * releases pushes for that new task too until a fresh task-scope resets the
+   * bucket.
+   */
+  continuationCarry: boolean
+  /**
+   * Literal marker that, appearing in the user's own prompt, suspends gate
+   * blocking for the session: enforcement decisions keep computing and
+   * journaling (observe-like) but never throw `BLOCKED` while suspended, and
+   * the session's gate state is cleared fresh. Not agent-dispatchable: only
+   * admitted user prompts are scanned. Default `TURNSTILE OFF:`.
+   */
+  suspendMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, resumes
+   * enforcement after a suspension with fresh task state: no credit earned
+   * while suspended rehydrates. Default `TURNSTILE ON:`.
+   */
+  resumeMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, explicitly
+   * retires the session's active task: journals `{type:"task-complete",
+   * plan}` with the bucket's `activePlan` and stamps `taskComplete`, so the
+   * NEXT admitted prompt starts a fresh task scope. Admission-only: child
+   * results and dispatch prompts never retire a task. Default `TASK DONE:`.
+   */
+  taskDoneMarker: string
+  /**
+   * Whether the suspend/resume markers are honored at all. When false, an
+   * OFF or ON marker is refused: the refusal is journaled (`refused:true`
+   * with the marker's `action`) and surfaced as a marker-style diagnostic,
+   * and no state changes (the refused entry folds replay-inert). Default
+   * true.
+   */
+  allowSuspend: boolean
+  /**
+   * Whether the advisory intent nudge is enabled. When true (default), a
+   * user prompt classified as implementation intent with no plan approval
+   * journals `{type:"intent"}` and prepends one advisory pipeline-entry
+   * nudge to the next tool delivery. When false, intent detection is a full
+   * no-op: nothing is journaled and nothing is injected.
+   */
+  intentNudge: boolean
+  /**
+   * `true` restores the legacy always-armed behavior (turnstile enforces
+   * from the first prompt). The default `false` is dormant-until-engaged:
+   * enforcement arms when the user provides a plan (a `PLAN APPROVED:`
+   * marker or a plan-file reference) or asks to run the planner/pipeline,
+   * and sleeps again on task completion, `TURNSTILE OFF:`, or a prompt with
+   * no continuation credit. The user-configured denylists
+   * (`toolPolicy.bashDeny`/`pathDeny`) enforce regardless.
+   */
+  alwaysEnforce: boolean
+  /**
+   * Plan-impact advisory: parent edit/write/write-shaped bash calls that
+   * overlap the bound active plan's scope are allowed with a journaled
+   * plan-impact classification instead of the parent-hands-on block.
+   * `planImpactStrict: true` restores blocking for structural overlap
+   * (files or the ## Decomposition section named by the plan). Default
+   * false.
+   */
+  planImpactStrict: boolean
+  /**
+   * When true, block the plan-reviewer dispatch after a planner dispatch
+   * until the user accepts or rejects the written plan via their own prompt
+   * (the configured `planReviewAcceptMarker` / `planReviewRejectMarker`
+   * literals). Default false — the fully-automated flow.
+   */
+  planUserReview: boolean
+  /**
+   * Requirements phase (opt-in): when true, non-trivial tasks dispatch the
+   * requirements subagent before the planner; the orchestrator relays the
+   * spec's Open Questions to the user and passes the finalized spec verbatim
+   * into the planner dispatch. Soft and ungated: the leg is loop-capped via
+   * `maxRequirementsRounds` but emits no marker and no gate. Default false —
+   * the pipeline is byte-identical when off.
+   */
+  requirementsPhase: boolean
+  /**
+   * Literal marker that, appearing in the user's own prompt, accepts the
+   * written plan and unblocks the plan-reviewer dispatch (the edited file is
+   * what the reviewer reads). Only consulted while `planUserReview` is on.
+   * Default `PLAN REVIEWED:`.
+   */
+  planReviewAcceptMarker: string
+  /**
+   * Literal marker that, appearing in the user's own prompt, rejects the
+   * written plan: retires the task scope without a counted plan-reviewer
+   * dispatch. Only consulted while `planUserReview` is on. Default
+   * `PLAN REJECTED:`.
+   */
+  planReviewRejectMarker: string
+  /**
+   * Minutes before an unanswered pending question resolves per
+   * `questionTimeoutAction`; `0` (default) holds indefinitely — the timeout
+   * never fires.
+   */
+  questionTimeoutMinutes: number
+  /**
+   * What happens when a pending question exceeds `questionTimeoutMinutes`:
+   * `hold` (default) keeps blocking pipeline dispatches; `resume` clears the
+   * pause, journals `action:"timeout"`, and lets the next dispatch proceed
+   * with a warning line naming the question.
+   */
+  questionTimeoutAction: "hold" | "resume"
+  /**
+   * Literal marker that, appearing in the user's own prompt, cancels a
+   * pending question without answering it. Default `QUESTION CANCELLED:`.
+   */
+  questionCancelMarker: string
+  /** Agent names turnstile recognizes. */
+  agents: TurnstileAgents
+  /** Gate marker regex source (compiled with `gm`). */
+  gateMarker: string
+  /** Verdict marker regex source (compiled with `gm`). */
+  verdictMarker: string
+  /**
+   * Evidence-correlation mode for the reviewer gate: `enforce` (default)
+   * requires a correlated exit-0 bash/shell test execution before a
+   * `GATE: PASS` flips the gate; `flag` flips yet stamps `verified`; `off`
+   * keeps the pre-evidence behavior. See `src/evidence.ts`.
+   */
+  gateEvidence: GateEvidenceMode
+  /**
+   * Enforcement mode for the reviewer ensemble. `enforce` (default) credits a
+   * reviewer `VERDICT: APPROVE` (`hasReviewApprove`) only when at
+   * least two unwaived reviewer dispatches were counted this task
+   * (`reviewerDispatches >= 2`); `advise` tracks and journals the count but
+   * credits unconditionally (today's advisory-prose behavior). The
+   * `maxReviewerRounds < 2` interaction is validated at resolve time
+   * (`config.validateResolved`).
+   */
+  reviewEnsemble: ReviewEnsembleMode
+  /**
+   * Case-insensitive regex source a successful (exit-0) bash/shell command
+   * must match to count as test execution. Overridable for non-JS/other
+   * toolchains; the default covers npm/pnpm/yarn/bun/deno/node --test/
+   * pytest/make test/go test/cargo test.
+   */
+  evidencePattern: string
+  /**
+   * Test-overlap corroboration (opt-in, default false): when true, a
+   * first-sight `GATE: PASS` must show file overlap between the tests that
+   * ran (extracted from the command line and the exit-0 command's stdout)
+   * and the files the task touched (write/edit calls by the parent and its
+   * pipeline children). Zero overlap keeps the gate red under `enforce`
+   * (the ordinary unverified-PASS/waiver ladder); requires `gateEvidence`
+   * to be `enforce` or `flag` (inert under `"off"`). See `src/overlap.ts`.
+   */
+  requireTestOverlap: boolean
+  /**
+   * Glob list of paths the test-overlap rule never applies to (docs,
+   * generated code): when every touched path matches some glob, the pass is
+   * accepted and the journal row records `exempt: true`. Default empty.
+   */
+  testOverlapExempt: string[]
+  /**
+   * Regex sources (compiled with `"i"`) deciding which paths count as test
+   * files for the overlap join. The defaults are the cross-ecosystem
+   * convention list in `src/overlap.ts` (JS/TS, Python, Go, Rust,
+   * Java/Kotlin, Ruby, C/C++); a configured list extends it. An invalid
+   * source is dropped with a journaled error; an entirely invalid list
+   * falls back to the defaults.
+   */
+  testOverlapTestFilePattern: string[]
+  /**
+   * Denylist policy for bash/shell and write/edit tools in `execute.before`.
+   * Both `bashDeny` and `pathDeny` default empty (git/gh consent is the host
+   * permission system's, and a configured rule blocks the moment it is added),
+   * and `observeSessionMove` journals `session_move` dispatches without
+   * blocking. See `src/tool-policy.ts`.
+   */
+  toolPolicy: TurnstileToolPolicy
+  /**
+   * Git-and-commit gate configuration: `commitMessages` lints `git commit`
+   * messages against the conventional-commits `commitFormat`, and
+   * `landingGate` gates push/PR-landing on a reviewer `VERDICT: APPROVE` —
+   * each enforced unconditionally while its boolean is true. See
+   * `src/tool-policy.ts`.
+   */
+  gitGates: TurnstileGitGates
+  /**
+   * Observe-only decision-ledger configuration: `decisionLedger.enabled` (default
+   * true) gates every `prov:*` journal write (human prompts, human permission
+   * denials); `false` silences the ledger without changing any other
+   * behavior. See `src/decision-ledger.ts`.
+   */
+  decisionLedger: TurnstileDecisionLedger
+  /**
+   * Tamper-evidence configuration: the per-record journal hash chain
+   * (`enabled`, default false — legacy row shape), the anchor-sink
+   * selection (`anchor`), the Merkle epoch size (`epochEntries`), and the
+   * optional session-end verify (`verifyOnSessionEnd`). See `src/journal.ts`
+   * and `src/anchor.ts`.
+   */
+  tamperEvidence: TurnstileTamperEvidence
+  /**
+   * Secret-detection configuration: the extra secret patterns (`patterns`,
+   * appended to the built-ins for both journal redaction and the write-time
+   * guard), the write-guard mode (`writeGuard`, default `advise`), and the
+   * advisory entropy heuristic (`entropy`, default false). See
+   * `src/secret-patterns.ts` and `src/tool-policy-guards.ts`.
+   */
+  secrets: TurnstileSecrets
+}
+
+/** Options accepted by the plugin factory; tests inject config and env here. */
+export interface TurnstileOptions {
+  /** Overrides applied last, on top of file and env layers. */
+  config?: Partial<TurnstileConfig>
+  /** Environment for config resolution; defaults to `process.env`. */
+  env?: Record<string, string | undefined>
+  /**
+   * Absolute path of the durable approved-plan sidecar; defaults to
+   * `approved-plans.jsonl` beside the journal (the metrics dir). Injected to
+   * redirect the sidecar (tests, fail-open drills).
+   */
+  approvalLedgerPath?: string
+}
+
+/**
+ * The v2 promise-plugin host shape (verified against opencode v2.0.22).
+ *
+ * Hook callback payloads are typed `any` at this wire boundary only; the
+ * host does not expose stable payload types. Every function turnstile
+ * defines has concrete parameter and return types; the `any` ends here.
+ */
+export type Host = {
+  tool?: {
+    hook?: (name: string, cb: (event: any) => Promise<void> | void) => Promise<unknown>
+  }
+  session?: {
+    hook?: (name: string, cb: (input: any) => Promise<void> | void) => Promise<unknown>
+    get?: (input: { sessionID: string }, options?: any) => Promise<SessionRecord | undefined>
+    /** Prompts an existing session (compliance re-prompt channel). */
+    prompt?: (input: { sessionID: string; text: string }, options?: any) => Promise<unknown>
+  }
+  event?: {
+    subscribe?: (options?: { signal?: AbortSignal }) => AsyncIterable<StreamEvent>
+  }
+  permission?: {
+    hook?: (
+      name: string,
+      callback: (event: unknown) => unknown | Promise<unknown>,
+    ) => Promise<unknown>
+  }
+  /**
+   * Host identity block (v2 Context.app). Optional; the version feeds the
+   * host-compat guard only — never enforcement.
+   */
+  app?: { name?: unknown; version?: unknown }
+  /**
+   * TUI surface, when the host exposes one (verified on the TUI side as
+   * `tui.toast.show` with `message` required). Optional-chained everywhere;
+   * the toast is a best-effort delivery channel on top of the journal.
+   */
+  tui?: {
+    toast?: {
+      show?: (input: {
+        message: string
+        title?: string
+        variant?: "info" | "success" | "warning" | "error"
+        duration?: number
+      }) => Promise<unknown>
+    }
+  }
+}
+
+/**
+ * Properties carried by a host `permission.evaluate` request at the wire
+ * boundary. Every field is optional and typed `unknown`: the host does not
+ * expose a stable shape for this payload, so a reshaped or partial payload
+ * fails open rather than failing hard. The plugin matches on `action` (the
+ * host's task/subagent dispatch name) and `source` rather than the tool input
+ * (which this payload does not carry), so escalation surfaces the same decision
+ * to a human without leaking the dispatch target to the subagent.
+ */
+export interface PermissionEvaluateEvent {
+  sessionID?: unknown
+  action?: unknown
+  resources?: unknown
+  metadata?: unknown
+  source?: {
+    type?: unknown
+    messageID?: unknown
+    id?: unknown
+  }
+  effect?: unknown
+  message?: unknown
+}

@@ -12,7 +12,7 @@ import {
   MAX_TRACKED_CHILD_WRITES,
   OVERRIDE_WINDOW_MS,
   createOverrideAdjacency,
-} from "../src/override-adjacency.ts"
+} from "../src/hooks/override-adjacency.ts"
 
 test("findOverride: hits a child write to the same path within the window", () => {
   const adj = createOverrideAdjacency()

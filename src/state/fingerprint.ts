@@ -1,0 +1,138 @@
+/**
+ * @fileoverview Fingerprint boundary: the worktree/branch identity a task was
+ * admitted against, and the pure predicate deciding whether a continuation
+ * prompt (an unchanged identity) carries the restart-sticky gate flags across
+ * a task-scope reset instead of wiping them. Both exports are total: they never
+ * throw.
+ */
+
+import { execFileSync } from "node:child_process"
+import type { StdioOptions } from "node:child_process"
+import * as path from "node:path"
+
+import type { GateState } from "../util/types.ts"
+import { isInterruptedReview } from "./task-scope.ts"
+
+/**
+ * The child_process options for the single rev-parse invocation: bounds the
+ * hang mode and silences git's stdio so a stuck or noisy binary can never
+ * stall or block the hook.
+ */
+const GIT_EXEC_OPTS: ExecOptions = { timeout: 250, stdio: ["ignore", "pipe", "ignore"] }
+
+/**
+ * The command-execution seam: a `child_process.execFileSync`-shaped function.
+ * Defaulted to `realExec` at the call site and overridable in tests, so the
+ * fallback branch is coverable without mocking `child_process` (mirroring the
+ * optional-argument injectability of setup.ts's `readPluginVersion`).
+ */
+type ExecFile = (command: string, args: ReadonlyArray<string>, options?: ExecOptions) => string
+
+/**
+ * The executable-options shape for the seam; a structural subset of
+ * child_process's `ExecFileSyncOptions` (only `timeout`/`stdio` are needed).
+ */
+type ExecOptions = { timeout?: number; stdio?: StdioOptions }
+
+/**
+ * Runs a command and returns its stdout as text. A defensive `String` wraps
+ * execFileSync's `string | Buffer` return so the seam's return type stays
+ * `string` regardless of which execFileSync overload resolves.
+ * @param command The command to run.
+ * @param args The argv array.
+ * @param options Optional child_process options.
+ * @returns The command's stdout as a string.
+ */
+function realExec(command: string, args: ReadonlyArray<string>, options?: ExecOptions): string {
+  return String(execFileSync(command, args, options))
+}
+
+/**
+ * Builds the single `git rev-parse` argv `worktreeFingerprint` runs to read
+ * the worktree root and the short branch name in one process (rev-parse
+ * prints each requested value in argv order, one per line).
+ * @param projectDir The absolute project directory to run against.
+ * @returns The `rev-parse --show-toplevel --abbrev-ref HEAD` argv.
+ */
+function gitRevParseArgv(projectDir: string): string[] {
+  return ["-C", projectDir, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"]
+}
+
+/**
+ * Returns a stable identity for the worktree/branch a task was admitted
+ * against. Runs one `git rev-parse --show-toplevel --abbrev-ref HEAD`
+ * invocation and joins the two output lines (toplevel, then branch), trimmed,
+ * with a NUL separator; both lines are non-empty for a real worktree, so the
+ * identity is well-formed. On any failure (a non-git directory, no git
+ * binary, the timeout, an injected throw, or a clean exit printing fewer than
+ * two lines) it returns `path.resolve(projectDir)`, so continuation still
+ * works inside any stable directory. This is the only continuation-vs-new-task
+ * signal, so it must not throw.
+ * @param projectDir The project directory to fingerprint.
+ * @param exec Optional exec seam; defaults to `realExec` (the real
+ *     `execFileSync`). Tests inject output or a throw to cover the branches
+ *     without mocking the binary.
+ * @returns `` `${show-toplevel}\u0000${abbrev-ref HEAD}` `` for a git worktree,
+ *     otherwise the resolved project directory.
+ */
+export function worktreeFingerprint(projectDir: string, exec: ExecFile = realExec): string {
+  try {
+    const lines = exec("git", gitRevParseArgv(projectDir), GIT_EXEC_OPTS).trim().split("\n")
+    if (lines.length < 2) return path.resolve(projectDir)
+    const [top = "", branch = ""] = lines
+    return `${top.trim()}\u0000${branch.trim()}`
+  } catch {
+    return path.resolve(projectDir)
+  }
+}
+
+/**
+ * Pure predicate deciding whether a continuation prompt carries the current
+ * task's restart-sticky gate flags across a task-scope reset. The carry is
+ * CREDIT-SCOPED by design: it is a no-op unless credit was actually earned
+ * (the test gate `hasGatePass` or the landing approval `hasReviewApprove`),
+ * so a continuation arriving before any `GATE: PASS` or reviewer
+ * `VERDICT: APPROVE` resets fully rather than carrying a
+ * freshly-earned-but-empty flag. An armed user-review pause
+ * (`planReviewPending`) also carries: it is restart-sticky state that must
+ * survive the boundary until the user resolves it (the accept/reject
+ * literals act only while it is pending). Only `taskFingerprint`
+ * distinguishes a
+ * same-branch continuation from a genuinely new task, so a fingerprint
+ * mismatch never carries. A retired bucket (`taskComplete`) carries only in
+ * the interrupted-review case (`isInterruptedReview`): a green gate, no
+ * credited approval, and at least one counted reviewer dispatch or waived
+ * reviewer round — a genuinely new task (no reviewer activity) or a
+ * completed review never carries out of a retire.
+ * @param prior The prior prompt's gate state; `undefined` before any prompt.
+ * @param fingerprint The worktree/branch identity the task was re-admitted
+ *     against.
+ * @param enabled The `continuationCarry` config flag, passed through so the
+ *     predicate stays unit-testable without a real config.
+ * @returns True only when carry is enabled, earned credit (a gate pass or a
+ *     landing approval) exists, the task was admitted again in the exact
+ *     same worktree/branch, and a retired bucket is an interrupted review.
+ */
+export function shouldCarryGate(
+  prior: GateState | undefined,
+  fingerprint: string,
+  enabled: boolean,
+): boolean {
+  return (
+    enabled &&
+    prior !== undefined &&
+    // A pending user-review pause carries too: the accept/reject literals
+    // arrive in a later prompt than the planner dispatch that armed the
+    // pause, so without the carry the pause would die at the boundary and
+    // the plan-reviewer dispatch would run unreviewed. A pending executor
+    // question carries for the same reason: the answer/cancel literal
+    // arrives in a later prompt than the delivery that opened the question.
+    (prior.hasGatePass ||
+      prior.hasReviewApprove ||
+      prior.planReviewPending ||
+      prior.questionPending !== "") &&
+    prior.taskFingerprint !== "" &&
+    prior.taskFingerprint === fingerprint &&
+    (!prior.taskComplete || isInterruptedReview(prior))
+  )
+}

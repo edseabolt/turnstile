@@ -16,10 +16,10 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 
 import { turnstile } from "../turnstile.ts"
-import { createHooksCore } from "../src/hooks-core.ts"
-import { shouldEngage, engagementEntry } from "../src/engagement.ts"
-import { classifyIntent } from "../src/intent.ts"
-import { newState, formatGateSnapshot } from "../src/state.ts"
+import { createHooksCore } from "../src/hooks/hooks-core.ts"
+import { shouldEngage, engagementEntry } from "../src/dispatch/engagement.ts"
+import { classifyIntent } from "../src/dispatch/intent.ts"
+import { newState, formatGateSnapshot } from "../src/state/state.ts"
 import {
   expectedPolicy,
   isolatedEnv,

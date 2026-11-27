@@ -10,7 +10,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { classifyIntent } from "../src/intent.ts"
+import { classifyIntent } from "../src/dispatch/intent.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,

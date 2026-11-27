@@ -36,7 +36,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { recordHash } from "../src/chain.ts"
+import { recordHash } from "../src/journal/chain.ts"
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const evidenceScript = join(repoRoot, "scripts", "evidence.mjs")

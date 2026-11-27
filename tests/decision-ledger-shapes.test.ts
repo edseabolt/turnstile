@@ -18,12 +18,12 @@ import {
   provOverrideEntry,
   provStatedEntry,
   provWaiverEntry,
-} from "../src/decision-ledger.ts"
+} from "../src/journal/decision-ledger.ts"
 import {
   REDACTION_SENTINEL,
   SECRET_PATTERNS,
   redactSecrets,
-} from "../src/decision-ledger-redact.ts"
+} from "../src/journal/decision-ledger-redact.ts"
 
 test("provStatedEntry pins its exact key set, no ts, and stable JSON order", () => {
   const e = provStatedEntry({ sessionID: "s1", text: "hello" })

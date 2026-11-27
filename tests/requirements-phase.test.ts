@@ -12,12 +12,12 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { BlockError } from "../src/gates.ts"
+import { BlockError } from "../src/gates/gates.ts"
 import { turnstile } from "../turnstile.ts"
-import { defaultConfig, mergeConfig } from "../src/config.ts"
-import { orchestratorPolicyFor } from "../src/policy.ts"
-import { clearMeteringCounters, formatPipelineStatus, newState } from "../src/state.ts"
-import { isPipelineChildDispatch } from "../src/child-registration.ts"
+import { defaultConfig, mergeConfig } from "../src/config/config.ts"
+import { orchestratorPolicyFor } from "../src/policy/policy.ts"
+import { clearMeteringCounters, formatPipelineStatus, newState } from "../src/state/state.ts"
+import { isPipelineChildDispatch } from "../src/dispatch/child-registration.ts"
 import {
   callSession,
   callTool,

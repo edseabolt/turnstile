@@ -20,7 +20,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 
-import { BlockError } from "../src/gates.ts"
+import { BlockError } from "../src/gates/gates.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callSession,

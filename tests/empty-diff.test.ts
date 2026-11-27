@@ -11,7 +11,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 
-import { isEmptyDiffPush, planPushRefs } from "../src/empty-diff.ts"
+import { isEmptyDiffPush, planPushRefs } from "../src/tool-policy/empty-diff.ts"
 import { tmpDir } from "./helpers.ts"
 
 /** True when git is available (the real-exec fixture cases skip otherwise). */

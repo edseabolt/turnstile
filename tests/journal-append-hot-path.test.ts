@@ -10,7 +10,7 @@ import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { appendLine } from "../src/journal-sinks.ts"
+import { appendLine } from "../src/journal/journal-sinks.ts"
 import { tmpDir } from "./helpers.ts"
 
 test("appendLine repairs the torn tail on the first write and not again", () => {

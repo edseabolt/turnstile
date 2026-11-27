@@ -299,7 +299,7 @@ Shared caveats:
   delete the checkout; if you relocate it, re-run `npm run init`.
 - `npm run install:check` reports drift between the manifest and what is
   actually installed. There is no `install:agents:check`: the orchestrator
-  policy is injected from code (`src/policy.ts`), not a manifest-managed
+  policy is injected from code (`src/policy/policy.ts`), not a manifest-managed
   template, so nothing to verify there. `npm run ci:installed` is now just
   `install:check`. These install checks must run after `npm run init` on a
   machine with artifacts installed; a fresh clone has nothing to check. The

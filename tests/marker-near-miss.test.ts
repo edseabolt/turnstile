@@ -18,7 +18,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { findMarkerNearMisses, formatNearMissDiagnostics } from "../src/markers.ts"
+import { findMarkerNearMisses, formatNearMissDiagnostics } from "../src/markers/markers.ts"
 import {
   callSession,
   callTool,

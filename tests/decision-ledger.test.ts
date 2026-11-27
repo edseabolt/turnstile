@@ -15,7 +15,7 @@ import {
   provOverrideEntry,
   provStatedEntry,
   provWaiverEntry,
-} from "../src/decision-ledger.ts"
+} from "../src/journal/decision-ledger.ts"
 
 // ── prov:stated ──────────────────────────────────────────────────────────────
 

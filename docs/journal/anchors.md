@@ -4,7 +4,7 @@ The chain fields and epochs are described in [the hash chain](chain.md);
 verification is described in [chain.md](chain.md). This file covers the
 anchor sinks.
 
-**Anchoring (the anchor-sink boundary, `src/anchor.ts`).** A Merkle root in
+**Anchoring (the anchor-sink boundary, `src/journal/anchor.ts`).** A Merkle root in
 the same file an attacker can rewrite proves nothing by itself. So each
 committed epoch's ref (`{sink, source, epoch, root, head, ts}`) is
 published to independent durable stores (the anchor sinks) at the
@@ -111,7 +111,7 @@ export, a factory throw, or a malformed sink each become a journaled
 
 **Row-level inclusion proofs (`prov --verify --session <id>`).** The scoped
 variant folds only the shared journal and the target session's sink.
-`merklePath`/`merklePathRoot` (`src/chain.ts`) derive a per-row audit
+`merklePath`/`merklePathRoot` (`src/journal/chain.ts`) derive a per-row audit
 path under the same Bitcoin-style pairwise/self-hash conventions as
 `merkleRoot` (odd nodes hashed with themselves, plus a final root self-hash,
 deliberately _not_ RFC 6962/9162's copied-node tree, so the proofs verify

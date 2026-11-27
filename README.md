@@ -275,7 +275,7 @@ no derived value feeds gates.
 ## Markers
 
 Subagents must emit these as the first line of their output. These examples
-are the canonical syntax; CI asserts the parser in `src/markers.ts` accepts
+are the canonical syntax; CI asserts the parser in `src/markers/markers.ts` accepts
 exactly them.
 
 ```
@@ -359,7 +359,7 @@ is described in [`docs/usage/field-tested.md`](docs/usage/field-tested.md).
 
 ## Configuration
 
-Defaults live in code (`src/config.ts`); override via
+Defaults live in code (`src/config/config.ts`); override via
 `~/.config/opencode/turnstile.json`, environment variables, or both
 (precedence: defaults < file < env; config is read once at setup; restart
 sessions to apply). Copy
@@ -450,7 +450,7 @@ tools remain unguarded. The full threat model:
   (`{ tool.hook, session.hook, permission.hook, event.subscribe }`, with the
   permission hook registered when the host exposes it).
 - Host compatibility is checked at setup against the shipped range
-  (`HOST_COMPAT` in `src/host-compat.ts`); see the matrix below.
+  (`HOST_COMPAT` in `src/hooks/host-compat.ts`); see the matrix below.
 
 ### OpenCode compatibility matrix
 

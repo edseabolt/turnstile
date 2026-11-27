@@ -16,7 +16,7 @@ import * as path from "node:path"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { createLedger } from "../src/ledger.ts"
+import { createLedger } from "../src/state/ledger.ts"
 import { turnstile } from "../turnstile.ts"
 import {
   callTool,

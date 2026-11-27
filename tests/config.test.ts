@@ -10,7 +10,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { DEFAULT_TEST_FILE_PATTERNS } from "../src/overlap.ts"
+import { DEFAULT_TEST_FILE_PATTERNS } from "../src/policy/overlap.ts"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -30,10 +30,10 @@ const {
   formatConfigWarnings,
   DEFAULT_EVIDENCE_PATTERN,
   DEFAULT_COMMIT_FORMAT,
-} = await import("../src/config.ts")
-const { defaultMetricsDir } = await import("../src/journal.ts")
+} = await import("../src/config/config.ts")
+const { defaultMetricsDir } = await import("../src/journal/journal.ts")
 const { GATE_RE, VERDICT_RE, CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER } =
-  await import("../src/markers.ts")
+  await import("../src/markers/markers.ts")
 
 /**
  * Resolves the config-error journal at call time, mirroring

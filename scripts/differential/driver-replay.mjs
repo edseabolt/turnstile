@@ -257,8 +257,8 @@ function replayCell(ledger, metricsDir) {
  *     The scenario result.
  */
 export async function scenario(treeRoot) {
-  return withModules(treeRoot, ["src/ledger.ts"], async (modules) => {
-    const { createLedger } = modules["src/ledger.ts"]
+  return withModules(treeRoot, ["src/state/ledger.ts"], async (modules) => {
+    const { createLedger } = modules["src/state/ledger.ts"]
     const cells = {}
     for (const fx of FIXTURES) {
       const metricsDir = seedFixture(fx)

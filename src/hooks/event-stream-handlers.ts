@@ -1,0 +1,1060 @@
+/**
+ * @fileoverview Event-stream per-event handlers: the dispatch table consumed
+ * by `startEventStream` (`src/hooks-events.ts`) — child→parent resolution and
+ * marker parsing from child sessions (created/text/ended/delta), permission
+ * ask/reply bookkeeping (plan-gate, landing-gate, and hands-on-gate latches),
+ * inbox prompt admission plus synthetic subagent-completion marker parsing
+ * (opencode ≥ 2.0.29), and the session-idle summary. Extracted from
+ * `src/hooks-events.ts`; every handler reads only the shared context, and the
+ * supervision loop (restart budget, clean-end note) stays in the factory.
+ * Per-event failures are journaled by the outer loop, never fatal to the
+ * stream.
+ */
+
+import {
+  asSessionID,
+  readRecordString,
+  syntheticCompletionOf,
+  DIRECTORY_KEYS,
+  HANDSON_ASK_MESSAGE_PREFIX,
+  LANDING_ASK_MESSAGE_PREFIX,
+  PLAN_ASK_MESSAGE_PREFIX,
+} from "./delivery.ts"
+import { decisionEntry, reviewerEnsembleEntry } from "../gates/gates-common.ts"
+import { readJournalEntries } from "../journal/journal.ts"
+import { verifyJournalChain } from "../journal/verify.ts"
+import { provDeniedEntry, type ProvDeniedKind } from "../journal/decision-ledger.ts"
+import type { TurnstileContext } from "./hooks-core.ts"
+import {
+  countSessionActivity,
+  formatAllGreenLine,
+  formatSessionSummary,
+  isInactive,
+  sessionTokenTotals,
+} from "../journal/summary.ts"
+import type { EventProperties } from "../util/types.ts"
+import { deTokenizeMarker, findTruncatedMarkerSpans } from "../markers/markers.ts"
+import {
+  addTotals,
+  extractStepUsage,
+  extractUsage,
+  zeroTotals,
+  type ExtractedUsage,
+} from "../dispatch/token-usage.ts"
+
+/** A per-event handler in consume()'s dispatch table, keyed by event type. */
+export type EventHandler = (properties: EventProperties) => void | Promise<void>
+
+/**
+ * Reply latency under which a human could not plausibly have read and
+ * answered the ask: a release reply arriving faster than this journals a
+ * provenance suspicion. Heuristic only — the release still applies and the
+ * row gates nothing; the journal keeps the audit trail honest about replies
+ * that look machine-generated (a non-interactive client auto-answering).
+ */
+const FAST_REPLY_MS = 1000
+
+/** Delivery-proof journal entry bound: 300 chars, like the trace's bound. */
+const SUMMARY_TEXT_BOUND = 300
+
+/**
+ * Journals a `marker`/`event:"delta-truncated"` diagnostic for each marker
+ * match the window fold just tail-sliced away that was never seen complete
+ * in streaming (a span already fully inside the previous window was credited
+ * then, so its loss is not a truncation). Diagnostic only: the span is never
+ * parsed as authoritative — gate credit is unaffected, arriving from
+ * streaming first-sight or the task-result delivery re-parse. Fail-open: an
+ * internal error journals an `error` entry and never throws from the event
+ * hook.
+ * @param ctx The shared per-setup context.
+ * @param sid The child session the folded window belongs to.
+ * @param buffer The window text before tail-slicing.
+ * @param window The surviving window text after tail-slicing.
+ * @param previousWindow The window text before the delta that triggered the
+ *     fold (a prefix of `buffer`).
+ */
+function journalTruncatedSpans(
+  ctx: TurnstileContext,
+  sid: string,
+  buffer: string,
+  window: string,
+  previousWindow: string,
+): void {
+  try {
+    for (const span of findTruncatedMarkerSpans(
+      buffer,
+      window,
+      previousWindow,
+      ctx.gateRe,
+      ctx.verdictRe,
+    )) {
+      ctx.journaler.journal({
+        type: "marker",
+        event: "delta-truncated",
+        sessionID: sid,
+        marker: deTokenizeMarker(span).slice(0, SUMMARY_TEXT_BOUND),
+      })
+    }
+  } catch (cause) {
+    ctx.journaler.journal({
+      type: "error",
+      sessionID: sid,
+      error: `delta-window truncation probe: ${String(cause)}`.slice(0, SUMMARY_TEXT_BOUND),
+    })
+  }
+}
+
+/**
+ * Folds a text delta into the session's tail-bounded sliding window and
+ * returns the folded window. Reassembles a possibly-split marker: the
+ * shared-empty dedup scope suppresses every re-fire, so only a newly
+ * completed marker across chunks is first-sighted. When the fold tail-slices
+ * a completed marker span that was never seen complete in streaming out of
+ * the window, a `delta-truncated` diagnostic is journaled (gate credit is
+ * unaffected).
+ * @param ctx The shared per-setup context.
+ * @param sid The child session the delta belongs to.
+ * @param delta The newly arrived delta text.
+ * @returns The window after appending the delta and tail-bounding it.
+ */
+function foldDeltaWindow(ctx: TurnstileContext, sid: string, delta: string): string {
+  const pending = ctx.deltaWindows.get(sid) ?? ""
+  const window = (pending + delta).slice(-ctx.maxDeltaWindowChars)
+  ctx.deltaWindows.set(sid, window)
+  ctx.boundDeltaWindows()
+  journalTruncatedSpans(ctx, sid, pending + delta, window, pending)
+  return window
+}
+
+/**
+ * Seeds the per-session directory cache for a root session: a directory a
+ * child event carries belongs to the parent's context, so only parent-less
+ * events seed the per-session cache (the edge branch's parent is already
+ * keyed by its own created event).
+ * @param ctx The shared per-setup context.
+ * @param sid The root session ID.
+ * @param properties The resolved event properties.
+ */
+function seedRootSessionDir(ctx: TurnstileContext, sid: string, properties: EventProperties): void {
+  const dir = readRecordString(properties, DIRECTORY_KEYS)
+  if (dir !== "") {
+    ctx.sessionDirs.set(sid, dir)
+    ctx.boundSessionDirs()
+  }
+}
+
+/**
+ * Handles a session.created event: records the child→parent edge (and
+ * back-fills evidence for a late edge), or marks a root session as a live
+ * parent and seeds its directory; then seeds the emitter-authority cache
+ * from the event's agent with or without the edge.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleSessionCreated(ctx: TurnstileContext, properties: EventProperties): void {
+  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  if (!sid) return
+  const agent = typeof properties.agent === "string" ? properties.agent : ""
+  if (typeof properties.parentID === "string") {
+    ctx.ledger.setParent(sid, properties.parentID, agent)
+    // Back-fill: a background child's edge often lands after
+    // its evidence and claim were recorded.
+    ctx.promoteOnEvidence(properties.parentID)
+  } else {
+    // Root sessions are live parents; the edge branch above is
+    // covered by setParent marking the parent.
+    ctx.ledger.markParent(sid)
+    seedRootSessionDir(ctx, sid, properties)
+  }
+  // Redundant emitter seed from the created event's agent: this
+  // fires with or without the edge, so a child that streams a
+  // marker before its edge lands (or an unresolved child) still
+  // seeds the authority cache; a genuine delivery remains the
+  // always-firing seed (see seedEmitter).
+  ctx.seedEmitter(sid, agent)
+}
+
+/**
+ * Handles a message.part.updated event: a text part carries possibly
+ * complete markers, parsed from the part's session once its parent is
+ * resolved.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleTextUpdated(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const part = properties.part ?? properties
+  const partSession = asSessionID(properties.sessionID ?? part?.sessionID)
+  if (part?.type === "text" && typeof part.text === "string" && partSession) {
+    await ctx.resolveParent(partSession)
+    ctx.parseMarkers(part.text, partSession, "child-message")
+  }
+}
+
+/**
+ * Handles a session.text.ended event: the finished text carries possibly
+ * complete markers, parsed once the session's parent is resolved.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleTextEnded(ctx: TurnstileContext, properties: EventProperties): Promise<void> {
+  const sid = properties.sessionID
+  const text = properties.text
+  if (typeof sid === "string" && typeof text === "string") {
+    await ctx.resolveParent(sid)
+    ctx.parseMarkers(text, sid, "child-text")
+  }
+}
+
+/**
+ * Handles a session.text.delta event: folds the delta into the session's
+ * sliding window, resolves the parent, then re-parses the window.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleTextDelta(ctx: TurnstileContext, properties: EventProperties): Promise<void> {
+  const sid = properties.sessionID
+  const delta = properties.delta
+  if (typeof sid === "string" && typeof delta === "string") {
+    const window = foldDeltaWindow(ctx, sid, delta)
+    await ctx.resolveParent(sid)
+    // Parse from the map, not the local fold: a task dispatch that
+    // interleaves during the await clears the window (the task
+    // boundary), and a stale local string would complete a marker
+    // that the clear was meant to drop.
+    const pending = ctx.deltaWindows.get(sid)
+    if (pending === window) ctx.parseMarkers(window, sid, "child-text-delta")
+  }
+}
+
+/**
+ * Handles a session.error event: journals the error (bounded to 500
+ * chars) so a child failure stays visible without killing the stream.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleSessionError(ctx: TurnstileContext, properties: EventProperties): void {
+  ctx.journaler.journal({
+    type: "error",
+    sessionID: properties.sessionID,
+    error: String(properties.error ?? "").slice(0, 500),
+  })
+}
+
+/**
+ * Records a landing-gate ask under the host request id, keyed to the
+ * ask's parent session so replies apply per-session and concurrent
+ * sessions cannot cross-apply; bounds the ask table.
+ * @param ctx The shared per-setup context.
+ * @param id The host request id of the ask.
+ * @param parent The parent session the ask belongs to.
+ */
+function recordAskedLanding(ctx: TurnstileContext, id: string, parent: string): void {
+  ctx.landingGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+  ctx.boundLandingGateAsks()
+}
+
+/**
+ * Records a hands-on-gate ask under the host request id, keyed to the
+ * ask's parent session so replies apply per-session and concurrent
+ * sessions cannot cross-apply; bounds the ask table. Mirrors
+ * recordAskedLanding; the disjoint message prefixes keep a hands-on
+ * approval from ever releasing the plan or landing gate (and vice versa).
+ * @param ctx The shared per-setup context.
+ * @param id The host request id of the ask.
+ * @param parent The parent session the ask belongs to.
+ */
+function recordAskedHandsOn(ctx: TurnstileContext, id: string, parent: string): void {
+  ctx.handsOnGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+  ctx.boundHandsOnGateAsks()
+}
+
+/**
+ * Records the plan-gate arm of a permission.asked: the prefixed echo (the
+ * evaluate handler's message) or the stolen empty-message consume of a
+ * live plan latch. Journals the steal for ladder diagnosability when the
+ * latch was stolen (it carries no action/decision, so the human PERM table
+ * is untouched and it is replay-inert), consumes the latch, and records
+ * the ask keyed to the parent.
+ * @param ctx The shared per-setup context.
+ * @param id The host request id of the ask.
+ * @param sid The session the ask was raised in.
+ * @param parent The parent session the ask belongs to.
+ */
+function recordPlanAskLatch(ctx: TurnstileContext, id: string, sid: string, parent: string): void {
+  ctx.awaitingPlanAsk.delete(sid)
+  ctx.planGateAsks.set(id, { sessionID: parent, recordedAt: Date.now() })
+  ctx.boundPlanAsks()
+}
+
+/**
+ * Records an empty-message landing escalate echo for the landing gate
+ * only. Reached only when the plan latch is NOT live — a coincident
+ * double-escalation (both latches live, one empty-message echo) resolves
+ * to the plan gate by branch order, a documented edge: the human still
+ * sees one ask, and the other latch survives for its own prefixed echo.
+ * @param ctx The shared per-setup context.
+ * @param id The host request id of the ask.
+ * @param sid The session the ask was raised in.
+ */
+function recordLandingAskEcho(ctx: TurnstileContext, id: string, sid: string): void {
+  recordAskedLanding(ctx, id, ctx.ledger.parentOf(sid))
+}
+
+/**
+ * Records a plan-gate ask: when the message carries the plan-ask prefix
+ * (the evaluate echo) or when the session is live-latched and the ask
+ * carries no message of its own (the escalated echo). A non-empty
+ * message WITHOUT either prefix is an unrelated ask (bash, write, …)
+ * even under a latched escalation — the evaluate handler always composes
+ * a prefix into its message, so a prefixed-or-empty message is the
+ * expected echo and anything else must never be recorded (a human's
+ * approval of an unrelated ask cannot release the plan or landing
+ * gate). An empty-message ask under a live landing latch (the plan
+ * latch not live) is a landing escalate echo: recorded for the landing
+ * gate only.
+ * @param ctx The shared per-setup context.
+ * @param id The host request id of the ask.
+ * @param sid The session the ask was raised in.
+ * @param message The ask's echoed message ("" when absent).
+ */
+function recordAskedPlan(ctx: TurnstileContext, id: string, sid: string, message: string): void {
+  const prefixed = message.startsWith(PLAN_ASK_MESSAGE_PREFIX)
+  // The empty-message consume of a live plan latch is the
+  // steal-able window: an unrelated ask wins the latch over the
+  // escalate echo. A prefixed ask (the normal echo) never does.
+  const stolen = !prefixed && message === "" && ctx.hasLiveAwaitingAsk(sid)
+  if (prefixed || stolen) {
+    const parent = ctx.ledger.parentOf(sid)
+    if (stolen) {
+      // Journal the steal for ladder diagnosability; it carries
+      // no action/decision, so the human PERM table (status.mjs
+      // counts only e.action === "ask") is untouched and it is
+      // replay-inert (the ledger never replays permission rows).
+      ctx.journaler.journal({
+        type: "permission",
+        sessionID: parent,
+        event: "latch-steal",
+        reason: "plan-gate",
+      })
+    }
+    recordPlanAskLatch(ctx, id, sid, parent)
+  } else if (message === "" && ctx.hasLiveLandingAsk(sid)) {
+    recordLandingAskEcho(ctx, id, sid)
+  }
+}
+
+/**
+ * Handles a permission.asked event: records plan-gate, landing-gate, and
+ * hands-on-gate asks (disjoint by message prefix). A missing/non-string id
+ * is inert (nothing is recorded). Fail-open — the outer loop journals any
+ * throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handlePermissionAsked(ctx: TurnstileContext, properties: EventProperties): void {
+  const id = properties.id ?? properties.requestID
+  if (typeof id !== "string" || id === "") return
+  const sid = asSessionID(properties.sessionID)
+  const message = typeof properties.message === "string" ? properties.message : ""
+  // Landing-gate ask: message carries the landing-ask prefix
+  // (the evaluate handler's echo). A landing ask is disjoint from
+  // a plan ask (different prefix), so an approval of one never
+  // releases the other.
+  if (message.startsWith(LANDING_ASK_MESSAGE_PREFIX)) {
+    recordAskedLanding(ctx, id, ctx.ledger.parentOf(sid))
+  } else if (message.startsWith(HANDSON_ASK_MESSAGE_PREFIX)) {
+    // Hands-on-gate ask: same prefix-dispatch contract.
+    recordAskedHandsOn(ctx, id, ctx.ledger.parentOf(sid))
+  } else {
+    recordAskedPlan(ctx, id, sid, message)
+  }
+}
+
+/**
+ * Journals a fast-reply provenance suspicion when a recorded ask was
+ * answered faster than a human could plausibly read it (see
+ * {@link FAST_REPLY_MS}). Journal-only: the suspicion never gates, and the
+ * release the reply carries still applies — the row keeps the audit trail
+ * honest about machine-looking replies (a non-interactive client
+ * auto-answering) without inventing a host signal that does not exist.
+ * @param ctx The shared per-setup context.
+ * @param ctxRecordedAt The ask's `permission.asked` arrival time.
+ * @param parent The parent session the ask belongs to.
+ * @param decision The reply being applied (`"always"` / `"once"`).
+ */
+function noteFastReply(
+  ctx: TurnstileContext,
+  ctxRecordedAt: number,
+  parent: string,
+  decision: string,
+): void {
+  if (Date.now() - ctxRecordedAt >= FAST_REPLY_MS) return
+  ctx.journaler.journal({
+    type: "permission",
+    sessionID: parent,
+    event: "suspicion",
+    reason: "no-interactive-human",
+    // `reply`, deliberately NOT `decision`: the row must stay outside the
+    // decision family (status.mjs's PERM counts and any journal tail
+    // scanning on `decision` must not read a suspicion as a decision).
+    reply: decision,
+  })
+}
+
+/**
+ * Journals one `prov:denied` decision-provenance row for a human permission
+ * denial. Additive to the existing `decisionEntry` row (which replay folds
+ * on and which stays untouched). Fail-open: a builder error journals an
+ * `error` row and never throws.
+ * @param ctx The shared per-setup context.
+ * @param sessionID The parent session the denial occurred in.
+ * @param kind The ask kind that was denied.
+ */
+function journalProvDenied(ctx: TurnstileContext, sessionID: string, kind: ProvDeniedKind): void {
+  if (!ctx.config.decisionLedger.enabled) return
+  try {
+    ctx.journaler.journal(
+      provDeniedEntry({ sessionID, kind }) as unknown as Record<string, unknown>,
+    )
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", sessionID, error: `prov: denied capture: ${e}` })
+  }
+}
+
+/**
+ * Applies a human reply to a RECORDED plan-gate ask (the dispatcher's
+ * falsy-record guard guarantees the record exists): "always" releases
+ * the plan gate for the rest of the task and records provenance; "once"
+ * stamps a single-dispatch grant; any other reply leaves the gate red.
+ * The record is consumed (deleted) on every path.
+ * @param ctx The shared per-setup context.
+ * @param rid The host request id matching the recorded ask.
+ * @param reply The human reply ("once" / "always" / "reject").
+ */
+function applyPlanGrant(ctx: TurnstileContext, rid: string, reply: unknown): void {
+  const planRecord = ctx.planGateAsks.get(rid)!
+  ctx.planGateAsks.delete(rid)
+  const parent = planRecord.sessionID
+  const s = ctx.ledger.state(parent)
+  if (reply === "always") {
+    // A standing human approval releases the plan gate for the
+    // rest of the task and records provenance. The sticky row
+    // (scope/kind) is what the boot replay folds back into a
+    // restored standing release after a restart.
+    s.humanApproval = true
+    s.hasPlanVerdict = true
+    noteFastReply(ctx, planRecord.recordedAt, parent, "always")
+    ctx.journaler.journal(decisionEntry(parent, "always", { kind: "plan" }))
+  } else if (reply === "once") {
+    // A plan-gate single-dispatch grant: consumed by exactly one
+    // executor dispatch in execute.before (the .plan
+    // short-circuit), so a stale grant cannot outlive that
+    // single dispatch.
+    s.pendingOnceGrant.plan = rid
+    noteFastReply(ctx, planRecord.recordedAt, parent, "once")
+    ctx.journaler.journal(decisionEntry(parent, "once"))
+  } else {
+    // reject (or any non-allow reply) leaves the gate red: the
+    // next execute.before dispatch re-blocks.
+    ctx.journaler.journal(decisionEntry(parent, "reject"))
+    journalProvDenied(ctx, parent, "plan")
+  }
+}
+
+/**
+ * Applies a landing-gate "always" reply: a standing human approval
+ * releases the landing gate for the rest of the task (the bash guard sees
+ * hasReviewApprove and allows every push). A human release outranks the
+ * ensemble, so the refusal stamp on the last ensemble entry is cleared:
+ * replay restores the human release (refusedApprove absent/false) rather
+ * than an earlier refused APPROVE. The bucket-free trace is credited too:
+ * the flag dies on the next task-scope reset, but this human release is
+ * credit the journal already records (the cleared refusal stamp), so the
+ * trace keeps live and restart behavior identical and lets the landing
+ * gate escalate the next turn's first push instead of throwing.
+ * @param ctx The shared per-setup context.
+ * @param parent The parent session the ask belongs to.
+ * @param recordedAt The ask's `permission.asked` arrival time.
+ */
+function applyLandingAlways(ctx: TurnstileContext, parent: string, recordedAt: number): void {
+  const s = ctx.ledger.state(parent)
+  s.hasReviewApprove = true
+  ctx.ledger.markCreditedApproval(parent)
+  noteFastReply(ctx, recordedAt, parent, "always")
+  ctx.journaler.journal(
+    reviewerEnsembleEntry(parent, ctx.config.agents.reviewer, s.reviewerDispatches, false),
+  )
+  ctx.journaler.journal(decisionEntry(parent, "always", { kind: "landing" }))
+}
+
+/**
+ * Applies a landing-gate "once" reply: a single-dispatch push grant,
+ * consumed by exactly one bash dispatch in execute.before (the .landing
+ * short-circuit), so a stale grant cannot outlive that single push.
+ * @param ctx The shared per-setup context.
+ * @param parent The parent session the ask belongs to.
+ * @param recordedAt The ask's `permission.asked` arrival time.
+ * @param rid The host request id matching the recorded ask.
+ */
+function applyLandingOnce(
+  ctx: TurnstileContext,
+  parent: string,
+  recordedAt: number,
+  rid: string,
+): void {
+  ctx.ledger.state(parent).pendingOnceGrant.landing = rid
+  noteFastReply(ctx, recordedAt, parent, "once")
+  ctx.journaler.journal(decisionEntry(parent, "once"))
+}
+
+/**
+ * Applies a human reply to a RECORDED landing-gate ask (the dispatcher's
+ * falsy-record guard guarantees the record exists): "always" releases
+ * the landing gate for the rest of the task; "once" stamps a
+ * single-dispatch push grant; any other reply leaves the gate red. The
+ * record is consumed (deleted) on every path.
+ * @param ctx The shared per-setup context.
+ * @param rid The host request id matching the recorded ask.
+ * @param reply The human reply ("once" / "always" / "reject").
+ */
+function applyLandingGrant(ctx: TurnstileContext, rid: string, reply: unknown): void {
+  const landingRecord = ctx.landingGateAsks.get(rid)!
+  ctx.landingGateAsks.delete(rid)
+  const parent = landingRecord.sessionID
+  if (reply === "always") {
+    applyLandingAlways(ctx, parent, landingRecord.recordedAt)
+  } else if (reply === "once") {
+    applyLandingOnce(ctx, parent, landingRecord.recordedAt, rid)
+  } else {
+    // reject (or any non-allow reply) leaves the gate red: the
+    // next execute.before push re-blocks and re-arms the ask.
+    ctx.journaler.journal(decisionEntry(parent, "reject"))
+    journalProvDenied(ctx, parent, "landing")
+  }
+}
+
+/**
+ * Applies a human reply to a RECORDED hands-on-gate ask (the dispatcher's
+ * falsy-record guard guarantees the record exists): "always" releases the
+ * hands-on gate for the rest of the task (task-scoped, dropped by the next
+ * prompt); "once" stamps a single-edit grant consumed by exactly one parent
+ * write/edit; any other reply leaves the gate red — the next parent edit
+ * re-blocks and re-arms. The record is consumed (deleted) on every path.
+ * @param ctx The shared per-setup context.
+ * @param rid The host request id matching the recorded ask.
+ * @param reply The human reply ("once" / "always" / "reject").
+ */
+function applyHandsOnGrant(ctx: TurnstileContext, rid: string, reply: unknown): void {
+  const handsOnRecord = ctx.handsOnGateAsks.get(rid)!
+  ctx.handsOnGateAsks.delete(rid)
+  const parent = handsOnRecord.sessionID
+  const s = ctx.ledger.state(parent)
+  if (reply === "always") {
+    // A standing human approval releases the rest of this task's parent
+    // edits (the guard sees handsOnRelease and allows every write/edit).
+    s.handsOnRelease = true
+    noteFastReply(ctx, handsOnRecord.recordedAt, parent, "always")
+    ctx.journaler.journal(decisionEntry(parent, "always", { kind: "hands-on" }))
+  } else if (reply === "once") {
+    // A hands-on-gate single-edit grant: consumed by exactly one parent
+    // write/edit in execute.before (the .handsOn short-circuit), so a
+    // stale grant cannot outlive that single edit.
+    s.pendingOnceGrant.handsOn = rid
+    noteFastReply(ctx, handsOnRecord.recordedAt, parent, "once")
+    ctx.journaler.journal(decisionEntry(parent, "once"))
+  } else {
+    // reject (or any non-allow reply) leaves the gate red: the next
+    // parent edit re-blocks and re-arms the ask.
+    ctx.journaler.journal(decisionEntry(parent, "reject"))
+    journalProvDenied(ctx, parent, "hands-on")
+  }
+}
+
+/**
+ * Journals a permission reply whose non-empty requestID matches no
+ * recorded ask: the inert no-op is diagnosable, and the entry carries
+ * no action/decision (the human PERM table is untouched and it is
+ * replay-inert). A requestID-less reply is a distinct,
+ * already-understood broken-host case and stays silent.
+ * @param ctx The shared per-setup context.
+ * @param rid The unmatched host request id.
+ * @param sessionID The session the reply arrived in.
+ */
+function noteUnrecordedReply(ctx: TurnstileContext, rid: string, sessionID: string): void {
+  ctx.journaler.journal({
+    type: "permission",
+    sessionID,
+    event: "unrecorded-reply",
+    requestID: rid,
+  })
+}
+
+/**
+ * Handles a permission.replied event: matches the reply against
+ * RECORDED asks only — a plan-gate ask (keyed by requestID, consumed
+ * once, releases/holds the plan gate), a landing-gate ask (consumed
+ * once, grants/holds a push), or a hands-on-gate ask. A requestID
+ * absent from all three maps was never an ask we raised, so the reply
+ * is inert — an approval of an unrelated permission ask cannot release
+ * any gate. Fail-open — the outer loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handlePermissionReplied(ctx: TurnstileContext, properties: EventProperties): void {
+  const rid = String(properties.requestID ?? "")
+  const reply = properties.reply
+  if (ctx.planGateAsks.get(rid)) {
+    applyPlanGrant(ctx, rid, reply)
+  } else if (ctx.landingGateAsks.get(rid)) {
+    applyLandingGrant(ctx, rid, reply)
+  } else if (ctx.handsOnGateAsks.get(rid)) {
+    applyHandsOnGrant(ctx, rid, reply)
+  } else if (rid !== "") {
+    noteUnrecordedReply(ctx, rid, asSessionID(properties.sessionID))
+  }
+}
+
+/**
+ * Credits a parsed synthetic completion through the gate-moving paths, gated
+ * on the seeded effective agent exactly as the foreground task-result
+ * delivery does: only a plan-reviewer child moves the plan gate (via
+ * `attributePlanVerdict`, whose journaled `plan` entry carries the
+ * replay-creditable source), and only a reviewer child credits the
+ * reviewer-approval (landing-gate) signal from the first-sight marker
+ * events. Parsing itself never credits — crediting is the caller's job.
+ * @param ctx The shared per-setup context.
+ * @param c The parsed synthetic completion (child ID, agent, text).
+ * @param markerEvents The first-sight marker events the parse journaled
+ *     (empty on a dedup hit — a replayed durable event — so the credits
+ *     are skipped and the approval stays single).
+ */
+async function creditSyntheticCompletion(
+  ctx: TurnstileContext,
+  c: { childID: string; agent: string; text: string },
+  markerEvents: ReturnType<TurnstileContext["parseMarkers"]>,
+): Promise<void> {
+  // Dedup gate: a replayed durable event re-parses to zero first-sight
+  // events, so its credits are skipped and the approval stays single.
+  if (markerEvents.length === 0) return
+  const effectiveAgent = c.agent || ctx.emitterAgent(c.childID)
+  if (effectiveAgent === ctx.config.agents.planReviewer) {
+    await ctx.attributePlanVerdict(c.childID, c.text)
+  }
+  if (effectiveAgent === ctx.config.agents.reviewer) {
+    ctx.creditReviewApproval(c.childID, markerEvents)
+  }
+}
+
+/**
+ * Handles a synthetic subagent completion on the inbox stream (opencode
+ * ≥ 2.0.29): a background child's final text arrives as a
+ * `session.inbox.enqueued` item with `metadata.source === "subagent"` and
+ * never passes through the foreground task-result hook, so its
+ * `VERDICT:`/`GATE:` markers must be parsed here. The child's emitter is
+ * seeded from the item metadata (the always-firing authority source), the
+ * child→parent edge is resolved, the text is parsed child-keyed under the
+ * `subagent-synthetic` source with a per-child dedup scope (first-sight
+ * journaling + streamed-verdict records only), and the gate-moving credits
+ * then run gated on the seeded effective agent (see
+ * {@link creditSyntheticCompletion}). The per-child scope keeps the
+ * `(scope, marker)` dedup from colliding across children or with the
+ * streaming sources (whose verdict markers are near-identical boilerplate)
+ * while still making a durable-event replay — the same scope and marker —
+ * a no-op. Non-subagent or malformed items return
+ * silently; a throw propagates to the outer loop's fail-open journaling.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleSyntheticCompletion(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const c = syntheticCompletionOf(properties.item)
+  if (!c) return
+  ctx.seedEmitter(c.childID, c.agent)
+  await ctx.resolveParent(c.childID)
+  const markerEvents = ctx.parseMarkers(
+    c.text,
+    c.childID,
+    "subagent-synthetic",
+    `subagent-synthetic\u0000${c.childID}\u0000`,
+  )
+  await creditSyntheticCompletion(ctx, c, markerEvents)
+}
+
+/**
+ * Handles a session.inbox.enqueued event: prompt admission via the
+ * inbox stream — the transport adopted because its publication is exact
+ * host-admission parity: the host publishes it inside its own admit
+ * region, immediately after the prompt hook fires. A user-authored
+ * prompt (type "user") carrying non-empty text is admitted; a synthetic
+ * subagent completion (opencode ≥ 2.0.29, `metadata.source === "subagent"`)
+ * is parsed for markers and credited through the child→parent edge (see
+ * {@link handleSyntheticCompletion}); other agent/composition arrivals
+ * (compaction / move, or a synthetic without subagent metadata) stay
+ * inert (provenance invariant). The inbox id dedupes against the hook
+ * path on the shared host message id. `delivered`/`cancelled` are
+ * intentionally unhandled — the captured admission point is the host's
+ * own publish, and a later drain or cancel cannot retroactively un-admit
+ * it. Fail-open — the outer loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleInboxEnqueued(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const sid = properties.sessionID
+  const inboxID = properties.inboxID
+  const item = properties.item
+  const text = item?.payload?.text
+  if (
+    typeof sid === "string" &&
+    typeof inboxID === "string" &&
+    item?.type === "user" &&
+    typeof text === "string" &&
+    text !== ""
+  ) {
+    ctx.admitPrompt(sid, { sessionID: sid, text }, inboxID)
+    return
+  }
+  // The synthetic arm shares the user arm's session/inbox id guard: an
+  // event without both ids is not a deliverable inbox item and stays
+  // inert (fail-open) before any parse.
+  if (typeof sid === "string" && typeof inboxID === "string") {
+    await handleSyntheticCompletion(ctx, properties)
+  }
+}
+
+/**
+ * Best-effort toast delivery of the session-end summary: a rejecting or
+ * throwing toast journals an `error` entry and changes nothing else
+ * (fail-open) — the journal entry is the headless log line either way.
+ * @param ctx The shared per-setup context.
+ * @param line The summary line to toast.
+ */
+async function deliverToast(ctx: TurnstileContext, line: string): Promise<void> {
+  if (!ctx.toast) return
+  try {
+    await ctx.toast(line, "success")
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", error: `session-summary toast: ${e}` })
+  }
+}
+
+/**
+ * Runs the optional session-end chain+anchor verify (`verifyOnSessionEnd`)
+ * and journals the verdict as a `chain-verify` row, toasting on failure
+ * when the host offers a toast. Fail-open: a verify error journals and
+ * never breaks the idle handler.
+ * @param ctx The shared per-setup context.
+ * @param sid The idle session ID.
+ */
+async function runSessionEndVerify(ctx: TurnstileContext, sid: string): Promise<void> {
+  if (!ctx.config.tamperEvidence.verifyOnSessionEnd) return
+  try {
+    const report = await verifyJournalChain({
+      metricsDir: ctx.config.metricsDir,
+      sinks: ctx.anchorSinks,
+      maxGenerations: ctx.config.journalMaxGenerations,
+    })
+    const broken = report.families.find((f) => f.verdict.status === "broken")
+    const detail =
+      broken && broken.verdict.status === "broken"
+        ? `${broken.source}: ${broken.verdict.detail}`
+        : report.ok
+          ? ""
+          : report.absentAnchored.length > 0
+            ? report.absentAnchored.join("; ")
+            : "unanchored epoch refs"
+    ctx.journaler.journal(
+      report.ok
+        ? { type: "chain-verify", ok: true, sessionID: sid }
+        : { type: "chain-verify", ok: false, sessionID: sid, detail },
+    )
+    if (!report.ok) await deliverToast(ctx, `[turnstile] chain verify failed: ${detail}`)
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", error: `chain-verify: ${String(e)}` })
+  }
+}
+
+/**
+ * Handles a session.idle event: surfaces the once-per-session summary line
+ * per the `sessionSummary` config. "off" is silent; a zero-activity session
+ * is silent under "quiet" and prints the all-green line under "on"; an
+ * active session prints the recap line (verified test-claims, premature
+ * dispatches blocked, waivers — counts derived from this session's journal
+ * entries via `countSessionActivity`). Delivery: journaled always as a
+ * `type:"session-summary"` delivery-proof entry (the headless log),
+ * toasted best-effort when the host offers `tui.toast` — a toast failure
+ * journals and changes nothing else (fail-open). Deduped per session via
+ * the bounded `ctx.summarizedSessions` set, so one summary per session per
+ * host process; a host restart may re-summary a still-idle session once
+ * (accepted; the journal entry makes it diagnosable). Fail-open — the
+ * outer loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleSessionIdle(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  if (sid === "") return
+  await runSessionEnd(ctx, sid)
+}
+
+/**
+ * Runs the shared session-end sequence once per session: the dedup add
+ * (bounded), the synchronous journal writes (the token-usage rollup flush
+ * when `tokenUsage` is not "off", then the session-summary proof row per
+ * the `sessionSummary` config), the session-end anchor, the chain verify,
+ * and the best-effort summary toast. The synchronous writes precede the
+ * first await so both rows survive headless hosts that exit the process
+ * during the anchor/verify window; the anchor publish still precedes the
+ * verify so published refs count as anchored. The trigger is `session.idle`
+ * (hosts ≤ 2.3.x) or `session.execution.succeeded`/`session.execution.failed`
+ * (hosts ≥ 2.4.x). The once-per-session dedup means the rollup and recap
+ * land after the FIRST trigger per session per host process on either
+ * contract: on 2.4.1 that is after the first agent run rather than at true
+ * quiescence (accepted parity with the 2.0.x first-idle flush; tokens from
+ * later runs stay unflushed until a host restart). Fail-open: the outer
+ * loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param sid The ended session's ID.
+ */
+async function runSessionEnd(ctx: TurnstileContext, sid: string): Promise<void> {
+  if (ctx.summarizedSessions.has(sid)) return
+  ctx.summarizedSessions.add(sid)
+  ctx.boundSummarizedSessions()
+  // Headless hosts can exit the process during the first await, so every
+  // synchronous journal write happens first: the rollup flush, then the
+  // summary proof row (flush-then-read, so summary totals include tokens).
+  if (ctx.config.tokenUsage !== "off") flushTokenUsageRollup(ctx, sid)
+  const summaryLine = ctx.config.sessionSummary === "off" ? null : composeSessionSummary(ctx, sid)
+  // The session-end anchor trigger runs after those rows are published and its
+  // publish is awaited, so refs closed/published for this session (including
+  // the rollup and summary rows) count as anchored in the verify that follows
+  // (no false "unanchored epoch refs" verdict). Fail-open by the journaler's
+  // anchor contract.
+  await ctx.journaler.anchorAsync("session-end", sid)
+  // The chain verify is independent of the summary setting: it runs once per
+  // session even when sessionSummary is "off".
+  await runSessionEndVerify(ctx, sid)
+  if (summaryLine !== null) await deliverToast(ctx, summaryLine)
+}
+
+/**
+ * Handles `session.execution.succeeded` and `session.execution.failed`
+ * (hosts ≥ 2.4.x): the session-end flush trigger. An absent or empty
+ * `sessionID` is inert (the payload shape is unverified; tolerate it).
+ * Awaited, not fire-and-forget: the consume loop journals per-event failures
+ * only for awaited rejections, so a `void`-ed throw would become an
+ * unhandled rejection and silently break the fail-open journaling contract.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+async function handleExecutionEnded(
+  ctx: TurnstileContext,
+  properties: EventProperties,
+): Promise<void> {
+  const sid = typeof properties.sessionID === "string" ? properties.sessionID : ""
+  if (sid === "") return
+  await runSessionEnd(ctx, sid)
+}
+
+/**
+ * Reads the session's activity and token totals from one journal read and
+ * composes the recap: the all-green line for zero-activity sessions (under
+ * "on"), else the recap line with the token rollup appended when the journal
+ * holds token-usage rows. Journals the delivery-proof entry and returns the
+ * line, or `null` when quiet-inactive (no row). Fully synchronous so the
+ * proof row survives headless process exit; must run after the rollup flush
+ * so summary-mode totals include the session's tokens.
+ * @param ctx The shared per-setup context.
+ * @param sid The idling session's ID.
+ * @returns The composed summary line, or `null` when no row was journaled.
+ */
+function composeSessionSummary(ctx: TurnstileContext, sid: string): string | null {
+  const entries = readJournalEntries(ctx.journaler.journalPath)
+  const counts = countSessionActivity(entries, sid)
+  const tokens = sessionTokenTotals(entries, sid)
+  const inactive = isInactive(counts)
+  if (inactive && ctx.config.sessionSummary === "quiet") return null
+  const line = inactive
+    ? formatAllGreenLine(ctx.journaler.journalPath)
+    : formatSessionSummary(counts, ctx.journaler.journalPath, tokens)
+  ctx.journaler.journal({
+    type: "session-summary",
+    sessionID: sid,
+    ...counts,
+    text: line.slice(0, SUMMARY_TEXT_BOUND),
+  })
+  return line
+}
+
+/**
+ * Journals the summary-mode token-usage rollup for a session and clears its
+ * accumulator. Called from `runSessionEnd` (which serves `session.idle` and
+ * the ≥ 2.4.1 `session.execution.succeeded`/`failed` carriers) first in the
+ * session-end sequence, before any await, so the rollup row survives headless
+ * process exit and flushes on every session end regardless of the summary
+ * setting. The session-end dedupe guard makes this
+ * once per session per host process; an empty accumulator journals nothing.
+ * @param ctx The shared per-setup context.
+ * @param sid The idling session's ID.
+ */
+function flushTokenUsageRollup(ctx: TurnstileContext, sid: string): void {
+  const totals = ctx.tokenUsageTotals.get(sid)
+  if (!totals) return
+  ctx.journaler.journal({
+    type: "token-usage",
+    event: "session-rollup",
+    sessionID: sid,
+    parentID: ctx.ledger.childToParent.get(sid) ?? sid,
+    tokens: {
+      input: totals.input,
+      output: totals.output,
+      reasoning: totals.reasoning,
+      cacheRead: totals.cacheRead,
+      cacheWrite: totals.cacheWrite,
+    },
+    cost: totals.cost,
+  })
+  ctx.tokenUsageTotals.delete(sid)
+}
+
+/**
+ * Handles `message.updated`: on a completed assistant snapshot, journals a
+ * `token-usage` row (`per-message` mode) or merges the turn into the
+ * per-session accumulator (`summary` mode, journaled as one rollup row at
+ * `session.idle`). Snapshots dedup by message ID so only the final completed
+ * update of a turn counts. `parentID` resolves via the `childToParent` map
+ * (own ID for parent sessions) so every row groups by task root. Fail-open —
+ * the outer consume loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleMessageUpdated(ctx: TurnstileContext, properties: EventProperties): void {
+  if (ctx.config.tokenUsage === "off") return
+  const usage = extractUsage(properties.info)
+  if (!usage) return
+  // The real host carries the session ID only inside the snapshot
+  // (`info.sessionID`); the top-level `properties.sessionID` fallback keeps
+  // tolerance for hosts that publish it there (same pattern as
+  // `handleTextUpdated`).
+  const sid = asSessionID(properties.sessionID ?? usage.sessionID)
+  if (sid === "") return
+  recordTurnUsage(ctx, { ...usage, sessionID: sid })
+}
+
+/**
+ * Handles `session.step.ended` (hosts ≥ 2.4.x): on a completed assistant
+ * step, merges the step into the same per-session accumulator and dedup set
+ * as `message.updated` (`per-message` mode journals one row per step). The
+ * 2.4.1 payload carries no `modelID`/`providerID`, so step-path rows stamp
+ * empty strings there (consumers sum tokens only). Fail-open: the outer
+ * consume loop journals any throw.
+ * @param ctx The shared per-setup context.
+ * @param properties The resolved event properties.
+ */
+function handleStepEnded(ctx: TurnstileContext, properties: EventProperties): void {
+  if (ctx.config.tokenUsage === "off") return
+  const usage = extractStepUsage(properties)
+  if (!usage) return
+  recordTurnUsage(ctx, { ...usage, modelID: "", providerID: "" })
+}
+
+/**
+ * Shared accumulation tail for both turn carriers (`message.updated` and
+ * `session.step.ended`): dedup-add by message ID (bounded), accumulate into
+ * the session's totals, and journal the per-message row when the mode asks
+ * for it. Note the deliberate ordering change from the pre-extraction
+ * `message.updated` path: the session ID is resolved BEFORE the dedup mark,
+ * so a session-less message no longer marks itself seen (an improvement:
+ * the turn stays eligible once a session ID is known). Cross-contract
+ * no-double-count falls out of the shared dedup key space: a turn whose
+ * assistant message ID arrives through both carriers counts once.
+ * @param ctx The shared per-setup context.
+ * @param usage The extracted turn usage with its session ID resolved.
+ */
+function recordTurnUsage(ctx: TurnstileContext, usage: ExtractedUsage): void {
+  if (ctx.tokenUsageSeen.has(usage.messageID)) return
+  ctx.tokenUsageSeen.add(usage.messageID)
+  ctx.boundTokenUsage()
+  accumulateTokenUsage(ctx, usage.sessionID, usage)
+  if (ctx.config.tokenUsage === "per-message") journalPerMessageRow(ctx, usage.sessionID, usage)
+}
+
+/**
+ * Merges one completed turn into the session's token accumulator (summary
+ * mode journals the merge as one rollup row during the shared session-end
+ * sequence, which serves `session.idle` and the ≥ 2.4.1
+ * `session.execution.succeeded`/`failed` carriers).
+ * @param ctx The shared per-setup context.
+ * @param sid The session the turn belongs to.
+ * @param usage The extracted turn usage.
+ */
+function accumulateTokenUsage(ctx: TurnstileContext, sid: string, usage: ExtractedUsage): void {
+  const totals = ctx.tokenUsageTotals.get(sid) ?? zeroTotals()
+  ctx.tokenUsageTotals.set(sid, addTotals(totals, usage.totals))
+}
+
+/**
+ * Journals one deduped per-message `token-usage` row. `parentID` resolves via
+ * the `childToParent` map (own ID for parent sessions) so every row groups by
+ * task root. `modelID`/`providerID` can be "": the ≥ 2.4.1
+ * `session.step.ended` carrier carries no model fields, while
+ * `message.updated` snapshots do; consumers sum tokens only.
+ * @param ctx The shared per-setup context.
+ * @param sid The session the turn belongs to.
+ * @param usage The extracted turn usage.
+ */
+function journalPerMessageRow(ctx: TurnstileContext, sid: string, usage: ExtractedUsage): void {
+  ctx.journaler.journal({
+    type: "token-usage",
+    sessionID: sid,
+    parentID: ctx.ledger.childToParent.get(sid) ?? sid,
+    messageID: usage.messageID,
+    modelID: usage.modelID,
+    providerID: usage.providerID,
+    tokens: {
+      input: usage.totals.input,
+      output: usage.totals.output,
+      reasoning: usage.totals.reasoning,
+      cacheRead: usage.totals.cacheRead,
+      cacheWrite: usage.totals.cacheWrite,
+    },
+    cost: usage.totals.cost,
+  })
+}
+
+/**
+ * Builds the event-type → handler dispatch table, in stream source order.
+ * Every handler is bound to the shared context; the table is consumed by
+ * `startEventStream`'s consume loop, which journals per-event failures
+ * fail-open.
+ * @param ctx The shared per-setup context (journaler, ledger, marker
+ *     services, ask latches, delta windows, admission state).
+ * @returns The dispatch table keyed by host event type.
+ */
+export function createEventHandlers(ctx: TurnstileContext): Record<string, EventHandler> {
+  return {
+    "session.created": (p) => handleSessionCreated(ctx, p),
+    "message.part.updated": (p) => handleTextUpdated(ctx, p),
+    "session.text.ended": (p) => handleTextEnded(ctx, p),
+    "session.text.delta": (p) => handleTextDelta(ctx, p),
+    "session.error": (p) => handleSessionError(ctx, p),
+    "permission.asked": (p) => handlePermissionAsked(ctx, p),
+    "permission.replied": (p) => handlePermissionReplied(ctx, p),
+    "session.inbox.enqueued": (p) => handleInboxEnqueued(ctx, p),
+    "message.updated": (p) => handleMessageUpdated(ctx, p),
+    "session.idle": (p) => handleSessionIdle(ctx, p),
+    "session.step.ended": (p) => handleStepEnded(ctx, p),
+    "session.execution.succeeded": (p) => handleExecutionEnded(ctx, p),
+    "session.execution.failed": (p) => handleExecutionEnded(ctx, p),
+  }
+}

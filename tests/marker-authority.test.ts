@@ -18,9 +18,9 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { turnstile } from "../turnstile.ts"
-import { newState } from "../src/state.ts"
-import { createLedger } from "../src/ledger.ts"
-import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers.ts"
+import { newState } from "../src/state/state.ts"
+import { createLedger } from "../src/state/ledger.ts"
+import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers/markers.ts"
 import {
   journalEntries,
   makeFakeHost,

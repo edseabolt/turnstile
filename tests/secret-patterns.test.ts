@@ -13,18 +13,18 @@ import {
   BUILTIN_SECRET_PATTERN_SOURCES,
   compileSecretPatterns,
   findHighEntropyLiterals,
-} from "../src/secret-patterns.ts"
+} from "../src/util/secret-patterns.ts"
 import {
   REDACTION_SENTINEL,
   redactSecrets,
   SECRET_PATTERNS,
-} from "../src/decision-ledger-redact.ts"
-import { defaultConfig, mergeConfig } from "../src/config.ts"
-import { createToolPolicy, type ToolPolicy } from "../src/tool-policy.ts"
-import { BlockError } from "../src/gates.ts"
-import { createHooksCore, type TurnstileContext } from "../src/hooks-core.ts"
-import type { Journaler } from "../src/journal.ts"
-import type { TurnstileConfig, TurnstileSecrets } from "../src/types.ts"
+} from "../src/journal/decision-ledger-redact.ts"
+import { defaultConfig, mergeConfig } from "../src/config/config.ts"
+import { createToolPolicy, type ToolPolicy } from "../src/tool-policy/tool-policy.ts"
+import { BlockError } from "../src/gates/gates.ts"
+import { createHooksCore, type TurnstileContext } from "../src/hooks/hooks-core.ts"
+import type { Journaler } from "../src/journal/journal.ts"
+import type { TurnstileConfig, TurnstileSecrets } from "../src/util/types.ts"
 import { isolatedEnv, journalEntries, tmpDir } from "./helpers.ts"
 
 /** A 24-char run of distinct letter+digit characters (entropy ≈ 4.58 bits). */

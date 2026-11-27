@@ -9,7 +9,7 @@
  * through the full plugin boot.
  *
  * Stateful (capture wiring) — runs one subprocess per tree. The module probe
- * on `src/decision-ledger.ts` is what makes pre-ledger references report
+ * on `src/journal/decision-ledger.ts` is what makes pre-ledger references report
  * `SKIPPED (absent in ref)` instead of crashing.
  */
 
@@ -34,7 +34,7 @@ const SECRET = "sk-abc123DEF456ghi789JKLmno"
 /**
  * Adds the builder-matrix cells: representative inputs per builder, plus the
  * exact JSON serialization (stable key order is part of the contract).
- * @param {Object} dl The tree's `src/decision-ledger.ts` module.
+ * @param {Object} dl The tree's `src/journal/decision-ledger.ts` module.
  * @param {Object<string, unknown>} cells The cell map to add to.
  */
 function builderCells(dl, cells) {
@@ -58,13 +58,13 @@ function builderCells(dl, cells) {
  * cap must be masked before truncation (never a half-visible prefix), a
  * secret inside the cap is masked, a secret after the cap is sliced away,
  * and the override path is redacted before the path-cap cut.
- * @param {Object} dl The tree's `src/decision-ledger.ts` module.
+ * @param {Object} dl The tree's `src/journal/decision-ledger.ts` module.
  * @param {Object<string, unknown>} cells The cell map to add to.
  */
 /**
  * Adds the straddling-cap redaction cell: a secret straddling the text cap
  * must be masked before truncation (never a half-visible prefix).
- * @param {Object} dl The tree's `src/decision-ledger.ts` module.
+ * @param {Object} dl The tree's `src/journal/decision-ledger.ts` module.
  * @param {Object<string, unknown>} cells The cell map to add to.
  */
 function redactionStraddlingCells(dl, cells) {
@@ -84,7 +84,7 @@ function redactionStraddlingCells(dl, cells) {
 /**
  * Adds the inside/after-cap redaction cells: a secret inside the cap is
  * masked, a secret after the cap is sliced away.
- * @param {Object} dl The tree's `src/decision-ledger.ts` module.
+ * @param {Object} dl The tree's `src/journal/decision-ledger.ts` module.
  * @param {Object<string, unknown>} cells The cell map to add to.
  */
 function redactionTextCells(dl, cells) {
@@ -108,7 +108,7 @@ function redactionTextCells(dl, cells) {
 /**
  * Adds the path redaction cell: the override path is redacted before the
  * path-cap cut.
- * @param {Object} dl The tree's `src/decision-ledger.ts` module.
+ * @param {Object} dl The tree's `src/journal/decision-ledger.ts` module.
  * @param {Object<string, unknown>} cells The cell map to add to.
  */
 function redactionPathCells(dl, cells) {
@@ -315,9 +315,9 @@ async function captureCells(treeRoot, cells) {
  *     The scenario result.
  */
 export async function scenario(treeRoot) {
-  return withModules(treeRoot, ["src/decision-ledger.ts"], async (modules) => {
+  return withModules(treeRoot, ["src/journal/decision-ledger.ts"], async (modules) => {
     const cells = {}
-    const dl = modules["src/decision-ledger.ts"]
+    const dl = modules["src/journal/decision-ledger.ts"]
     builderCells(dl, cells)
     redactionStraddlingCells(dl, cells)
     redactionTextCells(dl, cells)

@@ -8,8 +8,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { compareSemver, evaluateHostCompat, HOST_COMPAT, parseSemver } from "../src/host-compat.ts"
-import { createTurnstile } from "../src/setup.ts"
+import {
+  compareSemver,
+  evaluateHostCompat,
+  HOST_COMPAT,
+  parseSemver,
+} from "../src/hooks/host-compat.ts"
+import { createTurnstile } from "../src/hooks/setup.ts"
 import { journalEntries, makeFakeHost, tmpDir, waitUntil, isolatedEnv } from "./helpers.ts"
 
 /**

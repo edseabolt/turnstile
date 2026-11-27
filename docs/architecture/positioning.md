@@ -16,13 +16,13 @@ each maps to a turnstile mechanism:
 
 - **Stateful, task-scoped gates.** Permission rules are stateless
   per-tool-call decisions; they cannot condition a dispatch on prior
-  task state. Turnstile's `GateState` buckets (`src/state.ts`), keyed
+  task state. Turnstile's `GateState` buckets (`src/state/state.ts`), keyed
   per parent session and reset per prompt, make "executor blocked until
   this task's plan is approved" and per-leg round caps expressible
   and decidable in `tool.hook("execute.before")`, outside the model
   loop.
 - **Evidence correlation.** No host feature verifies a model's claim
-  against actual tool history. `src/evidence.ts` correlates a
+  against actual tool history. `src/policy/evidence.ts` correlates a
   `GATE: PASS` marker with a recorded exit-0 test execution matching
   `evidencePattern` (the default covers the canonical `npm run ci`
   verification chain) before the reviewer gate flips; a bare marker stays
@@ -36,9 +36,9 @@ each maps to a turnstile mechanism:
   attribution reasons) in the `BLOCKED` message and the `searched` field
   of the journaled `blocked` entry.
 - **A decision journal.** OpenCode logs are diagnostics, not a
-  structured decision record. `src/journal.ts` appends every gate
+  structured decision record. `src/journal/journal.ts` appends every gate
   transition, block, waiver, and dispatch to a replayable JSONL trail
-  (`replayGatePasses`, `src/ledger.ts`), which is what makes gates
+  (`replayGatePasses`, `src/state/ledger.ts`), which is what makes gates
   reviewable after the fact and stateful across restarts.
 
 The README's pitch states the same three properties in one screen for
@@ -72,8 +72,8 @@ Three properties matter for comparing enforcement layers, and all three
 are visible in this repo's tests:
 
 - Verifiable state. `GATE:` and `VERDICT:` markers are parsed from
-  child session text (`src/markers.ts`), stored per parent session
-  (`src/ledger.ts`), and replayed from the JSONL journal on restart, so
+  child session text (`src/markers/markers.ts`), stored per parent session
+  (`src/state/ledger.ts`), and replayed from the JSONL journal on restart, so
   replayed gate state survives a restart and the next user prompt; then
   every later prompt starts a clean gate cycle rather than living in a
   prompt.

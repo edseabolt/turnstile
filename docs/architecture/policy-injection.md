@@ -3,13 +3,13 @@
 Turnstile does not read orchestrator policy from a file at install time; it
 makes that policy available by injecting it at runtime. The primary channel is
 the pre-first-model-call `session.context` hook: `injectContextPolicy` in
-`src/context-surface.ts` appends the policy head (and any pending intent nudge)
+`src/hooks/context-surface.ts` appends the policy head (and any pending intent nudge)
 into the parent's primary-turn draft `system` array before the first model
 call, parent-guarded and latched (see the `context` hook in [hooks](hooks.md)).
-The `execute.after` body in `src/hooks-tool.ts` stays armed as the fallback.
+The `execute.after` body in `src/hooks/hooks-tool.ts` stays armed as the fallback.
 Via the `tool.hook("execute.after")` handler (the same hook the plugin already
 uses to rewrite tool output reaching the model), it prepends the orchestrator
-policy paragraph from `src/policy.ts` (via `src/delivery.ts`) to the first
+policy paragraph from `src/policy/policy.ts` (via `src/hooks/delivery.ts`) to the first
 `task` (or `subagent`) result delivery per task (once per task) and appends
 a per-delivery `PIPELINE:` status tail to every
 pipeline-stage delivery (see Pipeline continuation below). Each
@@ -84,7 +84,7 @@ follows the plugin through updates and uninstall–reinstall cycles.
 - **Pipeline continuation.** Every pipeline-stage delivery (the delivery's
   agent matched against the configured `config.agents` names, so a renamed
   install names its renamed stages) gains a one-line status tail rendered
-  by `formatPipelineStatus` (`src/state.ts`) from the resolved parent's gate
+  by `formatPipelineStatus` (`src/state/state.ts`) from the resolved parent's gate
   state after the just-arrived delivery: `PIPELINE: <stage>=done
 plan=APPROVED|PENDING tests=GREEN|RED reviewer=<n>/2 next=<successor> —
 <directive>`. The successor is the stage the orchestrator dispatches next,

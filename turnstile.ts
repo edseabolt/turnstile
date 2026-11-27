@@ -41,8 +41,8 @@
  * + responsibility, kept in sync with `src/`) is `docs/modules.md` —
  * do not hand-copy the list here.
  */
-import { createTurnstile } from "./src/setup.ts"
-import type { Host, TurnstileOptions } from "./src/types.ts"
+import { createTurnstile } from "./src/hooks/setup.ts"
+import type { Host, TurnstileOptions } from "./src/util/types.ts"
 
 /** The async setup function a plugin instance hands to the host. */
 export type SetupFn = (h: Host) => Promise<(() => void) | void>

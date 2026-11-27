@@ -13,7 +13,7 @@
 // The journal file is `turnstile.jsonl`; its rotated generations
 // (`${journal}.1`, `.2`, …) are walked newest-first with an early stop, so the
 // `replayTailLines` replay tail (default 2000) holds across all retained
-// generations — replay parity with src/ledger.ts.
+// generations — replay parity with src/state/ledger.ts.
 //
 //   opencode-turnstile status            Human-readable table.
 //   opencode-turnstile status --json     Machine-readable JSON.
@@ -69,7 +69,7 @@ const DEFAULT_REPLAY_TAIL_LINES = 2000
 
 /**
  * Suspension-config defaults. These mirror the runtime config defaults in
- * src/config.ts (this standalone script cannot import TS source — same
+ * src/config/config.ts (this standalone script cannot import TS source — same
  * precedent as DEFAULT_REPLAY_TAIL_LINES); a configured value in the config
  * file overrides each one.
  */
@@ -186,7 +186,7 @@ async function resolveUpdateCheck(env, metricsDir) {
 
 /**
  * Host session-ID alphabet, length-capped. Mirrors the canonical constant in
- * src/ledger.ts (this standalone script cannot import TS source): a session
+ * src/state/ledger.ts (this standalone script cannot import TS source): a session
  * whose ID fails the shape is not a session — replay parity, so a hostile
  * journal line mints no status row.
  */
@@ -194,14 +194,14 @@ const REPLAY_SESSION_RE = /^[A-Za-z0-9._-]{1,64}$/
 
 /**
  * Upper bound on a journaled VERDICT marker string. Mirrors the canonical
- * bound in src/ledger.ts: an oversized marker is treated like an absent one
+ * bound in src/state/ledger.ts: an oversized marker is treated like an absent one
  * (the existing empty-marker handling), never as a live verdict.
  */
 const MAX_REPLAY_MARKER_LEN = 512
 
 /**
  * Upper bound on a journaled observe-mode counter. Mirrors the canonical
- * bound in src/ledger.ts (this standalone script cannot import TS source): a
+ * bound in src/state/ledger.ts (this standalone script cannot import TS source): a
  * real period stays far below it, so anything larger — or non-integer — is
  * hostile padding, not a count, and the line folds nothing.
  */
@@ -209,7 +209,7 @@ const MAX_REPLAY_OBSERVE_COUNT = 1_000_000
 
 /**
  * Upper bound on a journaled plan file name, and its path-free alphabet.
- * Mirrors the canonical bound/alphabet in src/ledger.ts: an over-length,
+ * Mirrors the canonical bound/alphabet in src/state/ledger.ts: an over-length,
  * path-carrying, or hostile name degrades to the unbound empty name (replay
  * parity — a bound plan identity that fails its shape is unbound).
  */
@@ -427,7 +427,7 @@ function freshSession() {
  * Validates the two running totals an `observe` or `would-block` line
  * carries. Both must be integers within the replay counter bound (a real
  * period stays far below it; anything larger or non-integer is hostile
- * padding, not a count) — the all-or-nothing shape src/ledger.ts's replay
+ * padding, not a count) — the all-or-nothing shape src/state/ledger.ts's replay
  * validation uses, deliberately parallel because this standalone script
  * cannot import TS source. A line whose counters fail folds nothing (status
  * is observation-only, so a dropped line is silent here rather than

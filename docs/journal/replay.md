@@ -2,7 +2,7 @@
 
 ## Replay on restart
 
-On restart, `replayGatePasses` (`src/ledger.ts`) walks the shared journal
+On restart, `replayGatePasses` (`src/state/ledger.ts`) walks the shared journal
 generations newest-first (`turnstile.jsonl`, then `.1`, `.2`, … while the
 file exists), then every `sessions/` file family's generations the same
 way. The directory read is guarded: any failure replays the shared file

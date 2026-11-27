@@ -61,7 +61,7 @@ const CHATTER_RE =
   /^(ok|okay|yes|yeah|no|continue|go|go ahead|proceed|thanks|thank you|done|ack|acknowledged|lgtm|ship it|looks good|sure|fine)[.!, ]*$/i
 
 /**
- * Marker defaults; mirrors the runtime config defaults in src/config.ts
+ * Marker defaults; mirrors the runtime config defaults in src/config/config.ts
  * (scripts cannot import TS source). A config file's `waiverMarker` /
  * `approvalMarker` keys override these.
  */

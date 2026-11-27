@@ -15,10 +15,10 @@ import {
   agentFromDispatchEvent,
   isPipelineChildDispatch,
   resolveChildStatus,
-} from "../src/child-registration.ts"
-import { BlockError } from "../src/gates.ts"
-import type { GateLedger } from "../src/ledger.ts"
-import type { ToolHookEvent } from "../src/types.ts"
+} from "../src/dispatch/child-registration.ts"
+import { BlockError } from "../src/gates/gates.ts"
+import type { GateLedger } from "../src/state/ledger.ts"
+import type { ToolHookEvent } from "../src/util/types.ts"
 import {
   callSession,
   callTool,

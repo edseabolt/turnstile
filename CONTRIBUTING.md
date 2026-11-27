@@ -34,10 +34,10 @@ to re-point `--ref` after a deliberate behavior change.
 
 ## Repo rules
 
-1. **Marker drift:** the regex literals in `src/markers.ts` and the marker
+1. **Marker drift:** the regex literals in `src/markers/markers.ts` and the marker
    examples in `README.md`, `docs/usage.md` (the usage index), `agents/*.md`,
    and the policy
-   templates in `src/policy.ts` are synced by `scripts/check-markers.mjs`,
+   templates in `src/policy/policy.ts` are synced by `scripts/check-markers.mjs`,
    which extracts the literals by name and asserts every example parses.
    Edit all sides together; `prettier-ignore` comments on the literals
    keep them single-line so the extraction keeps working.
@@ -48,13 +48,13 @@ to re-point `--ref` after a deliberate behavior change.
    promise-plugin shape (`{ tool.hook, session.hook, permission.hook,
 event.subscribe }`, with permission registered when the host exposes it),
    verified against opencode v2.0.22. Do not assume hooks, events, or
-   payload fields not already handled in `src/types.ts` without verifying
+   payload fields not already handled in `src/util/types.ts` without verifying
    them against a real host.
 4. **Fail-open contract:** hook bodies are guarded; internal errors are
    journaled and the tool call proceeds. The only deliberate throws are
    `BlockError` instances with the `BLOCKED by turnstile:` prefix. New
    enforcement paths must follow this.
-5. **Config:** defaults live in `src/config.ts`; invalid keys are ignored
+5. **Config:** defaults live in `src/config/config.ts`; invalid keys are ignored
    and journaled, never thrown. With no config file and no env vars,
    behavior must be identical to the documented defaults.
 6. **Dependencies:** zero runtime dependencies is a stated feature;
@@ -93,7 +93,7 @@ trace format, and the exact block messages.
 
 ## Release checklist
 
-- At release: bump `HOST_COMPAT` in `src/host-compat.ts` when a new opencode
+- At release: bump `HOST_COMPAT` in `src/hooks/host-compat.ts` when a new opencode
   was tested, update the README compatibility matrix (including the tested
   list), and run `npm run ci`.
 - `CHANGELOG.md` is updated by the gh-release skill as part of cutting a

@@ -11,8 +11,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers.ts"
-import { newState } from "../src/state.ts"
+import { GATE_RE, VERDICT_RE, parseGateMarkers } from "../src/markers/markers.ts"
+import { newState } from "../src/state/state.ts"
 import { expectedPolicy } from "./helpers.ts"
 
 /** 1. Customized caps and the dispatch budget appear verbatim in the text,

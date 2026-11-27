@@ -8,7 +8,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-const { planScopeFiles, classifyPlanImpact } = await import("../src/plan-scope.ts")
+const { planScopeFiles, classifyPlanImpact } = await import("../src/gates/plan-scope.ts")
 
 /** A spec region with paths in both halves plus prose that must not match. */
 const SPEC = [

@@ -16,8 +16,8 @@ import {
   merklePathRoot,
   merkleRoot,
   recordHash,
-} from "../src/chain.ts"
-import type { ParsedRow } from "../src/chain.ts"
+} from "../src/journal/chain.ts"
+import type { ParsedRow } from "../src/journal/chain.ts"
 
 /** SHA-256 helper for expected-value construction. */
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex")

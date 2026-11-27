@@ -1,15 +1,15 @@
 // CI guard: the marker examples in README.md and docs/usage.md, the templates
-// in agents/*.md and src/policy.ts, and the evidence emitter's MARKER_OK copy
-// must be accepted by the parser regexes in src/markers.ts. Exits non-zero on drift.
+// in agents/*.md and src/policy/policy.ts, and the evidence emitter's MARKER_OK copy
+// must be accepted by the parser regexes in src/markers/markers.ts. Exits non-zero on drift.
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
-// The marker regex literals live in src/markers.ts (the marker boundary);
+// The marker regex literals live in src/markers/markers.ts (the marker boundary);
 // turnstile.ts stays in the list defensively so an older single-file layout
 // (regexes declared in the entry point) would still guard.
-const ts = ["turnstile.ts", "src/markers.ts"]
+const ts = ["turnstile.ts", "src/markers/markers.ts"]
   .map((f) => readFileSync(join(root, f), "utf8"))
   .join("\n")
 const readme = readFileSync(join(root, "README.md"), "utf8")
@@ -21,7 +21,7 @@ const evidence = readFileSync(join(root, "scripts", "evidence.mjs"), "utf8")
 
 function extractRegex(name) {
   const m = ts.match(new RegExp(`const ${name} = /(.+)/([a-z]*)`))
-  if (!m) throw new Error(`could not find ${name} in turnstile.ts or src/markers.ts`)
+  if (!m) throw new Error(`could not find ${name} in turnstile.ts or src/markers/markers.ts`)
   // strip the g flag: RegExp.test is stateful with /g (lastIndex advances)
   return new RegExp(m[1], m[2].replace(/g/g, ""))
 }
@@ -140,13 +140,13 @@ if (agentTemplates === 0) {
   failed++
 }
 
-// Plugin policy: the backticked GATE:/VERDICT: examples in src/policy.ts are
+// Plugin policy: the backticked GATE:/VERDICT: examples in src/policy/policy.ts are
 // the orchestrator-side half of the marker contract — the runtime policy
 // injected into the parent session. Same extraction rule as the agent
 // templates: they spell <n> and must parse once the placeholder stands in
 // for digits. (The template source that once lived here for this contract is
-// gone; src/policy.ts is its successor, so its examples are validated too.)
-const policyFile = join(root, "src", "policy.ts")
+// gone; src/policy/policy.ts is its successor, so its examples are validated too.)
+const policyFile = join(root, "src", "policy", "policy.ts")
 let policyTemplates = 0
 for (const m of readFileSync(policyFile, "utf8").matchAll(
   /`((?:GATE|VERDICT|QUESTION): [^\n`]*)`/g,
@@ -160,7 +160,7 @@ for (const m of readFileSync(policyFile, "utf8").matchAll(
   }
 }
 if (policyTemplates === 0) {
-  console.error("check-markers: no marker templates found in src/policy.ts")
+  console.error("check-markers: no marker templates found in src/policy/policy.ts")
   failed++
 }
 

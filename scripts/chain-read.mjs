@@ -1,5 +1,5 @@
-// CLI-side mirror of the journal hash-chain fold (`src/chain.ts` + the
-// family walk of `src/verify.ts`). scripts/*.mjs spawn under plain node and
+// CLI-side mirror of the journal hash-chain fold (`src/journal/chain.ts` + the
+// family walk of `src/journal/verify.ts`). scripts/*.mjs spawn under plain node and
 // cannot import src/*.ts, so the fold is re-implemented here; the sync
 // obligation is cross-checked by tests/prov-verify-cli.test.ts, which seeds
 // journals through the real src/ path and verifies through this mirror.
@@ -18,7 +18,7 @@ import { createHash } from "node:crypto"
  * Serializes a JSON-compatible value canonically: object keys sorted, no
  * whitespace, arrays in order, `undefined` object fields dropped and
  * `undefined` array elements rendered as `null`. Must stay byte-identical
- * to `canonicalJson` in src/chain.ts.
+ * to `canonicalJson` in src/journal/chain.ts.
  * @param {unknown} value The value to serialize.
  * @returns {string} The canonical JSON string.
  */
@@ -46,7 +46,7 @@ export function canonicalJson(value) {
 /**
  * Computes one record's chain hash: SHA-256 over the canonical JSON of
  * `{ prevHash, ts, payload }`. Must stay identical to `recordHash` in
- * src/chain.ts.
+ * src/journal/chain.ts.
  * @param {string} prevHash The previous record's hex hash.
  * @param {string} ts The record's ISO timestamp.
  * @param {Record<string, unknown>} payload The record's data fields.
@@ -60,7 +60,7 @@ export function recordHash(prevHash, ts, payload) {
  * Computes the Merkle root over a list of hex hashes: pairwise
  * `sha256(a + b)` per level, odd trailing node hashed with itself, the
  * single survivor hashed with itself once more, empty list hashing the
- * empty string. Must stay identical to `merkleRoot` in src/chain.ts.
+ * empty string. Must stay identical to `merkleRoot` in src/journal/chain.ts.
  * @param {string[]} hashes The leaf hashes, in order.
  * @returns {string} The root hash.
  */
@@ -77,7 +77,7 @@ export function merkleRoot(hashes) {
  * Reduces one Merkle level by one pairwise step: each adjacent pair hashes
  * via `sha256(a + b)`, and an odd trailing node is hashed with itself.
  * Shared by `merkleRoot` and `merklePath`. Must stay identical to
- * `reduceLevel` in src/chain.ts.
+ * `reduceLevel` in src/journal/chain.ts.
  * @param {string[]} level The current level's hashes, in order.
  * @returns {string[]} The next level's hashes.
  */
@@ -101,7 +101,7 @@ function reduceLevel(level) {
  * level's end is the odd-promotion case (the node's own hash, side
  * "right"). The final survivor self-hash is applied by `merklePathRoot`,
  * not recorded in the path. Must stay identical to `merklePath` in
- * src/chain.ts.
+ * src/journal/chain.ts.
  * @param {string[]} hashes The epoch's leaf hashes, in order.
  * @param {number} index The target leaf's 0-based position.
  * @returns {{ side: "left" | "right", hash: string }[]} The audit path,
@@ -130,7 +130,7 @@ export function merklePath(hashes, index) {
  * Recomputes the root from a leaf and its `merklePath` audit path: folds
  * `sha256(node + sibling)` per step (sibling on the right per `side`), then
  * applies the final survivor self-hash. Must stay identical to
- * `merklePathRoot` in src/chain.ts.
+ * `merklePathRoot` in src/journal/chain.ts.
  * @param {string} leaf The target leaf's hash.
  * @param {{ side: "left" | "right", hash: string }[]} path The audit path,
  *     leaf-to-root order.
@@ -151,7 +151,7 @@ export function merklePathRoot(leaf, path) {
 /**
  * Folds one file family's rows oldest-first, verifying the per-record
  * chain and every committed epoch root. Mirrors `foldChain` in
- * src/chain.ts: rows without a `hash` field are inert; the first mismatch
+ * src/journal/chain.ts: rows without a `hash` field are inert; the first mismatch
  * (prevHash, seq, or recomputed hash) wins; `chain-epoch` rows are
  * consumed as epoch commits checked against the accumulated data-row
  * hashes.
@@ -231,7 +231,7 @@ export function foldChain(rows, source, options = {}) {
 /**
  * Attaches `provContext` to a broken verdict when the rejected row is a
  * `prov:*` row, localizing the mutation to the row and its epoch window.
- * Must stay identical to `withProvContext` in src/chain.ts.
+ * Must stay identical to `withProvContext` in src/journal/chain.ts.
  * @param {{ status: "broken", detail: string, index: number }} broken The
  *     broken verdict.
  * @param {{ payload: Record<string, unknown>, seq: unknown }} row The row
@@ -259,7 +259,7 @@ function withProvContext(broken, row, windowEpoch) {
  * Consumes one chain-verified row into the fold state: a `chain-epoch` row
  * closes the current window (advancing the window index), any other row
  * accumulates into it — and into the collected-row list when collecting.
- * Must stay identical to `consumeRow` in src/chain.ts.
+ * Must stay identical to `consumeRow` in src/journal/chain.ts.
  * @param {{ ts: string, payload: Record<string, unknown>, seq: number,
  *     hash: string }} row The verified row.
  * @param {{ epochHashes: string[], epochs: object[], windowIncomplete:
@@ -322,7 +322,7 @@ function consumeRow(row, ctx, source) {
 /**
  * Lists a family's archived generations oldest-first (the `.gz` files in the
  * sibling `archive/` directory), or nothing when it is missing/unreadable.
- * Mirrors `archiveFiles` in src/verify.ts.
+ * Mirrors `archiveFiles` in src/journal/verify.ts.
  * @param {string} file Absolute path of the current journal file.
  * @returns {string[]} The archive paths, lexicographically sorted.
  */
@@ -345,7 +345,7 @@ function archiveFiles(file) {
  * then the numbered generations that exist, then the current file), plus
  * whether the family folds with a trust root: the oldest surviving file is
  * neither the current file nor `.1` only when the journaler pruned (or
- * archived). Mirrors `familyFiles` in src/verify.ts.
+ * archived). Mirrors `familyFiles` in src/journal/verify.ts.
  * @param {string} file Absolute path of the current journal file.
  * @param {number} maxGenerations The generation count convention.
  * @returns {{ files: string[], chainRootAtStart: boolean }} The existing
@@ -364,7 +364,7 @@ export function familyFiles(file, maxGenerations) {
 
 /**
  * Reads one journal file into the fold's row shape, skipping malformed
- * lines and non-object rows. Mirrors `readFamilyRows` in src/verify.ts.
+ * lines and non-object rows. Mirrors `readFamilyRows` in src/journal/verify.ts.
  * @param {string} file The file to read.
  * @returns {{ ts: string, payload: Record<string, unknown>, seq: unknown,
  *     prevHash: unknown, hash: unknown }[]} The parsed rows, oldest-first.
@@ -400,7 +400,7 @@ export function readFamilyRows(file) {
 
 /**
  * Folds one family across its generations and collects the epoch refs its
- * committed `chain-epoch` rows carry. Mirrors `foldFamily` in src/verify.ts.
+ * committed `chain-epoch` rows carry. Mirrors `foldFamily` in src/journal/verify.ts.
  * @param {string} source The family label.
  * @param {{ files: string[], chainRootAtStart: boolean }} family The
  *     family's files oldest-first plus the trust-root flag.
@@ -446,7 +446,7 @@ export function sessionSinkPathsLocal(metricsDir) {
 /**
  * Runs the full verify over a metrics directory: every journal family
  * folds across its generations and the committed epoch refs are collected.
- * Mirrors `verifyJournalChain` in src/verify.ts (anchor verification is
+ * Mirrors `verifyJournalChain` in src/journal/verify.ts (anchor verification is
  * performed by the caller, which resolves sinks).
  * @param {string} metricsDir The metrics directory.
  * @param {number} [maxGenerations=5] The rotation generation count convention
@@ -524,7 +524,7 @@ export function verifySessionFamilies(metricsDir, sessionID, maxGenerations = 5)
 /**
  * Reads the session-state anchor store (`<metricsDir>/anchors.jsonl`) and
  * returns the refs it names. Fail-open: a missing or malformed file yields
- * no anchored refs. Mirrors `readAnchoredRefs` in src/verify.ts.
+ * no anchored refs. Mirrors `readAnchoredRefs` in src/journal/verify.ts.
  * @param {string} metricsDir The metrics directory hosting the anchor store.
  * @returns {object[]} The anchored refs, oldest-first.
  */
@@ -549,7 +549,7 @@ export function readAnchoredRefs(metricsDir) {
  * generation was pruned, so absence is undetectable). It is reported absent
  * only when the root matches nothing AND the index is at or above the
  * lowest retained index — a gap within, or truncation of, retained history.
- * Mirrors `absentAnchoredRefs` in src/verify.ts.
+ * Mirrors `absentAnchoredRefs` in src/journal/verify.ts.
  * @param {string} metricsDir The metrics directory hosting the anchor store.
  * @param {object[]} refs The epoch refs collected from the journal.
  * @returns {string[]} One detail string per absent anchored epoch.
@@ -577,13 +577,13 @@ export function absentAnchoredRefs(metricsDir, refs) {
 }
 
 // ---------------------------------------------------------------------------
-// Anchor-sink mirror (src/anchor.ts). Same sync obligation as the fold above.
+// Anchor-sink mirror (src/journal/anchor.ts). Same sync obligation as the fold above.
 // ---------------------------------------------------------------------------
 
 /**
  * Builds the builtin `session-state` sink mirror: refs are read from
  * `<metricsDir>/anchors.jsonl`. Must stay identical to `sessionStateSink`
- * in src/anchor.ts.
+ * in src/journal/anchor.ts.
  * @param {{ metricsDir: string }} options The anchor options.
  * @returns {object} The sink.
  */
@@ -635,7 +635,7 @@ function execOut(command, args, options) {
 
 /**
  * Builds the builtin `git-note` sink mirror. Must stay identical to
- * `gitNoteSink` in src/anchor.ts.
+ * `gitNoteSink` in src/journal/anchor.ts.
  * @param {{ projectDir: string }} options The anchor options.
  * @returns {object} The sink.
  */
@@ -682,7 +682,7 @@ export function gitNoteSink(options) {
 
 /**
  * Builds the builtin `commit-trailer` sink mirror. Must stay identical to
- * `commitTrailerSink` in src/anchor.ts.
+ * `commitTrailerSink` in src/journal/anchor.ts.
  * @param {{ projectDir: string }} options The anchor options.
  * @returns {object} The sink.
  */
@@ -715,7 +715,7 @@ export function commitTrailerSink(options) {
 
 /**
  * Shape-checks a candidate sink. Must stay identical to `isAnchorSink` in
- * src/anchor.ts.
+ * src/journal/anchor.ts.
  * @param {unknown} value The candidate value.
  * @returns {boolean} True when the value is a well-formed sink.
  */
@@ -732,7 +732,7 @@ function isSink(value) {
 
 /**
  * Resolves one selection element to a sink, or a warning on failure. Must
- * stay identical to `resolveSinkElement` in src/anchor.ts (plugin sinks are
+ * stay identical to `resolveSinkElement` in src/journal/anchor.ts (plugin sinks are
  * lazy-imported — the CLI is a separate process and may).
  * @param {string | { plugin: string, options?: Record<string, unknown> }} element
  *     The selection element.
@@ -776,7 +776,7 @@ async function resolveSinkElement(element, options, warnings) {
 
 /**
  * Resolves the configured anchor selection into sinks. Must stay identical
- * to `resolveAnchorSinks` in src/anchor.ts.
+ * to `resolveAnchorSinks` in src/journal/anchor.ts.
  * @param {string | object | Array<string | object>} anchor The selection.
  * @param {{ metricsDir: string, projectDir: string }} options The anchor options.
  * @returns {Promise<{ sinks: object[], warnings: string[] }>} The sinks and warnings.
@@ -798,7 +798,7 @@ const DOMAIN_STRENGTH = { host: 0, repo: 1, external: 2 }
 /**
  * Resolves the weakest trust domain among the sinks whose verdict for the
  * ref is `ok`; null when unanchored. Must stay identical to
- * `weakestTrustDomain` in src/anchor.ts.
+ * `weakestTrustDomain` in src/journal/anchor.ts.
  * @param {Array<{ ref: object, sink: string, verdict: object }>} verdicts
  *     The per-sink verdicts.
  * @param {Map<string, string>} domains The sink-id → trust-domain map.
@@ -818,7 +818,7 @@ export function weakestTrustDomain(verdicts, domains, ref) {
 
 /**
  * Verifies refs across the sinks. Must stay identical to `verifyAnchors`
- * in src/anchor.ts.
+ * in src/journal/anchor.ts.
  * @param {object[]} sinks The sinks to verify against.
  * @param {object[]} refs The refs to verify.
  * @returns {Promise<{ verdicts: object[], weakest: object[] }>} The verdicts.
