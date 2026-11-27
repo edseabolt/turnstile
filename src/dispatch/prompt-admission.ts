@@ -11,20 +11,20 @@
  * that throws is journaled and swallowed, never thrown at the host.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { Gates } from "./gates.ts"
-import type { ContextSurfaceFlags } from "./context-surface.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { Gates } from "../gates/gates.ts"
+import type { ContextSurfaceFlags } from "../hooks/context-surface.ts"
 import type { EngagementReason } from "./engagement.ts"
-import type { GateState, PromptHookProperties, TurnstileConfig } from "./types.ts"
-import { decisionEntry, observeEntry } from "./gates-common.ts"
-import { parseWaiverScope, findMarkerNearMisses } from "./markers.ts"
+import type { GateState, PromptHookProperties, TurnstileConfig } from "../util/types.ts"
+import { decisionEntry, observeEntry } from "../gates/gates-common.ts"
+import { parseWaiverScope, findMarkerNearMisses } from "../markers/markers.ts"
 import { classifyIntent } from "./intent.ts"
 import { shouldEngage } from "./engagement.ts"
-import { promptTextOf } from "./delivery.ts"
-import { provStatedEntry } from "./decision-ledger.ts"
-import { keepsTaskScope } from "./task-scope.ts"
-import { shouldCarryGate, worktreeFingerprint } from "./fingerprint.ts"
+import { promptTextOf } from "../hooks/delivery.ts"
+import { provStatedEntry } from "../journal/decision-ledger.ts"
+import { keepsTaskScope } from "../state/task-scope.ts"
+import { shouldCarryGate, worktreeFingerprint } from "../state/fingerprint.ts"
 
 /**
  * The mutable once-per-load latches the admission body consumes. Owned by
@@ -64,7 +64,7 @@ export interface PromptAdmissionState {
   /** The once-per-load admission latches. */
   flags: PromptAdmissionFlags
   /** Near-miss marker diagnostics pending delivery, keyed by parent. */
-  nearMissPending: Map<string, import("./types.ts").MarkerNearMiss[]>
+  nearMissPending: Map<string, import("../util/types.ts").MarkerNearMiss[]>
   /** Evicts the oldest parents from nearMissPending past the cap. */
   boundNearMissPending(): void
   /** Parent → latest plan-reviewer dispatch timestamp. */
@@ -72,7 +72,7 @@ export interface PromptAdmissionState {
   /** Parent → plan file names from its latest plan-reviewer dispatch. */
   planReviewTarget: Map<string, string[]>
   /** Evidence tracker (task-scoped correlation, cleared on scope change). */
-  evidence: import("./evidence.ts").EvidenceTracker
+  evidence: import("../policy/evidence.ts").EvidenceTracker
   /** Parent → Date.now() of its latest admitted prompt (task window). */
   taskWindows: Map<string, number>
   /** Evicts the oldest task-window stamps past the cap. */

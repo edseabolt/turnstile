@@ -6,7 +6,7 @@
  * receives the compiled regexes as parameters.
  */
 
-import type { GateEvidenceMode, GateState, MarkerEvent, TestOverlapEvidence } from "./types.ts"
+import type { GateEvidenceMode, GateState, MarkerEvent, TestOverlapEvidence } from "../util/types.ts"
 import { GATE_RE, QUESTION_RE, VERDICT_RE, gateResultOf } from "./markers.ts"
 
 /**

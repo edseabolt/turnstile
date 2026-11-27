@@ -6,7 +6,7 @@
  * Pure bookkeeping; no enforcement decisions here.
  */
 
-import type { GateState } from "./types.ts"
+import type { GateState } from "../util/types.ts"
 
 export { mergeAfterReplay, newState } from "./state-carry.ts"
 

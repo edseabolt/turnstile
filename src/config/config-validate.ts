@@ -8,8 +8,8 @@
 
 import * as path from "node:path"
 
-import { CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER, GATE_RE, VERDICT_RE } from "./markers.ts"
-import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "./types.ts"
+import { CANONICAL_GATE_MARKER, CANONICAL_VERDICT_MARKER, GATE_RE, VERDICT_RE } from "../markers/markers.ts"
+import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "../util/types.ts"
 
 /**
  * Identity sentinel for "bareOutput not configured": `defaultConfig()` stores

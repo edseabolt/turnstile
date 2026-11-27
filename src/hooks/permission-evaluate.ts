@@ -11,9 +11,9 @@
 
 import { asSessionID, PLAN_ASK_MESSAGE_PREFIX } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import { waiverCovers } from "./gates-common.ts"
-import { HANDSON_REQUIREMENT, LANDING_REQUIREMENT } from "./tool-policy.ts"
-import type { PermissionEvaluateEvent } from "./types.ts"
+import { waiverCovers } from "../gates/gates-common.ts"
+import { HANDSON_REQUIREMENT, LANDING_REQUIREMENT } from "../tool-policy/tool-policy.ts"
+import type { PermissionEvaluateEvent } from "../util/types.ts"
 
 /**
  * Forces the host ask for a red plan gate under `escalation: "ask"`: names

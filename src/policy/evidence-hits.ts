@@ -8,7 +8,7 @@
  * are never stored.
  */
 
-import { evictTo } from "./bounded.ts"
+import { evictTo } from "../util/bounded.ts"
 import { extractTestFiles } from "./overlap.ts"
 
 /** Cap on the per-bucket test-file and touched-path sets (newest-wins). */

@@ -8,7 +8,7 @@
  * stream surfaces share, so every reader uses one extraction rule.
  */
 
-import type { PromptHookProperties, ToolHookEvent, ToolResult } from "./types.ts"
+import type { PromptHookProperties, ToolHookEvent, ToolResult } from "../util/types.ts"
 
 /**
  * Coerces an unknown host value into a session-ID string, mirroring the

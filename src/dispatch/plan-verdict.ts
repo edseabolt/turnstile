@@ -8,11 +8,11 @@
  * capture paths).
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { GateState } from "./types.ts"
-import type { Gates } from "./gates.ts"
-import { approvalResetsScope } from "./task-scope.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GateState } from "../util/types.ts"
+import type { Gates } from "../gates/gates.ts"
+import { approvalResetsScope } from "../state/task-scope.ts"
 
 /**
  * The state the plan-verdict concern reads and mutates: the shared deps and

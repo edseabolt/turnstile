@@ -15,7 +15,7 @@ import * as zlib from "node:zlib"
 import { foldChain } from "./chain.ts"
 import type { ChainVerdict, EpochSummary, ParsedRow } from "./chain.ts"
 import { verifyAnchors } from "./anchor.ts"
-import type { AnchorRef, AnchorSink } from "./types.ts"
+import type { AnchorRef, AnchorSink } from "../util/types.ts"
 
 /** The generation count used when a verify caller does not thread one:
  *  matches the `journalMaxGenerations` default in `defaultConfig()`. */

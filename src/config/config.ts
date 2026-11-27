@@ -14,8 +14,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { appendLine, defaultMetricsDir } from "./journal.ts"
-import { GATE_RE, VERDICT_RE, formatDiagnosticBlock } from "./markers.ts"
+import { appendLine, defaultMetricsDir } from "../journal/journal.ts"
+import { GATE_RE, VERDICT_RE, formatDiagnosticBlock } from "../markers/markers.ts"
 import {
   defaultAgents,
   defaultGitGates,
@@ -24,8 +24,8 @@ import {
   mergeConfigKey,
 } from "./config-merge.ts"
 import { BARE_OUTPUT_UNSET, validateResolved } from "./config-validate.ts"
-import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "./types.ts"
-import { DEFAULT_TEST_FILE_PATTERNS } from "./overlap.ts"
+import { DEFAULT_EPOCH_ENTRIES, type TurnstileConfig } from "../util/types.ts"
+import { DEFAULT_TEST_FILE_PATTERNS } from "../policy/overlap.ts"
 
 /** Default config file location. */
 export const CONFIG_PATH: string = path.join(os.homedir(), ".config", "opencode", "turnstile.json")
@@ -50,7 +50,7 @@ export const ENV_KEYS = {
 export const DEFAULT_EVIDENCE_PATTERN =
   "\\b(npm\\s+(run\\s+)?test|npm\\s+run\\s+ci|pnpm\\s+test|yarn\\s+test|bun\\s+test|deno\\s+test|node\\s+(?:--[\\w=-]+\\s+)*--test|pytest|make\\s+test(\\s|$)|go\\s+test|cargo\\s+test)\\b"
 
-export { DEFAULT_EPOCH_ENTRIES } from "./types.ts"
+export { DEFAULT_EPOCH_ENTRIES } from "../util/types.ts"
 
 export { BARE_OUTPUT_UNSET } from "./config-validate.ts"
 export { CANONICAL_REVIEWER_AGENT, DEFAULT_COMMIT_FORMAT } from "./config-merge.ts"

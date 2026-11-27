@@ -17,13 +17,13 @@
  * `{type:"error"}`, so a config typo that weakens the denylist is never silent.
  */
 
-import { DEFAULT_COMMIT_FORMAT } from "./config.ts"
-import { BlockError } from "./gates.ts"
-import type { Journaler } from "./journal.ts"
+import { DEFAULT_COMMIT_FORMAT } from "../config/config.ts"
+import { BlockError } from "../gates/gates.ts"
+import type { Journaler } from "../journal/journal.ts"
 import { splitCommands, tokenizeWords, type BashWriteVerdict } from "./bash-write.ts"
 import { parseCommitArgs } from "./commit-args.ts"
-import { findHighEntropyLiterals } from "./secret-patterns.ts"
-import type { TurnstileConfig } from "./types.ts"
+import { findHighEntropyLiterals } from "../util/secret-patterns.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 
 /**
  * Core landing-gate text shared by the enforce-path throw and the human ask

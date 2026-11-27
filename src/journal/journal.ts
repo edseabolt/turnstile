@@ -21,7 +21,7 @@ import {
 } from "./journal-sinks.ts"
 import type { JournalSinks } from "./journal-sinks.ts"
 import { withFileLock } from "./lockfile.ts"
-import type { AnchorRef, AnchorSink } from "./types.ts"
+import type { AnchorRef, AnchorSink } from "../util/types.ts"
 
 export {
   REPLAY_SESSION_RE,

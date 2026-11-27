@@ -14,8 +14,8 @@
  * mechanical enforcement.
  */
 
-import type { IntentKind } from "./intent.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { IntentKind } from "../dispatch/intent.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 
 /** The config slice the orchestrator policy text interpolates. */
 export type PolicyConfig = Pick<

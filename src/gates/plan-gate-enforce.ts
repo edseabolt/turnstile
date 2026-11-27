@@ -12,9 +12,9 @@
 
 import * as fs from "node:fs"
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { GateState, TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GateState, TurnstileConfig } from "../util/types.ts"
 import { BlockError, journalProvWaiver, waiverCovers, waiverStateNote } from "./gates-common.ts"
 import type { PlanGateRed } from "./plan-gate-status.ts"
 import { decompFallback, planGateStages, referencedPlans } from "./plan-gate-status.ts"

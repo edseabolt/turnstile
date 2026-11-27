@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process"
 import type { StdioOptions } from "node:child_process"
 import * as path from "node:path"
 
-import type { GateState } from "./types.ts"
+import type { GateState } from "../util/types.ts"
 import { isInterruptedReview } from "./task-scope.ts"
 
 /**

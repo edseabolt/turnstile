@@ -10,9 +10,9 @@
  * goes through the injected Journaler.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 import type { PlanImpact } from "./plan-scope.ts"
 import { createPlansScanCache } from "./plans-scan.ts"
 import { createPlanGateStatus, type PlanGateRed } from "./plan-gate-status.ts"

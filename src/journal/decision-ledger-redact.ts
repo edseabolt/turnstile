@@ -10,7 +10,7 @@
  * redaction without this module reading config.
  */
 
-import { compileSecretPatterns } from "./secret-patterns.ts"
+import { compileSecretPatterns } from "../util/secret-patterns.ts"
 
 /** The fixed replacement sentinel written over every redacted span. */
 export const REDACTION_SENTINEL = "[REDACTED]"

@@ -8,12 +8,12 @@
  * passed in — this module never re-parses marker syntax.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { GateState, MarkerEvent, TestOverlapEvidence, TurnstileConfig } from "./types.ts"
-import { deTokenizeMarker, parseGateMarkers } from "./markers.ts"
-import { computeTestOverlap } from "./overlap.ts"
-import type { EvidenceTracker } from "./evidence.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GateState, MarkerEvent, TestOverlapEvidence, TurnstileConfig } from "../util/types.ts"
+import { deTokenizeMarker, parseGateMarkers } from "../markers/markers.ts"
+import { computeTestOverlap } from "../policy/overlap.ts"
+import type { EvidenceTracker } from "../policy/evidence.ts"
 
 /**
  * The state the verdict-capture concern reads and mutates: the shared deps
@@ -51,7 +51,7 @@ interface EvidenceStampFields {
   observed: boolean | undefined
   passVerified: boolean | undefined
   stampVerified: boolean | undefined
-  stampMode: import("./types.ts").GateEvidenceMode | undefined
+  stampMode: import("../util/types.ts").GateEvidenceMode | undefined
 }
 
 /**

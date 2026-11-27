@@ -11,11 +11,11 @@
  * through the injected Journaler.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { TurnstileConfig } from "./types.ts"
-import { createDispatchBudget } from "./dispatch-budget.ts"
-import { createReviewGate } from "./dispatch-review-gate.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { TurnstileConfig } from "../util/types.ts"
+import { createDispatchBudget } from "../dispatch/dispatch-budget.ts"
+import { createReviewGate } from "../dispatch/dispatch-review-gate.ts"
 import type { EvidenceSearch } from "./gate-messages.ts"
 
 export type { EvidenceSearch } from "./gate-messages.ts"

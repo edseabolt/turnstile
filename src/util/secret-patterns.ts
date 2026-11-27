@@ -9,7 +9,7 @@
  * configured list only ever extends the built-ins.
  */
 
-import type { Journaler } from "./journal.ts"
+import type { Journaler } from "../journal/journal.ts"
 
 /** One built-in secret pattern: its regex source and compile flags. */
 export interface SecretPatternSource {

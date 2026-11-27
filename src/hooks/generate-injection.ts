@@ -6,7 +6,7 @@
  * orchestration (latches, journals, ledger state) lives in src/hooks-core.ts.
  */
 
-import type { GenerateDraft } from "./types.ts"
+import type { GenerateDraft } from "../util/types.ts"
 
 /** A system block as carried by the context/generate drafts (lenient shape). */
 export type SystemBlock = { type?: string; text?: string }

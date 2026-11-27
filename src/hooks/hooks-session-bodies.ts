@@ -15,8 +15,8 @@
 
 import { asSessionID } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import { formatGateSnapshot } from "./state.ts"
-import type { CompactionDraft, GenerateDraft, PromptHookProperties } from "./types.ts"
+import { formatGateSnapshot } from "../state/state.ts"
+import type { CompactionDraft, GenerateDraft, PromptHookProperties } from "../util/types.ts"
 
 /**
  * Applies the pipeline-agent decoding clamps to a generation draft:

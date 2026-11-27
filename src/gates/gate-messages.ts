@@ -7,7 +7,7 @@
  * keeps its own export list untouched. Pure text: no I/O, no state.
  */
 
-import type { TurnstileConfig } from "./types.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 
 /**
  * Attribution diagnostic for a gate-unverified refusal: which journaled test

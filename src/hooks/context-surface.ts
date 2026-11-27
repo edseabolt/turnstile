@@ -8,18 +8,18 @@
  * path is fail-open: a throwing mutation journals and never blocks the tool.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { GenerateDraft, ToolHookEvent } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GenerateDraft, ToolHookEvent } from "../util/types.ts"
 import {
   appendSystemText,
   describeRequestDraft,
   usableRequestDraft,
   type UsableRequestDraft,
 } from "./generate-injection.ts"
-import { formatConfigWarnings, formatObserveSummary } from "./config.ts"
-import { observeSummaryEntry } from "./gates-common.ts"
-import { intentNudge } from "./policy.ts"
+import { formatConfigWarnings, formatObserveSummary } from "../config/config.ts"
+import { observeSummaryEntry } from "../gates/gates-common.ts"
+import { intentNudge } from "../policy/policy.ts"
 import { asSessionID } from "./delivery.ts"
 
 /**
@@ -56,7 +56,7 @@ export interface ContextSurfaceState {
   /** The once-per-load latches (see {@link ContextSurfaceFlags}). */
   flags: ContextSurfaceFlags
   /** The pending intent nudges, consumed one-shot into the context draft. */
-  intentNudgePending: Map<string, import("./intent.ts").IntentKind>
+  intentNudgePending: Map<string, import("../dispatch/intent.ts").IntentKind>
   /** Journals a policy-injection outcome for a session. */
   journalPolicy(sessionID: string, injected: boolean, extra?: Record<string, unknown>): void
   /** Whether reactive enforcement is armed for the session's parent. */

@@ -9,10 +9,10 @@
  * live here; per-surface hook modules own their own registration bodies.
  */
 
-import { evictTo } from "./bounded.ts"
-import { loadConfig } from "./config.ts"
-import { sha256Hex16 } from "./chain.ts"
-import { createJournaler, type Journaler } from "./journal.ts"
+import { evictTo } from "../util/bounded.ts"
+import { loadConfig } from "../config/config.ts"
+import { sha256Hex16 } from "../journal/chain.ts"
+import { createJournaler, type Journaler } from "../journal/journal.ts"
 import {
   compileMarkerRegex,
   deltaWindowFloorChars,
@@ -21,26 +21,26 @@ import {
   markerRetryPrompt,
   verdictResultOf,
   VERDICT_RE,
-} from "./markers.ts"
-import { BlockError, createGates, type EvidenceSearch, type Gates } from "./gates.ts"
-import { wouldBlockEntry } from "./gates-common.ts"
-import { createEvidenceTracker, type EvidenceTracker } from "./evidence.ts"
+} from "../markers/markers.ts"
+import { BlockError, createGates, type EvidenceSearch, type Gates } from "../gates/gates.ts"
+import { wouldBlockEntry } from "../gates/gates-common.ts"
+import { createEvidenceTracker, type EvidenceTracker } from "../policy/evidence.ts"
 import { createOverrideAdjacency, type OverrideAdjacency } from "./override-adjacency.ts"
-import { createToolPolicy, type ToolPolicy } from "./tool-policy.ts"
-import { compileSecretPatterns } from "./secret-patterns.ts"
-import { formatPipelineStatus } from "./state.ts"
-import { classifyIntent, INTENT_KINDS, type IntentKind } from "./intent.ts"
-import { engagementEntry, shouldEngage, type EngagementReason } from "./engagement.ts"
-import { intentNudge, orchestratorPolicyFor } from "./policy.ts"
-import { createLedger, type GateLedger } from "./ledger.ts"
-import type { TokenUsageTotals } from "./token-usage.ts"
+import { createToolPolicy, type ToolPolicy } from "../tool-policy/tool-policy.ts"
+import { compileSecretPatterns } from "../util/secret-patterns.ts"
+import { formatPipelineStatus } from "../state/state.ts"
+import { classifyIntent, INTENT_KINDS, type IntentKind } from "../dispatch/intent.ts"
+import { engagementEntry, shouldEngage, type EngagementReason } from "../dispatch/engagement.ts"
+import { intentNudge, orchestratorPolicyFor } from "../policy/policy.ts"
+import { createLedger, type GateLedger } from "../state/ledger.ts"
+import type { TokenUsageTotals } from "../dispatch/token-usage.ts"
 import { createContextSurface, type ContextSurfaceFlags } from "./context-surface.ts"
 import { createParentResolution } from "./parent-resolution.ts"
-import { createVerdictCapture } from "./verdict-capture.ts"
-import { createPlanVerdict } from "./plan-verdict.ts"
-import { createDispatchGuard } from "./dispatch-guard.ts"
+import { createVerdictCapture } from "../dispatch/verdict-capture.ts"
+import { createPlanVerdict } from "../dispatch/plan-verdict.ts"
+import { createDispatchGuard } from "../dispatch/dispatch-guard.ts"
 import { createBashWriteGuard } from "./bash-write-guard.ts"
-import { createPromptAdmission, type PromptAdmissionFlags } from "./prompt-admission.ts"
+import { createPromptAdmission, type PromptAdmissionFlags } from "../dispatch/prompt-admission.ts"
 import {
   asSessionID,
   mutateDeliveryText,
@@ -60,7 +60,7 @@ import type {
   ToolHookEvent,
   TurnstileConfig,
   TurnstileOptions,
-} from "./types.ts"
+} from "../util/types.ts"
 
 /** The host `tui.toast.show` function, when the TUI surface exists. */
 type ToastShow = NonNullable<NonNullable<Host["tui"]>["toast"]>["show"]

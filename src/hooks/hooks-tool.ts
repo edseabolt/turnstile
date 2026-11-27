@@ -9,7 +9,7 @@
 import type { TurnstileContext } from "./hooks-core.ts"
 import { toolHooksAfter } from "./tool-hooks-after.ts"
 import { toolHooksBefore } from "./tool-hooks-before.ts"
-import type { ToolHookEvent } from "./types.ts"
+import type { ToolHookEvent } from "../util/types.ts"
 
 /**
  * Tool-surface hook bodies bound to one shared per-setup context. The

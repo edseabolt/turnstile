@@ -10,7 +10,7 @@
  */
 
 import type { JournalEntry } from "./journal.ts"
-import type { TokenUsageTotals } from "./token-usage.ts"
+import type { TokenUsageTotals } from "../dispatch/token-usage.ts"
 
 /** Session activity counts derived from the journal. */
 export interface SessionSummaryCounts {

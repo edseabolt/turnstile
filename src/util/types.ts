@@ -7,9 +7,9 @@
  * reshapes a field fails open instead of failing hard.
  */
 
-import type { TestOverlapEvidence } from "./overlap.ts"
+import type { TestOverlapEvidence } from "../policy/overlap.ts"
 
-export type { TestOverlapEvidence } from "./overlap.ts"
+export type { TestOverlapEvidence } from "../policy/overlap.ts"
 
 /** Task dispatch input as delivered by the host's `task`/`subagent` tools. */
 export interface TaskInput {

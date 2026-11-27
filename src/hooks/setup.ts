@@ -15,9 +15,9 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { configDigest } from "./config.ts"
-import { resolveAnchorSinks } from "./anchor.ts"
-import { BlockError } from "./gates.ts"
+import { configDigest } from "../config/config.ts"
+import { resolveAnchorSinks } from "../journal/anchor.ts"
+import { BlockError } from "../gates/gates.ts"
 import { evaluateHostCompat, HOST_COMPAT } from "./host-compat.ts"
 import type { CompatResult } from "./host-compat.ts"
 import { createHooksCore } from "./hooks-core.ts"
@@ -26,7 +26,7 @@ import { startEventStream } from "./hooks-events.ts"
 import { createPermissionHooks } from "./hooks-permission.ts"
 import { createSessionHooks } from "./hooks-session.ts"
 import { createToolHooks } from "./hooks-tool.ts"
-import type { Host, ToolHookEvent, TurnstileOptions } from "./types.ts"
+import type { Host, ToolHookEvent, TurnstileOptions } from "../util/types.ts"
 
 /**
  * Tracks a hook registration handle so it can be disposed on teardown.

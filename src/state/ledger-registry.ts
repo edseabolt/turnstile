@@ -9,9 +9,9 @@
  * journal appends (`appendLine` never throws).
  */
 
-import { evictTo } from "./bounded.ts"
-import type { ChildVerdict, GateState } from "./types.ts"
-import { appendLine, now } from "./journal.ts"
+import { evictTo } from "../util/bounded.ts"
+import type { ChildVerdict, GateState } from "../util/types.ts"
+import { appendLine, now } from "../journal/journal.ts"
 import { clearMeteringCounters } from "./state.ts"
 
 /**

@@ -12,7 +12,7 @@
  * no throwing.
  */
 
-import type { GateState } from "./types.ts"
+import type { GateState } from "../util/types.ts"
 
 /**
  * Decides whether an admitted prompt keeps the current task scope (no reset,

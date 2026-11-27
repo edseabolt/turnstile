@@ -8,9 +8,9 @@
  * config; persistence goes through the injected Journaler.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 import { createDispatchGates } from "./gates-dispatch.ts"
 import type { EvidenceSearch } from "./gates-dispatch.ts"
 import { createPlanGates } from "./gates-plan.ts"

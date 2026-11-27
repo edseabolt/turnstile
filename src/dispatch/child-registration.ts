@@ -15,10 +15,10 @@
  * consumer gates it like a parent.
  */
 
-import { agentFromTaskInput } from "./markers.ts"
-import type { TaskInput } from "./types.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { ToolHookEvent } from "./types.ts"
+import { agentFromTaskInput } from "../markers/markers.ts"
+import type { TaskInput } from "../util/types.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { ToolHookEvent } from "../util/types.ts"
 
 /** The ledger shape this boundary reads: only the child→parent edge map. */
 export type ChildEdgeLedger = Pick<GateLedger, "childToParent">

@@ -15,9 +15,9 @@ import type { StdioOptions } from "node:child_process"
 
 import { repairTornTail } from "./journal-sinks.ts"
 
-import type { AnchorRef, AnchorSelection, AnchorSink, AnchorVerdict } from "./types.ts"
+import type { AnchorRef, AnchorSelection, AnchorSink, AnchorVerdict } from "../util/types.ts"
 
-export type { AnchorRef, AnchorSelection, AnchorSink, AnchorVerdict } from "./types.ts"
+export type { AnchorRef, AnchorSelection, AnchorSink, AnchorVerdict } from "../util/types.ts"
 
 /** Options threaded to sink factories and resolution. */
 export interface AnchorOptions {

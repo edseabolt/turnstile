@@ -4,7 +4,7 @@
  * bookkeeping; the ledger boundary (`src/ledger.ts`) owns persistence.
  */
 
-import type { GateState } from "./types.ts"
+import type { GateState } from "../util/types.ts"
 import { isInterruptedReview } from "./task-scope.ts"
 
 /**

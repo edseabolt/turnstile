@@ -14,7 +14,7 @@ import type {
   TurnstileSecrets,
   TurnstileTamperEvidence,
   TurnstileToolPolicy,
-} from "./types.ts"
+} from "../util/types.ts"
 
 /**
  * Canonical default name of the reviewer agent whose task-result verdicts

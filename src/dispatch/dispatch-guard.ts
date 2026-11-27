@@ -10,22 +10,22 @@
  * block throws `BlockError` for the caller's fail-open catch.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { Gates } from "./gates.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { Gates } from "../gates/gates.ts"
 import type { EngagementReason } from "./engagement.ts"
-import type { GateState, ToolHookEvent, TurnstileConfig } from "./types.ts"
+import type { GateState, ToolHookEvent, TurnstileConfig } from "../util/types.ts"
 import { agentFromDispatchEvent } from "./child-registration.ts"
-import { asSessionID } from "./delivery.ts"
+import { asSessionID } from "../hooks/delivery.ts"
 import {
   MAINTENANCE_MAX_PER_PLAN,
   maintenanceDeclared,
   maintenanceDiffEligible,
   maintenanceMarkerSensitive,
-} from "./maintenance.ts"
-import { BlockError } from "./gates.ts"
-import { sha256Hex16 } from "./chain.ts"
-import { evictTo } from "./bounded.ts"
+} from "../gates/maintenance.ts"
+import { BlockError } from "../gates/gates.ts"
+import { sha256Hex16 } from "../journal/chain.ts"
+import { evictTo } from "../util/bounded.ts"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { spawnSync } from "node:child_process"
@@ -81,7 +81,7 @@ export interface DispatchGuardState {
   /** Re-evaluates evidence correlation for a parent with a pending PASS. */
   promoteOnEvidence(parent: string): void
   /** Builds the attribution diagnostic for a gate-unverified refusal. */
-  evidenceSearch(sid: string): import("./gates.ts").EvidenceSearch
+  evidenceSearch(sid: string): import("../gates/gates.ts").EvidenceSearch
   /** Resolves the project directory via session.get, caching per session. */
   resolveProjectDir(sessionID: string): Promise<string>
   /** Settles a task-dispatch guard catch (observe/suspend/blocked stamp). */

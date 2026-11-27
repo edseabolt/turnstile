@@ -8,12 +8,12 @@
  * (hooks guard and journal).
  */
 
-import type { GateLedger } from "./ledger.ts"
-import type { GateState, TurnstileConfig } from "./types.ts"
-import { BlockError, waiverCovers, waiverStateNote } from "./gates-common.ts"
-import { capBlockMessage } from "./gate-messages.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GateState, TurnstileConfig } from "../util/types.ts"
+import { BlockError, waiverCovers, waiverStateNote } from "../gates/gates-common.ts"
+import { capBlockMessage } from "../gates/gate-messages.ts"
 import { blockWithEscalation, type DispatchGateState } from "./dispatch-review-gate.ts"
-import type { Journaler } from "./journal.ts"
+import type { Journaler } from "../journal/journal.ts"
 
 /**
  * A resolved per-leg dispatch budget line: the leg's journal label, state

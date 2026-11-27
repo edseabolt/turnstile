@@ -15,8 +15,8 @@
  * `setup.ts`, and the tests keep importing from this boundary.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 import type { BashWriteVerdict } from "./bash-write.ts"
 import type {
   BashWriteGateCapability,
@@ -35,7 +35,7 @@ import {
   createTelemetry,
   type ToolPolicyState,
 } from "./tool-policy-guards.ts"
-import { compileSecretPatterns } from "./secret-patterns.ts"
+import { compileSecretPatterns } from "../util/secret-patterns.ts"
 
 export {
   HANDSON_REQUIREMENT,

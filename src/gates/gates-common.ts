@@ -6,9 +6,9 @@
  * (type only), and the pure `decision-ledger.ts` builders.
  */
 
-import { provWaiverEntry } from "./decision-ledger.ts"
-import type { Journaler } from "./journal.ts"
-import type { GateState, TurnstileConfig } from "./types.ts"
+import { provWaiverEntry } from "../journal/decision-ledger.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateState, TurnstileConfig } from "../util/types.ts"
 
 /**
  * The only error type turnstile deliberately throws at the host: an

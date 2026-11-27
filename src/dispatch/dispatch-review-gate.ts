@@ -9,23 +9,23 @@
  * failure fails open upstream (hooks guard and journal).
  */
 
-import type { Journaler } from "./journal.ts"
-import { REVIEW_ENSEMBLE_SIZE } from "./state.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { GateState, TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import { REVIEW_ENSEMBLE_SIZE } from "../state/state.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GateState, TurnstileConfig } from "../util/types.ts"
 import {
   BlockError,
   journalProvWaiver,
   reviewerEnsembleEntry,
   waiverCovers,
   waiverStateNote,
-} from "./gates-common.ts"
+} from "../gates/gates-common.ts"
 import {
   capBlockMessage,
   searchedSessionIds,
   unverifiedBlockMessage,
   type EvidenceSearch,
-} from "./gate-messages.ts"
+} from "../gates/gate-messages.ts"
 
 /**
  * The read-only state shared by the dispatch-domain gate modules: the

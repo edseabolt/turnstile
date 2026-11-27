@@ -11,9 +11,9 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { GateState, TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { GateState, TurnstileConfig } from "../util/types.ts"
 import { waiverCovers } from "./gates-common.ts"
 import { classifyPlanImpact, planScopeFiles } from "./plan-scope.ts"
 import type { PlanImpact, PlanScope } from "./plan-scope.ts"

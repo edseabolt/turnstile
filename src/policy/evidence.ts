@@ -14,11 +14,11 @@
  * by design.
  */
 
-import { DEFAULT_EVIDENCE_PATTERN } from "./config.ts"
+import { DEFAULT_EVIDENCE_PATTERN } from "../config/config.ts"
 import { DEFAULT_TEST_FILE_PATTERNS } from "./overlap.ts"
 import { createEvidenceHits } from "./evidence-hits.ts"
-import type { Journaler } from "./journal.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 
 /** Fallback pattern used when the configured `evidencePattern` fails to compile. */
 const FALLBACK_EVIDENCE_PATTERN = new RegExp(DEFAULT_EVIDENCE_PATTERN, "i")

@@ -20,13 +20,13 @@ import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import { evictTo } from "./bounded.ts"
-import { CANONICAL_REVIEWER_AGENT } from "./config.ts"
-import type { ChildVerdict, GateState } from "./types.ts"
-import { appendLine, now, REPLAY_SESSION_RE } from "./journal.ts"
-import type { Journaler } from "./journal.ts"
-import { withFileLock } from "./lockfile.ts"
-import { verdictResultOf } from "./markers.ts"
+import { evictTo } from "../util/bounded.ts"
+import { CANONICAL_REVIEWER_AGENT } from "../config/config.ts"
+import type { ChildVerdict, GateState } from "../util/types.ts"
+import { appendLine, now, REPLAY_SESSION_RE } from "../journal/journal.ts"
+import type { Journaler } from "../journal/journal.ts"
+import { withFileLock } from "../journal/lockfile.ts"
+import { verdictResultOf } from "../markers/markers.ts"
 import { REVIEW_ENSEMBLE_SIZE, mergeAfterReplay, newState } from "./state.ts"
 import {
   cap,
@@ -36,7 +36,7 @@ import {
   type CreditTrace,
   type LedgerRegistry,
 } from "./ledger-registry.ts"
-import type { StickyReleaseKind } from "./gates-common.ts"
+import type { StickyReleaseKind } from "../gates/gates-common.ts"
 
 /**
  * The slice of the journaler the ledger needs: the chained `journal` append

@@ -20,10 +20,10 @@ import {
   LANDING_ASK_MESSAGE_PREFIX,
   PLAN_ASK_MESSAGE_PREFIX,
 } from "./delivery.ts"
-import { decisionEntry, reviewerEnsembleEntry } from "./gates-common.ts"
-import { readJournalEntries } from "./journal.ts"
-import { verifyJournalChain } from "./verify.ts"
-import { provDeniedEntry, type ProvDeniedKind } from "./decision-ledger.ts"
+import { decisionEntry, reviewerEnsembleEntry } from "../gates/gates-common.ts"
+import { readJournalEntries } from "../journal/journal.ts"
+import { verifyJournalChain } from "../journal/verify.ts"
+import { provDeniedEntry, type ProvDeniedKind } from "../journal/decision-ledger.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import {
   countSessionActivity,
@@ -31,16 +31,16 @@ import {
   formatSessionSummary,
   isInactive,
   sessionTokenTotals,
-} from "./summary.ts"
-import type { EventProperties } from "./types.ts"
-import { deTokenizeMarker, findTruncatedMarkerSpans } from "./markers.ts"
+} from "../journal/summary.ts"
+import type { EventProperties } from "../util/types.ts"
+import { deTokenizeMarker, findTruncatedMarkerSpans } from "../markers/markers.ts"
 import {
   addTotals,
   extractStepUsage,
   extractUsage,
   zeroTotals,
   type ExtractedUsage,
-} from "./token-usage.ts"
+} from "../dispatch/token-usage.ts"
 
 /** A per-event handler in consume()'s dispatch table, keyed by event type. */
 export type EventHandler = (properties: EventProperties) => void | Promise<void>

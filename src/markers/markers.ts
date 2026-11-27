@@ -11,7 +11,7 @@
  * events byte-identical to legacy output).
  */
 
-import type { MarkerNearMiss, TaskInput, TurnstileConfig } from "./types.ts"
+import type { MarkerNearMiss, TaskInput, TurnstileConfig } from "../util/types.ts"
 
 // `export const` keeps the regex literals load-bearing for
 // scripts/check-markers.mjs, which extracts them by name and asserts the

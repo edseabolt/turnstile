@@ -10,7 +10,7 @@
 
 import { asSessionID } from "./delivery.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import type { ToolHookEvent } from "./types.ts"
+import type { ToolHookEvent } from "../util/types.ts"
 
 /**
  * Routes the denylist-guarded tools: bash/shell runs the command denylist +

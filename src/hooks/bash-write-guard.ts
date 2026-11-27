@@ -11,24 +11,24 @@
  * fail-open catch.
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
 import type {
   BashWriteGateCapability,
   HandsOnGateCapability,
   LandingGateCapability,
   ToolPolicy,
-} from "./tool-policy.ts"
-import type { Gates } from "./gates.ts"
-import type { GateState, ToolHookEvent, TurnstileConfig } from "./types.ts"
-import type { PlanImpact } from "./plan-scope.ts"
-import { classifyBashWrite } from "./bash-write.ts"
-import { isScratchTarget } from "./scratch.ts"
-import { isEmptyDiffPush } from "./empty-diff.ts"
-import { BlockError, waiverCovers } from "./gates-common.ts"
-import { isPushLanding } from "./tool-policy.ts"
-import { planImpactAdvisory } from "./policy.ts"
-import { resolvePlansDir } from "./plans-scan.ts"
+} from "../tool-policy/tool-policy.ts"
+import type { Gates } from "../gates/gates.ts"
+import type { GateState, ToolHookEvent, TurnstileConfig } from "../util/types.ts"
+import type { PlanImpact } from "../gates/plan-scope.ts"
+import { classifyBashWrite } from "../tool-policy/bash-write.ts"
+import { isScratchTarget } from "../tool-policy/scratch.ts"
+import { isEmptyDiffPush } from "../tool-policy/empty-diff.ts"
+import { BlockError, waiverCovers } from "../gates/gates-common.ts"
+import { isPushLanding } from "../tool-policy/tool-policy.ts"
+import { planImpactAdvisory } from "../policy/policy.ts"
+import { resolvePlansDir } from "../gates/plans-scan.ts"
 import { asSessionID } from "./delivery.ts"
 import type { OverrideAdjacency } from "./override-adjacency.ts"
 import * as path from "node:path"

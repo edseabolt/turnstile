@@ -14,7 +14,7 @@ import {
   sessionGenerateBody,
   sessionPromptBody,
 } from "./hooks-session-bodies.ts"
-import type { CompactionDraft, GenerateDraft, PromptHookProperties } from "./types.ts"
+import type { CompactionDraft, GenerateDraft, PromptHookProperties } from "../util/types.ts"
 
 /**
  * Session-surface hook bodies bound to one shared per-setup context. The

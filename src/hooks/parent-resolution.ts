@@ -9,13 +9,13 @@
  * says so).
  */
 
-import type { Journaler } from "./journal.ts"
-import type { GateLedger } from "./ledger.ts"
-import type { Host, SessionRecord, TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { GateLedger } from "../state/ledger.ts"
+import type { Host, SessionRecord, TurnstileConfig } from "../util/types.ts"
 import { AGENT_KEYS, DIRECTORY_KEYS, PARENT_KEYS, readRecordString } from "./delivery.ts"
-import { evictTo } from "./bounded.ts"
-import { resolveChildStatus } from "./child-registration.ts"
-import type { ToolPolicy } from "./tool-policy.ts"
+import { evictTo } from "../util/bounded.ts"
+import { resolveChildStatus } from "../dispatch/child-registration.ts"
+import type { ToolPolicy } from "../tool-policy/tool-policy.ts"
 
 /**
  * The state the parent-resolution concern reads and mutates: the shared

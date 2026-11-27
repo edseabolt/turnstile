@@ -9,14 +9,14 @@
  * `after` never gates — every failure journals fail-open.
  */
 
-import { agentFromDeliveryEvent } from "./child-registration.ts"
-import { dispatchStampKey } from "./dispatch-guard.ts"
+import { agentFromDeliveryEvent } from "../dispatch/child-registration.ts"
+import { dispatchStampKey } from "../dispatch/dispatch-guard.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
-import { provOverrideEntry } from "./decision-ledger.ts"
-import { sha256Hex16 } from "./chain.ts"
-import { QUESTION_RE, parseQuestionMarker } from "./markers.ts"
+import { provOverrideEntry } from "../journal/decision-ledger.ts"
+import { sha256Hex16 } from "../journal/chain.ts"
+import { QUESTION_RE, parseQuestionMarker } from "../markers/markers.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
-import type { MarkerEvent, ToolHookEvent, ToolResult } from "./types.ts"
+import type { MarkerEvent, ToolHookEvent, ToolResult } from "../util/types.ts"
 
 /**
  * The ordering invariant for the once-per-scope surface blocks: every block

@@ -18,7 +18,7 @@
 import type { TurnstileContext } from "./hooks-core.ts"
 import { createEventHandlers } from "./event-stream-handlers.ts"
 import type { EventHandler } from "./event-stream-handlers.ts"
-import type { EventProperties, StreamEvent } from "./types.ts"
+import type { EventProperties, StreamEvent } from "../util/types.ts"
 
 /** A consume() exit: the stream was torn down by an abort, or it completed cleanly. */
 type StreamExit = "aborted" | "clean"

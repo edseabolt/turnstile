@@ -12,8 +12,8 @@ import * as fs from "node:fs"
 import { createHash } from "node:crypto"
 import * as path from "node:path"
 
-import type { Journaler } from "./journal.ts"
-import type { TurnstileConfig } from "./types.ts"
+import type { Journaler } from "../journal/journal.ts"
+import type { TurnstileConfig } from "../util/types.ts"
 import { planSpecRegion } from "./plan-region.ts"
 
 /** What one plans-dir scan establishes for both plan gates. */
