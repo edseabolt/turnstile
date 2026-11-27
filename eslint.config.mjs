@@ -30,7 +30,7 @@ export default tseslint.config(
     // expose stable payload types (types.ts promises "any ends here").
     // Fake-host test payloads are loose for the same reason. Everywhere
     // else `any` is a violation.
-    files: ["src/types.ts", "tests/**/*.ts"],
+    files: ["src/util/types.ts", "tests/**/*.ts"],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
 )
