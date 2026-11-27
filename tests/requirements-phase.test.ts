@@ -114,6 +114,14 @@ test("policy: the requirements section and order line appear when the phase is o
     policy.includes("present them to the user and stop"),
     "the Open Questions relay is stated",
   )
+  assert.ok(
+    policy.includes("name a path under .opencode/requirements/"),
+    "the on-disk spec path convention is stated",
+  )
+  assert.ok(
+    policy.includes("still returns it verbatim"),
+    "the file write does not replace the verbatim hand-off",
+  )
 })
 
 /** A boolean requirementsPhase merges; a non-boolean is rejected with the

@@ -166,7 +166,10 @@ criteria `AC-1…AC-n`, and Open Questions each marked blocking or
 non-blocking). The orchestrator relays any remaining Open Questions to the
 user, folds the written answers in (an explicit delegation is recorded with
 its scope), and passes the finalized spec verbatim into the planner dispatch
-prompt. Trivial tasks (small fixes, renames, doc/config changes) skip the
+prompt. If the task needs the spec on disk, the dispatch prompt names a path
+under `.opencode/requirements/`; the requirements agent's definition allows
+writes there (a repo-local convention, not a config key) and it still
+returns the spec verbatim. Trivial tasks (small fixes, renames, doc/config changes) skip the
 leg. The phase is soft and ungated: it emits no marker and no gate. The only
 enforcement surface is the loop cap (`maxRequirementsRounds`, default 2,
 counted in `requirementsRounds` and the total dispatch budget, waived

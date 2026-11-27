@@ -264,7 +264,10 @@ function requirementsPhaseSection(c: PolicyConfig): string {
     `doc/config changes) skip the leg. The leg emits no marker and is ` +
     `capped at ${c.maxRequirementsRounds} dispatches per task inside the ` +
     `total dispatch budget; if the spec keeps coming back without ` +
-    `converging, escalate to the user.`
+    `converging, escalate to the user. If the task needs the spec on disk, ` +
+    `name a path under .opencode/requirements/ in the dispatch prompt; the ` +
+    `requirements agent writes the spec file there and still returns it ` +
+    `verbatim.`
   )
 }
 
