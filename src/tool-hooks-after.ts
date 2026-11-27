@@ -232,6 +232,29 @@ function checkDispatchTamper(ctx: TurnstileContext, event: ToolHookEvent, child:
 }
 
 /**
+ * Builds one `question` `open` journal row: the authoritative shape carries
+ * the question text only; the suppressed shape adds `authority:"suppressed"`
+ * (audit only — the replay fold skips it).
+ * @param sessionID The parent session the row is keyed on.
+ * @param question The extracted question text.
+ * @param suppressed Whether the observation was denied authority.
+ * @returns The journal row.
+ */
+function questionOpenRow(
+  sessionID: string,
+  question: string,
+  suppressed: boolean,
+): Record<string, unknown> {
+  return {
+    type: "question",
+    sessionID,
+    action: "open",
+    ...(suppressed ? { authority: "suppressed" } : {}),
+    question,
+  }
+}
+
+/**
  * Captures a first-sight `QUESTION:` marker on a task-result delivery:
  * parses the delivery text through the question arm (dedup keyed on the
  * delivery's scope, provenance keyed on the child session) and journals the
@@ -262,24 +285,12 @@ function captureQuestionOpen(
     const allowed = agent === ctx.config.agents.executor
     const parsed = parseQuestionMarker(s, output, QUESTION_RE, dedupScope, child, allowed)
     if (!parsed) return
-    if (parsed.authority === "suppressed") {
-      ctx.journaler.journal({
-        type: "question",
-        sessionID: sid,
-        action: "open",
-        authority: "suppressed",
-        question: parsed.question,
-      })
-      return
+    const suppressed = parsed.authority === "suppressed"
+    if (!suppressed) {
+      s.questionPending = parsed.question
+      s.questionOpenedAt = Date.now()
     }
-    s.questionPending = parsed.question
-    s.questionOpenedAt = Date.now()
-    ctx.journaler.journal({
-      type: "question",
-      sessionID: sid,
-      action: "open",
-      question: parsed.question,
-    })
+    ctx.journaler.journal(questionOpenRow(sid, parsed.question, suppressed))
   } catch (e) {
     ctx.journaler.journal({ type: "error", sessionID: child, error: `question open capture: ${e}` })
   }
