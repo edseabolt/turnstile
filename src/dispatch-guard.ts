@@ -164,10 +164,7 @@ function journalUnresolvedAgent(st: DispatchGuardState, sessionID: string, agent
  * @param event The execute.before tool event (task/subagent shape).
  * @returns A promise resolving when the dispatch is settled.
  */
-async function handleTaskDispatchBody(
-  st: DispatchGuardState,
-  event: ToolHookEvent,
-): Promise<void> {
+async function handleTaskDispatchBody(st: DispatchGuardState, event: ToolHookEvent): Promise<void> {
   // Dispatch-input-first resolution is safe here: `event.input` IS the
   // dispatch input (execute.before, no structured result echo exists),
   // so the `event.agent` fallback cannot shadow a child name the way it

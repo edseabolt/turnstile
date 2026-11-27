@@ -28,6 +28,7 @@ function extractRegex(name) {
 
 const gateRe = extractRegex("GATE_RE")
 const verdictRe = extractRegex("VERDICT_RE")
+const questionRe = extractRegex("QUESTION_RE")
 
 // MARKER_OK is declared across two lines (`const MARKER_OK =` then the literal),
 // so the extraction tolerates the newline between the `=` and the `/`.
@@ -41,7 +42,7 @@ const markerOkRe = new RegExp(markerOkMatch[1], markerOkMatch[2].replace(/g/g, "
 const lines = [readme, usage].flatMap((doc) =>
   [...doc.matchAll(/```[a-z]*\n([\s\S]*?)```/g)]
     .flatMap((m) => m[1].split("\n"))
-    .filter((l) => /^(GATE|VERDICT): /.test(l.trim()) && !/[<>]/.test(l)),
+    .filter((l) => /^(GATE|VERDICT|QUESTION): /.test(l.trim()) && !/[<>]/.test(l)),
 )
 
 if (lines.length === 0) {
@@ -59,6 +60,7 @@ let failed = 0
 const LEADING_DECORATION = "^\\s*[`>#*\\s]*"
 const CANONICAL_GATE_CORE = "GATE: (?:PASS|FAIL) tests=\\d+ passed=\\d+ failed=\\d+"
 const CANONICAL_VERDICT_CORE = "VERDICT: (?:APPROVE|BLOCK) crit=\\d+ high=\\d+ med=\\d+ low=\\d+"
+const CANONICAL_QUESTION_CORE = "QUESTION: .+"
 // Flag set after extractRegex strips `g`: multiline is load-bearing (`^`
 // must match each line), and any added flag (`i`, `s`, `u`, `y`, `d`) would
 // silently broaden or change match semantics without touching the source.
@@ -77,6 +79,7 @@ function markerCore(source) {
 for (const [re, name, canonical] of [
   [gateRe, "GATE_RE", CANONICAL_GATE_CORE],
   [verdictRe, "VERDICT_RE", CANONICAL_VERDICT_CORE],
+  [questionRe, "QUESTION_RE", CANONICAL_QUESTION_CORE],
 ]) {
   if (markerCore(re.source) !== canonical) {
     console.error(
@@ -93,30 +96,38 @@ for (const [re, name, canonical] of [
 }
 
 for (const line of lines) {
-  const ok = gateRe.test(line) || verdictRe.test(line)
+  const isQuestion = line.startsWith("QUESTION")
+  const ok = isQuestion ? questionRe.test(line) : gateRe.test(line) || verdictRe.test(line)
   if (!ok) {
     console.error(`check-markers: doc marker not accepted by parser: ${line}`)
     failed++
   }
   // The evidence emitter's MARKER_OK copy must accept the same concrete
   // examples the parser does, so a drift in that second copy fails the guard.
-  if (!markerOkRe.test(line)) {
+  // It is a GATE/VERDICT check: question lines are skipped (no counted
+  // fields, so MARKER_OK does not speak for them).
+  if (!isQuestion && !markerOkRe.test(line)) {
     console.error(`check-markers: doc marker not accepted by evidence MARKER_OK: ${line}`)
     failed++
   }
 }
 
-// Agent templates: the backticked GATE:/VERDICT: examples in
+// Agent templates: the backticked GATE:/VERDICT:/QUESTION: examples in
 // agents/*.md are the prompt-side half of the marker contract.
 // Templates spell the numeric fields <n>; they must parse once the
-// placeholder stands in for digits.
+// placeholder stands in for digits. QUESTION templates carry free text and
+// are validated against questionRe only.
 const agentsDir = join(root, "agents")
 let agentTemplates = 0
 for (const f of readdirSync(agentsDir).filter((f) => f.endsWith(".md"))) {
   const text = readFileSync(join(agentsDir, f), "utf8")
-  for (const m of text.matchAll(/`((?:GATE|VERDICT): [^\n`]*)`/g)) {
+  for (const m of text.matchAll(/`((?:GATE|VERDICT|QUESTION): [^\n`]*)`/g)) {
     const line = m[1].replaceAll("<n>", "1")
-    const re = line.startsWith("GATE") ? gateRe : verdictRe
+    const re = line.startsWith("GATE")
+      ? gateRe
+      : line.startsWith("VERDICT")
+        ? verdictRe
+        : questionRe
     agentTemplates++
     if (!re.test(line)) {
       console.error(`check-markers: agent marker template not accepted by parser: ${f}: ${line}`)
@@ -137,9 +148,11 @@ if (agentTemplates === 0) {
 // gone; src/policy.ts is its successor, so its examples are validated too.)
 const policyFile = join(root, "src", "policy.ts")
 let policyTemplates = 0
-for (const m of readFileSync(policyFile, "utf8").matchAll(/`((?:GATE|VERDICT): [^\n`]*)`/g)) {
+for (const m of readFileSync(policyFile, "utf8").matchAll(
+  /`((?:GATE|VERDICT|QUESTION): [^\n`]*)`/g,
+)) {
   const line = m[1].replaceAll("<n>", "1")
-  const re = line.startsWith("GATE") ? gateRe : verdictRe
+  const re = line.startsWith("GATE") ? gateRe : line.startsWith("VERDICT") ? verdictRe : questionRe
   policyTemplates++
   if (!re.test(line)) {
     console.error(`check-markers: policy marker template not accepted by parser: ${line}`)
@@ -157,6 +170,8 @@ for (const [re, bad] of [
   [gateRe, "GATE: OK tests=1 passed=1 failed=0"],
   [verdictRe, "VERDICT: APPROVE crit=1"],
   [verdictRe, "VERDICT: MAYBE crit=0 high=0 med=0 low=0"],
+  [questionRe, "QUESTION:"],
+  [questionRe, "QUESTION: "],
 ]) {
   if (re.test(bad)) {
     console.error(`check-markers: parser accepted malformed marker: ${bad}`)

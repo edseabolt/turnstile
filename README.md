@@ -146,6 +146,7 @@ hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 | Commit-lint            | `git commit -m` subjects must be conventional commits when `gitGates.commitMessages` is on (default)                                                                                                                                                                     |
 | Landing gate           | `git push` without a credited reviewer `VERDICT: APPROVE` blocks; a repeat attempt forces the interactive human ask                                                                                                                                                      |
 | Marker parsing         | `GATE:` / `VERDICT:` markers parsed from task results and child text; only marker-contracted emitters flip state — echoes are journaled `suppressed`                                                                                                                     |
+| Question pause         | an executor `QUESTION:` pauses pipeline dispatches for the task until you answer (the next dispatch prompt), cancel with `QUESTION CANCELLED:`, or the configured timeout resolves it (`hold` default)                                                                   |
 | Trace & telemetry      | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, errors, per-session token/cost usage                                                                                                                                                             |
 | Journal concurrency    | Concurrent OpenCode instances share one journal safely: chained appends and the approval sidecar write under a per-file lock with an in-lock re-read; lock contention degrades to an unlocked write with a journaled `journal-lock:` warning, never blocking enforcement |
 | Decoding clamps        | reviewer/plan-reviewer temperature = 0; executor/test-runner/debugger ≤ 0.2                                                                                                                                                                                              |
@@ -283,11 +284,14 @@ GATE: FAIL tests=12 passed=10 failed=2
 
 VERDICT: APPROVE crit=0 high=0 med=2 low=1
 VERDICT: BLOCK crit=1 high=0 med=0 low=2
+
+QUESTION: should chunk 3 use worker pools or a queue?
 ```
 
 The parser accepts these markers wrapped in markdown backticks and credits
 them identically to the bare form; only a marker that does not match the
-fields above is treated as absent.
+fields above is treated as absent. A `QUESTION:` marker carries free text
+(no counted fields); only the executor's deliveries open a question.
 
 Waiver and approval markers (must appear in the user's prompt, verbatim; a
 dispatch prompt that merely contains the marker unlocks nothing):

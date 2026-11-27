@@ -259,11 +259,8 @@ async function bootWith(config: Partial<TurnstileConfig>): Promise<{
  * @returns The replayed gate state bucket, or undefined.
  */
 function replayedState(metricsDir: string, sessionID: string): Record<string, unknown> | undefined {
-  return createLedger(
-    path.join(metricsDir, "turnstile.jsonl"),
-    64,
-    2000,
-  ).peek(sessionID) as Record<string, unknown> | undefined
+  return createLedger(path.join(metricsDir, "turnstile.jsonl"), 64, 2000).peek(sessionID) as
+    Record<string, unknown> | undefined
 }
 
 test("executor QUESTION pauses the pipeline; the answer dispatch resumes it", async () => {
@@ -323,10 +320,7 @@ test("a non-executor QUESTION is journaled suppressed and pauses nothing", async
     const open = entriesOf(metricsDir, "question").find((e) => e.action === "open")
     assert.ok(open)
     assert.equal(open.authority, "suppressed")
-    assert.ok(
-      !replayedState(metricsDir, "p1")?.questionPending,
-      "a suppressed open pauses nothing",
-    )
+    assert.ok(!replayedState(metricsDir, "p1")?.questionPending, "a suppressed open pauses nothing")
     await callTool(h, "execute.before", {
       tool: "task",
       sessionID: "p1",
@@ -438,7 +432,26 @@ test("an internal question-pause error journals and the dispatch proceeds", asyn
   )
 })
 
-// ── Policy + agent text (asserted after the chunk-6 validated-source landing)
+// ── Policy + agent text ──────────────────────────────────────────────────────
+
+test("policy: the question section is always present with the marker example", () => {
+  const text = expectedPolicy({})
+  assert.ok(text.includes("Questions (executor):"))
+  assert.ok(text.includes("QUESTION: <text>"))
+  assert.ok(text.includes("QUESTION CANCELLED:"))
+  const { config } = mergeConfig(defaultConfig({}), {})
+  assert.equal(orchestratorPolicyFor(config), text)
+})
+
+test("agents/executor.md carries the asking-instead-of-guessing section", () => {
+  const text = fs.readFileSync(
+    path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "executor.md"),
+    "utf8",
+  )
+  assert.match(text, /## Asking instead of guessing/)
+  assert.match(text, /QUESTION: <text>/)
+  assert.match(text, /questionCancelMarker/)
+})
 
 // ── Config surface ───────────────────────────────────────────────────────────
 
