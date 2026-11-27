@@ -26,6 +26,10 @@ A typical enforced run:
    path: it skips the plan-approval and decomposition gates and is capped at
    4 per plan. Eligibility is canonical in `src/maintenance.ts`; the journaling
    semantics are in [journal/entry-types.md](../journal/entry-types.md)'s `maintenance` entry.
+   An executor result may instead stop with a `QUESTION:` marker: the pipeline
+   pauses until the user's answer (the next dispatch prompt), a cancel, or the
+   configured timeout resolves it (see
+   [Executor question pause](gates.md#executor-question-pause)).
 5. The test-runner's `GATE: PASS` may require corroborating exit-0 bash
    evidence (`gateEvidence:"enforce"`); without it the flag is held as
    `unverifiedPass` and promoted when evidence arrives, including when a

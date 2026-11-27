@@ -35,6 +35,9 @@
   "requirementsPhase": false,
   "planReviewAcceptMarker": "PLAN REVIEWED:",
   "planReviewRejectMarker": "PLAN REJECTED:",
+  "questionTimeoutMinutes": 0,
+  "questionTimeoutAction": "hold",
+  "questionCancelMarker": "QUESTION CANCELLED:",
   "agents": {
     "planner": "planner",
     "reviewer": "reviewer",
