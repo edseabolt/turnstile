@@ -3,47 +3,48 @@
   "generatedAt": "1970-01-01T00:00:00.000Z",
   "noJournal": false,
   "noTask": false,
-  "task": "t-c796b386",
-  "green": true,
-  "emittedAt": "2026-11-27T16:48:57.034Z",
+  "task": "t-3aa75f7a",
+  "green": false,
+  "emittedAt": "2026-11-27T17:59:40.714Z",
   "plan": {
     "verdict": "APPROVE",
     "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
-    "at": "2026-11-27T14:02:22.334Z",
+    "at": "2026-11-27T17:51:36.132Z",
     "source": "subagent-synthetic",
     "stale": false
   },
   "tests": {
     "result": "PASS",
-    "marker": null,
-    "at": "2026-11-27T13:59:00.205Z",
+    "marker": "GATE: PASS tests=2121 passed=2121 failed=0",
+    "at": "2026-11-27T17:17:02.371Z",
     "verified": true,
     "mode": "enforce",
     "exitZeroRuns": 0
   },
   "review": {
-    "approves": 2,
+    "approves": 0,
     "expected": 2
   },
   "waivers": 0,
-  "blocks": 0,
-  "dispatches": 10,
+  "blocks": 3,
+  "dispatches": 13,
   "journal": {
     "files": [
-      "ses_de2cfcca2ffeyBN2riYum0DVpS.jsonl",
-      "ses_de2cd53a4ffeW3vkOpxk2Q9gDI.jsonl",
-      "ses_de2c3d8fcffeecnHcaRHRm25NU.jsonl",
-      "ses_de2c2a779ffetbhErpw2yROFWj.jsonl",
-      "ses_de2bfdeceffeY6mYeh0j3gVARg.jsonl",
-      "ses_de2bd8d2cffebMpVUSK31dF1ZU.jsonl",
-      "ses_de2bd8d2bffeKuPx3Z0bIkRLU6.jsonl",
-      "ses_de2b7a36fffeplX662wYKsREoo.jsonl",
-      "ses_de2b46819ffeqcZrpjxTi0vN54.jsonl",
-      "ses_de2b262a2ffdnyh28A0Ph6F8vE.jsonl",
-      "ses_de2b262a2ffe8zGl3klX6mtva0.jsonl",
+      "ses_de4c216caffe5Vqb6TL2yElr4E.jsonl",
+      "ses_de4c16e70ffeU2hvTrNQ1zF7nr.jsonl",
+      "ses_de4be65e4ffeG1YxtvEthEw3Jd.jsonl",
+      "ses_de2ce58efffefg3C4TS2y4W0jz.jsonl",
+      "ses_de2bce0eaffesFJVYEv9xWKrKd.jsonl",
+      "ses_de213b6ddffeIaj81C9HKnERq2.jsonl",
+      "ses_de211c251ffecVeZWM74bXmIUI.jsonl",
+      "ses_de20c8f62ffekAk8fO8pFG5cWh.jsonl",
+      "ses_de20acd2cffefF1hNblXYTf36J.jsonl",
+      "ses_de1ff1824ffe5kPxlvjfFTO6w5.jsonl",
+      "ses_de1fd053dffeLHU5FDpXWk6I6O.jsonl",
+      "ses_de1fd053cffe1eWZdMjbQzuZQF.jsonl",
       "turnstile.jsonl"
     ],
-    "lines": 354,
-    "head": "sha256:1b50d81ed198"
+    "lines": 1083,
+    "head": "sha256:c5617e0cec79"
   }
 }
