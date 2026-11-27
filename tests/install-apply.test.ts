@@ -479,7 +479,7 @@ test("real manifest copy smoke: --copy install makes the default verify path loa
   const home = freshScratch(t)
   const install = spawnInstaller(["--copy"], { home })
   assert.equal(install.status, 0, install.stderr)
-  assert.match(install.stdout, /install: copy .*plugins\/src\/setup\.ts/)
+  assert.match(install.stdout, /install: copy .*plugins\/src\/hooks\/setup.ts/)
   assert.match(install.stdout, /install: loadable .*plugins\/turnstile\.ts/)
 })
 
@@ -488,10 +488,10 @@ test("--check --repair: a missing installed file is reported unloadable but does
   const home = freshScratch(t)
   const install = spawnInstaller(["--copy"], { home })
   assert.equal(install.status, 0, install.stderr)
-  rmSync(homePath(home, ".config/opencode/plugins/src/setup.ts"))
+  rmSync(homePath(home, ".config/opencode/plugins/src/hooks/setup.ts"))
   const res = spawnInstaller(["--copy", "--check", "--repair"], { home })
   assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stdout, /install: would repair .*plugins\/src\/setup\.ts \(missing\)/)
+  assert.match(res.stdout, /install: would repair .*plugins\/src\/hooks\/setup.ts \(missing\)/)
   assert.match(
     res.stdout,
     /check: unloadable .*plugins\/turnstile\.ts — .*setup\.ts.*\(would be loadable after repair\)/,
