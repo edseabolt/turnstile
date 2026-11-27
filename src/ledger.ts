@@ -454,6 +454,9 @@ interface ReplayMaps {
   lastEngagement: Map<string, boolean>
   /** Last-wins `plan-review` action per session (`pause`/`accept`/`reject`). */
   lastPlanReview: Map<string, string>
+  /** Last-wins `question` fold per session: the pending text ("" cleared)
+   *  and the open row's epoch ms (0 cleared). */
+  lastQuestion: Map<string, { pending: string; openedAt: number }>
   /** Restored child→parent edges (last-wins per child), for the setup re-seed. */
   childEdges: Map<string, { parent: string; agent: string }>
   /** Ordered per-session task-scope fold (see {@link ScopeFold}). */
@@ -571,6 +574,7 @@ function newReplayMaps(): ReplayMaps {
     lastRefusedApprove: new Map(),
     lastEngagement: new Map(),
     lastPlanReview: new Map(),
+    lastQuestion: new Map(),
     childEdges: new Map(),
     scopeFolds: new Map(),
   }
@@ -748,7 +752,8 @@ function parseReplayLine(line: string): Record<string, unknown> | "malformed" | 
     entry.type !== "task-complete" &&
     entry.type !== "engagement" &&
     entry.type !== "plan-impact" &&
-    entry.type !== "plan-review"
+    entry.type !== "plan-review" &&
+    entry.type !== "question"
   ) {
     return null
   }
@@ -1211,6 +1216,55 @@ function foldPlanReview(
   return null
 }
 
+/**
+ * Sanitizes a replayed question text: a non-empty string within the name
+ * length bound. Anything else degrades to the empty text (the pause then
+ * blocks with an empty quoted question rather than a hostile payload).
+ * @param question The raw `question` field of a replayed `question` row.
+ * @returns The question text, or "" when unusable.
+ */
+function sanitizeQuestion(question: unknown): string {
+  if (
+    typeof question !== "string" ||
+    question.length < 1 ||
+    question.length > MAX_REPLAY_NAME_LEN
+  ) {
+    return ""
+  }
+  return question
+}
+
+/**
+ * Folds a `question` row: last-wins per session. An `open` row records the
+ * pending text and the row `ts` (epoch ms — the timeout clock's anchor, so a
+ * restart does not reset it); an `answer`/`cancel`/`timeout` row records the
+ * cleared pair. A suppressed open (an audit-only observation from a
+ * non-executor emitter) folds nothing. Unknown actions and hostile fields
+ * are fold-inert.
+ * @param entry The parsed `question` entry.
+ * @param maps The replay maps holding the last-wins question map.
+ * @param sessionID The validated session ID.
+ * @returns Always null (the row folds or is inert; never dropped).
+ */
+function foldQuestion(
+  entry: Record<string, unknown>,
+  maps: ReplayMaps,
+  sessionID: string,
+): ReplayDrop | null {
+  const action = entry.action
+  if (action === "open") {
+    if (entry.authority === "suppressed") return null
+    const ts =
+      typeof entry.ts === "string" && !Number.isNaN(Date.parse(entry.ts)) ? Date.parse(entry.ts) : 0
+    maps.lastQuestion.set(sessionID, { pending: sanitizeQuestion(entry.question), openedAt: ts })
+    return null
+  }
+  if (action === "answer" || action === "cancel" || action === "timeout") {
+    maps.lastQuestion.set(sessionID, { pending: "", openedAt: 0 })
+  }
+  return null
+}
+
 /** Dispatch table for the replay fold: one arm per known entry `type`.
  *  Unknown types (and the inert `plan-impact` rows) fall through to the
  *  ensemble arm via the `foldReplayLine` fallback, matching the historical
@@ -1238,6 +1292,7 @@ const REPLAY_FOLDS: Record<string, ReplayFoldArm> = {
   },
   engagement: (entry, maps, sessionID) => foldEngagement(entry, maps, sessionID),
   "plan-review": (entry, maps, sessionID) => foldPlanReview(entry, maps, sessionID),
+  question: (entry, maps, sessionID) => foldQuestion(entry, maps, sessionID),
   "plan-impact": () => null,
 }
 
@@ -1533,6 +1588,24 @@ function restorePlanReview(
 }
 
 /**
+ * Restores the last-wins `question` fold per session: an `open` row re-arms
+ * the pending question with its original clock; an `answer`/`cancel`/
+ * `timeout` row restores it cleared.
+ * @param states The session→state map to populate.
+ * @param lastQuestion The replayed last-wins question folds.
+ */
+function restoreQuestions(
+  states: Map<string, GateState>,
+  lastQuestion: Map<string, { pending: string; openedAt: number }>,
+): void {
+  for (const [sessionID, q] of lastQuestion) {
+    const s = graceBucket(states, sessionID)
+    s.questionPending = q.pending
+    s.questionOpenedAt = q.openedAt
+  }
+}
+
+/**
  * Runs the restore loops in order (gate, plan, verdict, human-grant,
  * scope fold, ensemble, engagement, plan-review) over the replayed maps.
  * @param states The session→state map to populate.
@@ -1563,6 +1636,7 @@ function restoreBuckets(
   restoreEnsembleCounts(states, maps.lastEnsemble)
   restoreEngagement(states, maps.lastEngagement)
   restorePlanReview(states, maps.lastPlanReview)
+  restoreQuestions(states, maps.lastQuestion)
 }
 
 /**

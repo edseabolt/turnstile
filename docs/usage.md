@@ -29,15 +29,19 @@ in [`journal.md`](journal.md).
 
 Pipeline subagents emit machine-checkable markers as the first line of their
 output. The test-runner emits the gate marker; the reviewers emit the verdict
-marker:
+marker; the executor may stop and ask with the question marker:
 
 ```text
 GATE: PASS tests=12 passed=12 failed=0
 VERDICT: APPROVE crit=3 high=1 med=0 low=0
+QUESTION: should chunk 3 use worker pools or a queue?
 ```
 
 A `GATE: FAIL tests=… passed=… failed=…` un-greens an earlier PASS
 (latest-wins), and a `VERDICT: BLOCK crit=… high=… med=… low=…` sends the
-plan back to the planner. The full semantics live in
+plan back to the planner. An executor `QUESTION:` pauses the pipeline for
+the task: relay the question to the user, then re-dispatch with the answer
+as the dispatch prompt; the user can cancel instead with `QUESTION
+CANCELLED:` in their own prompt. The full semantics live in
 [usage/worked-session.md](usage/worked-session.md) and
 [architecture/gates.md](architecture/gates.md).

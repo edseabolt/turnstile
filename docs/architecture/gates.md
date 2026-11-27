@@ -133,6 +133,29 @@ literals are admission-only (never agent-dispatchable) and waivers do not
 bypass the pause; a prompt carrying neither literal leaves the pause armed
 (fail-toward-strict: a lost accept never dispatches an unreviewed plan).
 
+### Executor question pause
+
+When the executor's task result carries a first-sight `QUESTION: <text>`
+marker (parsed by `parseQuestionMarker`; only the configured executor stage's
+deliveries carry question authority — a question from any other emitter is
+journaled `authority:"suppressed"` and pauses nothing), the parent's bucket
+arms `questionPending`/`questionOpenedAt` and journals a `question` `open`
+row. The next pipeline dispatch is blocked with a deliberate
+`BLOCKED by turnstile:` error naming the question (journaled
+`reason:"question-pending"`); the dispatch after that block is the
+user-relayed answer — both fields clear, an `answer` row journals, and the
+dispatch proceeds with its prompt verbatim. The user can cancel instead:
+`questionCancelMarker` (default `QUESTION CANCELLED:`) in their own prompt
+clears the pause and journals a `cancel` row. A pending question aged past
+`questionTimeoutMinutes` (default `0`: never) resolves per
+`questionTimeoutAction`: `hold` (default) keeps blocking; `resume` clears the
+pause, journals a `timeout` row, and lets the dispatch proceed with a warning
+line appended to the dispatch prompt. The pause is task-scoped and
+restart-sticky: it rides `carryStickyFlags`/`mergeAfterReplay` and the
+continuation-carry predicate, and is restored by the last-wins `question`
+replay fold (the open row's `ts` re-arms the timeout clock, so a restart does
+not reset it).
+
 ### Requirements phase (opt-in, ungated)
 
 With `requirementsPhase: true` (default `false`; the pipeline is
@@ -211,3 +234,4 @@ behavior byte-identical to the no-overlap path. The evidence rides the
 | `lastGateMarker`, `lastVerdictMarker`                                                        | stamped at first-sight `GATE:`/`VERDICT:` (de-tokenized, so they cannot re-parse)                                                                                                                                                                             | prompt reset                                                                                                                                                                                                | rendered into the compaction snapshot; display only, never enforces                                                                           |
 | `engaged`                                                                                    | engagement capture (`PLAN APPROVED:` prompt, `plan-ref`/`dispatch` classified prompt); an actual planner dispatch; replay (last-wins `engagement` row)                                                                                                        | task retire (`markTaskComplete`); `TURNSTILE OFF:` clear; a no-credit scope-changing prompt reset (journaled `continuation-drop`); restart-sticky otherwise (carried through `mergeAfterReplay`)            | arms the reactive gates (dormant-until-engaged); display in the compaction snapshot (`- engaged: yes/no`)                                     |
 | `planReviewPending`                                                                          | an admitted planner dispatch while `planUserReview` is on (journaled `plan-review` `pause` row); replay (last-wins `plan-review` row)                                                                                                                         | the `planReviewAcceptMarker` capture; the `planReviewRejectMarker` capture (which also retires the task); restart-sticky otherwise (carried through `carryStickyFlags`/`mergeAfterReplay`)                  | plan-reviewer dispatch (the user plan-review pause; only while `planUserReview` is on)                                                        |
+| `questionPending` / `questionOpenedAt`                                                       | a first-sight authoritative `QUESTION:` on an executor delivery (journaled `question` `open` row; `questionOpenedAt` = open time); replay (last-wins `question` row, clock from the row `ts`)                                                                 | the answer dispatch (after a block); the `questionCancelMarker` capture; a `resume` timeout; restart-sticky otherwise (carried through `carryStickyFlags`/`mergeAfterReplay`)                               | every pipeline dispatch (the executor question pause; the first dispatch after the open blocks, the next one is the answer)                   |

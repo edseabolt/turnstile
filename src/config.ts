@@ -299,6 +299,26 @@ function defaultMarkerSources(): Pick<
 }
 
 /**
+ * Builds the executor-question defaults: no timeout (hold indefinitely), the
+ * hold action, and the canonical cancel literal.
+ * @returns The question-shaped default fields.
+ */
+function defaultQuestionScalars(): Pick<
+  TurnstileConfig,
+  "questionTimeoutMinutes" | "questionTimeoutAction" | "questionCancelMarker"
+> {
+  return {
+    // 0 = no timeout: an open question holds the pipeline until the user
+    // answers or cancels, however long that takes.
+    questionTimeoutMinutes: 0,
+    // Past an armed timeout, hold (keep blocking) is the conservative
+    // default; `resume` lets the next dispatch proceed with a warning.
+    questionTimeoutAction: "hold",
+    questionCancelMarker: "QUESTION CANCELLED:",
+  }
+}
+
+/**
  * Builds the decision-ledger defaults.
  * @returns The decision-ledger-shaped default fields.
  */
@@ -347,6 +367,7 @@ export function defaultConfig(
     ...defaultMarkerScalars(),
     ...defaultModeScalars(),
     ...defaultEnforcementScalars(),
+    ...defaultQuestionScalars(),
     ...defaultDecisionLedgerScalars(),
     ...defaultTamperEvidence(),
     agents: defaultAgents(),

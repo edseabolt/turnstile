@@ -124,8 +124,13 @@ export function shouldCarryGate(
     // A pending user-review pause carries too: the accept/reject literals
     // arrive in a later prompt than the planner dispatch that armed the
     // pause, so without the carry the pause would die at the boundary and
-    // the plan-reviewer dispatch would run unreviewed.
-    (prior.hasGatePass || prior.hasReviewApprove || prior.planReviewPending) &&
+    // the plan-reviewer dispatch would run unreviewed. A pending executor
+    // question carries for the same reason: the answer/cancel literal
+    // arrives in a later prompt than the delivery that opened the question.
+    (prior.hasGatePass ||
+      prior.hasReviewApprove ||
+      prior.planReviewPending ||
+      prior.questionPending !== "") &&
     prior.taskFingerprint !== "" &&
     prior.taskFingerprint === fingerprint &&
     (!prior.taskComplete || isInterruptedReview(prior))

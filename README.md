@@ -146,6 +146,7 @@ hatch. Full detail (guards, state fields, escape ladders, diagrams) lives in
 | Commit-lint            | `git commit -m` subjects must be conventional commits when `gitGates.commitMessages` is on (default)                                                                                                                                                                     |
 | Landing gate           | `git push` without a credited reviewer `VERDICT: APPROVE` blocks; a repeat attempt forces the interactive human ask                                                                                                                                                      |
 | Marker parsing         | `GATE:` / `VERDICT:` markers parsed from task results and child text; only marker-contracted emitters flip state — echoes are journaled `suppressed`                                                                                                                     |
+| Question pause         | an executor `QUESTION:` pauses pipeline dispatches for the task until you answer (the next dispatch prompt), cancel with `QUESTION CANCELLED:`, or the configured timeout resolves it (`hold` default)                                                                   |
 | Trace & telemetry      | JSONL journal of dispatches, gate transitions, verdicts, blocked calls, errors, per-session token/cost usage                                                                                                                                                             |
 | Journal concurrency    | Concurrent OpenCode instances share one journal safely: chained appends and the approval sidecar write under a per-file lock with an in-lock re-read; lock contention degrades to an unlocked write with a journaled `journal-lock:` warning, never blocking enforcement |
 | Decoding clamps        | reviewer/plan-reviewer temperature = 0; executor/test-runner/debugger ≤ 0.2                                                                                                                                                                                              |
@@ -283,11 +284,14 @@ GATE: FAIL tests=12 passed=10 failed=2
 
 VERDICT: APPROVE crit=0 high=0 med=2 low=1
 VERDICT: BLOCK crit=1 high=0 med=0 low=2
+
+QUESTION: should chunk 3 use worker pools or a queue?
 ```
 
 The parser accepts these markers wrapped in markdown backticks and credits
 them identically to the bare form; only a marker that does not match the
-fields above is treated as absent.
+fields above is treated as absent. A `QUESTION:` marker carries free text
+(no counted fields); only the executor's deliveries open a question.
 
 Waiver and approval markers (must appear in the user's prompt, verbatim; a
 dispatch prompt that merely contains the marker unlocks nothing):
@@ -377,6 +381,9 @@ The knobs most people touch:
 | `gitGates.landingGate`       | `true`                 | gate `git push` on a credited reviewer `VERDICT: APPROVE`                                                                                                          |
 | `reviewEnsemble`             | `enforce`              | `advise` credits a single-reviewer APPROVE unconditionally                                                                                                         |
 | `planUserReview`             | `false`                | pause the pipeline after the planner until you accept or reject; see [User plan review](#user-plan-review-opt-in)                                                  |
+| `questionTimeoutMinutes`     | `0`                    | minutes before an unanswered executor question resolves per `questionTimeoutAction`; `0` holds indefinitely                                                        |
+| `questionTimeoutAction`      | `hold`                 | `hold` keeps blocking past the timeout; `resume` clears the pause and lets the next dispatch proceed with a warning line naming the question                       |
+| `questionCancelMarker`       | `QUESTION CANCELLED:`  | prompt literal that cancels a pending executor question without answering it                                                                                       |
 | `requirementsPhase`          | `false`                | dispatch the requirements subagent before the planner; see [Requirements phase](#requirements-phase-opt-in)                                                        |
 | `sessionSummary`             | `quiet`                | one recap line at session end for active sessions (`on` adds an all-green line for idle ones; `off` disables)                                                      |
 | `tokenUsage`                 | `summary`              | token-usage journaling: `summary` journals one rollup row per session at session.idle; `per-message` journals one row per completed assistant turn; `off` disables |

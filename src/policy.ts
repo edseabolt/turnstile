@@ -33,6 +33,7 @@ export type PolicyConfig = Pick<
   | "maxRequirementsRounds"
   | "planReviewAcceptMarker"
   | "planReviewRejectMarker"
+  | "questionCancelMarker"
   | "metricsDir"
 >
 
@@ -268,6 +269,30 @@ function requirementsPhaseSection(c: PolicyConfig): string {
 }
 
 /**
+ * Executor-question line: the executor may stop its task result with a
+ * `QUESTION:` marker stating the decision needed; the pipeline pauses until
+ * the user answers (relayed as the next dispatch prompt) or cancels with the
+ * configured literal. Unconditional: the marker syntax is a validated source,
+ * so the line is always present (the planUserReviewSection precedent is the
+ * conditional variant). The cancel literal is interpolated from config so the
+ * prose matches the mechanical capture.
+ * @param c The resolved config slice (the cancel literal).
+ * @returns The executor-question line.
+ */
+function questionSection(c: PolicyConfig): string {
+  return (
+    `Questions (executor): when a decision exceeds your authority or the plan's ` +
+    `information, the executor may stop its task result with a first line ` +
+    `\`QUESTION: <text>\` stating the decision needed. The pipeline pauses for ` +
+    `that task until the user answers; the orchestrator relays the question to ` +
+    `the user, then re-dispatches with the answer as the dispatch prompt, or ` +
+    `the user cancels with \`${c.questionCancelMarker}\`. Do not guess past a ` +
+    `\`QUESTION:\`-worthy ambiguity, and do not emit \`QUESTION:\` for decisions ` +
+    `the plan already answers.`
+  )
+}
+
+/**
  * Builds the orchestrator policy injected into the parent session per task.
  *
  * One line per concern: the injected block is prepended to the model-facing
@@ -295,6 +320,7 @@ export function orchestratorPolicyFor(c: PolicyConfig): string {
       worktreeCommitSection(),
       traceSection(c),
       verificationSection(),
+      questionSection(c),
       ...(c.planUserReview ? [planUserReviewSection(c)] : []),
       ...(c.requirementsPhase ? [requirementsPhaseSection(c)] : []),
     ].join("\n"),

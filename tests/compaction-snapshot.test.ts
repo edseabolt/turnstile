@@ -110,9 +110,10 @@ test("formatGateSnapshot renders a fresh bucket", () => {
   assert.match(lines[3]!, /^- plan: PENDING stamp=unknown$/)
   assert.match(lines[4]!, /^- reviewer: PENDING dispatches=0 last=none$/)
   assert.match(lines[5]!, /^- waiver: none human: none$/)
-  assert.match(lines[6]!, /^- rounds: planner=0 plan-reviewer=0 test-runner=0 reviewer=0 total=0$/)
-  assert.match(lines[7]!, /^- landing: blocks=0 reads=0 hands-on blocks=0$/)
-  assert.match(lines[8]!, /^- task: unstamped$/)
+  assert.match(lines[6]!, /^- question: none$/)
+  assert.match(lines[7]!, /^- rounds: planner=0 plan-reviewer=0 test-runner=0 reviewer=0 total=0$/)
+  assert.match(lines[8]!, /^- landing: blocks=0 reads=0 hands-on blocks=0$/)
+  assert.match(lines[9]!, /^- task: unstamped$/)
 })
 
 /** `formatGateSnapshot` on a populated bucket renders every value (true side). */
@@ -152,9 +153,10 @@ test("formatGateSnapshot renders a populated bucket", () => {
     /^- reviewer: APPROVED dispatches=3 last=verdict: APPROVE crit=0 high=0 med=1 low=0$/,
   )
   assert.match(lines[5]!, /^- waiver: ACTIVE human: APPROVED$/)
-  assert.match(lines[6]!, /^- rounds: planner=1 plan-reviewer=2 test-runner=4 reviewer=5 total=12$/)
-  assert.match(lines[7]!, /^- landing: blocks=2 reads=7 hands-on blocks=3$/)
-  assert.match(lines[8]!, /^- task: wt:main$/)
+  assert.match(lines[6]!, /^- question: none$/)
+  assert.match(lines[7]!, /^- rounds: planner=1 plan-reviewer=2 test-runner=4 reviewer=5 total=12$/)
+  assert.match(lines[8]!, /^- landing: blocks=2 reads=7 hands-on blocks=3$/)
+  assert.match(lines[9]!, /^- task: wt:main$/)
 })
 
 /** A live scoped waiver renders ACTIVE with its parsed scope, comma-joined. */

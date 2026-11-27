@@ -1,7 +1,8 @@
 /**
- * @fileoverview Marker boundary: `GATE:`/`VERDICT:` marker parsing with
- * per-task dedup, plus agent attribution helpers. Pure with respect to
- * journal and filesystem, so callers journal the returned marker events.
+ * @fileoverview Marker boundary: `GATE:`/`VERDICT:`/`QUESTION:` marker
+ * parsing with per-task dedup, plus agent attribution helpers. Pure with
+ * respect to journal and filesystem, so callers journal the returned marker
+ * events.
  *
  * The caller computes the evidence verdict (it owns the evidence tracker and
  * config) and threads it in as optional trailing params: `passVerified` flips
@@ -20,6 +21,8 @@ import type { MarkerNearMiss, TaskInput, TurnstileConfig } from "./types.ts"
 export const GATE_RE = /^\s*[`>#*\s]*GATE: (PASS|FAIL) tests=\d+ passed=\d+ failed=\d+/gm
 // prettier-ignore
 export const VERDICT_RE = /^\s*[`>#*\s]*VERDICT: (APPROVE|BLOCK) crit=\d+ high=\d+ med=\d+ low=\d+/gm
+// prettier-ignore
+export const QUESTION_RE = /^\s*[`>#*\s]*QUESTION: .+/gm
 
 /**
  * Canonical example matching the default GATE_RE. Display and breadth-probe
@@ -34,6 +37,12 @@ export const CANONICAL_GATE_MARKER = "GATE: PASS tests=3 passed=3 failed=0"
  * parses under VERDICT_RE.
  */
 export const CANONICAL_VERDICT_MARKER = "VERDICT: APPROVE crit=0 high=0 med=0 low=0"
+/**
+ * Canonical example matching the default QUESTION_RE. Display and
+ * breadth-probe source only (see `src/config.ts`); guarded by a test
+ * asserting it still parses under QUESTION_RE.
+ */
+export const CANONICAL_QUESTION_MARKER = "QUESTION: <text>"
 
 /**
  * Strips a marker's leading authority token so de-tokenized text can never
@@ -44,12 +53,12 @@ export const CANONICAL_VERDICT_MARKER = "VERDICT: APPROVE crit=0 high=0 med=0 lo
  * is the same rationale the orchestrator-policy placeholders encode: injected
  * context that must not be mistaken for a real marker (see `policy.ts`).
  * @param marker The raw marker text, e.g. `GATE: PASS tests=2 passed=2 failed=0`.
- * @returns The same text with `GATE:`/`VERDICT:` lowercased, or the input
- *     unchanged when neither token prefixes it.
+ * @returns The same text with `GATE:`/`VERDICT:`/`QUESTION:` lowercased, or
+ *     the input unchanged when no marker token prefixes it.
  */
 export function deTokenizeMarker(marker: string): string {
   return marker.replace(
-    /^(GATE|VERDICT):/,
+    /^(GATE|VERDICT|QUESTION):/,
     (_full, kind: string): string => `${kind.toLowerCase()}:`,
   )
 }
@@ -406,4 +415,4 @@ export function markerRetryPrompt(
   )
 }
 
-export { parseGateMarkers } from "./gate-markers-parse.ts"
+export { parseGateMarkers, parseQuestionMarker } from "./gate-markers-parse.ts"

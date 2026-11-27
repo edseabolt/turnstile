@@ -3,20 +3,20 @@
   "generatedAt": "1970-01-01T00:00:00.000Z",
   "noJournal": false,
   "noTask": false,
-  "task": "t-b496fc58",
+  "task": "t-347913df",
   "green": true,
-  "emittedAt": "2026-11-26T22:35:44.045Z",
+  "emittedAt": "2026-11-27T00:52:13.911Z",
   "plan": {
     "verdict": "APPROVE",
     "marker": "VERDICT: APPROVE crit=0 high=0 med=0 low=0",
-    "at": "2026-11-26T22:33:29.159Z",
+    "at": "2026-11-27T00:47:52.338Z",
     "source": "subagent-synthetic",
     "stale": false
   },
   "tests": {
     "result": "PASS",
-    "marker": "GATE: PASS tests=2094 passed=2094 failed=0",
-    "at": "2026-11-26T22:21:51.156Z",
+    "marker": "GATE: PASS tests=2119 passed=2119 failed=0",
+    "at": "2026-11-27T00:30:15.188Z",
     "verified": true,
     "mode": "enforce",
     "exitZeroRuns": 0
@@ -26,22 +26,22 @@
     "expected": 2
   },
   "waivers": 0,
-  "blocks": 0,
-  "dispatches": 8,
+  "blocks": 1,
+  "dispatches": 11,
   "journal": {
     "files": [
-      "ses_de652b4d1ffewyTG25zX4xUKpO.jsonl",
-      "ses_de64ce3e4ffeT1dyIdvh8GiSj0.jsonl",
-      "ses_de638bf48ffebQh0QpKuDLYQqa.jsonl",
-      "ses_de634a2e9ffeopxExmkq0KD1xy.jsonl",
-      "ses_de60f54fcffeapAQtbP331WziM.jsonl",
-      "ses_de60c5915ffed1z3YbkkfKtsDw.jsonl",
-      "ses_de60c5914ffevvlp7FQ6DvRXhd.jsonl",
-      "ses_de6056f45ffeYOEoxX5jYTBPxs.jsonl",
-      "ses_de60342baffe4du1WFjnuijNj8.jsonl",
+      "ses_de5ee16d1ffeCoim8anHUKggYE.jsonl",
+      "ses_de5ec5626ffecSqgxbsJtth1Pl.jsonl",
+      "ses_de5e0450affeGOUhdjjm38bs8U.jsonl",
+      "ses_de5da3c29ffetpteMSt2LP7JA9.jsonl",
+      "ses_de5d8feadffe41RLA68Uw6APev.jsonl",
+      "ses_de599d3c1ffe5tEQwS4rnEJFjz.jsonl",
+      "ses_de596b82dffeW1gEf8qELLfkT1.jsonl",
+      "ses_de596b82effeHh0SH4h46EWQiy.jsonl",
+      "ses_de58932d8ffeihbzYq13KayTNR.jsonl",
       "turnstile.jsonl"
     ],
-    "lines": 534,
-    "head": "sha256:08f6fe3c77b1"
+    "lines": 995,
+    "head": "sha256:34853853189f"
   }
 }

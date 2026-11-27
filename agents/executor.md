@@ -19,6 +19,16 @@ approval, a plan/dispatch prompt, or a planner dispatch); a parent that
 started dormant may carry no prior gate state at your dispatch — the gates
 fire normally from then on.
 
+## Asking instead of guessing
+
+If a decision you must implement exceeds your authority or the information in
+the plan, stop and ask: make `QUESTION: <text>` the first line of your task
+result, stating exactly the decision you need. The pipeline pauses until the
+user answers. Do not guess. Do not use the marker for decisions the plan
+already answers. The cancel literal (`QUESTION CANCELLED:` by default) is
+configurable via the `questionCancelMarker` config key; configured values are
+defaults, so honor a literal named in the dispatch prompt.
+
 ## Execution sequence
 
 Work the plan chunk in this order, without deliberating about process:

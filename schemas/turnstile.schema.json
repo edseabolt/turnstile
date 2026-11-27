@@ -163,6 +163,19 @@
       "type": "string",
       "description": "Literal marker that, appearing in the user's own prompt, rejects the written plan: retires the task scope without a counted plan-reviewer dispatch. Only consulted while planUserReview is on (default PLAN REJECTED:)."
     },
+    "questionTimeoutMinutes": {
+      "type": "integer",
+      "description": "Minutes before an unanswered pending executor question resolves per questionTimeoutAction; 0 (default) holds indefinitely — the timeout never fires."
+    },
+    "questionTimeoutAction": {
+      "type": "string",
+      "enum": ["hold", "resume"],
+      "description": "What happens when a pending executor question exceeds questionTimeoutMinutes: hold (default) keeps blocking pipeline dispatches; resume clears the pause, journals {action:\"timeout\"}, and lets the next dispatch proceed with a warning line naming the question."
+    },
+    "questionCancelMarker": {
+      "type": "string",
+      "description": "Literal marker that, appearing in the user's own prompt, cancels a pending executor question without answering it (default QUESTION CANCELLED:)."
+    },
     "escalation": {
       "type": "string",
       "enum": ["block", "ask"],

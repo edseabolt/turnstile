@@ -165,6 +165,9 @@ export interface TurnstileContext {
    *  execute.before, so the stamp is keyed by the dispatching parent and
    *  the resolved agent, keeping concurrent dispatches distinct). */
   dispatchPromptHashes: Map<string, string>
+  /** Parents whose pending question already drew a block (see
+   *  DispatchGuardState.questionBlocks). */
+  questionBlocks: Set<string>
   /** Per-session sliding window of streamed child text. */
   deltaWindows: Map<string, string>
   /** Child session ID → resolved agent name (emitter authority). */
@@ -375,13 +378,14 @@ export interface TurnstileContext {
   creditReviewApproval(child: string, markerEvents: MarkerEvent[]): void
   /** Prologue for a task/subagent dispatch. */
   handleTaskDispatch(event: ToolHookEvent): Promise<void>
-  /** Guard-and-journal section of a task dispatch. */
+  /** Guard-and-journal section of a task dispatch. Returns the effective
+   *  dispatch prompt (the timeout-resume warning appended when it fired). */
   guardedTaskDispatch(
     sessionID: string,
     agent: string,
     prompt: string,
     description: string,
-  ): Promise<void>
+  ): Promise<string>
   /** Handles a bash/shell tool call. */
   handleBashDispatch(event: ToolHookEvent, tool: "bash" | "shell"): void
   /** Handles a write/edit tool call (denylist + hands-on gate; parent sessions and non-pipeline subagents gate, only registered pipeline children are exempt). */
@@ -473,6 +477,7 @@ interface CoreState {
   sessionDirs: Map<string, string>
   markerRetries: Map<string, number>
   dispatchPromptHashes: Map<string, string>
+  questionBlocks: Set<string>
   deltaWindows: Map<string, string>
   maxDeltaWindowChars: number
   maxTrackedDeltaWindows: number
@@ -1760,6 +1765,9 @@ function buildCoreDeliveryMaps(st: CoreState): void {
   // echoed prompt by the tamper check (tool-hooks-after, keyed through the
   // child's resolved parent). Bounded like markerRetries.
   st.dispatchPromptHashes = new Map<string, string>()
+  // Parents whose pending question already drew a deliberate block: the next
+  // dispatch is the user-relayed answer (see questionPendingBlockBody).
+  st.questionBlocks = new Set<string>()
   st.taskDeliverySeq = { current: 0 }
 }
 
@@ -2281,6 +2289,7 @@ type CoreMapViews = Pick<
   | "sessionDirs"
   | "markerRetries"
   | "dispatchPromptHashes"
+  | "questionBlocks"
   | "deltaWindows"
   | "sessionAgents"
   | "admittedIds"
@@ -2310,6 +2319,7 @@ function coreMapViews(st: CoreState): CoreMapViews {
     sessionDirs: st.sessionDirs,
     markerRetries: st.markerRetries,
     dispatchPromptHashes: st.dispatchPromptHashes,
+    questionBlocks: st.questionBlocks,
     deltaWindows: st.deltaWindows,
     sessionAgents: st.sessionAgents,
     admittedIds: st.admittedIds,

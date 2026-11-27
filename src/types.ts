@@ -817,6 +817,22 @@ export interface GateState {
    * only while `planUserReview` is on.
    */
   planReviewPending: boolean
+  /**
+   * The pending executor question text; "" when none. Set by a first-sight
+   * authoritative `QUESTION:` marker on an executor task-result delivery;
+   * cleared by the answer dispatch, the cancel capture, or a `resume`
+   * timeout. Task-scoped (fresh "" on a task-scope reset) and
+   * restart-sticky through `mergeAfterReplay` (exactly like
+   * `planReviewPending`) and restored by the `question` journal fold.
+   */
+  questionPending: string
+  /**
+   * Epoch ms when the pending question was opened (the journal row's `ts`);
+   * 0 when none. Restored at replay from the journaled open row so a
+   * restart does not reset the timeout clock; carried with
+   * `questionPending`.
+   */
+  questionOpenedAt: number
 }
 
 /** One first-sight marker observation returned by the marker parser. */
@@ -1144,6 +1160,24 @@ export interface TurnstileConfig {
    * `PLAN REJECTED:`.
    */
   planReviewRejectMarker: string
+  /**
+   * Minutes before an unanswered pending question resolves per
+   * `questionTimeoutAction`; `0` (default) holds indefinitely — the timeout
+   * never fires.
+   */
+  questionTimeoutMinutes: number
+  /**
+   * What happens when a pending question exceeds `questionTimeoutMinutes`:
+   * `hold` (default) keeps blocking pipeline dispatches; `resume` clears the
+   * pause, journals `action:"timeout"`, and lets the next dispatch proceed
+   * with a warning line naming the question.
+   */
+  questionTimeoutAction: "hold" | "resume"
+  /**
+   * Literal marker that, appearing in the user's own prompt, cancels a
+   * pending question without answering it. Default `QUESTION CANCELLED:`.
+   */
+  questionCancelMarker: string
   /** Agent names turnstile recognizes. */
   agents: TurnstileAgents
   /** Gate marker regex source (compiled with `gm`). */

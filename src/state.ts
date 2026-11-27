@@ -87,6 +87,10 @@ export function formatGateSnapshot(s: GateState): string {
     `- plan: ${s.hasPlanVerdict ? "APPROVED" : "PENDING"}${s.approvedPlan !== "" ? ` plan=${s.approvedPlan}` : ""} stamp=${s.plansSignature ? "known" : "unknown"}`,
     `- reviewer: ${s.hasReviewApprove ? "APPROVED" : "PENDING"} dispatches=${s.reviewerDispatches} last=${s.lastVerdictMarker || "none"}`,
     `- waiver: ${waiverStatus} human: ${s.humanApproval ? "APPROVED" : "none"}`,
+    // Display-only pending-question state: the raw question text never rides
+    // the snapshot (the block message and journal carry it), so the line is
+    // byte-stable across questions.
+    `- question: ${s.questionPending ? "PENDING" : "none"}`,
     `- rounds: planner=${s.plannerRounds} plan-reviewer=${s.planReviewerRounds} test-runner=${s.testRunnerRounds} reviewer=${s.reviewRounds} total=${s.totalDispatches}`,
     `- landing: blocks=${s.landingBlocks} reads=${s.reads} hands-on blocks=${s.handsOnBlocks}`,
     `- task: ${s.taskFingerprint || "unstamped"}`,

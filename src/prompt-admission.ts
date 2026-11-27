@@ -559,6 +559,37 @@ function capturePlanReviewBody(
 }
 
 /**
+ * User question-cancel capture (prompt channel): scans the user's own prompt
+ * for the configured `questionCancelMarker` literal and cancels a pending
+ * question without answering it. Acts only while `questionPending` holds —
+ * a prompt can never cancel anything when no question is open. Placed
+ * adjacent to `capturePlanReviewBody` for symmetry; a co-present suspend
+ * literal's fresh-start clear is authoritative regardless of order.
+ * Fail-open: a coercion that throws is journaled under the "question cancel
+ * capture" key and swallowed.
+ * @param st The prompt-admission state.
+ * @param sessionID The parent session the cancel marker is scanned for.
+ * @param properties The prompt payload to scan.
+ */
+function captureQuestionCancelBody(
+  st: PromptAdmissionState,
+  sessionID: string,
+  properties: PromptHookProperties,
+): void {
+  try {
+    if (promptTextOf(properties).indexOf(st.config.questionCancelMarker) === -1) return
+    const s = st.ledger.state(sessionID)
+    if (s.questionPending === "") return
+    s.questionPending = ""
+    s.questionOpenedAt = 0
+    st.journaler.journal({ type: "question", sessionID, action: "cancel" })
+  } catch (e) {
+    // Fail-open: the cancel capture never blocks a prompt.
+    st.journaler.journal({ type: "error", sessionID, error: `question cancel capture: ${e}` })
+  }
+}
+
+/**
  * Refuses a suspend/resume marker under `allowSuspend:false`: journals the
  * refused entry (`refused:true`) and parks the marker-style near-miss
  * diagnostic for surfacing (the same diagnostic shape and channel as the
@@ -925,6 +956,7 @@ function admitPromptBody(
   captureWaiverBody(st, sessionID, properties)
   captureTaskDoneBody(st, sessionID, properties)
   capturePlanReviewBody(st, sessionID, properties)
+  captureQuestionCancelBody(st, sessionID, properties)
   captureSuspendBody(st, sessionID, properties)
   scanNearMissesBody(st, sessionID, properties)
   surfaceKeylessPromptBody(st, sessionID, properties)

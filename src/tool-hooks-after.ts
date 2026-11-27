@@ -14,6 +14,7 @@ import { dispatchStampKey } from "./dispatch-guard.ts"
 import { asSessionID, classifyDelivery } from "./delivery.ts"
 import { provOverrideEntry } from "./decision-ledger.ts"
 import { sha256Hex16 } from "./chain.ts"
+import { QUESTION_RE, parseQuestionMarker } from "./markers.ts"
 import type { TurnstileContext } from "./hooks-core.ts"
 import type { MarkerEvent, ToolHookEvent, ToolResult } from "./types.ts"
 
@@ -231,6 +232,71 @@ function checkDispatchTamper(ctx: TurnstileContext, event: ToolHookEvent, child:
 }
 
 /**
+ * Builds one `question` `open` journal row: the authoritative shape carries
+ * the question text only; the suppressed shape adds `authority:"suppressed"`
+ * (audit only — the replay fold skips it).
+ * @param sessionID The parent session the row is keyed on.
+ * @param question The extracted question text.
+ * @param suppressed Whether the observation was denied authority.
+ * @returns The journal row.
+ */
+function questionOpenRow(
+  sessionID: string,
+  question: string,
+  suppressed: boolean,
+): Record<string, unknown> {
+  return {
+    type: "question",
+    sessionID,
+    action: "open",
+    ...(suppressed ? { authority: "suppressed" } : {}),
+    question,
+  }
+}
+
+/**
+ * Captures a first-sight `QUESTION:` marker on a task-result delivery:
+ * parses the delivery text through the question arm (dedup keyed on the
+ * delivery's scope, provenance keyed on the child session) and journals the
+ * open row. Only the configured executor stage's deliveries carry question
+ * authority — a question from any other emitter is journaled first-sight
+ * with `authority:"suppressed"` (audit only) and pauses nothing. An
+ * authoritative open sets `questionPending`/`questionOpenedAt` on the
+ * parent's bucket. Fail-open: an internal error journals `type:"error"` and
+ * never throws (the delivery surface never gates).
+ * @param ctx The shared per-setup context.
+ * @param child The delivery's child session ID.
+ * @param agent The resolved delivery agent name.
+ * @param output The classified delivery text.
+ * @param dedupScope The delivery's dedup scope (shared with the marker
+ *     parse so one delivery is one observation).
+ */
+function captureQuestionOpen(
+  ctx: TurnstileContext,
+  child: string,
+  agent: string,
+  output: string,
+  dedupScope: string,
+): void {
+  try {
+    const sid = ctx.ledger.parentOf(child)
+    if (!sid) return
+    const s = ctx.ledger.state(sid)
+    const allowed = agent === ctx.config.agents.executor
+    const parsed = parseQuestionMarker(s, output, QUESTION_RE, dedupScope, child, allowed)
+    if (!parsed) return
+    const suppressed = parsed.authority === "suppressed"
+    if (!suppressed) {
+      s.questionPending = parsed.question
+      s.questionOpenedAt = Date.now()
+    }
+    ctx.journaler.journal(questionOpenRow(sid, parsed.question, suppressed))
+  } catch (e) {
+    ctx.journaler.journal({ type: "error", sessionID: child, error: `question open capture: ${e}` })
+  }
+}
+
+/**
  * The task/subagent delivery body: classifies the delivery once
  * (marker parsing, the bare-output check, and policy injection all
  * read the same classified child + text), seeds the emitter-authority
@@ -245,12 +311,9 @@ function checkDispatchTamper(ctx: TurnstileContext, event: ToolHookEvent, child:
 async function afterTaskDelivery(ctx: TurnstileContext, event: ToolHookEvent): Promise<void> {
   const { delivery, output, child, agent, effectiveAgent } = await classifyAndSeed(ctx, event)
   checkDispatchTamper(ctx, event, child)
-  const markerEvents = ctx.parseMarkers(
-    output,
-    child,
-    "task-result",
-    `task-result\u0000${ctx.nextTaskDeliverySeq()}`,
-  )
+  const dedupScope = `task-result\u0000${ctx.nextTaskDeliverySeq()}`
+  const markerEvents = ctx.parseMarkers(output, child, "task-result", dedupScope)
+  captureQuestionOpen(ctx, child, agent, output, dedupScope)
   creditReviewerDelivery(ctx, child, effectiveAgent, markerEvents)
   await attributePlanDelivery(ctx, child, effectiveAgent, output)
   await handleBareOutput(ctx, agent, child, output)

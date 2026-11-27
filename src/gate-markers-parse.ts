@@ -7,7 +7,7 @@
  */
 
 import type { GateEvidenceMode, GateState, MarkerEvent, TestOverlapEvidence } from "./types.ts"
-import { GATE_RE, VERDICT_RE, gateResultOf } from "./markers.ts"
+import { GATE_RE, QUESTION_RE, VERDICT_RE, gateResultOf } from "./markers.ts"
 
 /**
  * Records first-sight provenance for a dedup key and accounts for a
@@ -383,4 +383,72 @@ function applyLastMarkers(
   if (verdict.match) {
     applyVerdictMarker(state, verdict.match, verdict.count, dedupScope, raw, kindAllowed, events)
   }
+}
+
+/**
+ * One first-sight `QUESTION:` observation: the full matched marker text, the
+ * question text (everything after `QUESTION: `), and the authority verdict
+ * (`"ok"` when the emitting session may open a question, `"suppressed"`
+ * otherwise — an audit-only observation that pauses nothing).
+ */
+export interface QuestionEvent {
+  marker: string
+  question: string
+  authority: "ok" | "suppressed"
+}
+
+/**
+ * Extracts the question text from one matched marker span: everything after
+ * the `QUESTION: ` token (the leading markdown decoration the regex tolerates
+ * precedes the token, so the token index — not a fixed offset — is the split
+ * point).
+ * @param marker The full matched marker text.
+ * @returns The question text ("" when the token is somehow absent).
+ */
+function questionTextOf(marker: string): string {
+  const at = marker.indexOf("QUESTION: ")
+  return at === -1 ? "" : marker.slice(at + "QUESTION: ".length)
+}
+
+/**
+ * Parses the last `QUESTION:` marker out of assistant text, mutating the
+ * given gate state's dedup set and returning the first-sight observation for
+ * the caller to journal (null when the text carries no question or the marker
+ * was already seen). Deliberately separate from `parseGateMarkers`: that
+ * function's signature and callers are byte-identity-sensitive, and a
+ * question carries no counted fields, so a dedicated arm keeps the
+ * GATE/VERDICT path untouched.
+ *
+ * Dedup keys on `(scope, question text)` through the same provenance
+ * machinery as the other kinds (`gate = false`, so a cross-child re-delivery
+ * never charges the gate suppression counter). Authority is threaded in as a
+ * resolved boolean (the caller resolves the emitting agent against the
+ * configured executor stage): a denied observation is returned with
+ * `authority:"suppressed"` for audit journaling and pauses nothing, but the
+ * dedup key is still registered so the same text re-delivered stays silent.
+ * @param state Mutable gate state for the parent session.
+ * @param text The assistant text to scan.
+ * @param questionRe The question marker regex (defaults to QUESTION_RE).
+ * @param dedupScope Key prefix partitioning the dedup set (default "").
+ * @param raw Raw session ID that produced the marker (child provenance).
+ * @param allowed Whether the emitting session may open a question (default
+ *     true).
+ * @returns The first-sight question observation, or null when none.
+ */
+export function parseQuestionMarker(
+  state: GateState,
+  text: string,
+  questionRe: RegExp = QUESTION_RE,
+  dedupScope = "",
+  raw = "",
+  allowed = true,
+): QuestionEvent | null {
+  if (!text) return null
+  const matches = text.match(questionRe) ?? []
+  const marker = matches[matches.length - 1]
+  if (!marker) return null
+  const question = questionTextOf(marker)
+  const key = `${dedupScope}question\u0000${question}`
+  if (!observeMarker(state, key, raw, false)) return null
+  return { marker, question, authority: allowed ? "ok" : "suppressed" }
 }
