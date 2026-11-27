@@ -203,7 +203,10 @@ or **non-blocking**. If any Open Question remains, the orchestrator presents
 them to you and stops; your written answers are folded into the spec (an
 "use your judgment" answer is recorded as an explicit delegation with its
 scope), and only then is the planner dispatched, with the finalized spec
-passed verbatim at the top of its dispatch prompt. Trivial tasks (small
+passed verbatim at the top of its dispatch prompt. If you need the spec as
+a file, name a path under `.opencode/requirements/` in the dispatch prompt;
+the requirements agent writes it there and still returns it verbatim.
+Trivial tasks (small
 fixes, renames, doc/config changes) skip the leg.
 
 The phase is soft: it emits no marker and no gate. The only enforcement
