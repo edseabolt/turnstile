@@ -471,6 +471,21 @@ function suppressedMarkerCounts(entries) {
   return { bySession, total }
 }
 
+/** Counts marker near misses by UTC day without carrying marker text into the report. */
+function countMarkerNearMisses(entries) {
+  const byDay = new Map()
+  let total = 0
+  for (const entry of entries) {
+    if (entry?.type !== "marker" || entry.event !== "near-miss") continue
+    const time = typeof entry.ts === "string" ? Date.parse(entry.ts) : NaN
+    if (!Number.isFinite(time)) continue
+    const day = new Date(time).toISOString().split("T")[0]
+    byDay.set(day, (byDay.get(day) ?? 0) + 1)
+    total++
+  }
+  return { total, byDay: Object.fromEntries([...byDay].sort()) }
+}
+
 /**
  * Aggregates the journal lines into per-session status. Replays the same
  * gate/plan last-wins rules as ledger.ts's replayGatePasses: a trailing
@@ -504,7 +519,7 @@ function suppressedMarkerCounts(entries) {
  * `"verdict"`) count per session into `suppressedMarkers` via
  * {@link suppressedMarkerCounts}; they mutate no state and stay outside the
  * replay-parity fold (replay-inert by design).
- * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number }, rekeys: Array<{ ts: string, plan: string }>, suppressedTotal: number }}
+ * @returns {{ sessions: Map<string, Record<string, unknown>>, observe: { seen: number, observed: number, wouldBlocks: number }, rekeys: Array<{ ts: string, plan: string }>, suppressedTotal: number, markerNearMisses: { total: number, byDay: Record<string, number> } }}
  *     sessionID → accumulator, plus the folded observe-mode state, the
  *     `plan-rekey` rows (the durable-store scheme-migration audit), and the
  *     global suppressed marker-attempt total.
@@ -513,7 +528,9 @@ function aggregate(lines) {
   const sessions = new Map()
   const observe = { seen: 0, observed: 0, wouldBlocks: 0 }
   const rekeys = []
-  const suppressed = suppressedMarkerCounts(dedupeSinks(lines).map(parseLine))
+  const telemetryEntries = dedupeSinks(lines).map(parseLine)
+  const suppressed = suppressedMarkerCounts(telemetryEntries)
+  const markerNearMisses = countMarkerNearMisses(telemetryEntries)
   const forSession = (id) => {
     let a = sessions.get(id)
     if (!a) {
@@ -680,7 +697,7 @@ function aggregate(lines) {
   // state replay so a session with only suppressed rows still surfaces.
   for (const [sid, n] of suppressed.bySession) forSession(sid).suppressedMarkers = n
 
-  return { sessions, observe, rekeys, suppressedTotal: suppressed.total }
+  return { sessions, observe, rekeys, suppressedTotal: suppressed.total, markerNearMisses }
 }
 
 // Local fold helpers: standalone scripts cannot import src/, so this fold is
@@ -1201,7 +1218,7 @@ async function main(argv) {
     return 0
   }
 
-  const { sessions, observe, rekeys, suppressedTotal } = aggregate(lines)
+  const { sessions, observe, rekeys, suppressedTotal, markerNearMisses } = aggregate(lines)
   for (const [id, a] of sessions) {
     base.sessions[id] = a
   }
@@ -1219,6 +1236,7 @@ async function main(argv) {
         {
           ...base,
           ...(tokenUsage ? { tokenUsage } : {}),
+          ...(markerNearMisses.total ? { markerNearMisses } : {}),
           ...(pluginLoad ? { pluginLoad } : {}),
           ...(update ? { update } : {}),
           ...(advisory ? { advisories: [advisory] } : {}),
@@ -1236,6 +1254,7 @@ async function main(argv) {
       rekeys,
       suppressedTotal,
     )
+    if (markerNearMisses.total) table += `\nmarker near misses: ${markerNearMisses.total}`
     if (tokenUsage) table += `\n${renderTokenLines(tokenUsage)}`
     const loaded = loadedPluginLine(setupRow)
     if (loaded) table += `\n${loaded}`

@@ -34,6 +34,13 @@ carries a top-level `suspension` block (the resolved `allowSuspend`,
 `suspendMarker`/`resumeMarker`, config path, and file presence), the
 surface the `turnstile-off`/`turnstile-on` skills read ([install](install.md)).
 
+### Marker near misses
+
+When the journal contains mistyped marker events, the status table shows
+their total. The `--json` report includes a `markerNearMisses` object with
+`total` and `byDay` counts for UTC dates in the journal window. The report
+contains counts only.
+
 ### Token usage
 
 When the journal contains `token-usage` rows, `status` appends a rollup: one

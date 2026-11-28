@@ -1194,6 +1194,33 @@ test("status counts suppressed marker rows per session, skips replay drops, and 
   }
 })
 
+test("status counts journaled near misses by UTC day without exposing marker text", () => {
+  const dir = metricsDir()
+  try {
+    const marker = { type: "marker", event: "near-miss", sessionID: "p1", found: "typo" }
+    const earlier = line(Date.UTC(2026, 10, 26), marker)
+    const later = line(Date.UTC(2026, 10, 27), marker)
+    writeJournal(dir, "turnstile.jsonl.1", [earlier])
+    writeJournal(dir, "turnstile.jsonl", [
+      earlier,
+      later,
+      line(Date.UTC(2026, 10, 27, 1), marker),
+      { ...marker, ts: "invalid" },
+      { ...later, event: "approval" },
+    ])
+    const result = runStatus(dir, ["--json"])
+    assert.equal(code(result), 0)
+    assert.deepEqual(JSON.parse(result.stdout).markerNearMisses, {
+      total: 3,
+      byDay: { "2026-11-26": 1, "2026-11-27": 2 },
+    })
+    assert.doesNotMatch(result.stdout, /typo/)
+    assert.match(runStatus(dir).stdout, /marker near misses: 3/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── --check-updates (opt-in registry check, 24h cache, fail-open) ───────────
 //
 // These tests run status.mjs with an async spawn (not spawnSync): the stub
